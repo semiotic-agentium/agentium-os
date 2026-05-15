@@ -137,6 +137,23 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Discover, approve, and write an MCP server snapshot directly to the repository registry.
+    McpRegistryEnable {
+        /// Server id to enable (must match an entry under `mcpServers` in the config file).
+        server_id: String,
+        /// Path to mcp-servers.json (default: $HOME/.agentium-os/mcp-servers.json).
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Repository URL (e.g. http://127.0.0.1:18080/repository).
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
+        repository_url: String,
+        /// Skip the interactive approval prompt.
+        #[arg(long)]
+        yes: bool,
+        /// Runner token for authenticated operator access (falls back to RUNNER_TOKEN env).
+        #[arg(long)]
+        runner_token: Option<String>,
+    },
     /// Push a local MCP snapshot into the repository registry.
     McpRegistryPush {
         /// Server id to push from the local snapshot cache.
@@ -239,6 +256,22 @@ async fn main() -> Result<()> {
                 deploy_url.as_deref(),
                 &message,
                 &origin,
+                runner_token.as_deref(),
+            )
+            .await?;
+        }
+        Commands::McpRegistryEnable {
+            server_id,
+            config,
+            repository_url,
+            yes,
+            runner_token,
+        } => {
+            mcp_registry_enable(
+                &server_id,
+                config.as_deref(),
+                &repository_url,
+                yes,
                 runner_token.as_deref(),
             )
             .await?;
@@ -810,22 +843,14 @@ async fn load_agent_package(
     })
 }
 
-async fn mcp_registry_push(
-    server_id: &str,
+async fn post_mcp_snapshot_to_registry(
     repository_url: &str,
-    cache_root: Option<&std::path::Path>,
+    snapshot: baml_rt_tools::mcp_snapshot::McpServerSnapshot,
     runner_token_flag: Option<&str>,
-) -> Result<()> {
+    op_name: &str,
+) -> Result<serde_json::Value> {
     use baml_rt_repository::http::ImportMcpSnapshotRequest;
-    use baml_rt_tools::mcp_cache::{default_cache_root, read_snapshot};
 
-    let cache_root: PathBuf = match cache_root {
-        Some(p) => p.to_path_buf(),
-        None => default_cache_root()
-            .ok_or_else(|| anyhow::anyhow!("HOME is not set; pass --cache-root explicitly"))?,
-    };
-    let snapshot = read_snapshot(&cache_root, server_id)
-        .with_context(|| format!("reading MCP snapshot for `{server_id}`"))?;
     let token = resolve_builder_token(runner_token_flag)?;
     let url = format!(
         "{}/mcp/snapshots/import",
@@ -844,9 +869,187 @@ async fn mcp_registry_push(
         .with_context(|| format!("posting MCP snapshot to {url}"))?;
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
-    check_response(status, &body, "MCP registry push", token.is_some())?;
-    let body: serde_json::Value =
-        serde_json::from_str(&body).context("Failed to parse MCP registry push response")?;
+    check_response(status, &body, op_name, token.is_some())?;
+    serde_json::from_str(&body).context("Failed to parse MCP registry response")
+}
+
+fn mcp_default_config_path() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("HOME is not set; pass --config explicitly"))?;
+    Ok(home.join(".agentium-os").join("mcp-servers.json"))
+}
+
+async fn import_mcp_snapshot_from_config(
+    server_id: &str,
+    config_path: Option<&std::path::Path>,
+) -> Result<baml_rt_tools::mcp_snapshot::McpServerSnapshot> {
+    use anyhow::bail;
+    use baml_rt_tools::mcp_config::McpServersFile;
+    use baml_tools_mcp::importer::{EnvSecretResolver, ImportOptions, Importer};
+
+    let config_path = match config_path {
+        Some(p) => p.to_path_buf(),
+        None => mcp_default_config_path()?,
+    };
+    let raw = fs::read_to_string(&config_path)
+        .with_context(|| format!("reading mcp-servers config at {}", config_path.display()))?;
+    let parsed = McpServersFile::parse(&raw)
+        .with_context(|| format!("parsing {}", config_path.display()))?;
+    let Some(server_config) = parsed.servers.get(server_id) else {
+        bail!(
+            "server `{server_id}` not found in {}; available: {:?}",
+            config_path.display(),
+            parsed.servers.keys().collect::<Vec<_>>()
+        );
+    };
+
+    println!(
+        "Importing MCP server `{server_id}` from {}",
+        config_path.display()
+    );
+    let importer = Importer::new(&EnvSecretResolver);
+    importer
+        .import(
+            server_config,
+            ImportOptions {
+                server_id: server_id.to_string(),
+                sandbox_profile: None,
+            },
+        )
+        .await
+        .with_context(|| format!("importing MCP server `{server_id}`"))
+}
+
+fn print_mcp_snapshot_summary(snapshot: &baml_rt_tools::mcp_snapshot::McpServerSnapshot) {
+    println!();
+    println!(
+        "Server: {}\n  protocol_version: {}\n  server_config_digest: {}",
+        snapshot.server_id, snapshot.protocol_version, snapshot.server_config_digest,
+    );
+    if let Some(info) = &snapshot.server_info {
+        println!("  server_info: {}", info);
+    }
+    if !snapshot.secret_refs.is_empty() {
+        println!(
+            "  secret_refs: {}",
+            snapshot
+                .secret_refs
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    println!("\nTools ({}):", snapshot.tools.len());
+    for tool in &snapshot.tools {
+        println!(
+            "  - {}\n      mcp_name: {}\n      access: {}\n      schema_digest: {}\n      output_mode: {:?}{}",
+            tool.platform_tool_name,
+            tool.mcp_tool_name,
+            tool.access_level,
+            tool.input_schema_digest,
+            tool.output_mode,
+            tool.opaque_fallback_reason
+                .as_deref()
+                .map(|r| format!("\n      opaque_fallback: {r}"))
+                .unwrap_or_default(),
+        );
+    }
+    println!();
+}
+
+fn approve_mcp_snapshot(snapshot: &mut baml_rt_tools::mcp_snapshot::McpServerSnapshot) {
+    use baml_rt_tools::mcp_snapshot::McpApprovalState;
+
+    let owner = std::env::var("MCP_APPROVER_EMAIL")
+        .ok()
+        .or_else(|| std::env::var("GIT_AUTHOR_EMAIL").ok());
+    let reviewed_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| format!("epoch:{}", d.as_secs()))
+        .ok();
+    let prior_state = snapshot.approval.state;
+    snapshot.approval.state = McpApprovalState::Approved;
+    tracing::info!(
+        target: "mcp.approval",
+        mcp_server_id = %snapshot.server_id,
+        event = "mcp.approval_transition",
+        from = ?prior_state,
+        to = ?McpApprovalState::Approved,
+        owner = ?owner,
+        "MCP server approved",
+    );
+    snapshot.approval.owner = owner.clone();
+    snapshot.approval.reviewed_at = reviewed_at.clone();
+    for tool in &mut snapshot.tools {
+        tool.approval.state = McpApprovalState::Approved;
+        tool.approval.owner = owner.clone();
+        tool.approval.reviewed_at = reviewed_at.clone();
+    }
+}
+
+async fn mcp_registry_enable(
+    server_id: &str,
+    config_path: Option<&std::path::Path>,
+    repository_url: &str,
+    skip_prompt: bool,
+    runner_token_flag: Option<&str>,
+) -> Result<()> {
+    let mut snapshot = import_mcp_snapshot_from_config(server_id, config_path).await?;
+    print_mcp_snapshot_summary(&snapshot);
+    let approve = if skip_prompt {
+        true
+    } else {
+        inquire::Confirm::new("Approve this server and all tools into the registry?")
+            .with_default(false)
+            .prompt()
+            .unwrap_or(false)
+    };
+    if !approve {
+        println!("Aborted. Registry was not modified.");
+        return Ok(());
+    }
+    approve_mcp_snapshot(&mut snapshot);
+    let body = post_mcp_snapshot_to_registry(
+        repository_url,
+        snapshot,
+        runner_token_flag,
+        "MCP registry enable",
+    )
+    .await?;
+    let version = body
+        .get("version")
+        .and_then(|v| v.get("version"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "<unknown>".into());
+    println!("✅ Enabled MCP server `{server_id}` as registry version {version}");
+    Ok(())
+}
+
+async fn mcp_registry_push(
+    server_id: &str,
+    repository_url: &str,
+    cache_root: Option<&std::path::Path>,
+    runner_token_flag: Option<&str>,
+) -> Result<()> {
+    use baml_rt_tools::mcp_cache::{default_cache_root, read_snapshot};
+
+    let cache_root: PathBuf = match cache_root {
+        Some(p) => p.to_path_buf(),
+        None => default_cache_root()
+            .ok_or_else(|| anyhow::anyhow!("HOME is not set; pass --cache-root explicitly"))?,
+    };
+    let snapshot = read_snapshot(&cache_root, server_id)
+        .with_context(|| format!("reading MCP snapshot for `{server_id}`"))?;
+    let body = post_mcp_snapshot_to_registry(
+        repository_url,
+        snapshot,
+        runner_token_flag,
+        "MCP registry push",
+    )
+    .await?;
     let version = body
         .get("version")
         .and_then(|v| v.get("version"))
@@ -909,92 +1112,16 @@ async fn mcp_enable(
     cache_root: Option<&std::path::Path>,
     skip_prompt: bool,
 ) -> Result<()> {
-    use anyhow::bail;
-    use baml_rt_tools::{
-        mcp_cache::{default_cache_root, write_snapshot},
-        mcp_config::McpServersFile,
-        mcp_snapshot::McpApprovalState,
-    };
-    use baml_tools_mcp::importer::{EnvSecretResolver, ImportOptions, Importer};
+    use baml_rt_tools::mcp_cache::{default_cache_root, write_snapshot};
 
-    let config_path: PathBuf = match config_path {
-        Some(p) => p.to_path_buf(),
-        None => {
-            let home = std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .ok_or_else(|| anyhow::anyhow!("HOME is not set; pass --config explicitly"))?;
-            home.join(".agentium-os").join("mcp-servers.json")
-        }
-    };
     let cache_root: PathBuf = match cache_root {
         Some(p) => p.to_path_buf(),
         None => default_cache_root()
             .ok_or_else(|| anyhow::anyhow!("HOME is not set; pass --cache-root explicitly"))?,
     };
 
-    let raw = fs::read_to_string(&config_path)
-        .with_context(|| format!("reading mcp-servers config at {}", config_path.display()))?;
-    let parsed = McpServersFile::parse(&raw)
-        .with_context(|| format!("parsing {}", config_path.display()))?;
-    let Some(server_config) = parsed.servers.get(server_id) else {
-        bail!(
-            "server `{server_id}` not found in {}; available: {:?}",
-            config_path.display(),
-            parsed.servers.keys().collect::<Vec<_>>()
-        );
-    };
-
-    println!(
-        "Importing MCP server `{server_id}` from {}",
-        config_path.display()
-    );
-    let importer = Importer::new(&EnvSecretResolver);
-    let mut snapshot = importer
-        .import(
-            server_config,
-            ImportOptions {
-                server_id: server_id.to_string(),
-                sandbox_profile: None,
-            },
-        )
-        .await
-        .with_context(|| format!("importing MCP server `{server_id}`"))?;
-
-    println!();
-    println!(
-        "Server: {server_id}\n  protocol_version: {}\n  server_config_digest: {}",
-        snapshot.protocol_version, snapshot.server_config_digest,
-    );
-    if let Some(info) = &snapshot.server_info {
-        println!("  server_info: {}", info);
-    }
-    if !snapshot.secret_refs.is_empty() {
-        println!(
-            "  secret_refs: {}",
-            snapshot
-                .secret_refs
-                .iter()
-                .map(|s| s.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-    println!("\nTools ({}):", snapshot.tools.len());
-    for tool in &snapshot.tools {
-        println!(
-            "  - {}\n      mcp_name: {}\n      access: {}\n      schema_digest: {}\n      output_mode: {:?}{}",
-            tool.platform_tool_name,
-            tool.mcp_tool_name,
-            tool.access_level,
-            tool.input_schema_digest,
-            tool.output_mode,
-            tool.opaque_fallback_reason
-                .as_deref()
-                .map(|r| format!("\n      opaque_fallback: {r}"))
-                .unwrap_or_default(),
-        );
-    }
-    println!();
+    let mut snapshot = import_mcp_snapshot_from_config(server_id, config_path).await?;
+    print_mcp_snapshot_summary(&snapshot);
 
     let approve = if skip_prompt {
         true
@@ -1010,31 +1137,7 @@ async fn mcp_enable(
         return Ok(());
     }
 
-    let owner = std::env::var("MCP_APPROVER_EMAIL")
-        .ok()
-        .or_else(|| std::env::var("GIT_AUTHOR_EMAIL").ok());
-    let reviewed_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| format!("epoch:{}", d.as_secs()))
-        .ok();
-    let prior_state = snapshot.approval.state;
-    snapshot.approval.state = McpApprovalState::Approved;
-    tracing::info!(
-        target: "mcp.approval",
-        mcp_server_id = %server_id,
-        event = "mcp.approval_transition",
-        from = ?prior_state,
-        to = ?McpApprovalState::Approved,
-        owner = ?owner,
-        "MCP server approved via mcp-enable",
-    );
-    snapshot.approval.owner = owner.clone();
-    snapshot.approval.reviewed_at = reviewed_at.clone();
-    for tool in &mut snapshot.tools {
-        tool.approval.state = McpApprovalState::Approved;
-        tool.approval.owner = owner.clone();
-        tool.approval.reviewed_at = reviewed_at.clone();
-    }
+    approve_mcp_snapshot(&mut snapshot);
 
     fs::create_dir_all(&cache_root)
         .with_context(|| format!("creating cache root at {}", cache_root.display()))?;
