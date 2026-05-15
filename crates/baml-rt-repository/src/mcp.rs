@@ -1,11 +1,10 @@
 //! MCP registry domain types.
 
 use baml_rt_tools::{
-    mcp_snapshot::{Digest, McpApprovalState, McpServerSnapshot},
+    mcp_snapshot::{Digest, McpApprovalState, McpServerSnapshot, canonical_digest},
     tools::ToolAccess,
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 
 /// Registry row for an MCP server id.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -75,9 +74,5 @@ pub struct McpSnapshotBlob {
 
 /// Computes the content digest used for immutable snapshot versions.
 pub fn compute_snapshot_digest(snapshot: &McpServerSnapshot) -> Digest {
-    let bytes = serde_jcs::to_vec(snapshot)
-        .unwrap_or_else(|_| serde_json::to_vec(snapshot).unwrap_or_else(|_| b"null".to_vec()));
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    Digest::new(format!("sha256:{:x}", hasher.finalize()))
+    canonical_digest(snapshot)
 }

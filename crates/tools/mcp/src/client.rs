@@ -12,10 +12,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, BufReader},
     process::{ChildStdin, ChildStdout},
     time::error::Elapsed,
 };
+
+use crate::wire::write_json_line;
 
 /// Protocol version advertised during `initialize`. Pinned per current
 /// platform decision; bumping this is an explicit design step.
@@ -153,11 +155,7 @@ impl McpStdioClient {
     }
 
     async fn write_message(&mut self, value: &Value) -> Result<(), McpRpcError> {
-        let mut payload =
-            serde_json::to_vec(value).map_err(|err| McpRpcError::Malformed(err.to_string()))?;
-        payload.push(b'\n');
-        self.writer.write_all(&payload).await?;
-        self.writer.flush().await?;
+        write_json_line(&mut self.writer, value).await?;
         Ok(())
     }
 

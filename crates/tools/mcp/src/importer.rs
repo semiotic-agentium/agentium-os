@@ -11,13 +11,11 @@ use baml_rt_tools::{
     mcp_schema_normalize::normalize,
     mcp_snapshot::{
         ApprovalRecord, Digest, MCP_SNAPSHOT_SCHEMA_VERSION, McpImportedTool, McpOutputMode,
-        McpServerSnapshot, McpTransportRef, SecretRef, compute_server_identity_digest,
-        compute_tools_digest,
+        McpServerSnapshot, McpTransportRef, SecretRef, canonical_digest,
+        compute_server_identity_digest, compute_tools_digest,
     },
     tools::ToolAccess,
 };
-use serde_jcs as _;
-use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
 
@@ -252,10 +250,7 @@ fn compute_server_config_digest(server_id: &str, config: &McpServerConfig) -> Di
         "secret_names": config.secrets.iter().map(|s| &s.name).collect::<Vec<_>>(),
         "sandbox": config.sandbox,
     });
-    let bytes = serde_jcs::to_vec(&canonical).unwrap_or_else(|_| b"null".to_vec());
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    Digest::new(format!("sha256:{:x}", hasher.finalize()))
+    canonical_digest(&canonical)
 }
 
 #[cfg(test)]

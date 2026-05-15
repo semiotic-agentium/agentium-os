@@ -8,6 +8,7 @@ pub mod importer;
 pub mod resolver;
 pub mod runtime;
 pub mod sandbox;
+pub mod wire;
 
 pub use client::{CLIENT_PROTOCOL_VERSION, McpRpcError, McpStdioClient};
 pub use composite::CompositeResolver;

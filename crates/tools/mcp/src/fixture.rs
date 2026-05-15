@@ -12,6 +12,8 @@ use tokio::{
     sync::Mutex,
 };
 
+use crate::wire::write_json_line;
+
 pub const FAKE_PROTOCOL_VERSION: &str = "2025-06-18";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,7 +128,7 @@ where
                         "message": format!("parse error: {err}"),
                     }
                 });
-                write_message(&mut writer, &response).await?;
+                write_json_line(&mut writer, &response).await?;
                 continue;
             }
         };
@@ -164,7 +166,7 @@ where
                         }
                     }
                 });
-                write_message(&mut writer, &response).await?;
+                write_json_line(&mut writer, &response).await?;
             }
             "notifications/initialized" => {
                 state.lock().await.initialized = true;
@@ -177,7 +179,7 @@ where
                         "tools": tools.iter().map(serialize_tool).collect::<Vec<_>>()
                     }
                 });
-                write_message(&mut writer, &response).await?;
+                write_json_line(&mut writer, &response).await?;
             }
             "tools/call" => {
                 call_count += 1;
@@ -203,7 +205,7 @@ where
                             "total": 1.0
                         }
                     });
-                    write_message(&mut writer, &progress).await?;
+                    write_json_line(&mut writer, &progress).await?;
                 }
 
                 if config.malformed_response {
@@ -226,7 +228,7 @@ where
                     "id": id,
                     "result": result
                 });
-                write_message(&mut writer, &response).await?;
+                write_json_line(&mut writer, &response).await?;
 
                 if config.drift_mode && !drifted && call_count == 1 {
                     drifted = true;
@@ -257,7 +259,7 @@ where
                         "method": "notifications/tools/list_changed",
                         "params": {}
                     });
-                    write_message(&mut writer, &notif).await?;
+                    write_json_line(&mut writer, &notif).await?;
                 }
             }
             "notifications/cancelled" => {
@@ -269,7 +271,7 @@ where
                     "id": id,
                     "result": null
                 });
-                write_message(&mut writer, &response).await?;
+                write_json_line(&mut writer, &response).await?;
             }
             "exit" => break,
             other => {
@@ -281,7 +283,7 @@ where
                         "message": format!("method not found: {other}")
                     }
                 });
-                write_message(&mut writer, &response).await?;
+                write_json_line(&mut writer, &response).await?;
             }
         }
     }
@@ -299,16 +301,6 @@ fn serialize_tool(tool: &FakeMcpTool) -> Value {
     Value::Object(obj)
 }
 
-async fn write_message<W>(writer: &mut W, value: &Value) -> std::io::Result<()>
-where
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    let mut payload = serde_json::to_vec(value)?;
-    payload.push(b'\n');
-    writer.write_all(&payload).await?;
-    writer.flush().await?;
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {

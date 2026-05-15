@@ -159,6 +159,17 @@ impl std::fmt::Display for Digest {
     }
 }
 
+/// Hashes a value with JCS-canonicalised serde JSON then SHA-256, returning
+/// the platform's `sha256:<hex>` digest. Centralises the digest convention
+/// used by every MCP digest (server identity, tools, server config, snapshot
+/// blob) so callers cannot drift on the canonicalisation or the prefix.
+pub fn canonical_digest<T: Serialize + ?Sized>(value: &T) -> Digest {
+    let bytes = serde_jcs::to_vec(value).unwrap_or_else(|_| b"null".to_vec());
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Digest::new(format!("sha256:{:x}", hasher.finalize()))
+}
+
 /// Computes the server identity digest from the MCP `initialize` response.
 ///
 /// Covers only the fields whose change must invalidate the existing
@@ -176,10 +187,7 @@ pub fn compute_server_identity_digest(capabilities: &Value, server_info: &Value)
         "capabilities": capabilities,
         "server_info_name": server_name,
     });
-    let bytes = serde_jcs::to_vec(&canonical).unwrap_or_else(|_| b"null".to_vec());
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    Digest::new(format!("sha256:{:x}", hasher.finalize()))
+    canonical_digest(&canonical)
 }
 
 /// Computes the server-wide tool-set digest from the imported tool list.
@@ -215,10 +223,7 @@ where
         .into_iter()
         .map(|(name, digest)| json!({ "name": name, "input_schema_digest": digest }))
         .collect();
-    let bytes = serde_jcs::to_vec(&canonical).unwrap_or_else(|_| b"[]".to_vec());
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    Digest::new(format!("sha256:{:x}", hasher.finalize()))
+    canonical_digest(&canonical)
 }
 
 /// Returns true when the server and the named tool are both `Approved`.
