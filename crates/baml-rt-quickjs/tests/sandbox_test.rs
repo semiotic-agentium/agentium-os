@@ -23,24 +23,15 @@ async fn test_sandbox_environment() {
 
     // 1. require must not be available
     let require_code = r#"
-        (() => {
-            try {
-                if (typeof require !== 'undefined') {
-                    require('fs');
-                    return JSON.stringify({error: "require should not be available"});
-                }
-                return JSON.stringify({success: true, message: "require not available"});
-            } catch (e) {
-                return JSON.stringify({success: true, error: e.toString()});
-            }
-        })()
+        (() => ({ available: typeof require !== 'undefined' }))()
     "#;
     let result = bridge.eval_sync(require_code).await;
     assert!(result.is_ok(), "require check should execute");
     let value = result.unwrap();
-    assert!(
-        value.get("message").or(value.get("error")).is_some(),
-        "require: should return message about availability"
+    assert_eq!(
+        value.get("available").and_then(serde_json::Value::as_bool),
+        Some(false),
+        "require must not be exposed to agent JS"
     );
 
     // 2. console.log must work
@@ -68,22 +59,14 @@ async fn test_sandbox_environment() {
 
     // 3. fetch must not be available
     let fetch_code = r#"
-        (() => {
-            try {
-                if (typeof fetch !== 'undefined') {
-                    return JSON.stringify({error: "fetch should not be available"});
-                }
-                return JSON.stringify({success: true, message: "fetch not available"});
-            } catch (e) {
-                return JSON.stringify({success: true, error: e.toString()});
-            }
-        })()
+        (() => ({ available: typeof fetch !== 'undefined' }))()
     "#;
     let result = bridge.eval_sync(fetch_code).await;
     assert!(result.is_ok(), "fetch check should execute");
     let value = result.unwrap();
-    assert!(
-        value.get("message").or(value.get("error")).is_some(),
-        "fetch: should return message about availability"
+    assert_eq!(
+        value.get("available").and_then(serde_json::Value::as_bool),
+        Some(false),
+        "fetch must not be exposed to agent JS"
     );
 }
