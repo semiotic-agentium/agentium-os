@@ -416,7 +416,8 @@ impl ClusterManager {
                  content_hash = $hash, \
                  runner_id = $runner_id, \
                  runner_endpoint = $endpoint, \
-                 status = 'active'",
+                 status = 'active', \
+                 updated_at_ms = time::millis(time::now())",
             )
             .bind(("placement_key", placement_key))
             .bind(("pkg", key.agent_package.as_str().to_string()))
@@ -773,6 +774,57 @@ mod tests {
         assert!(
             rows[0].get("pod_name").and_then(|v| v.as_str()).is_some(),
             "pod_name field must still be present (HOSTNAME-sourced best-effort)"
+        );
+    }
+
+    async fn fetch_placement_updated_at_ms(db: &Surreal<Any>, key: &AgentRouteKey) -> Option<i64> {
+        let rows: Vec<serde_json::Value> = db
+            .query(
+                "SELECT updated_at_ms FROM cluster_agent_placements \
+                 WHERE agent_package = $pkg AND agent_instance_id = $inst",
+            )
+            .bind(("pkg", key.agent_package.as_str().to_string()))
+            .bind(("inst", key.agent_instance_id.as_str().to_string()))
+            .await
+            .unwrap()
+            .take(0)
+            .unwrap();
+        rows.first()
+            .and_then(|r| r.get("updated_at_ms"))
+            .and_then(|v| v.as_i64())
+    }
+
+    /// `cluster_agent_placements.updated_at_ms` must be written on every
+    /// upsert so operators have a liveness signal for the placement row
+    /// (see #383). Re-recording the same placement must advance the
+    /// timestamp — otherwise the field cannot distinguish a fresh deploy
+    /// from a row last touched by a long-dead runner.
+    #[tokio::test]
+    async fn record_placement_stamps_updated_at_ms() {
+        let db = test_db().await;
+        let identity = identity(1);
+        let mgr = ClusterManager::new(db.clone(), identity, TEST_TTL_MS)
+            .await
+            .unwrap();
+
+        let key = test_route_key();
+        let hash = test_hash();
+        mgr.record_placement(&key, &hash).await.unwrap();
+
+        let first_ts = fetch_placement_updated_at_ms(&db, &key)
+            .await
+            .expect("updated_at_ms must be a non-null integer after record_placement");
+        assert!(first_ts > 0, "updated_at_ms must be a positive ms epoch");
+
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        mgr.record_placement(&key, &hash).await.unwrap();
+
+        let second_ts = fetch_placement_updated_at_ms(&db, &key)
+            .await
+            .expect("updated_at_ms must remain non-null after a re-record");
+        assert!(
+            second_ts > first_ts,
+            "re-recording the placement must bump updated_at_ms (first={first_ts}, second={second_ts})"
         );
     }
 
