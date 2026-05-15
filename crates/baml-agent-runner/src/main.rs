@@ -257,7 +257,8 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         repository_store.clone() as Arc<dyn BlobStore>,
         repository_store.clone() as Arc<dyn MetadataStore>,
         repository_store.clone() as Arc<dyn LineageStore>,
-        repository_store as Arc<dyn SearchStore>,
+        repository_store.clone() as Arc<dyn SearchStore>,
+        repository_store as Arc<dyn baml_rt_repository::McpRegistryStore>,
     ));
     let raw_deployments = deployment_state
         .list_deployments()

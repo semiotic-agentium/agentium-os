@@ -3,6 +3,7 @@
 //! Request and response types for the REST API surface, plus RFC 7807
 //! error mapping from `RepositoryError`.
 
+use baml_rt_tools::mcp_snapshot::McpServerSnapshot;
 use http_api_problem::{HttpApiProblem, StatusCode as ProblemStatusCode};
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +12,7 @@ use crate::{
     error::RepositoryError,
     ids::{AgentName, ContentHash, Version},
     lineage::LineageSubgraph,
+    mcp::{McpRegistryServerVersion, McpRegistryToolVersion},
 };
 
 // ---------------------------------------------------------------------------
@@ -221,6 +223,31 @@ pub struct RemoveTagRequest {
     pub tag: String,
 }
 
+/// GET /mcp/servers/:server_id/versions
+#[derive(Debug, Deserialize)]
+pub struct McpServerPath {
+    pub server_id: String,
+}
+
+/// GET /mcp/servers/:server_id/versions/:version
+#[derive(Debug, Deserialize)]
+pub struct McpServerVersionPath {
+    pub server_id: String,
+    pub version: u32,
+}
+
+/// GET /mcp/tools?platform_tool_name=...
+#[derive(Debug, Deserialize)]
+pub struct McpToolQuery {
+    pub platform_tool_name: String,
+}
+
+/// POST /mcp/snapshots/import
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ImportMcpSnapshotRequest {
+    pub snapshot: McpServerSnapshot,
+}
+
 // ---------------------------------------------------------------------------
 // Response types
 // ---------------------------------------------------------------------------
@@ -263,4 +290,24 @@ pub struct LineageResponse {
 pub struct BlobDownloadMeta {
     pub hash: ContentHash,
     pub size_bytes: usize,
+}
+
+/// Response for MCP server version listing.
+#[derive(Debug, Serialize)]
+pub struct McpServerVersionsResponse {
+    pub server_id: String,
+    pub versions: Vec<McpRegistryServerVersion>,
+}
+
+/// Response for MCP tool lookup.
+#[derive(Debug, Serialize)]
+pub struct McpToolLookupResponse {
+    pub tools: Vec<McpRegistryToolVersion>,
+    pub total: usize,
+}
+
+/// Response for imported MCP snapshot.
+#[derive(Debug, Serialize)]
+pub struct ImportMcpSnapshotResponse {
+    pub version: McpRegistryServerVersion,
 }

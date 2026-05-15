@@ -17,9 +17,10 @@ use crate::{
     entry::{RepositoryEntry, RepositoryEntryHeader, Tag},
     http::{
         AddTagRequest, BlobPath, EntriesQuery, EntriesQueryMode, EntriesResponse, GetByHashPath,
-        GetByVersionPath, HttpResult, LineagePath, LineageQuery, LineageResponse,
-        ListAgentsResponse, ListVersionsPath, ListVersionsResponse, RemoveTagRequest,
-        SearchResponse, TagPath,
+        GetByVersionPath, HttpResult, ImportMcpSnapshotRequest, ImportMcpSnapshotResponse,
+        LineagePath, LineageQuery, LineageResponse, ListAgentsResponse, ListVersionsPath,
+        ListVersionsResponse, McpServerPath, McpServerVersionPath, McpServerVersionsResponse,
+        McpToolLookupResponse, McpToolQuery, RemoveTagRequest, SearchResponse, TagPath,
     },
     ids::Version,
     search::SearchQuery,
@@ -175,6 +176,96 @@ pub async fn remove_tag(
     let hash = p.hash.parse().map_err(|e| bad_request(format!("{e}")))?;
     let tag = Tag::new(body.tag);
     svc.remove_tag(&hash, &tag)
+        .await
+        .map_err(HttpApiProblem::from)?;
+    Ok(Json(()))
+}
+
+/// List MCP snapshot versions for one server (GET /repository/mcp/servers/{server_id}/versions).
+pub async fn list_mcp_server_versions(
+    State(svc): State<RepoState>,
+    Path(p): Path<McpServerPath>,
+) -> HttpResult<McpServerVersionsResponse> {
+    let versions = svc
+        .list_mcp_server_versions(&p.server_id)
+        .await
+        .map_err(HttpApiProblem::from)?;
+    Ok(Json(McpServerVersionsResponse {
+        server_id: p.server_id,
+        versions,
+    }))
+}
+
+/// Get an MCP snapshot by server/version (GET /repository/mcp/servers/{server_id}/versions/{version}).
+pub async fn get_mcp_snapshot(
+    State(svc): State<RepoState>,
+    Path(p): Path<McpServerVersionPath>,
+) -> HttpResult<baml_rt_tools::mcp_snapshot::McpServerSnapshot> {
+    let snapshot = svc
+        .get_mcp_snapshot(&p.server_id, p.version)
+        .await
+        .map_err(HttpApiProblem::from)?;
+    match snapshot {
+        Some(snapshot) => Ok(Json(snapshot)),
+        None => Err(not_found(format!(
+            "MCP snapshot not found: {}@{}",
+            p.server_id, p.version
+        ))),
+    }
+}
+
+/// Get the latest MCP snapshot for a server (GET /repository/mcp/servers/{server_id}).
+pub async fn get_latest_mcp_snapshot(
+    State(svc): State<RepoState>,
+    Path(p): Path<McpServerPath>,
+) -> HttpResult<baml_rt_tools::mcp_snapshot::McpServerSnapshot> {
+    let snapshot = svc
+        .get_latest_mcp_snapshot(&p.server_id)
+        .await
+        .map_err(HttpApiProblem::from)?;
+    match snapshot {
+        Some(snapshot) => Ok(Json(snapshot)),
+        None => Err(not_found(format!(
+            "MCP snapshot not found: {}",
+            p.server_id
+        ))),
+    }
+}
+
+/// Find MCP tool versions by platform tool name (GET /repository/mcp/tools?platform_tool_name=...).
+pub async fn find_mcp_tool(
+    State(svc): State<RepoState>,
+    Query(q): Query<McpToolQuery>,
+) -> HttpResult<McpToolLookupResponse> {
+    if q.platform_tool_name.trim().is_empty() {
+        return Err(bad_request("platform_tool_name must not be empty"));
+    }
+    let tools = svc
+        .find_mcp_tool(&q.platform_tool_name)
+        .await
+        .map_err(HttpApiProblem::from)?;
+    let total = tools.len();
+    Ok(Json(McpToolLookupResponse { tools, total }))
+}
+
+/// Import a full MCP snapshot as a new registry version (POST /repository/mcp/snapshots/import).
+pub async fn import_mcp_snapshot(
+    State(svc): State<RepoState>,
+    Json(body): Json<ImportMcpSnapshotRequest>,
+) -> HttpResult<ImportMcpSnapshotResponse> {
+    let version = svc
+        .put_mcp_snapshot(&body.snapshot)
+        .await
+        .map_err(HttpApiProblem::from)?;
+    Ok(Json(ImportMcpSnapshotResponse { version }))
+}
+
+/// Mark an MCP snapshot version stale (POST /repository/mcp/servers/{server_id}/versions/{version}/mark-stale).
+pub async fn mark_mcp_version_stale(
+    State(svc): State<RepoState>,
+    Path(p): Path<McpServerVersionPath>,
+) -> HttpResult<()> {
+    svc.mark_mcp_version_stale(&p.server_id, p.version)
         .await
         .map_err(HttpApiProblem::from)?;
     Ok(Json(()))
