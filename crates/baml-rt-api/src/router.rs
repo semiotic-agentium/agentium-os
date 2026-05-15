@@ -340,6 +340,24 @@ pub fn api_router_with_services_and_deploy(
         cluster_directory,
         web_dir,
     } = config;
+
+    // Cluster-mode invariant: when the topology is `Cluster`, the directory
+    // should be wired so `/cluster/agents` can serve real data. A mismatch
+    // (cluster mode without a directory) only surfaces today via the
+    // endpoint's 404 with a misleading "standalone mode" detail; surface it
+    // loudly at construction so production misconfigurations don't sit
+    // dormant. This stays a log line rather than a panic because several
+    // unit tests construct cluster-mode routers to verify auth-tier
+    // semantics without exercising `/cluster/agents`; a follow-up will
+    // collapse the two fields into a typestate so the impossible state
+    // cannot be expressed at all.
+    if matches!(cluster_mode, ClusterMode::Cluster) && cluster_directory.is_none() {
+        tracing::error!(
+            "ApiServerConfig invariant violation: cluster_mode = Cluster but cluster_directory \
+             is None — GET /cluster/agents will return 404 even though the topology is cluster"
+        );
+    }
+
     let http_trace_layer =
         TraceLayer::new_for_http().make_span_with(otel_middleware::http_request_span);
 

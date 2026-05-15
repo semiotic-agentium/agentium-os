@@ -1724,6 +1724,14 @@ expression: snapshot
               "$ref": "#/components/schemas/PlacementSourceDto",
               "description": "`\"runner\"` when the data came from a successful `/agents` fan-out;\n`\"placement\"` when only the placement table knew about it."
             },
+            "updated_at_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "description": "When the placement row was last written. Set only for\n`source = \"placement\"` rows so operators can judge how stale the\nfallback is. Absent for `source = \"runner\"` rows (the runner's live\nresponse makes write-time meaningless)."
+            },
             "version": {
               "type": [
                 "string",

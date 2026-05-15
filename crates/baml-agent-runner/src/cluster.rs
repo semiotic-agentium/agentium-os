@@ -461,6 +461,7 @@ impl ClusterManager {
     pub(crate) fn directory(&self) -> ClusterDirectory {
         ClusterDirectory {
             db: self.db.clone(),
+            local_runner_id: self.identity.runner_id.to_string(),
             placement_ttl_ms: self.placement_ttl_ms,
         }
     }
@@ -553,11 +554,16 @@ fn parse_service_instance_id(row: &serde_json::Value, runner_id: &str) -> String
 /// SurrealDB types.
 pub(crate) struct ClusterDirectory {
     db: Arc<Surreal<Any>>,
+    local_runner_id: String,
     placement_ttl_ms: u64,
 }
 
 #[async_trait]
 impl ClusterDirectoryService for ClusterDirectory {
+    fn local_runner_id(&self) -> &str {
+        &self.local_runner_id
+    }
+
     async fn list_runners(&self) -> Result<Vec<ClusterRunnerInfo>, ClusterDirectoryError> {
         let ttl = self.placement_ttl_ms as i64;
         let rows: Vec<serde_json::Value> = self
@@ -578,16 +584,11 @@ impl ClusterDirectoryService for ClusterDirectory {
                 let runner_id = row.get("runner_id").and_then(|v| v.as_str())?.to_string();
                 let endpoint = row.get("endpoint").and_then(|v| v.as_str())?.to_string();
                 let service_instance_id = parse_service_instance_id(&row, &runner_id);
-                let pod_name = row
-                    .get("pod_name")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string);
                 let last_heartbeat_ms = row.get("last_heartbeat_ms").and_then(|v| v.as_i64());
                 Some(ClusterRunnerInfo {
                     runner_id,
                     endpoint,
                     service_instance_id,
-                    pod_name,
                     last_heartbeat_ms,
                 })
             })
