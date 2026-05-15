@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use baml_rt::A2aAgent;
+use serde_json::Value;
 
 #[tokio::test]
 async fn test_sandbox_environment() {
@@ -29,7 +30,7 @@ async fn test_sandbox_environment() {
     assert!(result.is_ok(), "require check should execute");
     let value = result.unwrap();
     assert_eq!(
-        value.get("available").and_then(serde_json::Value::as_bool),
+        value.get("available").and_then(Value::as_bool),
         Some(false),
         "require must not be exposed to agent JS"
     );
@@ -65,7 +66,7 @@ async fn test_sandbox_environment() {
     assert!(result.is_ok(), "fetch check should execute");
     let value = result.unwrap();
     assert_eq!(
-        value.get("available").and_then(serde_json::Value::as_bool),
+        value.get("available").and_then(Value::as_bool),
         Some(false),
         "fetch must not be exposed to agent JS"
     );
