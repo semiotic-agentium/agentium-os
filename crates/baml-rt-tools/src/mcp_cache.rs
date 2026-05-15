@@ -97,7 +97,10 @@ pub fn write_snapshot(root: &Path, snapshot: &McpServerSnapshot) -> io::Result<(
         approval: snapshot.approval.clone(),
         sandbox_profile: snapshot.sandbox_profile.clone(),
     };
-    write_json(&server_dir.join(SERVER_FILE), &record)?;
+    // Atomic writes: a crash mid-import otherwise leaves a half-written
+    // `server.json` next to a fully-written tool record, which the runtime
+    // sees as a tool whose owning server fails to parse.
+    write_json_atomic(&server_dir.join(SERVER_FILE), &record)?;
 
     for tool in &snapshot.tools {
         let dir = tool_dir(root, &tool.platform_tool_name);
@@ -107,7 +110,7 @@ pub fn write_snapshot(root: &Path, snapshot: &McpServerSnapshot) -> io::Result<(
             server_id: snapshot.server_id.clone(),
             tool: tool.clone(),
         };
-        write_json(&dir.join(TOOL_METADATA_FILE), &entry)?;
+        write_json_atomic(&dir.join(TOOL_METADATA_FILE), &entry)?;
     }
     Ok(())
 }
@@ -139,6 +142,11 @@ pub fn read_server(root: &Path, server_id: &str) -> io::Result<ServerRecord> {
 }
 
 /// Read every tool record under `<root>/tools/` whose `server_id` matches.
+///
+/// Tool slugs are derived from platform tool names (`mcp/<server>/<tool>` →
+/// `mcp__<server>__<tool>`), so we filter dir names by prefix before parsing
+/// JSON. A 1000-tool cache with M tools per server reads only M files
+/// instead of N·M.
 pub fn read_tools_for_server(root: &Path, server_id: &str) -> io::Result<Vec<McpImportedTool>> {
     let tools_root = root.join(TOOLS_DIR);
     let mut out = Vec::new();
@@ -147,13 +155,21 @@ pub fn read_tools_for_server(root: &Path, server_id: &str) -> io::Result<Vec<Mcp
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(out),
         Err(err) => return Err(err),
     };
+    let slug_prefix = format!("mcp__{}__", server_id);
     for entry in entries {
         let entry = entry?;
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if !name.starts_with(&slug_prefix) {
+            continue;
+        }
         let path = entry.path().join(TOOL_METADATA_FILE);
         if !path.is_file() {
             continue;
         }
         let record: ToolRecord = read_json(&path)?;
+        // Defensive: a colliding slug from another server would still parse;
+        // confirm the embedded `server_id` matches before yielding the tool.
         if record.server_id == server_id {
             out.push(record.tool);
         }
@@ -190,15 +206,9 @@ pub fn remove_server(root: &Path, server_id: &str) -> io::Result<()> {
     }
 }
 
-fn write_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
-    let bytes = serde_json::to_vec_pretty(value)
-        .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;
-    fs::write(path, bytes)
-}
-
 /// Write JSON atomically: serialize to a sibling `.tmp` file then rename in
-/// place. PR5 drift transitions use this so a crash mid-rewrite never leaves
-/// the snapshot in a half-stale state.
+/// place. Both initial snapshot writes and drift transitions go through this
+/// so a crash mid-rewrite never leaves the snapshot in a half-stale state.
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     let bytes = serde_json::to_vec_pretty(value)
         .map_err(|err| io::Error::new(ErrorKind::InvalidData, err))?;

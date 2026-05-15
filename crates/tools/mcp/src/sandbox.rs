@@ -83,6 +83,28 @@ pub fn spawn(spec: SpawnSpec) -> Result<SandboxedChild, SandboxError> {
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
+    // Detach into a new process group so a runaway child cannot signal the
+    // runner's process group. Unix-only; Windows builds skip this.
+    #[cfg(unix)]
+    cmd.process_group(0);
+
+    // Linux: ask the kernel to SIGKILL the child if the runner dies
+    // unexpectedly (panic during async drop, `kill -9` from k8s, OOM).
+    // `kill_on_drop` is best-effort and runs only if `Drop` executes; this
+    // covers the cases where it does not.
+    // SAFETY: prctl with PR_SET_PDEATHSIG is async-signal-safe and only
+    // touches the calling thread's parent-death-signal flag. We do not call
+    // into Rust runtime code between fork and exec.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
     let child = cmd.spawn().map_err(|source| SandboxError::Spawn {
         command: spec.command.clone(),
         source,

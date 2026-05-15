@@ -387,16 +387,44 @@ impl McpConnection {
 
 impl Drop for McpConnection {
     fn drop(&mut self) {
-        // If the rmcp service is initialised, fire-and-forget a cancel so the
-        // child process is reaped instead of inheriting our tokio runtime.
-        // OnceCell's sync `take` is only available with `&mut self`.
-        let maybe_service = self.service.take();
-        if let Some(service_arc) = maybe_service
-            && let Ok(service) = Arc::try_unwrap(service_arc)
-        {
-            tokio::spawn(async move {
-                let _ = service.cancel().await;
-            });
+        // If the rmcp service is initialised, signal cancel so the child
+        // process is reaped. Two failure modes to handle explicitly:
+        //   1. Drop runs on a thread with no tokio runtime — `tokio::spawn`
+        //      would panic. Detect via `Handle::try_current()` and fall back
+        //      to firing the cancellation token (terminates the read loop;
+        //      `TokioChildProcess::Drop` then reaps via `kill_on_drop`).
+        //   2. The `Arc<RunningService>` still has live clones (e.g. an
+        //      in-flight call). `Arc::try_unwrap` then fails silently; log a
+        //      warning so leaked children are at least observable.
+        let Some(service_arc) = self.service.take() else {
+            return;
+        };
+        match Arc::try_unwrap(service_arc) {
+            Ok(service) => match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    handle.spawn(async move {
+                        let _ = service.cancel().await;
+                    });
+                }
+                Err(_) => {
+                    // No runtime present: cancel the token synchronously and
+                    // let `Drop` on `RunningService` / its transport reap.
+                    service.cancellation_token().cancel();
+                }
+            },
+            Err(still_shared) => {
+                tracing::warn!(
+                    target: "mcp.runtime",
+                    server_id = %self.launch.server_id,
+                    strong_count = Arc::strong_count(&still_shared),
+                    event = "mcp.connection_drop_leaks_service",
+                    "McpConnection dropped while rmcp service still has outstanding clones; \
+                     child process will not be reaped until the last clone is released",
+                );
+                // Best-effort: fire cancellation through the shared handle so
+                // any future awaiting the read loop unblocks.
+                still_shared.cancellation_token().cancel();
+            }
         }
     }
 }
@@ -410,7 +438,7 @@ async fn verify_server_identity(
     launch: &ServerLaunch,
 ) -> Result<(), ConnectionError> {
     let Some(peer_info) = service.peer().peer_info() else {
-        cancel_service_best_effort(service).await;
+        signal_cancel(service).await;
         return Err(ConnectionError::MissingPeerInfo {
             server_id: launch.server_id.clone(),
         });
@@ -418,7 +446,7 @@ async fn verify_server_identity(
     let capabilities = match to_value(&peer_info.capabilities) {
         Ok(value) => value,
         Err(err) => {
-            cancel_service_best_effort(service).await;
+            signal_cancel(service).await;
             return Err(ConnectionError::IdentitySerializeFailed {
                 server_id: launch.server_id.clone(),
                 source: err,
@@ -428,7 +456,7 @@ async fn verify_server_identity(
     let server_info = match to_value(&peer_info.server_info) {
         Ok(value) => value,
         Err(err) => {
-            cancel_service_best_effort(service).await;
+            signal_cancel(service).await;
             return Err(ConnectionError::IdentitySerializeFailed {
                 server_id: launch.server_id.clone(),
                 source: err,
@@ -445,7 +473,7 @@ async fn verify_server_identity(
             event = "mcp.identity_mismatch",
             "MCP server identity digest does not match approved snapshot; refusing to bind connection",
         );
-        cancel_service_best_effort(service).await;
+        signal_cancel(service).await;
         return Err(ConnectionError::IdentityMismatch {
             server_id: launch.server_id.clone(),
             expected: launch.expected_identity_digest.clone(),
@@ -455,11 +483,16 @@ async fn verify_server_identity(
     Ok(())
 }
 
-async fn cancel_service_best_effort(service: &RunningService<RoleClient, RuntimeClientHandler>) {
-    // rmcp's `cancel` takes `self`; we only have a borrow here because the
-    // service is owned by the surrounding future. Send the JSON-RPC cancel
-    // through the cancellation token instead, which terminates the read loop
-    // and lets `Drop` reap the child.
+/// Signal the rmcp service to wind down without consuming it.
+///
+/// `rmcp::RunningService::cancel` takes `self`, but our callers hold a
+/// borrow because the service is owned by the surrounding `OnceCell` /
+/// `Arc`. Firing the cancellation token has the same effect on the child
+/// process — it terminates the read loop, which lets `RunningService`'s
+/// own `Drop` close the transport, and `TokioChildProcess::Drop` then reaps
+/// the child via `kill_on_drop` (Linux additionally has
+/// `PR_SET_PDEATHSIG=SIGKILL` from the sandbox layer as a safety net).
+async fn signal_cancel(service: &RunningService<RoleClient, RuntimeClientHandler>) {
     service.cancellation_token().cancel();
 }
 

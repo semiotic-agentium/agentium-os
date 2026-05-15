@@ -2307,6 +2307,7 @@ dependencies = [
  "async-trait",
  "baml-rt-core",
  "baml-rt-tools",
+ "libc",
  "rmcp",
  "serde",
  "serde_json",

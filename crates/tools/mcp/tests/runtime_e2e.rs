@@ -17,7 +17,7 @@ use baml_rt_tools::{
     tools::{ToolAccess, ToolName, ToolSessionContext},
 };
 use baml_tools_mcp::{
-    CompositeResolver,
+    composite::CompositeResolver,
     fixture::{FakeMcpConfig, FakeMcpTool},
     importer::EnvSecretResolver,
     resolver::McpResolver,

@@ -104,11 +104,15 @@ impl<'a, R: SecretResolver + Sync> Importer<'a, R> {
             run_discovery(&mut sandboxed, timeout).await?;
 
         if initialize_result.protocol_version != CLIENT_PROTOCOL_VERSION {
-            tracing::warn!(
-                advertised = %initialize_result.protocol_version,
-                expected = CLIENT_PROTOCOL_VERSION,
-                "MCP server advertised non-pinned protocol version"
-            );
+            // The pinned protocol version is load-bearing for digest
+            // contracts: a server speaking a different revision may produce
+            // schemas whose canonical form differs from what was approved.
+            // Fail closed at import time rather than silently approving
+            // mismatched contracts.
+            return Err(ImportError::ProtocolMismatch {
+                advertised: initialize_result.protocol_version,
+                expected: CLIENT_PROTOCOL_VERSION.to_string(),
+            });
         }
 
         if descriptors.is_empty() {
@@ -188,11 +192,37 @@ async fn run_discovery(
 
     let mut stderr_tail = String::new();
     if let Some(mut stream) = stderr.take() {
-        let _ = tokio::time::timeout(
-            Duration::from_millis(50),
+        match tokio::time::timeout(
+            Duration::from_millis(250),
             stream.read_to_string(&mut stderr_tail),
         )
-        .await;
+        .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => tracing::warn!(
+                target: "mcp.importer",
+                error = %err,
+                event = "mcp.import_stderr_drain_failed",
+                "failed to drain MCP child stderr after discovery"
+            ),
+            Err(_) => tracing::debug!(
+                target: "mcp.importer",
+                event = "mcp.import_stderr_drain_timeout",
+                "MCP child stderr drain timed out (250ms cap)"
+            ),
+        }
+    }
+
+    // Signal the child to exit now that discovery is done. `kill_on_drop`
+    // would do this eventually, but only when `Drop` runs in the reaper —
+    // for k8s SIGKILL or async-drop panics that is never. Best-effort.
+    if let Err(err) = sandboxed.child.start_kill() {
+        tracing::debug!(
+            target: "mcp.importer",
+            error = %err,
+            event = "mcp.import_child_kill_failed",
+            "failed to start_kill MCP import child; will rely on kill_on_drop"
+        );
     }
 
     Ok((initialize_result, tools, stderr_tail))

@@ -34,7 +34,8 @@ use baml_rt_tools::{
     register_manifest_tools_with_fallback,
 };
 use baml_tools_mcp::{
-    CompositeResolver, default_mcp_resolver, importer::SecretResolver as McpSecretResolver,
+    composite::CompositeResolver, importer::SecretResolver as McpSecretResolver,
+    resolver::default_mcp_resolver,
 };
 
 /// Bridges the LLM-side `SecretResolver` (returns `SecretValue`) into the

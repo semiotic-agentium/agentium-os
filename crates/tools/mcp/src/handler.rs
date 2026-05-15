@@ -13,18 +13,14 @@ use baml_rt_tools::{
     ToolFailure, ToolSession, ToolSessionError, ToolStep,
     tools::{ToolFunctionMetadata, ToolHandler, ToolSessionContext},
 };
-use rmcp::{model::CallToolResult, service::ServiceError};
+use rmcp::{
+    model::{CallToolResult, ErrorCode},
+    service::ServiceError,
+};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::runtime::{ConnectionError, McpConnection};
-
-/// JSON-RPC reserved range used by MCP. Codes in this band indicate
-/// LLM-correctable problems (bad params, unknown method, etc.); the wider
-/// world of server-specific codes is treated as a hard execution failure.
-const JSONRPC_INVALID_PARAMS: i32 = -32602;
-const JSONRPC_METHOD_NOT_FOUND: i32 = -32601;
-const JSONRPC_INVALID_REQUEST: i32 = -32600;
 
 pub struct McpToolHandler {
     metadata: ToolFunctionMetadata,
@@ -153,21 +149,28 @@ impl ToolSession for McpToolSession {
 
     async fn finish(&mut self) -> std::result::Result<(), ToolSessionError> {
         let mut state = self.state.lock().await;
-        *state = SessionState::Closed;
+        // Do not erase an `Aborted` marker — later observers (and the
+        // session FSM itself) rely on `Aborted` being terminal.
+        if !matches!(*state, SessionState::Aborted) {
+            *state = SessionState::Closed;
+        }
         Ok(())
     }
 
+    /// Marks the session as aborted **locally**. The in-flight `tools/call`
+    /// on the shared MCP connection keeps running until the server completes
+    /// or the per-call timeout fires; `notifications/cancelled` per-request
+    /// is not yet plumbed through rmcp's public `call_tool` surface.
+    /// Callers therefore should not assume cancellation propagates to the
+    /// MCP peer — the local session refuses further reads, but the server
+    /// may still produce side effects from the request that was already
+    /// dispatched.
     async fn abort(
         &mut self,
         _reason: Option<String>,
     ) -> std::result::Result<(), ToolSessionError> {
         let mut state = self.state.lock().await;
         *state = SessionState::Aborted;
-        // Per-call MCP `notifications/cancelled` requires the in-flight request
-        // id, which rmcp does not currently expose for `call_tool`. PR 5 will
-        // either lift this up via a lower-level peer call or wait for an
-        // upstream API. For now an aborted session refuses further reads and
-        // the next tool call on the same connection is unaffected.
         Ok(())
     }
 }
@@ -175,7 +178,12 @@ impl ToolSession for McpToolSession {
 fn connection_error_to_session(err: ConnectionError) -> ToolSessionError {
     match err {
         ConnectionError::InvalidArguments(_) => {
-            ToolSessionError::Tool(ToolFailure::invalid_input(err.to_string()))
+            // BAML codegen guarantees a JSON object for tool arguments. Reaching
+            // this arm means the runtime received a malformed payload — surface
+            // as a transport/infra error so the LLM does not get prompted to
+            // "retry with different inputs," which would mask the codegen bug.
+            debug_assert!(false, "MCP runtime received non-object tool arguments: {err}");
+            ToolSessionError::Transport(BamlRtError::InvalidArgument(err.to_string()))
         }
         ConnectionError::CallTool(ref service_err) => classify_service_error(&err, service_err),
         ConnectionError::InitializeFailed(_) | ConnectionError::CallTimeout(_) => {
@@ -213,10 +221,10 @@ fn connection_error_to_session(err: ConnectionError) -> ToolSessionError {
 fn classify_service_error(top: &ConnectionError, err: &ServiceError) -> ToolSessionError {
     match err {
         ServiceError::McpError(data) => {
-            let code = data.code.0;
-            if code == JSONRPC_INVALID_PARAMS
-                || code == JSONRPC_METHOD_NOT_FOUND
-                || code == JSONRPC_INVALID_REQUEST
+            let code = data.code;
+            if code == ErrorCode::INVALID_PARAMS
+                || code == ErrorCode::METHOD_NOT_FOUND
+                || code == ErrorCode::INVALID_REQUEST
             {
                 ToolSessionError::Tool(ToolFailure::invalid_input(top.to_string()))
             } else {

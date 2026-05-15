@@ -239,16 +239,25 @@ fn project_record(record: &ToolRecord) -> Result<ToolFunctionMetadata> {
 /// Used as part of the connection pool key so two agents with different
 /// secret values never share an MCP child process. The hash itself never
 /// leaks any secret content.
+///
+/// Each field is **length-prefixed** with its big-endian u64 byte length
+/// before its bytes. A naive NUL separator allows pool-key collisions when
+/// secret names or values contain `\0` — e.g. `(A, "B\0C=D")` and `(A=B,
+/// "C\0D")` would otherwise hash identically and route two tenants with
+/// different secrets to the same MCP child process, breaching the
+/// secret-isolation boundary.
 fn hash_secret_identity(secrets: &BTreeMap<String, String>) -> String {
     if secrets.is_empty() {
         return "sha256:empty".to_string();
     }
     let mut hasher = Sha256::new();
     for (name, value) in secrets {
-        hasher.update(name.as_bytes());
-        hasher.update([0u8]);
-        hasher.update(value.as_bytes());
-        hasher.update([0u8]);
+        let name_bytes = name.as_bytes();
+        let value_bytes = value.as_bytes();
+        hasher.update((name_bytes.len() as u64).to_be_bytes());
+        hasher.update(name_bytes);
+        hasher.update((value_bytes.len() as u64).to_be_bytes());
+        hasher.update(value_bytes);
     }
     format!("sha256:{:x}", hasher.finalize())
 }
