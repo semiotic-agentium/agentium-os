@@ -527,10 +527,16 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         let runtime_secret_store = prov_config.runtime_secret_store();
         let readyz_for_http = readyz.clone();
         let runner_token = config.runner_token.clone();
-        let cluster_mode = if cluster_mgr.is_some() {
-            baml_rt_api::ClusterMode::Cluster
-        } else {
-            baml_rt_api::ClusterMode::Standalone
+        // Pair the directory + heartbeat so cluster mode is a single value.
+        // `Standalone` covers the no-SurrealDB path; mismatched fields are
+        // no longer representable.
+        let cluster = match (cluster_mgr.as_ref(), cluster_heartbeat_health) {
+            (Some(mgr), Some(heartbeat)) => baml_rt_api::ClusterTopology::Cluster {
+                directory: Arc::new(mgr.directory())
+                    as Arc<dyn baml_rt_api::ClusterDirectoryService>,
+                heartbeat,
+            },
+            _ => baml_rt_api::ClusterTopology::Standalone,
         };
         let api_config = baml_rt_api::ApiServerConfig {
             mermaid,
@@ -547,8 +553,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             runtime_secret_store,
             ready: readyz_for_http,
             runner_token,
-            cluster_mode,
-            cluster_heartbeat: cluster_heartbeat_health,
+            cluster,
             web_dir,
             ..baml_rt_api::ApiServerConfig::empty(
                 tool_catalog,

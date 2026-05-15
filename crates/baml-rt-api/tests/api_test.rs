@@ -1,6 +1,9 @@
 //! HTTP API tests: discovery, A2A forward, and error mapping.
 //! Uses insta snapshots with selective redaction for variant parts (IDs, instance URLs, etc.).
 
+#[path = "common/mod.rs"]
+mod common;
+
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, OnceLock},
@@ -33,6 +36,7 @@ use baml_rt_provenance::{
     ProvenanceOpsQueryResponse, ProvenanceWriter, SurrealStoreBuilder, events::LlmDriftInfo,
     serialized_prompt_utf8_len,
 };
+use common::cluster_topology_for_test;
 use futures_util::stream;
 use opentelemetry::{global, trace::TracerProvider as _};
 use opentelemetry_sdk::{testing::trace::InMemorySpanExporterBuilder, trace::TracerProvider};
@@ -2324,7 +2328,7 @@ async fn authed_test_router(token: Option<&str>, mode: ClusterMode) -> axum::Rou
         registry,
         ApiServerConfig {
             runner_token: token.map(String::from),
-            cluster_mode: mode,
+            cluster: cluster_topology_for_test(mode),
             ..test_api_server_config().await
         },
     )
@@ -2566,7 +2570,7 @@ async fn authed_test_router_with_repo(token: Option<&str>, mode: ClusterMode) ->
         ApiServerConfig {
             repository_service: Some(repo_service),
             runner_token: token.map(String::from),
-            cluster_mode: mode,
+            cluster: cluster_topology_for_test(mode),
             ..test_api_server_config().await
         },
     )

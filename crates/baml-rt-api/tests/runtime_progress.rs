@@ -1,5 +1,8 @@
 //! Integration tests for the `/diagnose` endpoint.
 
+#[path = "common/mod.rs"]
+mod common;
+
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
@@ -9,13 +12,14 @@ use axum::{
 };
 use baml_rt_a2a::AgentRegistry;
 use baml_rt_api::{
-    ApiServerConfig, ClusterHeartbeatHealth, ClusterMode, HeartbeatErrorKind,
-    READYZ_LAG_THRESHOLD_MS, RuntimeProgressMeter, api_router, api_router_with_services_and_deploy,
+    ApiServerConfig, ClusterHeartbeatHealth, HeartbeatErrorKind, READYZ_LAG_THRESHOLD_MS,
+    RuntimeProgressMeter, api_router, api_router_with_services_and_deploy,
 };
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentDiscoveryEntry, AgentDispatchAck, AgentDispatchRequest,
     AgentLister, AgentRouteKey, BamlRtError, BusStream, Result,
 };
+use common::StubClusterDirectory;
 use serde::Deserialize;
 use tower::ServiceExt;
 
@@ -125,8 +129,10 @@ async fn base_router_config(meter: Arc<RuntimeProgressMeter>) -> ApiServerConfig
 async fn cluster_router_with_heartbeat(health: Arc<ClusterHeartbeatHealth>) -> axum::Router {
     let registry: Arc<dyn AgentRegistry> = Arc::new(StubRegistry);
     let config = ApiServerConfig {
-        cluster_mode: ClusterMode::Cluster,
-        cluster_heartbeat: Some(health),
+        cluster: baml_rt_api::ClusterTopology::Cluster {
+            directory: Arc::new(StubClusterDirectory),
+            heartbeat: health,
+        },
         ..base_router_config(RuntimeProgressMeter::spawn_in_current_runtime()).await
     };
     api_router_with_services_and_deploy(registry, config)

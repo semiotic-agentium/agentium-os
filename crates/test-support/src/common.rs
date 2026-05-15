@@ -33,7 +33,11 @@ use tokio::sync::RwLock;
 
 /// Deep-copy an agent fixture tree into `dst` so the builder can write tsconfig / generated `.d.ts`
 /// without touching the committed workspace (read-only checkouts, Nix sandboxes, sparse clones).
-fn copy_agent_tree_for_build(src: &Path, dst: &Path) -> std::io::Result<()> {
+///
+/// Exposed for tests that need to clone a fixture into a temp dir and mutate it
+/// before building (e.g. content-hash perturbation tests in the cluster-agents
+/// integration suite).
+pub fn copy_agent_tree_for_build(src: &Path, dst: &Path) -> std::io::Result<()> {
     if !src.is_dir() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,

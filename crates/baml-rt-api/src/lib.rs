@@ -4,6 +4,7 @@
 //! (SSE streaming JSON-RPC responses).
 //! (A2A JSON-RPC forward). Delegates to an internal [`AgentRegistry`](baml_rt_a2a::AgentRegistry) implementation.
 
+pub mod cluster_agents;
 pub mod cluster_heartbeat;
 mod config_handlers;
 mod context_index;
@@ -24,6 +25,11 @@ pub mod service_error;
 mod spans;
 
 pub use baml_rt_core::HeartbeatErrorKind;
+pub use cluster_agents::{
+    ClusterAgentPlacementDto, ClusterAgentRowDto, ClusterAgentsResponseDto, ClusterDirectoryError,
+    ClusterDirectoryService, ClusterPlacementInfo, ClusterRunnerInfo, ClusterRunnerStatusDto,
+    PlacementSourceDto,
+};
 pub use cluster_heartbeat::{ClusterHeartbeatHealth, HeartbeatStatus};
 pub use context_index::{
     ContextIndexCursorToken, ContextIndexError, ContextIndexQueryParams, ContextIndexRequest,
@@ -54,8 +60,8 @@ pub use planning::{
 };
 pub use provenance_ops::{ProvenanceOpsError, ProvenanceOpsService};
 pub use router::{
-    ApiServerConfig, ApiState, ClusterMode, LISTENER_EXIT_AFTER_SECS_ENV, api_router,
-    api_router_with_services_and_deploy, serve_with_services_and_deploy,
+    ApiServerConfig, ApiState, ClusterMode, ClusterTopology, LISTENER_EXIT_AFTER_SECS_ENV,
+    api_router, api_router_with_services_and_deploy, serve_with_services_and_deploy,
 };
 pub use runtime_progress::{READYZ_LAG_THRESHOLD_MS, RuntimeProgressMeter};
 pub use service_error::{ServiceError, service_result_to_http};

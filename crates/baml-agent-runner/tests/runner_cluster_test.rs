@@ -392,6 +392,37 @@ async fn deploy_by_hash_returns_success() {
     );
 }
 
+/// In standalone mode there is no cluster registry, so `/cluster/agents`
+/// must 404 with an RFC 7807 problem body — never invent an empty cluster
+/// view that lies about reality. The route is operator-authenticated, so
+/// the request carries the configured runner token even in standalone
+/// mode (where auth is otherwise a no-op): we are asserting the absence of
+/// the cluster directory, not the absence of authentication.
+#[tokio::test]
+async fn cluster_agents_returns_404_in_standalone_mode() {
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+    let runner = RunnerProcess::start(RunnerProcessConfig::standalone()).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("{}/cluster/agents", runner.base_url))
+        .header("X-Runner-Token", DEFAULT_TOKEN)
+        .send()
+        .await
+        .expect("GET /cluster/agents in standalone mode");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "/cluster/agents must be 404 outside cluster mode"
+    );
+    let body: Value = resp.json().await.expect("RFC 7807 JSON problem");
+    let detail = body.get("detail").and_then(Value::as_str).unwrap_or("");
+    assert!(
+        detail.contains("cluster"),
+        "problem body should explain cluster mode is required; got: {body}"
+    );
+}
+
 #[tokio::test]
 async fn deploy_idempotent_returns_already_deployed() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
@@ -1447,6 +1478,317 @@ mod cluster {
             "TEST_SECRET must show linked_to on runner-B; got: {entry}"
         );
     }
+
+    /// `GET /cluster/agents` fans out across runners and reports per-package
+    /// rows. With both runners reachable and serving the same fixture, the
+    /// row for that fixture must list both placements and `version_skew` must
+    /// be `false`. This is the cluster-side health view from issue #387.
+    #[tokio::test]
+    async fn cluster_agents_endpoint_reports_both_runners_without_skew() {
+        let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+        ensure_fixture_runtime_types();
+
+        let ip = match detect_non_loopback_ip() {
+            Some(ip) => ip,
+            None => {
+                eprintln!(
+                    "SKIPPED cluster_agents_endpoint_reports_both_runners_without_skew: \
+                     no non-loopback private IP detected"
+                );
+                return;
+            }
+        };
+        let bind_addr = ip.to_string();
+
+        let package_path =
+            build_agent_package_archive_to_temp(agent_fixture("dispatch-echo"), "dispatch-echo")
+                .await;
+        let _cleanup = TempFileCleanup::new(package_path.clone());
+
+        let surreal = SurrealContainer::start().await;
+
+        let port_a = reserve_ephemeral_addr(&bind_addr).port();
+        let port_b = reserve_ephemeral_addr(&bind_addr).port();
+
+        let endpoint_a = format!("http://{bind_addr}:{port_a}");
+        let endpoint_b = format!("http://{bind_addr}:{port_b}");
+
+        let runner_a = RunnerProcess::start(
+            RunnerProcessConfig::standalone()
+                .with_surreal(&surreal.endpoint)
+                .with_runner_endpoint(&endpoint_a)
+                .with_bind_addr(&bind_addr),
+        )
+        .await;
+        let runner_b = RunnerProcess::start(
+            RunnerProcessConfig::standalone()
+                .with_surreal(&surreal.endpoint)
+                .with_runner_endpoint(&endpoint_b)
+                .with_bind_addr(&bind_addr),
+        )
+        .await;
+        let client = reqwest::Client::new();
+
+        let hash = publish_fixture(
+            &client,
+            &runner_a.base_url,
+            &package_path,
+            DEFAULT_TOKEN,
+            "runner_cluster_test",
+        )
+        .await;
+        publish_fixture(
+            &client,
+            &runner_b.base_url,
+            &package_path,
+            DEFAULT_TOKEN,
+            "runner_cluster_test",
+        )
+        .await;
+
+        deploy_hash(&client, &runner_a.base_url, &hash, DEFAULT_TOKEN).await;
+        deploy_hash(&client, &runner_b.base_url, &hash, DEFAULT_TOKEN).await;
+
+        // Either runner answers /cluster/agents identically; hit runner-A.
+        let resp = client
+            .get(format!("{}/cluster/agents", runner_a.base_url))
+            .header("X-Runner-Token", DEFAULT_TOKEN)
+            .send()
+            .await
+            .expect("GET /cluster/agents on runner-A");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "/cluster/agents must succeed in cluster mode"
+        );
+        let body: Value = resp.json().await.expect("/cluster/agents JSON");
+
+        let runners = body
+            .get("runners")
+            .and_then(Value::as_array)
+            .expect("runners array present");
+        assert_eq!(
+            runners.len(),
+            2,
+            "both runners must appear in cluster directory; body={body}"
+        );
+        assert!(
+            runners
+                .iter()
+                .all(|r| r.get("reachable").and_then(Value::as_bool) == Some(true)),
+            "both runners must be reachable for the no-skew case; body={body}"
+        );
+
+        let agents = body
+            .get("agents")
+            .and_then(Value::as_array)
+            .expect("agents array present");
+        let row = agents
+            .iter()
+            .find(|a| a.get("agent_package").and_then(Value::as_str) == Some("dispatch-echo"))
+            .unwrap_or_else(|| panic!("dispatch-echo row missing; body={body}"));
+        assert_eq!(
+            row.get("version_skew").and_then(Value::as_bool),
+            Some(false),
+            "same hash on both runners must not flag version_skew; row={row}"
+        );
+        let placements = row
+            .get("placements")
+            .and_then(Value::as_array)
+            .expect("placements array present");
+        assert_eq!(
+            placements.len(),
+            2,
+            "both runner placements must be listed; row={row}"
+        );
+        assert!(
+            placements
+                .iter()
+                .all(|p| p.get("source").and_then(Value::as_str) == Some("runner")),
+            "both runners answered the fan-out → both rows should be sourced from `/agents`; row={row}"
+        );
+    }
+
+    /// `/cluster/agents` exposes cluster topology and is therefore
+    /// operator-authenticated. In cluster mode, an unauthenticated request
+    /// must fail-closed with 401, the same posture as `/deploy` and
+    /// `/control/migrate`.
+    #[tokio::test]
+    async fn cluster_agents_requires_auth_in_cluster_mode() {
+        let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+
+        let surreal = SurrealContainer::start().await;
+
+        let runner = RunnerProcess::start(
+            RunnerProcessConfig::standalone()
+                .with_surreal(&surreal.endpoint)
+                .with_runner_endpoint(common::FAKE_CLUSTER_RUNNER_ENDPOINT),
+        )
+        .await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .get(format!("{}/cluster/agents", runner.base_url))
+            .send()
+            .await
+            .expect("GET /cluster/agents without token in cluster mode");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "/cluster/agents must reject unauthenticated requests in cluster mode"
+        );
+    }
+
+    /// The whole point of issue #387. Two runners host the same
+    /// `agent_package` at genuinely-different `content_hash` values
+    /// (the dispatch-echo source is perturbed by a single comment line on
+    /// runner-B so the build pipeline produces a fresh hash). The
+    /// cluster-wide view must report `version_skew=true` with both hashes
+    /// listed, and each placement must be `source=runner` (no fallback to
+    /// the placement table — both runners answered live).
+    #[tokio::test]
+    async fn cluster_agents_endpoint_flags_version_skew_across_runners() {
+        let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+        ensure_fixture_runtime_types();
+
+        let ip = match detect_non_loopback_ip() {
+            Some(ip) => ip,
+            None => {
+                eprintln!(
+                    "SKIPPED cluster_agents_endpoint_flags_version_skew_across_runners: \
+                     no non-loopback private IP detected"
+                );
+                return;
+            }
+        };
+        let bind_addr = ip.to_string();
+
+        // Build TWO distinct archives of `dispatch-echo`:
+        //  - hash_a: the canonical fixture as-is.
+        //  - hash_b: a temp-dir copy with a one-line comment appended to
+        //    `src/index.ts`. Content-addressable hashing means this
+        //    deterministically diverges from hash_a without changing the
+        //    package name, manifest, or runtime behaviour.
+        let package_a =
+            build_agent_package_archive_to_temp(agent_fixture("dispatch-echo"), "dispatch-echo")
+                .await;
+        let _cleanup_a = TempFileCleanup::new(package_a.clone());
+
+        let perturbed_src = std::env::temp_dir().join(format!(
+            "dispatch-echo-perturbed-{pid}-{uuid}",
+            pid = std::process::id(),
+            uuid = uuid::Uuid::new_v4(),
+        ));
+        copy_fixture_with_perturbation(&agent_fixture("dispatch-echo"), &perturbed_src);
+        let package_b =
+            build_agent_package_archive_to_temp(perturbed_src.clone(), "dispatch-echo-perturbed")
+                .await;
+        let _cleanup_b = TempFileCleanup::new(package_b.clone());
+        let _ = fs::remove_dir_all(&perturbed_src);
+
+        let surreal = SurrealContainer::start().await;
+
+        let port_a = reserve_ephemeral_addr(&bind_addr).port();
+        let port_b = reserve_ephemeral_addr(&bind_addr).port();
+        let endpoint_a = format!("http://{bind_addr}:{port_a}");
+        let endpoint_b = format!("http://{bind_addr}:{port_b}");
+
+        let runner_a = RunnerProcess::start(
+            RunnerProcessConfig::standalone()
+                .with_surreal(&surreal.endpoint)
+                .with_runner_endpoint(&endpoint_a)
+                .with_bind_addr(&bind_addr),
+        )
+        .await;
+        let runner_b = RunnerProcess::start(
+            RunnerProcessConfig::standalone()
+                .with_surreal(&surreal.endpoint)
+                .with_runner_endpoint(&endpoint_b)
+                .with_bind_addr(&bind_addr),
+        )
+        .await;
+        let client = reqwest::Client::new();
+
+        let hash_a = publish_fixture(
+            &client,
+            &runner_a.base_url,
+            &package_a,
+            DEFAULT_TOKEN,
+            "runner_cluster_test_skew",
+        )
+        .await;
+        let hash_b = publish_fixture(
+            &client,
+            &runner_b.base_url,
+            &package_b,
+            DEFAULT_TOKEN,
+            "runner_cluster_test_skew",
+        )
+        .await;
+        assert_ne!(
+            hash_a, hash_b,
+            "perturbed source must produce a different content hash"
+        );
+
+        deploy_hash(&client, &runner_a.base_url, &hash_a, DEFAULT_TOKEN).await;
+        deploy_hash(&client, &runner_b.base_url, &hash_b, DEFAULT_TOKEN).await;
+
+        let resp = client
+            .get(format!("{}/cluster/agents", runner_a.base_url))
+            .header("X-Runner-Token", DEFAULT_TOKEN)
+            .send()
+            .await
+            .expect("GET /cluster/agents on runner-A");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: Value = resp.json().await.expect("/cluster/agents JSON");
+
+        let row = body
+            .get("agents")
+            .and_then(Value::as_array)
+            .and_then(|rows| {
+                rows.iter().find(|a| {
+                    a.get("agent_package").and_then(Value::as_str) == Some("dispatch-echo")
+                })
+            })
+            .unwrap_or_else(|| panic!("dispatch-echo row missing; body={body}"));
+        assert_eq!(
+            row.get("version_skew").and_then(Value::as_bool),
+            Some(true),
+            "different content hashes across runners MUST flag version_skew=true (issue #387 verbatim); row={row}",
+        );
+
+        let placements = row
+            .get("placements")
+            .and_then(Value::as_array)
+            .expect("placements array");
+        let hashes: Vec<&str> = placements
+            .iter()
+            .filter_map(|p| p.get("content_hash").and_then(Value::as_str))
+            .collect();
+        assert!(
+            hashes.contains(&hash_a.as_str()) && hashes.contains(&hash_b.as_str()),
+            "both content hashes must appear in placements; got {hashes:?}, want a={hash_a}, b={hash_b}",
+        );
+        assert!(
+            placements
+                .iter()
+                .all(|p| p.get("source").and_then(Value::as_str) == Some("runner")),
+            "both runners answered live → every placement must be source=runner; row={row}"
+        );
+    }
+}
+
+/// Copy a fixture agent directory and append a single trailing comment line
+/// to `src/index.ts` so the resulting archive content-hashes differently
+/// from the original while remaining build-equivalent.
+#[cfg(feature = "cluster-tests")]
+fn copy_fixture_with_perturbation(src: &Path, dst: &Path) {
+    test_support::common::copy_agent_tree_for_build(src, dst)
+        .expect("clone fixture into perturbation temp dir");
+    let index_path = dst.join("src").join("index.ts");
+    let mut existing = fs::read_to_string(&index_path).expect("read index.ts");
+    existing.push_str("\n// perturbation marker for cluster_agents skew test\n");
+    fs::write(&index_path, existing).expect("write perturbed index.ts");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
