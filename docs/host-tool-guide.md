@@ -1,9 +1,10 @@
 # Host + External Tool Guide
 
-This guide covers both tool paths:
+This guide covers three tool paths:
 
-1. **External tools (recommended default)** — standalone tool directories loaded at runtime
-2. **Static host tools (Rust, compiled into platform)** — platform-internal only
+1. **External tools (recommended default for custom platform tools)** — standalone tool directories loaded at runtime
+2. **MCP tools (approved server snapshots)** — MCP server tools imported into the repository registry and exposed as concrete platform tool names such as `mcp/meteo/get_meteo`
+3. **Static host tools (Rust, compiled into platform)** — platform-internal only
 
 For agent authoring (BAML prompts, planner loops, `StructuredReply`), see [How to write agents](how-to-write-agents.md).
 
@@ -11,10 +12,15 @@ For agent authoring (BAML prompts, planner loops, `StructuredReply`), see [How t
 
 ## 0) Prerequisites
 
-For external tools in general:
+For external tools and MCP registry commands in general:
 
 - Rust toolchain + Cargo (nightly pinned via `rust-toolchain.toml`)
 - `jq` (optional; only needed for manual JSON patching outside CLI helpers)
+
+Additional for local stdio MCP demos:
+
+- an MCP server command declared in `$HOME/.agentium-os/mcp-servers.json` or a path passed with `--config`
+- a running `baml-agent-runner` exposing `/repository/*` when importing directly into the registry
 
 Additional for sandboxed tools (especially `microsandbox`):
 
@@ -45,6 +51,8 @@ Use this sequence for a new sandboxed external tool:
 6. Allowlist tool in agent manifest
 7. Publish + deploy agent
 8. Verify with chat
+
+For MCP-backed tools, use the shorter registry flow in §11: declare the MCP server config, run `cargo agent-platform mcp enable <server-id>`, allowlist concrete `mcp/<server>/<tool>` names in the agent manifest, then build/regen locally with `BAML_MCP_REGISTRY_URL` or publish through the repository-backed builder.
 
 ---
 
@@ -499,7 +507,158 @@ Richer hardening (runtime write-probe, copy-on-write staging, overlayfs snapshot
 
 ---
 
-## 11) Static host tools (compiled-in Rust)
+## 11) MCP tools (approved server snapshots)
+
+MCP integration is intentionally registry/snapshot-first for production-style agents. The model is:
+
+1. An operator declares a local stdio MCP server in `mcp-servers.json`.
+2. The importer connects to the server, runs `initialize` + `tools/list`, normalizes schemas, and creates an approved snapshot.
+3. The repository registry stores immutable MCP server versions and per-tool schema digests.
+4. Agents allowlist concrete platform tool names such as `mcp/meteo/get_meteo` in `manifest.json`.
+5. The builder projects approved MCP tools into normal BAML/TypeScript tool interfaces.
+6. At runtime, the MCP resolver maps the platform tool call to MCP `tools/call` and records provenance with `backend=Mcp`.
+
+### 11.1 Configure a local stdio MCP server
+
+Default config path:
+
+```text
+$HOME/.agentium-os/mcp-servers.json
+```
+
+Example shape:
+
+```json
+{
+  "mcpServers": {
+    "meteo": {
+      "command": "/abs/path/to/meteo-mcp",
+      "args": [],
+      "env": {
+        "METEO_MODE": "demo"
+      },
+      "secrets": [],
+      "sandbox": {
+        "profile": "mcp-import-restricted",
+        "import_timeout_secs": 30,
+        "runtime_call_timeout_secs": 120
+      },
+      "description": "Local weather demo MCP server"
+    }
+  }
+}
+```
+
+Rules:
+
+- server ids may contain ASCII letters, digits, `_`, and `-` only;
+- `env` must not contain likely secret values (`TOKEN`, `SECRET`, `PASSWORD`, etc.); use `secrets` declarations instead;
+- snapshots store secret references only, never raw secret values;
+- current production-ready runtime path is local stdio; Streamable HTTP remains a follow-up until HTTP security controls land.
+
+### 11.2 Import and inspect MCP registry snapshots
+
+Start a runner with repository routes:
+
+```bash
+cargo run -p baml-agent-runner --all-features -- \
+  --serve-http 127.0.0.1:18080
+```
+
+Import and approve the server into the repository registry:
+
+```bash
+cargo agent-platform mcp enable meteo \
+  --config ~/.agentium-os/mcp-servers.json \
+  --repository-url http://127.0.0.1:18080/repository \
+  --yes
+```
+
+Read-only inspection commands:
+
+```bash
+cargo agent-platform mcp list
+cargo agent-platform mcp versions meteo
+cargo agent-platform mcp server meteo
+cargo agent-platform mcp tool mcp/meteo/get_meteo
+```
+
+Mutation commands (`mcp enable`) use `--runner-token` or `RUNNER_TOKEN` when the runner requires operator authentication. Read-only registry inspection commands are public routes.
+
+### 11.3 Registry source of truth and package artifacts
+
+The repository registry is the MCP schema source of truth. Operators should not manage a second snapshot source under `~/.agentium-os/mcp`.
+
+Default local config path:
+
+```text
+$HOME/.agentium-os/mcp-servers.json   # runtime/import config: command, args, non-secret env, secret refs
+```
+
+During local build/package, approved registry snapshots may be materialized into the build directory and packaged under `mcp/`. Those files are derived build artifacts for runtime compatibility, not an operator-managed cache.
+
+### 11.4 Agent wiring and build/publish
+
+Allowlist concrete MCP platform tools in the agent manifest:
+
+```json
+{
+  "tools": ["mcp/meteo/get_meteo"]
+}
+```
+
+Build or regenerate with the MCP registry URL set so BAML/TypeScript generation can read the approved registry snapshot:
+
+```bash
+BAML_MCP_REGISTRY_URL=http://127.0.0.1:18080/repository \
+  cargo agent-platform build --path examples/agents/meteo-mcp-agent
+
+BAML_MCP_REGISTRY_URL=http://127.0.0.1:18080/repository \
+  cargo agent-platform regen --path examples/agents/meteo-mcp-agent
+```
+
+`baml-agent-builder package` also honors `BAML_MCP_REGISTRY_URL`. Resolved MCP snapshots are packaged under `mcp/` in the agent artifact for runtime compatibility.
+
+Publish/deploy/chat flow:
+
+```bash
+# Repository-side publish builds with the repository's embedded MCP registry service.
+cargo agent-platform publish --agent-dir examples/agents/meteo-mcp-agent
+
+cargo agent-platform deploy --hash <HASH_FROM_PUBLISH>
+cargo agent-platform chat --agent meteo-mcp-agent
+```
+
+The demo script wraps this flow:
+
+```bash
+scripts/meteo_mcp.sh runner   # terminal 1
+scripts/meteo_mcp.sh chat     # terminal 2
+scripts/meteo_mcp.sh review   # inspect registry state
+```
+
+### 11.5 Builder MCP subcommands
+
+`cargo agent-platform mcp ...` is the operator-friendly wrapper. The lower-level builder also exposes MCP commands directly:
+
+```bash
+baml-agent-builder mcp-registry-enable <server-id> [--config <path>] [--repository-url <url>] [--yes] [--runner-token <token>]
+```
+
+Use the builder command directly for scripting or when bypassing the `cargo-agent-platform` wrapper. Set `BAML_AGENT_BUILDER=/path/to/baml-agent-builder` if the wrapper should invoke a specific binary.
+
+### 11.6 MCP security and reproducibility notes
+
+- Only approved server snapshots with approved tool entries are projected into generated BAML.
+- Agent manifests should list concrete MCP tools, not a broad dynamic `mcp/call` gateway.
+- Runtime drift (`notifications/tools/list_changed`) marks snapshots stale; it does not mutate compiled BAML schemas in place.
+- Per-call provenance uses `tool_name=mcp/<server>/<tool>`, `backend=Mcp`, and the MCP schema digest.
+- Registry imports create immutable versions. Avoid building production artifacts from mutable `latest` unless the workflow explicitly allows it.
+- Remote Streamable HTTP MCP is not enabled for production runtime yet; keep using local stdio MCP until TLS, egress, redirect, auth, and consent controls are implemented.
+
+---
+
+## 12) Static host tools (compiled-in Rust)
 
 Use only for platform-internal extensions.
 
@@ -514,4 +673,4 @@ Then:
 3. ensure workspace/tool-link wiring is correct
 4. allowlist in agent manifest
 
-For most integrations, use external tools instead.
+For most custom platform tools, use external tools instead. For existing MCP servers, prefer the approved MCP registry flow in §11.

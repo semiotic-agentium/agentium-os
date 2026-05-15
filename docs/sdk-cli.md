@@ -22,6 +22,9 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 | `check-external-tool --path <dir>` | Validate external tool metadata against schema + runtime parser |
 | `sandbox-bind-sync --tool-dir <dir> [--rootfs <path>] [--image <tag>]` | Generate local bind dev runtime lock + sidecar bundle; can build/export rootfs from Docker |
 | `sandbox-oci-prepare --tool-dir <dir>` | Materialize OCI sidecar bundle from metadata (no registry pull required) |
+| `mcp list` | List MCP servers imported into the repository registry |
+| `mcp enable <server-id>` | Discover, approve, and store an MCP server snapshot in the repository registry |
+| `mcp server|versions|tool ...` | Inspect MCP registry snapshots, versions, and platform tool entries |
 | `chat --agent <name>` | Interactive terminal chat with a deployed agent |
 
 ## Installation
@@ -56,7 +59,7 @@ cargo agent-platform <command> --help
 
 ## Operator Authentication
 
-In cluster mode, operator actions (publish, deploy, undeploy, push) require a runner token. The token is configured on the runner via `RUNNER_TOKEN` env or `--runner-token` flag (see `docs/agent-runner.md`).
+In cluster mode, operator actions (publish, deploy, undeploy, push, and MCP registry mutations such as `mcp enable`) require a runner token. The token is configured on the runner via `RUNNER_TOKEN` env or `--runner-token` flag (see `docs/agent-runner.md`).
 
 The CLI resolves the token from two sources, in order of precedence:
 
@@ -75,7 +78,7 @@ cargo agent-platform deploy --hash <sha256> --url https://runner.example.com \
   --runner-token "$RUNNER_TOKEN"
 ```
 
-**Public commands** (`list-deployed-instances`, `chat`) do not accept or require a token — they use public API routes.
+**Public commands** (`list-deployed-instances`, `chat`, and read-only MCP registry inspection commands) do not accept or require a token — they use public API routes.
 
 ---
 
@@ -260,6 +263,13 @@ cargo agent-platform build --path agents/clickup-agent
 ```
 
 Output: `<agent-name>-<version>.tar.gz`
+
+If the agent manifest includes MCP tools (`mcp/<server>/<tool>`), set `BAML_MCP_REGISTRY_URL` to a repository URL so the builder resolves approved registry snapshots during type generation/package assembly:
+
+```bash
+BAML_MCP_REGISTRY_URL=http://127.0.0.1:18080/repository \
+  cargo agent-platform build --path examples/agents/meteo-mcp-agent
+```
 
 ---
 
@@ -456,6 +466,7 @@ cargo agent-platform regen [names]... [--path <agent-dir>]
 Notes:
 - `--path` cannot be combined with agent names.
 - If the agent uses external tools, set `BAML_EXTERNAL_TOOLS_DIR` to one or more tool directories containing `tool-metadata.json` (colon-separated).
+- If the agent uses MCP tools, set `BAML_MCP_REGISTRY_URL` to the repository URL so generated BAML/TypeScript uses approved registry snapshots.
 
 Run after adding/modifying tools or BAML schemas, and before committing.
 
@@ -517,6 +528,70 @@ cargo agent-platform sandbox-bind-sync \
 | `--json` | off | Emit machine-readable JSON summary |
 
 `--image` is intentionally explicit: scaffolds and setup scripts use the conventional `<bundle>-<tool-name>-sandbox:local` tag, but the sync command should not silently pick or overwrite a Docker tag if the caller did not ask for Docker-assisted mode.
+
+---
+
+### `mcp`
+
+Inspects and manages approved MCP server snapshots in the repository registry. MCP tools are exposed to agents as concrete platform tool names such as `mcp/meteo/get_meteo`; the registry stores the approved server snapshot and per-tool schema digests used by builder code generation.
+
+```bash
+cargo agent-platform mcp <command> [options]
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List MCP servers known to the repository registry |
+| `enable <server-id>` | Discover `initialize` + `tools/list`, prompt for approval, and import the approved snapshot into the registry |
+| `server <server-id> [--version <n>]` | Show the latest or a specific server snapshot summary |
+| `versions <server-id>` | List immutable registry versions for a server |
+| `tool <platform-tool-name>` | Lookup registry entries by platform tool name, e.g. `mcp/meteo/get_meteo` |
+
+Common options:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--repository-url <url>` | `http://127.0.0.1:18080/repository` | Repository base URL where `/repository/*` routes are mounted |
+| `--json` | off | Emit raw JSON for read-only inspection commands |
+| `--runner-token <token>` | `RUNNER_TOKEN` env | Operator token for mutation commands (`enable`) |
+
+`enable` also accepts `--config <path>` (default: `$HOME/.agentium-os/mcp-servers.json`) and `--yes` to skip the interactive approval prompt.
+
+Example local registry flow:
+
+```bash
+# Start a runner exposing /repository first.
+cargo run -p baml-agent-runner --all-features -- --serve-http 127.0.0.1:18080
+
+# Import and approve a local stdio MCP server declared in mcp-servers.json.
+cargo agent-platform mcp enable meteo \
+  --config ~/.agentium-os/mcp-servers.json \
+  --repository-url http://127.0.0.1:18080/repository \
+  --yes
+
+# Review registry state.
+cargo agent-platform mcp list
+cargo agent-platform mcp versions meteo
+cargo agent-platform mcp server meteo
+cargo agent-platform mcp tool mcp/meteo/get_meteo
+```
+
+Build/regen note: when an agent manifest includes `mcp/<server>/<tool>` entries, type generation resolves the server snapshot from the registry when `BAML_MCP_REGISTRY_URL` is set. Registry snapshots resolved during build are packaged under `mcp/` for runtime compatibility.
+
+```bash
+BAML_MCP_REGISTRY_URL=http://127.0.0.1:18080/repository \
+  cargo agent-platform build --path examples/agents/meteo-mcp-agent
+```
+
+The `cargo agent-platform mcp enable` command delegates to the lower-level `baml-agent-builder mcp-registry-enable` command. Set `BAML_AGENT_BUILDER=/path/to/baml-agent-builder` to force a specific builder binary; otherwise the CLI runs the workspace builder via Cargo.
+
+Lower-level builder command:
+
+```bash
+baml-agent-builder mcp-registry-enable <server-id> [--config <path>] [--repository-url <url>] [--yes] [--runner-token <token>]
+```
+
+The repository registry is the source of truth. Packaged MCP snapshot files are build artifacts derived from registry versions, not an operator-managed `~/.agentium-os/mcp` cache.
 
 ---
 
