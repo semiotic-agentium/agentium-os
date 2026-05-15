@@ -160,8 +160,15 @@ impl ClusterEndpointResolver for PlacementResolver {
         // Two-stage lookup: fetch the placement, then the serving runner's
         // `service_instance_id`. A correlated sub-select on `cluster_runners`
         // inside the projection of the first query does not resolve
-        // `runner_id` from the outer row in SurrealDB v3. `ORDER BY id ASC`
-        // makes the LIMIT 1 pick stable when multiple rows match.
+        // `runner_id` from the outer row in SurrealDB v3.
+        //
+        // Tie-breaker policy (when multiple fresh placements exist for the
+        // same agent on different runners): newest `updated_at_ms` wins,
+        // then `runner_endpoint` ASC for stability. The bias toward newest
+        // write makes upgrade ramps automatically prefer the new code —
+        // operators upgrade one pod, traffic shifts to it as soon as the
+        // refreshed placement row lands. The alphabetical secondary sort
+        // keeps the choice deterministic across calls when timestamps tie.
         let result: Result<Vec<serde_json::Value>, _> = self
             .db
             .query(
@@ -173,7 +180,7 @@ impl ClusterEndpointResolver for PlacementResolver {
                    SELECT VALUE runner_id FROM cluster_runners \
                    WHERE last_heartbeat_ms > (time::millis(time::now()) - $ttl)\
                  ) \
-                 ORDER BY id ASC \
+                 ORDER BY updated_at_ms DESC, runner_endpoint ASC \
                  LIMIT 1",
             )
             .bind(("pkg", pkg.to_string()))
@@ -1082,6 +1089,128 @@ mod tests {
             AgentInstanceId::default(),
         );
         mgr.record_placement(&key, &test_hash()).await.unwrap();
+    }
+
+    /// Seed two `(cluster_runners, cluster_agent_placements)` row pairs with
+    /// controlled `runner_id`, `runner_endpoint`, and `updated_at_ms` values
+    /// so resolver tie-breaker tests can decouple "which row sorts first by
+    /// id" from "which row sorts first by endpoint" from "which row sorts
+    /// first by updated_at_ms". `record_placement` derives `runner_id` from
+    /// a random UUID, so going through it leaves the alphabetical ordering
+    /// of the placement record ids unpredictable and the test flaky.
+    async fn seed_two_placements(
+        db: &Surreal<Any>,
+        runner_a: (&str, &str, i64),
+        runner_b: (&str, &str, i64),
+    ) {
+        let (rid_a, endpoint_a, ts_a) = runner_a;
+        let (rid_b, endpoint_b, ts_b) = runner_b;
+        let key = test_route_key();
+        let pkg = key.agent_package.as_str();
+        let inst = key.agent_instance_id.as_str();
+        let hash = test_hash().as_str().to_string();
+        db.query(
+            "CREATE type::record('cluster_runners', $rid_a) SET \
+               runner_id = $rid_a, endpoint = $endpoint_a, \
+               service_instance_id = $sid_a, pod_name = $sid_a, \
+               last_heartbeat_ms = time::millis(time::now());\
+             CREATE type::record('cluster_runners', $rid_b) SET \
+               runner_id = $rid_b, endpoint = $endpoint_b, \
+               service_instance_id = $sid_b, pod_name = $sid_b, \
+               last_heartbeat_ms = time::millis(time::now());\
+             CREATE type::record('cluster_agent_placements', $key_a) SET \
+               agent_package = $pkg, agent_instance_id = $inst, \
+               content_hash = $hash, runner_id = $rid_a, \
+               runner_endpoint = $endpoint_a, status = $status, \
+               updated_at_ms = $ts_a;\
+             CREATE type::record('cluster_agent_placements', $key_b) SET \
+               agent_package = $pkg, agent_instance_id = $inst, \
+               content_hash = $hash, runner_id = $rid_b, \
+               runner_endpoint = $endpoint_b, status = $status, \
+               updated_at_ms = $ts_b",
+        )
+        .bind(("rid_a", rid_a.to_string()))
+        .bind(("rid_b", rid_b.to_string()))
+        .bind(("endpoint_a", endpoint_a.to_string()))
+        .bind(("endpoint_b", endpoint_b.to_string()))
+        .bind(("sid_a", format!("sid-{rid_a}")))
+        .bind(("sid_b", format!("sid-{rid_b}")))
+        .bind(("key_a", format!("{pkg}/{inst}/{rid_a}")))
+        .bind(("key_b", format!("{pkg}/{inst}/{rid_b}")))
+        .bind(("pkg", pkg.to_string()))
+        .bind(("inst", inst.to_string()))
+        .bind(("hash", hash))
+        .bind(("status", PLACEMENT_STATUS_ACTIVE.to_string()))
+        .bind(("ts_a", ts_a))
+        .bind(("ts_b", ts_b))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    }
+
+    /// When the same agent is hosted on two runners, the resolver picks the
+    /// placement with the newest `updated_at_ms`. This is the upgrade-ramp
+    /// contract: an operator re-deploys to one pod and traffic shifts to it
+    /// as soon as the refreshed placement row lands.
+    ///
+    /// Seed values are arranged so the **older** row sorts FIRST by both
+    /// `id` (record id) and `runner_endpoint` ASC — the only ordering that
+    /// returns the newer row is `updated_at_ms DESC`.
+    #[tokio::test]
+    async fn placement_resolver_prefers_newest_updated_at_ms() {
+        let db = test_db().await;
+        seed_two_placements(
+            &db,
+            ("aaa-older", "http://aaa-older:18080", 1_000),
+            ("zzz-newer", "http://zzz-newer:18080", 2_000),
+        )
+        .await;
+
+        let observer = RunnerId::new_random();
+        let resolver = PlacementResolver::new(db.clone(), observer, TEST_TTL_MS);
+        let placement = resolver
+            .resolve(&test_route_key())
+            .await
+            .unwrap()
+            .expect("resolver must return a placement");
+        assert_eq!(
+            placement.endpoint, "http://zzz-newer:18080",
+            "resolver must prefer the placement with the newest updated_at_ms, \
+             even when both `id` ASC and `runner_endpoint` ASC point at the older row"
+        );
+    }
+
+    /// When two placements share `updated_at_ms` to the millisecond, the
+    /// secondary sort on `runner_endpoint ASC` keeps the choice stable so
+    /// routing does not flap between calls.
+    ///
+    /// Seed values are arranged so the alphabetical winner by
+    /// `runner_endpoint` sorts LAST by `id` (record id) — the only ordering
+    /// that picks the `aaa-endpoint` row is the explicit
+    /// `runner_endpoint ASC` secondary sort.
+    #[tokio::test]
+    async fn placement_resolver_tie_breaks_by_runner_endpoint() {
+        let db = test_db().await;
+        seed_two_placements(
+            &db,
+            ("aaa-runner-id", "http://zzz-endpoint:18080", 1_000),
+            ("zzz-runner-id", "http://aaa-endpoint:18080", 1_000),
+        )
+        .await;
+
+        let observer = RunnerId::new_random();
+        let resolver = PlacementResolver::new(db.clone(), observer, TEST_TTL_MS);
+        let placement = resolver
+            .resolve(&test_route_key())
+            .await
+            .unwrap()
+            .expect("resolver must return a placement");
+        assert_eq!(
+            placement.endpoint, "http://aaa-endpoint:18080",
+            "tie-break must pick the alphabetically-lowest runner_endpoint, \
+             even when the other row sorts first by `id`"
+        );
     }
 
     /// Resolver picks the same placement on every call when cluster state is
