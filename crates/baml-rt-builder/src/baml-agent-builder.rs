@@ -127,10 +127,10 @@ enum Commands {
     McpReview {
         /// Server id to review (must match an entry in the cache).
         server_id: String,
-        /// Path to mcp-servers.json (default: $HOME/.agent-platform/mcp-servers.json).
+        /// Path to mcp-servers.json (default: $HOME/.agentium-os/mcp-servers.json).
         #[arg(long)]
         config: Option<PathBuf>,
-        /// Snapshot cache root (default: $HOME/.agent-platform/mcp).
+        /// Snapshot cache root (default: $HOME/.agentium-os/mcp).
         #[arg(long)]
         cache_root: Option<PathBuf>,
         /// Show the diff without rewriting any cache entries.
@@ -141,10 +141,10 @@ enum Commands {
     McpEnable {
         /// Server id to enable (must match an entry under `mcpServers` in the config file).
         server_id: String,
-        /// Path to mcp-servers.json (default: $HOME/.agent-platform/mcp-servers.json).
+        /// Path to mcp-servers.json (default: $HOME/.agentium-os/mcp-servers.json).
         #[arg(long)]
         config: Option<PathBuf>,
-        /// Snapshot cache root (default: $HOME/.agent-platform/mcp).
+        /// Snapshot cache root (default: $HOME/.agentium-os/mcp).
         #[arg(long)]
         cache_root: Option<PathBuf>,
         /// Skip the interactive approval prompt.
@@ -780,7 +780,7 @@ async fn mcp_enable(
             let home = std::env::var_os("HOME")
                 .map(PathBuf::from)
                 .ok_or_else(|| anyhow::anyhow!("HOME is not set; pass --config explicitly"))?;
-            home.join(".agent-platform").join("mcp-servers.json")
+            home.join(".agentium-os").join("mcp-servers.json")
         }
     };
     let cache_root: PathBuf = match cache_root {
@@ -928,7 +928,7 @@ async fn mcp_review(
             let home = std::env::var_os("HOME")
                 .map(PathBuf::from)
                 .ok_or_else(|| anyhow::anyhow!("HOME is not set; pass --config explicitly"))?;
-            home.join(".agent-platform").join("mcp-servers.json")
+            home.join(".agentium-os").join("mcp-servers.json")
         }
     };
     let cache_root: PathBuf = match cache_root {

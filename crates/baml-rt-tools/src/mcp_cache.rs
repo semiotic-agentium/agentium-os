@@ -25,11 +25,11 @@ const TOOLS_DIR: &str = "tools";
 const SERVER_FILE: &str = "server.json";
 const TOOL_METADATA_FILE: &str = "tool-metadata.json";
 
-/// Default user-home cache root: `$HOME/.agent-platform/mcp`.
+/// Default user-home cache root: `$HOME/.agentium-os/mcp`.
 /// Returns `None` when the home dir cannot be determined.
 pub fn default_cache_root() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(".agent-platform").join("mcp"))
+    Some(PathBuf::from(home).join(".agentium-os").join("mcp"))
 }
 
 /// Persisted on-disk shape of a server entry. Mirrors `McpServerSnapshot`
