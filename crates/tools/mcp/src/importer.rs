@@ -11,7 +11,7 @@ use baml_rt_tools::{
     mcp_schema_normalize::normalize,
     mcp_snapshot::{
         ApprovalRecord, Digest, MCP_SNAPSHOT_SCHEMA_VERSION, McpImportedTool, McpOutputMode,
-        McpServerSnapshot, McpTransportRef, SecretRef,
+        McpServerSnapshot, McpTransportRef, SecretRef, compute_server_identity_digest,
     },
     tools::ToolAccess,
 };
@@ -120,6 +120,10 @@ impl<'a, R: SecretResolver + Sync> Importer<'a, R> {
 
         let tools = project_tools(&options.server_id, descriptors)?;
         let server_config_digest = compute_server_config_digest(&options.server_id, config);
+        let server_identity_digest = compute_server_identity_digest(
+            &initialize_result.capabilities,
+            &initialize_result.server_info,
+        );
         let secret_refs = config
             .secrets
             .iter()
@@ -139,6 +143,7 @@ impl<'a, R: SecretResolver + Sync> Importer<'a, R> {
             protocol_version: initialize_result.protocol_version,
             server_info: Some(initialize_result.server_info),
             server_config_digest,
+            server_identity_digest,
             runtime_artifact_digest: None,
             secret_refs,
             approval: ApprovalRecord::pending(),

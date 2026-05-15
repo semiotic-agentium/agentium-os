@@ -4,7 +4,8 @@
 //! read snapshots without depending on any MCP protocol/transport crate.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 
 use crate::tools::ToolAccess;
 
@@ -20,6 +21,11 @@ pub struct McpServerSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_info: Option<Value>,
     pub server_config_digest: Digest,
+    /// Digest of the server-advertised identity contract captured at import
+    /// time. Covers `capabilities` + `serverInfo.name` so cosmetic version
+    /// bumps don't trip reconnect checks while binary swap / capability
+    /// changes still fail closed.
+    pub server_identity_digest: Digest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_artifact_digest: Option<Digest>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -151,6 +157,29 @@ impl std::fmt::Display for Digest {
     }
 }
 
+/// Computes the server identity digest from the MCP `initialize` response.
+///
+/// Covers only the fields whose change must invalidate the existing
+/// approval: server-advertised `capabilities` and `serverInfo.name`. The
+/// cosmetic `serverInfo.version` and other implementation fields are
+/// deliberately excluded so patch releases of an approved server do not
+/// force re-approval.
+///
+/// `protocolVersion` is enforced by the client's pinned version during
+/// `initialize`; a server that speaks a different revision cannot complete
+/// the handshake, so including it here would be redundant.
+pub fn compute_server_identity_digest(capabilities: &Value, server_info: &Value) -> Digest {
+    let server_name = server_info.get("name").cloned().unwrap_or(Value::Null);
+    let canonical = json!({
+        "capabilities": capabilities,
+        "server_info_name": server_name,
+    });
+    let bytes = serde_jcs::to_vec(&canonical).unwrap_or_else(|_| b"null".to_vec());
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Digest::new(format!("sha256:{:x}", hasher.finalize()))
+}
+
 /// Returns true when the server and the named tool are both `Approved`.
 /// Builder/runtime callers use this to decide whether a tool can be projected
 /// into platform metadata.
@@ -213,6 +242,7 @@ mod tests {
             protocol_version: "2025-06-18".into(),
             server_info: Some(json!({ "name": "fake", "version": "0.1.0" })),
             server_config_digest: Digest::new("sha256:server-config"),
+            server_identity_digest: Digest::new("sha256:server-identity"),
             runtime_artifact_digest: None,
             secret_refs: vec![SecretRef {
                 name: "fake/api_token".into(),

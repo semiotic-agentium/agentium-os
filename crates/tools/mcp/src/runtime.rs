@@ -15,6 +15,7 @@ use std::{
     time::Duration,
 };
 
+use baml_rt_tools::mcp_snapshot::compute_server_identity_digest;
 use rmcp::{
     ErrorData as McpError, ServiceExt,
     handler::client::ClientHandler,
@@ -29,7 +30,7 @@ use rmcp::{
     },
     transport::{ConfigureCommandExt, TokioChildProcess},
 };
-use serde_json::Value;
+use serde_json::{Value, to_value};
 use thiserror::Error;
 use tokio::sync::OnceCell;
 
@@ -65,6 +66,16 @@ pub enum ConnectionError {
         "MCP server `{server_id}` is stale (tools/list_changed received); operator must re-run mcp-review/mcp-enable"
     )]
     Stale { server_id: String },
+    #[error(
+        "MCP server `{server_id}` identity digest mismatch (expected `{expected}`, observed `{observed}`); operator must re-run mcp-review/mcp-enable"
+    )]
+    IdentityMismatch {
+        server_id: String,
+        expected: String,
+        observed: String,
+    },
+    #[error("MCP server `{server_id}` did not return peer_info after initialize")]
+    MissingPeerInfo { server_id: String },
 }
 
 /// Spawn parameters frozen at registration time. The runtime never reads MCP
@@ -83,6 +94,11 @@ pub struct ServerLaunch {
     pub server_config_digest: String,
     /// Snapshot's MCP protocol version. Surfaces in telemetry only.
     pub protocol_version: String,
+    /// Identity digest recorded at import time, derived from server-advertised
+    /// `capabilities` + `serverInfo.name`. The runtime recomputes the same
+    /// digest from the live `initialize` response and refuses to bind a
+    /// connection on mismatch.
+    pub expected_identity_digest: String,
 }
 
 impl ServerLaunch {
@@ -256,10 +272,12 @@ impl McpConnection {
                 command: launch.command.clone(),
                 source: err,
             })?;
-            handler
+            let service = handler
                 .serve(transport)
                 .await
-                .map_err(|err| ConnectionError::InitializeFailed(err.to_string()))
+                .map_err(|err| ConnectionError::InitializeFailed(err.to_string()))?;
+            verify_server_identity(&service, &launch).await?;
+            Ok(service)
         };
         match tokio::time::timeout(timeout, serve).await {
             Ok(result) => result,
@@ -282,6 +300,50 @@ impl Drop for McpConnection {
             });
         }
     }
+}
+
+/// Reads the live `initialize` result from the established rmcp session,
+/// recomputes the identity digest, and compares it to the value frozen in
+/// the approved snapshot. Mismatch cancels the freshly-built service so the
+/// child process is reaped before the error bubbles up.
+async fn verify_server_identity(
+    service: &RunningService<RoleClient, RuntimeClientHandler>,
+    launch: &ServerLaunch,
+) -> Result<(), ConnectionError> {
+    let Some(peer_info) = service.peer().peer_info() else {
+        cancel_service_best_effort(service).await;
+        return Err(ConnectionError::MissingPeerInfo {
+            server_id: launch.server_id.clone(),
+        });
+    };
+    let capabilities = to_value(&peer_info.capabilities).unwrap_or(Value::Null);
+    let server_info = to_value(&peer_info.server_info).unwrap_or(Value::Null);
+    let observed = compute_server_identity_digest(&capabilities, &server_info);
+    if observed.as_str() != launch.expected_identity_digest {
+        tracing::warn!(
+            target: "mcp.identity",
+            mcp_server_id = %launch.server_id,
+            expected = %launch.expected_identity_digest,
+            observed = %observed,
+            event = "mcp.identity_mismatch",
+            "MCP server identity digest does not match approved snapshot; refusing to bind connection",
+        );
+        cancel_service_best_effort(service).await;
+        return Err(ConnectionError::IdentityMismatch {
+            server_id: launch.server_id.clone(),
+            expected: launch.expected_identity_digest.clone(),
+            observed: observed.as_str().to_string(),
+        });
+    }
+    Ok(())
+}
+
+async fn cancel_service_best_effort(service: &RunningService<RoleClient, RuntimeClientHandler>) {
+    // rmcp's `cancel` takes `self`; we only have a borrow here because the
+    // service is owned by the surrounding future. Send the JSON-RPC cancel
+    // through the cancellation token instead, which terminates the read loop
+    // and lets `Drop` reap the child.
+    service.cancellation_token().cancel();
 }
 
 fn arguments_to_map(

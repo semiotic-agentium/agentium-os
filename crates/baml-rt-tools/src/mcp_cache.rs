@@ -44,6 +44,7 @@ pub struct ServerRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_info: Option<serde_json::Value>,
     pub server_config_digest: crate::mcp_snapshot::Digest,
+    pub server_identity_digest: crate::mcp_snapshot::Digest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_artifact_digest: Option<crate::mcp_snapshot::Digest>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -91,6 +92,7 @@ pub fn write_snapshot(root: &Path, snapshot: &McpServerSnapshot) -> io::Result<(
         protocol_version: snapshot.protocol_version.clone(),
         server_info: snapshot.server_info.clone(),
         server_config_digest: snapshot.server_config_digest.clone(),
+        server_identity_digest: snapshot.server_identity_digest.clone(),
         runtime_artifact_digest: snapshot.runtime_artifact_digest.clone(),
         secret_refs: snapshot.secret_refs.clone(),
         approval: snapshot.approval.clone(),
@@ -123,6 +125,7 @@ pub fn read_snapshot(root: &Path, server_id: &str) -> io::Result<McpServerSnapsh
         protocol_version: record.protocol_version,
         server_info: record.server_info,
         server_config_digest: record.server_config_digest,
+        server_identity_digest: record.server_identity_digest,
         runtime_artifact_digest: record.runtime_artifact_digest,
         secret_refs: record.secret_refs,
         approval: record.approval,
@@ -298,6 +301,7 @@ mod tests {
             protocol_version: "2025-06-18".into(),
             server_info: None,
             server_config_digest: Digest::new("sha256:server"),
+            server_identity_digest: Digest::new("sha256:identity"),
             runtime_artifact_digest: None,
             secret_refs: vec![SecretRef {
                 name: "fake/token".into(),

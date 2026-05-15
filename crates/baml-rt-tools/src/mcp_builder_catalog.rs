@@ -246,6 +246,7 @@ mod tests {
             protocol_version: "2025-06-18".into(),
             server_info: None,
             server_config_digest: Digest::new("sha256:server"),
+            server_identity_digest: Digest::new("sha256:identity"),
             runtime_artifact_digest: None,
             secret_refs: vec![SecretRef {
                 name: "GRAFANA_TOKEN".into(),

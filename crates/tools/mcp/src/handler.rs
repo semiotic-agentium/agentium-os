@@ -184,6 +184,13 @@ fn connection_error_to_session(err: ConnectionError) -> ToolSessionError {
         ConnectionError::InitializeTimeout(_) => {
             ToolSessionError::Tool(ToolFailure::execution_failed(err.to_string()))
         }
+        ConnectionError::IdentityMismatch { .. } | ConnectionError::MissingPeerInfo { .. } => {
+            // Fail-closed: the live server's advertised identity does not
+            // match the approved snapshot. Treat as transport failure so the
+            // runtime does not surface this to the LLM as a recoverable
+            // tool error.
+            ToolSessionError::Transport(BamlRtError::InvalidArgument(err.to_string()))
+        }
         ConnectionError::Stale { .. } => {
             // Fail-closed transport error: the tool registry is no longer
             // trusted for this connection; surface to the runtime so the

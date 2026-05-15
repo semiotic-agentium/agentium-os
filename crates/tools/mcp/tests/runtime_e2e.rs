@@ -10,6 +10,7 @@ use baml_rt_tools::{
     mcp_snapshot::{
         ApprovalRecord, Digest, MCP_SNAPSHOT_SCHEMA_VERSION, McpApprovalState, McpImportedTool,
         McpOutputMode, McpServerSnapshot, McpTransportRef, SecretRef,
+        compute_server_identity_digest,
     },
     tool_fsm::{ToolSessionId, ToolStep},
     tools::{ToolAccess, ToolName, ToolSessionContext},
@@ -49,6 +50,15 @@ fn approved_tool(name: &str, schema: serde_json::Value) -> McpImportedTool {
     }
 }
 
+/// Identity digest matching what `fake-mcp-stdio` advertises on initialize:
+/// `serverInfo.name = "grafana"` and `capabilities.tools.listChanged = true`.
+fn fixture_identity_digest() -> Digest {
+    compute_server_identity_digest(
+        &json!({ "tools": { "listChanged": true } }),
+        &json!({ "name": "grafana" }),
+    )
+}
+
 fn approved_snapshot(tools: Vec<McpImportedTool>) -> McpServerSnapshot {
     McpServerSnapshot {
         schema_version: MCP_SNAPSHOT_SCHEMA_VERSION,
@@ -60,6 +70,7 @@ fn approved_snapshot(tools: Vec<McpImportedTool>) -> McpServerSnapshot {
         protocol_version: "2025-06-18".into(),
         server_info: None,
         server_config_digest: Digest::new("sha256:server"),
+        server_identity_digest: fixture_identity_digest(),
         runtime_artifact_digest: None,
         secret_refs: vec![SecretRef {
             name: "GRAFANA_TOKEN".into(),
@@ -332,6 +343,78 @@ async fn http_transport_is_rejected_at_resolve() {
         ),
         Ok(_) => panic!("expected HTTP transport to be rejected"),
     }
+}
+
+#[tokio::test]
+async fn identity_mismatch_fails_closed_on_first_send() {
+    // Snapshot is approved against the fake server's real advertised
+    // identity, but we corrupt it before writing so the runtime's recompute
+    // step finds a mismatch. No tool call should ever execute.
+    let cache = tempfile::tempdir().unwrap();
+    let mut snap = approved_snapshot(vec![approved_tool(
+        "search_dashboards",
+        json!({"type": "object"}),
+    )]);
+    snap.server_identity_digest = Digest::new("sha256:not-the-server-we-approved");
+    write_snapshot(cache.path(), &snap).unwrap();
+    let fixture_path = cache.path().join("fixture.json");
+    write_fixture(&fixture_path, &sample_fixture());
+
+    let resolver = build_resolver(&fixture_path, cache.path());
+    let name = ToolName::parse("mcp/grafana/search_dashboards").unwrap();
+    let (_metadata, handler) = resolver.resolve(&name).unwrap().expect("resolved");
+    let mut session = handler
+        .open_session(session_context(&name), json!({}))
+        .await
+        .unwrap();
+
+    // First send triggers lazy spawn → initialize → identity verification.
+    let err = session
+        .send(json!({}))
+        .await
+        .expect_err("identity mismatch must fail first send");
+    let display = format!("{err:?}");
+    assert!(
+        display.contains("identity digest mismatch"),
+        "unexpected error: {display}"
+    );
+}
+
+#[tokio::test]
+async fn identity_mismatch_when_server_name_differs() {
+    // Server's advertised name differs from what was approved at import:
+    // approved snapshot expects `grafana`, fixture reports `clickup`.
+    let cache = tempfile::tempdir().unwrap();
+    write_snapshot(
+        cache.path(),
+        &approved_snapshot(vec![approved_tool(
+            "search_dashboards",
+            json!({"type": "object"}),
+        )]),
+    )
+    .unwrap();
+    let fixture_path = cache.path().join("fixture.json");
+    let mut fixture = sample_fixture();
+    fixture.server_name = Some("clickup".into());
+    write_fixture(&fixture_path, &fixture);
+
+    let resolver = build_resolver(&fixture_path, cache.path());
+    let name = ToolName::parse("mcp/grafana/search_dashboards").unwrap();
+    let (_metadata, handler) = resolver.resolve(&name).unwrap().expect("resolved");
+    let mut session = handler
+        .open_session(session_context(&name), json!({}))
+        .await
+        .unwrap();
+
+    let err = session
+        .send(json!({}))
+        .await
+        .expect_err("server name change must fail identity check");
+    let display = format!("{err:?}");
+    assert!(
+        display.contains("identity digest mismatch"),
+        "unexpected error: {display}"
+    );
 }
 
 #[tokio::test]
