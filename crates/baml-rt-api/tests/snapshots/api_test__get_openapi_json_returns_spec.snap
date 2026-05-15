@@ -163,7 +163,7 @@ expression: snapshot
             "cluster"
           ],
           "summary": "`GET /cluster/agents` — list every package known to the cluster.",
-          "description": "The response is the union of each runner's local `/agents` (for reachable\nrunners) plus the `cluster_agent_placements` table (as a fallback for\nunreachable ones). `version_skew` is set per row when more than one\ndistinct `content_hash` is observed across the runners hosting that\npackage+instance.\n\nReturns `404` in standalone mode (no cluster directory).",
+          "description": "The response is the union of each runner's local `/agents` (for reachable\nrunners) plus the `cluster_agent_placements` table (as a fallback for\nunreachable ones). `version_skew` is set per row when more than one\ndistinct `content_hash` is observed across the runners hosting that\npackage+instance.\n\nOperator-authenticated in cluster mode: aggregating cluster topology\n(runner endpoints, service-instance ids, and per-runner content hashes)\nexposes operational layout beyond what the per-runner `/agents`\ndiscovery view reveals, so the route lives behind `X-Runner-Token` next\nto the deployment-lifecycle endpoints. Returns `404` in standalone mode\n(no cluster directory).",
           "operationId": "get_cluster_agents",
           "responses": {
             "200": {
@@ -176,13 +176,21 @@ expression: snapshot
                 }
               }
             },
+            "401": {
+              "description": "Missing or invalid runner token (cluster mode)"
+            },
             "404": {
               "description": "Standalone mode — no cluster directory"
             },
             "500": {
               "description": "Cluster directory backend failed"
             }
-          }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
         }
       },
       "/config": {

@@ -394,7 +394,10 @@ async fn deploy_by_hash_returns_success() {
 
 /// In standalone mode there is no cluster registry, so `/cluster/agents`
 /// must 404 with an RFC 7807 problem body — never invent an empty cluster
-/// view that lies about reality.
+/// view that lies about reality. The route is operator-authenticated, so
+/// the request carries the configured runner token even in standalone
+/// mode (where auth is otherwise a no-op): we are asserting the absence of
+/// the cluster directory, not the absence of authentication.
 #[tokio::test]
 async fn cluster_agents_returns_404_in_standalone_mode() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
@@ -403,6 +406,7 @@ async fn cluster_agents_returns_404_in_standalone_mode() {
 
     let resp = client
         .get(format!("{}/cluster/agents", runner.base_url))
+        .header("X-Runner-Token", DEFAULT_TOKEN)
         .send()
         .await
         .expect("GET /cluster/agents in standalone mode");
@@ -1548,6 +1552,7 @@ mod cluster {
         // Either runner answers /cluster/agents identically; hit runner-A.
         let resp = client
             .get(format!("{}/cluster/agents", runner_a.base_url))
+            .header("X-Runner-Token", DEFAULT_TOKEN)
             .send()
             .await
             .expect("GET /cluster/agents on runner-A");
@@ -1601,6 +1606,36 @@ mod cluster {
                 .iter()
                 .all(|p| p.get("source").and_then(Value::as_str) == Some("runner")),
             "both runners answered the fan-out → both rows should be sourced from `/agents`; row={row}"
+        );
+    }
+
+    /// `/cluster/agents` exposes cluster topology and is therefore
+    /// operator-authenticated. In cluster mode, an unauthenticated request
+    /// must fail-closed with 401, the same posture as `/deploy` and
+    /// `/control/migrate`.
+    #[tokio::test]
+    async fn cluster_agents_requires_auth_in_cluster_mode() {
+        let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+
+        let surreal = SurrealContainer::start().await;
+
+        let runner = RunnerProcess::start(
+            RunnerProcessConfig::standalone()
+                .with_surreal(&surreal.endpoint)
+                .with_runner_endpoint(common::FAKE_CLUSTER_RUNNER_ENDPOINT),
+        )
+        .await;
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .get(format!("{}/cluster/agents", runner.base_url))
+            .send()
+            .await
+            .expect("GET /cluster/agents without token in cluster mode");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "/cluster/agents must reject unauthenticated requests in cluster mode"
         );
     }
 
@@ -1700,6 +1735,7 @@ mod cluster {
 
         let resp = client
             .get(format!("{}/cluster/agents", runner_a.base_url))
+            .header("X-Runner-Token", DEFAULT_TOKEN)
             .send()
             .await
             .expect("GET /cluster/agents on runner-A");

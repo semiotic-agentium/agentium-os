@@ -161,13 +161,20 @@ const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// distinct `content_hash` is observed across the runners hosting that
 /// package+instance.
 ///
-/// Returns `404` in standalone mode (no cluster directory).
+/// Operator-authenticated in cluster mode: aggregating cluster topology
+/// (runner endpoints, service-instance ids, and per-runner content hashes)
+/// exposes operational layout beyond what the per-runner `/agents`
+/// discovery view reveals, so the route lives behind `X-Runner-Token` next
+/// to the deployment-lifecycle endpoints. Returns `404` in standalone mode
+/// (no cluster directory).
 #[utoipa::path(
     get,
     path = "/cluster/agents",
     tag = "cluster",
+    security(("RunnerToken" = [])),
     responses(
         (status = 200, description = "Cluster-wide agent view with version skew", body = ClusterAgentsResponseDto),
+        (status = 401, description = "Missing or invalid runner token (cluster mode)"),
         (status = 404, description = "Standalone mode — no cluster directory"),
         (status = 500, description = "Cluster directory backend failed"),
     ),
@@ -441,7 +448,11 @@ async fn fetch_runner_agents(runner: ClusterRunnerInfo) -> FanOutOutcome {
         "cluster_directory_fanout_runner",
         target_runner_id = %runner.runner_id,
         target_service_instance_id = %runner.service_instance_id,
-        endpoint = %runner.endpoint,
+        // `destination_endpoint` matches the field name used by
+        // `baml_rt_observability::spans::cluster_a2a_forward` so Grafana
+        // queries that pivot on outbound-call destinations cover both
+        // spans without per-span field aliases.
+        destination_endpoint = %runner.endpoint,
     );
     async move {
         let start = Instant::now();

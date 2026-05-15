@@ -395,7 +395,6 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(
             handlers::get_conversation_history_stream
         ))
-        .routes(utoipa_axum::routes!(cluster_agents::get_cluster_agents))
         .split_for_parts();
 
     let public_router = agent_router.merge(other_public_router);
@@ -420,6 +419,7 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(handlers::post_undeploy))
         .routes(utoipa_axum::routes!(handlers::get_deployments))
         .routes(utoipa_axum::routes!(handlers::post_migrate))
+        .routes(utoipa_axum::routes!(cluster_agents::get_cluster_agents))
         .split_for_parts();
 
     let auth_layer = ClusterAuthLayer::new(ClusterAuthConfig {
