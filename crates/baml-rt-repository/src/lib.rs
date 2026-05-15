@@ -28,6 +28,7 @@
 pub mod entry;
 pub mod ids;
 pub mod lineage;
+pub mod mcp;
 pub mod search;
 
 // --- Operations ---
@@ -59,6 +60,10 @@ pub use entry::{ChangeRationale, NewEntry, RepositoryEntry, RepositoryEntryHeade
 pub use error::{RepositoryError, Result};
 pub use ids::{AgentName, ContentHash, Generation, Version, VersionRef};
 pub use lineage::{LineageEdge, LineageKind, LineageSubgraph, Parentage};
+pub use mcp::{
+    McpRegistryServer, McpRegistryServerVersion, McpRegistryToolVersion, McpSnapshotBlob,
+    compute_snapshot_digest,
+};
 pub use package::{
     PackageExtractError, manifest_package_name_from_tar_gz, source_bundle_from_agent_dir,
     source_bundle_from_tar_gz,
@@ -68,5 +73,5 @@ pub use router::{
     repository_router_without_publish,
 };
 pub use service::RepositoryService;
-pub use storage::{BlobStore, LineageStore, MetadataStore, SearchStore};
+pub use storage::{BlobStore, LineageStore, McpRegistryStore, MetadataStore, SearchStore};
 pub use surreal_store::SurrealStore;

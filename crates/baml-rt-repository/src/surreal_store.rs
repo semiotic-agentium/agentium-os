@@ -9,6 +9,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use baml_rt_tools::mcp_snapshot::{McpApprovalState, McpServerSnapshot};
 use serde_json::Value;
 use surrealdb::{
     Surreal,
@@ -25,8 +26,9 @@ use crate::{
     lineage::{
         AncestryNode, EdgeDescription, LineageEdge, LineageKind, LineageSubgraph, Parentage,
     },
+    mcp::{McpRegistryServerVersion, McpRegistryToolVersion, compute_snapshot_digest},
     search::{LineageRelation, SearchOrder, SearchQuery},
-    storage::{BlobStore, LineageStore, MetadataStore, SearchStore},
+    storage::{BlobStore, LineageStore, McpRegistryStore, MetadataStore, SearchStore},
 };
 
 type LineageAdjacency = HashMap<ContentHash, Vec<(ContentHash, LineageKind)>>;
@@ -38,6 +40,10 @@ const TBL_ENTRIES: &str = "entries";
 const TBL_TAGS: &str = "tags";
 const TBL_EDGES: &str = "lineage_edges";
 const TBL_BLOBS: &str = "blobs";
+const TBL_MCP_SERVERS: &str = "mcp_servers";
+const TBL_MCP_SERVER_VERSIONS: &str = "mcp_server_versions";
+const TBL_MCP_TOOL_VERSIONS: &str = "mcp_tool_versions";
+const TBL_MCP_SNAPSHOT_BLOBS: &str = "mcp_snapshot_blobs";
 
 const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE TABLE IF NOT EXISTS entries SCHEMAFULL",
@@ -74,6 +80,50 @@ const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE FIELD IF NOT EXISTS hash ON blobs TYPE string",
     "DEFINE FIELD IF NOT EXISTS data_hex ON blobs TYPE string",
     "DEFINE INDEX IF NOT EXISTS idx_blob_hash ON blobs FIELDS hash UNIQUE",
+    "DEFINE TABLE IF NOT EXISTS mcp_servers SCHEMAFULL",
+    "DEFINE FIELD IF NOT EXISTS server_id ON mcp_servers TYPE string",
+    "DEFINE FIELD IF NOT EXISTS tenant_id ON mcp_servers TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS display_name ON mcp_servers TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS latest_version ON mcp_servers TYPE option<int>",
+    "DEFINE FIELD IF NOT EXISTS created_at ON mcp_servers TYPE string",
+    "DEFINE INDEX IF NOT EXISTS idx_mcp_server_id ON mcp_servers FIELDS server_id UNIQUE",
+    "DEFINE TABLE IF NOT EXISTS mcp_server_versions SCHEMAFULL",
+    "DEFINE FIELD IF NOT EXISTS server_id ON mcp_server_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS version ON mcp_server_versions TYPE int",
+    "DEFINE FIELD IF NOT EXISTS snapshot_digest ON mcp_server_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS server_config_digest ON mcp_server_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS server_identity_digest ON mcp_server_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS tools_digest ON mcp_server_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS protocol_version ON mcp_server_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS transport_json ON mcp_server_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS secret_refs_json ON mcp_server_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS sandbox_profile ON mcp_server_versions TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS approval_state ON mcp_server_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS owner ON mcp_server_versions TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS reviewed_at ON mcp_server_versions TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS expires_at ON mcp_server_versions TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS created_at ON mcp_server_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS stale_at ON mcp_server_versions TYPE option<string>",
+    "DEFINE INDEX IF NOT EXISTS idx_mcp_server_version_unique ON mcp_server_versions FIELDS server_id, version UNIQUE",
+    "DEFINE TABLE IF NOT EXISTS mcp_tool_versions SCHEMAFULL",
+    "DEFINE FIELD IF NOT EXISTS server_id ON mcp_tool_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS server_version ON mcp_tool_versions TYPE int",
+    "DEFINE FIELD IF NOT EXISTS platform_tool_name ON mcp_tool_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS mcp_tool_name ON mcp_tool_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS input_schema_digest ON mcp_tool_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS output_mode_json ON mcp_tool_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS access_level ON mcp_tool_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS approval_state ON mcp_tool_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS owner ON mcp_tool_versions TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS reviewed_at ON mcp_tool_versions TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS opaque_fallback_reason ON mcp_tool_versions TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS tool_json ON mcp_tool_versions TYPE string",
+    "DEFINE INDEX IF NOT EXISTS idx_mcp_tool_version_unique ON mcp_tool_versions FIELDS server_id, server_version, platform_tool_name UNIQUE",
+    "DEFINE INDEX IF NOT EXISTS idx_mcp_tool_platform_name ON mcp_tool_versions FIELDS platform_tool_name",
+    "DEFINE TABLE IF NOT EXISTS mcp_snapshot_blobs SCHEMAFULL",
+    "DEFINE FIELD IF NOT EXISTS snapshot_digest ON mcp_snapshot_blobs TYPE string",
+    "DEFINE FIELD IF NOT EXISTS snapshot_json ON mcp_snapshot_blobs TYPE string",
+    "DEFINE INDEX IF NOT EXISTS idx_mcp_snapshot_digest ON mcp_snapshot_blobs FIELDS snapshot_digest UNIQUE",
 ];
 
 fn map_surreal_write(e: surrealdb::Error) -> RepositoryError {
@@ -94,6 +144,45 @@ fn decode_err(msg: impl Into<String>) -> RepositoryError {
             std::io::ErrorKind::InvalidData,
             msg.into(),
         )),
+    }
+}
+
+fn encode_json<T: serde::Serialize>(value: &T, field: &str) -> Result<String> {
+    serde_json::to_string(value)
+        .map_err(|e| decode_err(format!("{field} serialization failed: {e}")))
+}
+
+fn decode_json<T: for<'de> serde::Deserialize<'de>>(value: &str, field: &str) -> Result<T> {
+    serde_json::from_str(value).map_err(|e| decode_err(format!("invalid {field}: {e}")))
+}
+
+fn parse_mcp_approval_state(value: &str) -> Result<McpApprovalState> {
+    match value {
+        "pending" => Ok(McpApprovalState::Pending),
+        "approved" => Ok(McpApprovalState::Approved),
+        "rejected" => Ok(McpApprovalState::Rejected),
+        "stale" => Ok(McpApprovalState::Stale),
+        other => Err(decode_err(format!("invalid MCP approval state: {other}"))),
+    }
+}
+
+fn mcp_approval_state_str(value: McpApprovalState) -> &'static str {
+    match value {
+        McpApprovalState::Pending => "pending",
+        McpApprovalState::Approved => "approved",
+        McpApprovalState::Rejected => "rejected",
+        McpApprovalState::Stale => "stale",
+    }
+}
+
+fn parse_tool_access(value: &str) -> Result<baml_rt_tools::tools::ToolAccess> {
+    match value {
+        "read" => Ok(baml_rt_tools::tools::ToolAccess::Read),
+        "write" => Ok(baml_rt_tools::tools::ToolAccess::Write),
+        "delete" => Ok(baml_rt_tools::tools::ToolAccess::Delete),
+        other => Err(decode_err(format!(
+            "invalid MCP tool access level: {other}"
+        ))),
     }
 }
 
@@ -974,6 +1063,351 @@ impl LineageStore for SurrealStore {
 }
 
 #[async_trait]
+impl McpRegistryStore for SurrealStore {
+    async fn put_mcp_snapshot(
+        &self,
+        snapshot: &McpServerSnapshot,
+    ) -> Result<McpRegistryServerVersion> {
+        let server_id = snapshot.server_id.clone();
+        let mut resp = self
+            .db
+            .query(format!(
+                "SELECT version FROM {TBL_MCP_SERVER_VERSIONS} WHERE server_id = $server_id ORDER BY version DESC LIMIT 1"
+            ))
+            .bind(("server_id", server_id.clone()))
+            .await
+            .map_err(map_surreal_read)?;
+        let rows: Vec<Value> = resp.take(0).map_err(map_surreal_read)?;
+        let next_version = rows
+            .first()
+            .and_then(|r| r.get("version").and_then(Value::as_u64))
+            .map(|v| v as u32 + 1)
+            .unwrap_or(1);
+
+        let created_at = crate::service::chrono_now().as_str().to_string();
+        let snapshot_digest = compute_snapshot_digest(snapshot);
+        let snapshot_json = encode_json(snapshot, "mcp_snapshot")?;
+        let transport_json = serde_json::to_value(&snapshot.transport)
+            .map_err(|e| decode_err(format!("transport serialization failed: {e}")))?;
+        let secret_refs_json = serde_json::to_value(&snapshot.secret_refs)
+            .map_err(|e| decode_err(format!("secret_refs serialization failed: {e}")))?;
+
+        self.db
+            .query(format!(
+                "UPSERT {TBL_MCP_SNAPSHOT_BLOBS} SET snapshot_digest = $snapshot_digest, snapshot_json = $snapshot_json WHERE snapshot_digest = $snapshot_digest"
+            ))
+            .bind(("snapshot_digest", snapshot_digest.as_str().to_string()))
+            .bind(("snapshot_json", snapshot_json.clone()))
+            .await
+            .map_err(map_surreal_write)?;
+
+        let _ = self
+            .db
+            .query(format!(
+                "UPSERT {TBL_MCP_SERVERS} SET server_id = $server_id, latest_version = $latest_version, created_at = $created_at WHERE server_id = $server_id"
+            ))
+            .bind(("server_id", server_id.clone()))
+            .bind(("latest_version", next_version as i64))
+            .bind(("created_at", created_at.clone()))
+            .await
+            .map_err(map_surreal_write)?;
+
+        let transport_json_string = encode_json(&transport_json, "transport_json")?;
+        let secret_refs_json_string = encode_json(&secret_refs_json, "secret_refs_json")?;
+        let approval_state = mcp_approval_state_str(snapshot.approval.state).to_string();
+        let _ = self
+            .db
+            .query(format!(
+                "CREATE {TBL_MCP_SERVER_VERSIONS} SET \
+                    server_id = $server_id, \
+                    version = $version, \
+                    snapshot_digest = $snapshot_digest, \
+                    server_config_digest = $server_config_digest, \
+                    server_identity_digest = $server_identity_digest, \
+                    tools_digest = $tools_digest, \
+                    protocol_version = $protocol_version, \
+                    transport_json = $transport_json, \
+                    secret_refs_json = $secret_refs_json, \
+                    sandbox_profile = $sandbox_profile, \
+                    approval_state = $approval_state, \
+                    owner = $owner, \
+                    reviewed_at = $reviewed_at, \
+                    expires_at = $expires_at, \
+                    created_at = $created_at, \
+                    stale_at = $stale_at"
+            ))
+            .bind(("server_id", server_id.clone()))
+            .bind(("version", next_version as i64))
+            .bind(("snapshot_digest", snapshot_digest.as_str().to_string()))
+            .bind((
+                "server_config_digest",
+                snapshot.server_config_digest.as_str().to_string(),
+            ))
+            .bind((
+                "server_identity_digest",
+                snapshot.server_identity_digest.as_str().to_string(),
+            ))
+            .bind(("tools_digest", snapshot.tools_digest.as_str().to_string()))
+            .bind(("protocol_version", snapshot.protocol_version.clone()))
+            .bind(("transport_json", transport_json_string))
+            .bind(("secret_refs_json", secret_refs_json_string))
+            .bind(("sandbox_profile", snapshot.sandbox_profile.clone()))
+            .bind(("approval_state", approval_state))
+            .bind(("owner", snapshot.approval.owner.clone()))
+            .bind(("reviewed_at", snapshot.approval.reviewed_at.clone()))
+            .bind(("expires_at", snapshot.approval.expires_at.clone()))
+            .bind(("created_at", created_at.clone()))
+            .bind(("stale_at", Option::<String>::None))
+            .await
+            .map_err(map_surreal_write)?;
+
+        for tool in &snapshot.tools {
+            let output_mode_json = serde_json::to_value(&tool.output_mode)
+                .map_err(|e| decode_err(format!("output_mode serialization failed: {e}")))?;
+            let tool_json = serde_json::to_value(tool)
+                .map_err(|e| decode_err(format!("tool serialization failed: {e}")))?;
+            let _ = self
+                .db
+                .query(format!(
+                    "CREATE {TBL_MCP_TOOL_VERSIONS} SET \
+                        server_id = $server_id, \
+                        server_version = $server_version, \
+                        platform_tool_name = $platform_tool_name, \
+                        mcp_tool_name = $mcp_tool_name, \
+                        input_schema_digest = $input_schema_digest, \
+                        output_mode_json = $output_mode_json, \
+                        access_level = $access_level, \
+                        approval_state = $approval_state, \
+                        owner = $owner, \
+                        reviewed_at = $reviewed_at, \
+                        opaque_fallback_reason = $opaque_fallback_reason, \
+                        tool_json = $tool_json"
+                ))
+                .bind(("server_id", server_id.clone()))
+                .bind(("server_version", next_version as i64))
+                .bind(("platform_tool_name", tool.platform_tool_name.clone()))
+                .bind(("mcp_tool_name", tool.mcp_tool_name.clone()))
+                .bind((
+                    "input_schema_digest",
+                    tool.input_schema_digest.as_str().to_string(),
+                ))
+                .bind((
+                    "output_mode_json",
+                    encode_json(&output_mode_json, "output_mode_json")?,
+                ))
+                .bind(("access_level", tool.access_level.as_str().to_string()))
+                .bind((
+                    "approval_state",
+                    mcp_approval_state_str(tool.approval.state).to_string(),
+                ))
+                .bind(("owner", tool.approval.owner.clone()))
+                .bind(("reviewed_at", tool.approval.reviewed_at.clone()))
+                .bind((
+                    "opaque_fallback_reason",
+                    tool.opaque_fallback_reason.clone(),
+                ))
+                .bind(("tool_json", encode_json(&tool_json, "tool_json")?))
+                .await
+                .map_err(map_surreal_write)?;
+        }
+
+        Ok(McpRegistryServerVersion {
+            server_id,
+            version: next_version,
+            snapshot_digest,
+            server_config_digest: snapshot.server_config_digest.clone(),
+            server_identity_digest: snapshot.server_identity_digest.clone(),
+            tools_digest: snapshot.tools_digest.clone(),
+            protocol_version: snapshot.protocol_version.clone(),
+            transport_json,
+            secret_refs_json,
+            sandbox_profile: snapshot.sandbox_profile.clone(),
+            approval_state: snapshot.approval.state,
+            owner: snapshot.approval.owner.clone(),
+            reviewed_at: snapshot.approval.reviewed_at.clone(),
+            expires_at: snapshot.approval.expires_at.clone(),
+            created_at,
+            stale_at: None,
+        })
+    }
+
+    async fn get_mcp_snapshot(
+        &self,
+        server_id: &str,
+        version: u32,
+    ) -> Result<Option<McpServerSnapshot>> {
+        let mut resp = self
+            .db
+            .query(format!(
+                "SELECT snapshot_digest FROM {TBL_MCP_SERVER_VERSIONS} WHERE server_id = $server_id AND version = $version LIMIT 1"
+            ))
+            .bind(("server_id", server_id.to_string()))
+            .bind(("version", version as i64))
+            .await
+            .map_err(map_surreal_read)?;
+        let rows: Vec<Value> = resp.take(0).map_err(map_surreal_read)?;
+        let Some(snapshot_digest) = rows
+            .first()
+            .and_then(|r| r.get("snapshot_digest"))
+            .and_then(Value::as_str)
+        else {
+            return Ok(None);
+        };
+        let mut blob_resp = self
+            .db
+            .query(format!(
+                "SELECT snapshot_json FROM {TBL_MCP_SNAPSHOT_BLOBS} WHERE snapshot_digest = $snapshot_digest LIMIT 1"
+            ))
+            .bind(("snapshot_digest", snapshot_digest.to_string()))
+            .await
+            .map_err(map_surreal_read)?;
+        let blob_rows: Vec<Value> = blob_resp.take(0).map_err(map_surreal_read)?;
+        let Some(snapshot_json) = blob_rows
+            .first()
+            .and_then(|r| r.get("snapshot_json"))
+            .and_then(Value::as_str)
+        else {
+            return Err(decode_err(format!(
+                "MCP snapshot blob missing for digest {snapshot_digest}"
+            )));
+        };
+        Ok(Some(decode_json(snapshot_json, "mcp_snapshot")?))
+    }
+
+    async fn get_latest_mcp_snapshot(&self, server_id: &str) -> Result<Option<McpServerSnapshot>> {
+        let mut resp = self
+            .db
+            .query(format!(
+                "SELECT latest_version FROM {TBL_MCP_SERVERS} WHERE server_id = $server_id LIMIT 1"
+            ))
+            .bind(("server_id", server_id.to_string()))
+            .await
+            .map_err(map_surreal_read)?;
+        let rows: Vec<Value> = resp.take(0).map_err(map_surreal_read)?;
+        let Some(version) = rows
+            .first()
+            .and_then(|r| r.get("latest_version"))
+            .and_then(Value::as_u64)
+        else {
+            return Ok(None);
+        };
+        self.get_mcp_snapshot(server_id, version as u32).await
+    }
+
+    async fn list_mcp_server_versions(
+        &self,
+        server_id: &str,
+    ) -> Result<Vec<McpRegistryServerVersion>> {
+        let mut resp = self
+            .db
+            .query(format!(
+                "SELECT * FROM {TBL_MCP_SERVER_VERSIONS} WHERE server_id = $server_id ORDER BY version DESC"
+            ))
+            .bind(("server_id", server_id.to_string()))
+            .await
+            .map_err(map_surreal_read)?;
+        let rows: Vec<Value> = resp.take(0).map_err(map_surreal_read)?;
+        rows.iter().map(row_to_mcp_server_version).collect()
+    }
+
+    async fn find_mcp_tool(&self, platform_tool_name: &str) -> Result<Vec<McpRegistryToolVersion>> {
+        let mut resp = self
+            .db
+            .query(format!(
+                "SELECT * FROM {TBL_MCP_TOOL_VERSIONS} WHERE platform_tool_name = $platform_tool_name ORDER BY server_version DESC"
+            ))
+            .bind(("platform_tool_name", platform_tool_name.to_string()))
+            .await
+            .map_err(map_surreal_read)?;
+        let rows: Vec<Value> = resp.take(0).map_err(map_surreal_read)?;
+        rows.iter().map(row_to_mcp_tool_version).collect()
+    }
+
+    async fn mark_mcp_version_stale(&self, server_id: &str, version: u32) -> Result<()> {
+        let stale_at = crate::service::chrono_now().as_str().to_string();
+        self.db
+            .query(format!(
+                "UPDATE {TBL_MCP_SERVER_VERSIONS} SET approval_state = $approval_state, stale_at = $stale_at WHERE server_id = $server_id AND version = $version"
+            ))
+            .bind(("approval_state", "stale".to_string()))
+            .bind(("stale_at", stale_at.clone()))
+            .bind(("server_id", server_id.to_string()))
+            .bind(("version", version as i64))
+            .await
+            .map_err(map_surreal_write)?;
+        self.db
+            .query(format!(
+                "UPDATE {TBL_MCP_TOOL_VERSIONS} SET approval_state = $approval_state WHERE server_id = $server_id AND server_version = $version"
+            ))
+            .bind(("approval_state", "stale".to_string()))
+            .bind(("server_id", server_id.to_string()))
+            .bind(("version", version as i64))
+            .await
+            .map_err(map_surreal_write)?;
+        Ok(())
+    }
+}
+
+fn row_to_mcp_server_version(row: &Value) -> Result<McpRegistryServerVersion> {
+    Ok(McpRegistryServerVersion {
+        server_id: get_required_str(row, "server_id")?.to_string(),
+        version: get_required_u32(row, "version")?,
+        snapshot_digest: baml_rt_tools::mcp_snapshot::Digest::new(get_required_str(
+            row,
+            "snapshot_digest",
+        )?),
+        server_config_digest: baml_rt_tools::mcp_snapshot::Digest::new(get_required_str(
+            row,
+            "server_config_digest",
+        )?),
+        server_identity_digest: baml_rt_tools::mcp_snapshot::Digest::new(get_required_str(
+            row,
+            "server_identity_digest",
+        )?),
+        tools_digest: baml_rt_tools::mcp_snapshot::Digest::new(get_required_str(
+            row,
+            "tools_digest",
+        )?),
+        protocol_version: get_required_str(row, "protocol_version")?.to_string(),
+        transport_json: decode_json(get_required_str(row, "transport_json")?, "transport_json")?,
+        secret_refs_json: decode_json(
+            get_required_str(row, "secret_refs_json")?,
+            "secret_refs_json",
+        )?,
+        sandbox_profile: get_optional_str(row, "sandbox_profile"),
+        approval_state: parse_mcp_approval_state(get_required_str(row, "approval_state")?)?,
+        owner: get_optional_str(row, "owner"),
+        reviewed_at: get_optional_str(row, "reviewed_at"),
+        expires_at: get_optional_str(row, "expires_at"),
+        created_at: get_required_str(row, "created_at")?.to_string(),
+        stale_at: get_optional_str(row, "stale_at"),
+    })
+}
+
+fn row_to_mcp_tool_version(row: &Value) -> Result<McpRegistryToolVersion> {
+    Ok(McpRegistryToolVersion {
+        server_id: get_required_str(row, "server_id")?.to_string(),
+        server_version: get_required_u32(row, "server_version")?,
+        platform_tool_name: get_required_str(row, "platform_tool_name")?.to_string(),
+        mcp_tool_name: get_required_str(row, "mcp_tool_name")?.to_string(),
+        input_schema_digest: baml_rt_tools::mcp_snapshot::Digest::new(get_required_str(
+            row,
+            "input_schema_digest",
+        )?),
+        output_mode_json: decode_json(
+            get_required_str(row, "output_mode_json")?,
+            "output_mode_json",
+        )?,
+        access_level: parse_tool_access(get_required_str(row, "access_level")?)?,
+        approval_state: parse_mcp_approval_state(get_required_str(row, "approval_state")?)?,
+        owner: get_optional_str(row, "owner"),
+        reviewed_at: get_optional_str(row, "reviewed_at"),
+        opaque_fallback_reason: get_optional_str(row, "opaque_fallback_reason"),
+        tool_json: decode_json(get_required_str(row, "tool_json")?, "tool_json")?,
+    })
+}
+
+#[async_trait]
 impl SearchStore for SurrealStore {
     async fn search(&self, query: &SearchQuery) -> Result<Vec<RepositoryEntryHeader>> {
         let mut rows = self.all_entry_rows().await?;
@@ -995,5 +1429,121 @@ impl SearchStore for SurrealStore {
         self.apply_order(&mut headers, query);
         self.apply_limit(&mut headers, query);
         Ok(headers)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use baml_rt_tools::{
+        mcp_snapshot::{
+            ApprovalRecord, Digest, MCP_SNAPSHOT_SCHEMA_VERSION, McpImportedTool, McpOutputMode,
+            McpTransportRef, SecretRef, compute_tools_digest,
+        },
+        tools::ToolAccess,
+    };
+    use serde_json::json;
+
+    use super::*;
+
+    fn approved() -> ApprovalRecord {
+        ApprovalRecord {
+            state: McpApprovalState::Approved,
+            owner: Some("operator@example.com".into()),
+            reviewed_at: Some("epoch:1".into()),
+            expires_at: None,
+        }
+    }
+
+    fn tool(name: &str, schema_digest: &str) -> McpImportedTool {
+        McpImportedTool {
+            platform_tool_name: format!("mcp/meteo/{name}"),
+            mcp_tool_name: name.into(),
+            description: Some(format!("{name} tool")),
+            input_schema: json!({ "type": "object", "properties": { "city": { "type": "string" } } }),
+            input_schema_digest: Digest::new(schema_digest),
+            output_mode: McpOutputMode::ContentEnvelope,
+            access_level: ToolAccess::Read,
+            approval: approved(),
+            opaque_fallback_reason: None,
+            annotations: serde_json::Value::Null,
+        }
+    }
+
+    fn snapshot(schema_digest: &str) -> McpServerSnapshot {
+        let tools = vec![tool("get_meteo", schema_digest)];
+        McpServerSnapshot {
+            schema_version: MCP_SNAPSHOT_SCHEMA_VERSION,
+            server_id: "meteo".into(),
+            transport: McpTransportRef::Stdio {
+                command_ref: "meteo-mcp".into(),
+                args: vec!["--stdio".into()],
+            },
+            protocol_version: "2025-06-18".into(),
+            server_info: Some(json!({ "name": "meteo" })),
+            server_config_digest: Digest::new("sha256:server"),
+            server_identity_digest: Digest::new("sha256:identity"),
+            tools_digest: compute_tools_digest(&tools),
+            secret_refs: vec![SecretRef {
+                name: "meteo/token".into(),
+                version: Some("1".into()),
+            }],
+            approval: approved(),
+            sandbox_profile: Some("restricted".into()),
+            tools,
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_snapshot_versions_round_trip() {
+        let store = SurrealStore::open_in_memory().await.unwrap();
+        let first = snapshot("sha256:input1");
+        let inserted = store.put_mcp_snapshot(&first).await.unwrap();
+        assert_eq!(inserted.server_id, "meteo");
+        assert_eq!(inserted.version, 1);
+
+        let read_back = store.get_mcp_snapshot("meteo", 1).await.unwrap().unwrap();
+        assert_eq!(read_back, first);
+        let latest = store
+            .get_latest_mcp_snapshot("meteo")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest, first);
+
+        let second = snapshot("sha256:input2");
+        let inserted_second = store.put_mcp_snapshot(&second).await.unwrap();
+        assert_eq!(inserted_second.version, 2);
+        let versions = store.list_mcp_server_versions("meteo").await.unwrap();
+        assert_eq!(
+            versions.iter().map(|v| v.version).collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+        let latest = store
+            .get_latest_mcp_snapshot("meteo")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest, second);
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_lookup_and_stale_transition() {
+        let store = SurrealStore::open_in_memory().await.unwrap();
+        store
+            .put_mcp_snapshot(&snapshot("sha256:input1"))
+            .await
+            .unwrap();
+
+        let tools = store.find_mcp_tool("mcp/meteo/get_meteo").await.unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].approval_state, McpApprovalState::Approved);
+        assert_eq!(tools[0].access_level, ToolAccess::Read);
+
+        store.mark_mcp_version_stale("meteo", 1).await.unwrap();
+        let versions = store.list_mcp_server_versions("meteo").await.unwrap();
+        assert_eq!(versions[0].approval_state, McpApprovalState::Stale);
+        assert!(versions[0].stale_at.is_some());
+        let tools = store.find_mcp_tool("mcp/meteo/get_meteo").await.unwrap();
+        assert_eq!(tools[0].approval_state, McpApprovalState::Stale);
     }
 }
