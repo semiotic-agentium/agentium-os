@@ -99,7 +99,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 - **baml-rt-provenance** — Provenance graph: event normalization, SurrealDB persistence, cluster-safe archive refs with activity-anchor idempotency, effect subscriber observability
 - **baml-rt-repository** — Agent package repository: content-addressable archive with lineage, versioning, and search
 - **baml-rt-router** — Cluster routing, SSRF validation, token auth, cross-pod A2A forwarding with distributed trace propagation
-- **baml-rt-api** — HTTP API surface: agent discovery (GET /agents), A2A JSON-RPC forwarding, OpenAPI via utoipa, RFC 7807 errors, operator auth boundary, OpenTelemetry middleware for distributed tracing, conversation history endpoints, context metrics, runtime-progress-gated readiness probe
+- **baml-rt-api** — HTTP API surface: agent discovery (GET /agents), A2A JSON-RPC forwarding, OpenAPI via utoipa, RFC 7807 errors, operator auth boundary, OpenTelemetry middleware for distributed tracing, conversation history endpoints, context metrics, runtime-progress-gated readiness probe, cluster-wide deployment fan-out (POST /cluster/deploy)
 
 **Derive macros**
 - **baml-derive-core** — Core types and rendering for derive macro (`BamlType` trait)
@@ -175,6 +175,7 @@ The runner HTTP API has two access tiers:
 - `GET /config`, `POST /config` — configuration management
 - `GET /config/secrets-overview` — secrets inventory
 - `POST /deploy`, `POST /undeploy` — deployment lifecycle
+- `POST /cluster/deploy` — cluster-wide deployment fan-out (resolves hash once, forwards to all runners)
 - `POST /migrate` — database migration
 - Repository mutation endpoints
 
