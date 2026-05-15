@@ -12881,6 +12881,7 @@ dependencies = [
  "baml-tools-calculator",
  "dotenvy",
  "flate2",
+ "futures-util",
  "serde",
  "serde_json",
  "tar",

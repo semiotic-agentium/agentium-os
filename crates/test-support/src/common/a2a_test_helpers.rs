@@ -3,8 +3,39 @@ use std::collections::HashMap;
 use baml_rt::a2a_types::{
     A2aMessageId, JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest,
 };
-use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
+use baml_rt_core::{
+    A2aStreamChunk,
+    bus::BusStream,
+    ids::{ContextId, ExternalId, TaskId},
+};
+use futures_util::StreamExt;
 use serde_json::Value;
+
+/// Drives a `BusStream<A2aStreamChunk>` chunk-by-chunk and returns the first
+/// `Some(_)` the predicate yields. The stream is dropped on match.
+///
+/// Streaming-aware replacement for the `collect_a2a_stream(...).await`-then-scan
+/// idiom, which buffers the entire stream into a `Vec` before any assertion
+/// runs (anti-pattern for streaming-systems tests — see #468). Callers that
+/// only need to assert on one signal — "FSM hit COMPLETED", "a chunk arrived",
+/// "this text appeared in some message" — should use this; tests that
+/// genuinely need to assert on the *sequence* of chunks can fold per-chunk
+/// state into the predicate (e.g. `Some(())` only when their running tally
+/// reaches the expected order).
+pub async fn await_signal_from_stream<F, T>(
+    mut stream: BusStream<A2aStreamChunk>,
+    mut predicate: F,
+) -> Option<T>
+where
+    F: FnMut(&Value) -> Option<T>,
+{
+    while let Some(chunk) = stream.next().await {
+        if let Some(result) = predicate(&chunk.0) {
+            return Some(result);
+        }
+    }
+    None
+}
 
 pub fn user_message(message_id: &str, text: &str, context_id: Option<ContextId>) -> Message {
     user_message_with_task(message_id, text, context_id, None)

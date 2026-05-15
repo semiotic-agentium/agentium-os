@@ -3,7 +3,7 @@
 pub use crate::support::tools::*;
 mod a2a_test_helpers;
 pub use a2a_test_helpers::{
-    chunk_content, chunks_from_responses, first_message_text_from_stream,
+    await_signal_from_stream, chunk_content, chunks_from_responses, first_message_text_from_stream,
     first_task_id_from_stream, is_error_response, message_texts_from_chunks,
     message_visible_content_from_chunks, send_stream_request, send_stream_request_with_task,
     user_message, user_message_with_task,
