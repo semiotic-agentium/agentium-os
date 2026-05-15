@@ -3,8 +3,38 @@ use std::collections::HashMap;
 use baml_rt::a2a_types::{
     A2aMessageId, JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest,
 };
-use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
+use baml_rt_core::{
+    A2aStreamChunk,
+    bus::BusStream,
+    ids::{ContextId, ExternalId, TaskId},
+};
+use futures_util::StreamExt;
 use serde_json::Value;
+
+/// Drives a `BusStream<A2aStreamChunk>` chunk-by-chunk and returns the first
+/// `Some(_)` the predicate yields. The stream is dropped on match.
+///
+/// Use for tests asserting one signal ("FSM hit COMPLETED", "this text
+/// appeared", "any chunk arrived"). For tests asserting on chunk
+/// sequences, fold the running state into the predicate (return
+/// `Some(())` only when a running tally hits the expected order); the
+/// predicate state should stay bounded — accumulating chunks into a
+/// `Vec` inside the closure re-creates the buffer-everything shape this
+/// helper exists to avoid.
+pub async fn await_first_match<F, T>(
+    mut stream: BusStream<A2aStreamChunk>,
+    mut predicate: F,
+) -> Option<T>
+where
+    F: FnMut(&Value) -> Option<T>,
+{
+    while let Some(chunk) = stream.next().await {
+        if let Some(result) = predicate(chunk.as_ref()) {
+            return Some(result);
+        }
+    }
+    None
+}
 
 pub fn user_message(message_id: &str, text: &str, context_id: Option<ContextId>) -> Message {
     user_message_with_task(message_id, text, context_id, None)

@@ -4,24 +4,10 @@
 
 mod common;
 
-use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
+use baml_rt_a2a::A2aRequestHandler;
 use baml_rt_core::ids::{ContextId, CorrelationId};
-use test_support::common::send_stream_request;
+use test_support::common::{await_first_match, send_stream_request};
 use tokio::time::Duration;
-
-async fn collect_responses(
-    agent: &A2aAgent,
-    request: serde_json::Value,
-) -> baml_rt::Result<Vec<serde_json::Value>> {
-    let stream = agent
-        .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(request))
-        .await?;
-    let chunks = baml_rt_core::collect_a2a_stream(stream).await;
-    Ok(chunks
-        .into_iter()
-        .map(baml_rt_core::A2aStreamChunk::into_inner)
-        .collect())
-}
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_scope_attribution_without_cross_contamination() {
@@ -48,14 +34,19 @@ async fn test_scope_attribution_without_cross_contamination() {
             &correlation_id.to_string(),
             Some(context_id.clone()),
         );
-        let responses =
-            tokio::time::timeout(Duration::from_secs(15), collect_responses(&agent, request))
-                .await
-                .expect("request timeout")
-                .expect("handle");
+        let stream = agent
+            .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(request))
+            .await
+            .expect("handle");
+        let first_chunk = tokio::time::timeout(
+            Duration::from_secs(15),
+            await_first_match(stream, |_chunk| Some(())),
+        )
+        .await
+        .expect("request timeout");
         assert!(
-            !responses.is_empty(),
-            "expected at least one stream response"
+            first_chunk.is_some(),
+            "expected at least one stream chunk for context {context_id:?}"
         );
     }
 
