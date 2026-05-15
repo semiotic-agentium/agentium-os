@@ -257,7 +257,7 @@ pub fn default_mcp_resolver<R: SecretResolver + Send + Sync>(
                 return Ok(None);
             };
             PathBuf::from(home)
-                .join(".agent-platform")
+                .join(".agentium-os")
                 .join("mcp-servers.json")
         }
     };

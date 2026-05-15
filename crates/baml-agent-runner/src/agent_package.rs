@@ -218,8 +218,14 @@ impl AgentPackage {
         // Fail-closed: when the manifest references `mcp/...` tools but the
         // operator never approved them (no snapshot, no mcp-servers.json),
         // register_manifest_tools_with_fallback returns an error.
+        let package_mcp_root = self.extract_dir.join("mcp");
+        let mcp_cache_root = if package_mcp_root.exists() {
+            Some(package_mcp_root.as_path())
+        } else {
+            None
+        };
         let mcp_resolver = default_mcp_resolver(
-            None,
+            mcp_cache_root,
             None,
             LlmSecretResolverToMcpAdapter::new(llm_secret_resolver),
         )?;

@@ -1,7 +1,8 @@
 //! Generate `baml-runtime.d.ts`, generated BAML fragments, and session-plan metadata.
 
-use std::{collections::HashMap, fs, path::Path};
+use std::{collections::HashMap, fs, path::Path, sync::Arc};
 
+use baml_rt_repository::RepositoryService;
 use baml_rt_tools::{
     external_tools::{EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalToolsLockfile, external_dirs_from_env},
     gather_coordination_fragments,
@@ -26,23 +27,42 @@ use crate::builder::{
 ///
 /// Writes `baml-runtime.d.ts` into the agent's `src/` directory so that both
 /// `tsc` and IDEs can resolve the types without any temp-dir indirection.
-pub struct RuntimeTypeGenerator;
+#[derive(Clone, Default)]
+pub struct RuntimeTypeGenerator {
+    mcp_registry_service: Option<Arc<RepositoryService>>,
+    mcp_registry_url: Option<String>,
+}
 
 impl RuntimeTypeGenerator {
     pub fn new() -> Self {
-        Self
+        Self {
+            mcp_registry_service: None,
+            mcp_registry_url: std::env::var("BAML_MCP_REGISTRY_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+        }
     }
-}
 
-impl Default for RuntimeTypeGenerator {
-    fn default() -> Self {
-        Self::new()
+    pub fn with_mcp_registry_service(service: Arc<RepositoryService>) -> Self {
+        Self {
+            mcp_registry_service: Some(service),
+            mcp_registry_url: None,
+        }
+    }
+
+    pub fn with_mcp_registry_url(url: impl Into<String>) -> Self {
+        Self {
+            mcp_registry_service: None,
+            mcp_registry_url: Some(url.into()),
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl TypeGenerator for RuntimeTypeGenerator {
     async fn generate(&self, agent_dir: &AgentDir, build_dir: &BuildDir) -> Result<()> {
+        prepare_mcp_registry_cache(agent_dir, build_dir, self).await?;
+
         let agent_dir = agent_dir.clone();
         let build_dir = build_dir.clone();
 
@@ -68,7 +88,14 @@ impl TypeGenerator for RuntimeTypeGenerator {
             // which is populated by the catalog from inventory providers
             // (internal tools) or `coordination.baml_file` (external bundles).
             let tool_metadata = if !tool_names.is_empty() {
-                let catalog = baml_rt_tools::external_tools::build_builder_catalog()?;
+                let mcp_root = build_dir.join("mcp");
+                let catalog = baml_rt_tools::external_tools::build_builder_catalog_with_mcp_root(
+                    if mcp_root.exists() {
+                        Some(mcp_root.as_path())
+                    } else {
+                        None
+                    },
+                )?;
                 baml_rt_tools::tool_catalog::resolve_manifest_tools_with_catalog(
                     &catalog,
                     &tool_names,
@@ -244,6 +271,78 @@ fn build_tool_step_executors_map(
         }
     }
     map
+}
+
+async fn prepare_mcp_registry_cache(
+    agent_dir: &AgentDir,
+    build_dir: &BuildDir,
+    generator: &RuntimeTypeGenerator,
+) -> Result<()> {
+    let tool_names = load_manifest_tools(&agent_dir.baml_src())?;
+    let mut server_ids: Vec<String> = tool_names
+        .iter()
+        .filter_map(|name| {
+            let rest = name.strip_prefix("mcp/")?;
+            rest.split('/').next().map(str::to_string)
+        })
+        .collect();
+    server_ids.sort();
+    server_ids.dedup();
+    if server_ids.is_empty() {
+        return Ok(());
+    }
+
+    let root = build_dir.join("mcp");
+    if let Some(service) = &generator.mcp_registry_service {
+        for server_id in &server_ids {
+            let snapshot = service
+                .get_latest_mcp_snapshot(server_id)
+                .await
+                .map_err(|err| BamlBuilderError::InvalidArgumentWithSource {
+                    message: format!("failed to fetch MCP snapshot `{server_id}` from registry"),
+                    source: Box::new(err),
+                })?
+                .ok_or_else(|| {
+                    BamlBuilderError::InvalidArgument(format!(
+                        "manifest uses MCP server `{server_id}`, but no registry snapshot was found"
+                    ))
+                })?;
+            baml_rt_tools::mcp_cache::write_snapshot(&root, &snapshot)
+                .map_err(BamlBuilderError::Io)?;
+        }
+        return Ok(());
+    }
+
+    let Some(registry_url) = &generator.mcp_registry_url else {
+        return Ok(());
+    };
+    let http = reqwest::Client::new();
+    for server_id in &server_ids {
+        let url = format!(
+            "{}/mcp/servers/{server_id}",
+            registry_url.trim_end_matches('/')
+        );
+        let response = http.get(&url).send().await.map_err(|err| {
+            BamlBuilderError::InvalidArgumentWithSource {
+                message: format!("failed to fetch MCP snapshot `{server_id}` from {url}"),
+                source: Box::new(err),
+            }
+        })?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(BamlBuilderError::InvalidArgument(format!(
+                "failed to fetch MCP snapshot `{server_id}` from registry ({status}): {body}"
+            )));
+        }
+        let snapshot: baml_rt_tools::mcp_snapshot::McpServerSnapshot = serde_json::from_str(&body)
+            .map_err(|err| BamlBuilderError::InvalidArgumentWithSource {
+                message: format!("failed to parse MCP snapshot `{server_id}` from registry"),
+                source: Box::new(err),
+            })?;
+        baml_rt_tools::mcp_cache::write_snapshot(&root, &snapshot).map_err(BamlBuilderError::Io)?;
+    }
+    Ok(())
 }
 
 fn build_external_tools_lockfile(
