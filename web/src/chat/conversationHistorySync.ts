@@ -16,6 +16,7 @@ import type { ChatMessage, ConversationHistoryPage, HistoryHydrateState } from "
 import {
   applyConversationHistoryDelta,
   applyConversationHistoryPage,
+  ConversationHistoryDeltaApplyMode,
   explicitRestoreMayIgnoreEmptyLivePlaceholder,
   liveAgentBubbleBlocksHistoryReplace,
   shouldDeferProvenanceHistoryRebuild,
@@ -143,7 +144,7 @@ export function applyConversationHistoryIngress(
     deps.extendLlmFromPage(page);
     // Observe pane updates from `extendLlmFromPage` + trace refresh; merge structural rows only
     // so Primary tool/session_step traces keep pace without double-applying assistant prose.
-    applyConversationHistoryDelta(deps.messages, page, "structural_only");
+    applyConversationHistoryDelta(deps.messages, page, ConversationHistoryDeltaApplyMode.StructuralOnly);
     deps.setHistoryVersion(page.version);
     deps.setSelectedContextId(page.contextId);
     deps.setHydrateState("ready");

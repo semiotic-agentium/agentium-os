@@ -334,12 +334,18 @@ export function applyConversationHistoryPage(
  *   `session_step` rows from provenance — skip user rows and assistant `message` text so POST /a2a
  *   stream text remains authoritative. Keeps Primary tool/session traces aligned with Observe.
  */
-export type ConversationHistoryDeltaApplyMode = "full" | "structural_only";
+export const ConversationHistoryDeltaApplyMode = {
+  Full: "full",
+  StructuralOnly: "structural_only",
+} as const;
+
+export type ConversationHistoryDeltaApplyMode =
+  (typeof ConversationHistoryDeltaApplyMode)[keyof typeof ConversationHistoryDeltaApplyMode];
 
 export function applyConversationHistoryDelta(
   messages: Ref<ChatMessage[]>,
   page: ConversationHistoryPage,
-  applyMode: ConversationHistoryDeltaApplyMode = "full",
+  applyMode: ConversationHistoryDeltaApplyMode = ConversationHistoryDeltaApplyMode.Full,
 ): void {
   if (Array.isArray(page.items) && page.items.length > 0) {
     const sorted = [...page.items].sort((a, b) => a.timestampMs - b.timestampMs);
@@ -348,7 +354,7 @@ export function applyConversationHistoryDelta(
       const ts = new Date(normalizeEpochMs(item.timestampMs));
       const content = item.content;
       if (isUser) {
-        if (applyMode === "structural_only") {
+        if (applyMode === ConversationHistoryDeltaApplyMode.StructuralOnly) {
           continue;
         }
         const text = content.type === "message" ? content.text : "";
@@ -367,7 +373,7 @@ export function applyConversationHistoryDelta(
         continue;
       }
 
-      if (applyMode === "structural_only" && content.type === "message") {
+      if (applyMode === ConversationHistoryDeltaApplyMode.StructuralOnly && content.type === "message") {
         continue;
       }
 
