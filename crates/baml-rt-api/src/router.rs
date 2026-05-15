@@ -236,6 +236,7 @@ fn repository_route_metric_label(matched: &MatchedPath) -> &'static str {
         "/search" => "repository_search",
         "/lineage/{hash}" => "repository_get_lineage",
         "/blobs/{hash}" => "repository_get_blob",
+        "/mcp/servers" => "repository_mcp_list_servers",
         "/mcp/servers/{server_id}" => "repository_mcp_get_latest_snapshot",
         "/mcp/servers/{server_id}/versions" => "repository_mcp_list_server_versions",
         "/mcp/servers/{server_id}/versions/{version}" => "repository_mcp_get_snapshot",
@@ -850,6 +851,14 @@ fn repository_openapi_fragment() -> serde_json::Value {
                         "400": { "description": "Invalid hash" },
                         "404": { "description": "Blob not found" }
                     }
+                }
+            },
+            "/repository/mcp/servers": {
+                "get": {
+                    "tags": ["repository"],
+                    "summary": "List MCP servers",
+                    "operationId": "repository_mcp_list_servers",
+                    "responses": { "200": { "description": "MCP server list" } }
                 }
             },
             "/repository/mcp/servers/{server_id}": {

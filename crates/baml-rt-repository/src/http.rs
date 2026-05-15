@@ -12,7 +12,7 @@ use crate::{
     error::RepositoryError,
     ids::{AgentName, ContentHash, Version},
     lineage::LineageSubgraph,
-    mcp::{McpRegistryServerVersion, McpRegistryToolVersion},
+    mcp::{McpRegistryServer, McpRegistryServerVersion, McpRegistryToolVersion},
 };
 
 // ---------------------------------------------------------------------------
@@ -290,6 +290,13 @@ pub struct LineageResponse {
 pub struct BlobDownloadMeta {
     pub hash: ContentHash,
     pub size_bytes: usize,
+}
+
+/// Response for MCP server listing.
+#[derive(Debug, Serialize)]
+pub struct McpServersResponse {
+    pub servers: Vec<McpRegistryServer>,
+    pub total: usize,
 }
 
 /// Response for MCP server version listing.

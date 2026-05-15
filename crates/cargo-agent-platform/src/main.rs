@@ -430,6 +430,15 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum McpCommands {
+    /// List MCP servers in the repository registry.
+    List {
+        /// Repository base URL where repository routes are mounted.
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
+        repository_url: String,
+        /// Emit raw JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Discover, approve, and store an MCP server schema in the repository registry.
     Enable {
         /// Server id from mcp-servers.json.
@@ -896,6 +905,10 @@ fn main() -> anyhow::Result<()> {
         } => commands::doctor::run(ci, warn_missing_catalog),
 
         Commands::Mcp { command } => match command {
+            McpCommands::List {
+                repository_url,
+                json,
+            } => commands::mcp::list(&repository_url, json),
             McpCommands::Enable {
                 server_id,
                 config,

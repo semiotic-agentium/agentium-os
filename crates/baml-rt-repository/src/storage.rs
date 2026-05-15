@@ -19,7 +19,7 @@ use crate::{
     error::Result,
     ids::{AgentName, ContentHash, Version, VersionRef},
     lineage::{AncestryNode, LineageEdge, LineageSubgraph},
-    mcp::{McpRegistryServerVersion, McpRegistryToolVersion},
+    mcp::{McpRegistryServer, McpRegistryServerVersion, McpRegistryToolVersion},
     search::SearchQuery,
 };
 
@@ -162,6 +162,9 @@ pub trait SearchStore: Send + Sync {
 /// Stores immutable MCP server snapshot versions and their tool projections.
 #[async_trait]
 pub trait McpRegistryStore: Send + Sync {
+    /// List known MCP servers ordered by id.
+    async fn list_mcp_servers(&self) -> Result<Vec<McpRegistryServer>>;
+
     /// Insert a full server snapshot as a new immutable version.
     async fn put_mcp_snapshot(
         &self,

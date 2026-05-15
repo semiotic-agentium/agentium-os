@@ -15,7 +15,7 @@ use crate::{
     error::{RepositoryError, Result},
     ids::{AgentName, ContentHash, Generation, LineageEdgeId, Version},
     lineage::{EdgeDescription, LineageEdge, LineageKind, LineageSubgraph, Parentage},
-    mcp::{McpRegistryServerVersion, McpRegistryToolVersion},
+    mcp::{McpRegistryServer, McpRegistryServerVersion, McpRegistryToolVersion},
     search::SearchQuery,
     storage::{BlobStore, LineageStore, McpRegistryStore, MetadataStore, SearchStore},
 };
@@ -53,6 +53,10 @@ impl RepositoryService {
     // -----------------------------------------------------------------------
     // MCP registry
     // -----------------------------------------------------------------------
+
+    pub async fn list_mcp_servers(&self) -> Result<Vec<McpRegistryServer>> {
+        self.mcp_registry.list_mcp_servers().await
+    }
 
     pub async fn put_mcp_snapshot(
         &self,

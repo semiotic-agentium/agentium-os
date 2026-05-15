@@ -20,7 +20,8 @@ use crate::{
         GetByVersionPath, HttpResult, ImportMcpSnapshotRequest, ImportMcpSnapshotResponse,
         LineagePath, LineageQuery, LineageResponse, ListAgentsResponse, ListVersionsPath,
         ListVersionsResponse, McpServerPath, McpServerVersionPath, McpServerVersionsResponse,
-        McpToolLookupResponse, McpToolQuery, RemoveTagRequest, SearchResponse, TagPath,
+        McpServersResponse, McpToolLookupResponse, McpToolQuery, RemoveTagRequest, SearchResponse,
+        TagPath,
     },
     ids::Version,
     search::SearchQuery,
@@ -179,6 +180,13 @@ pub async fn remove_tag(
         .await
         .map_err(HttpApiProblem::from)?;
     Ok(Json(()))
+}
+
+/// List MCP servers (GET /repository/mcp/servers).
+pub async fn list_mcp_servers(State(svc): State<RepoState>) -> HttpResult<McpServersResponse> {
+    let servers = svc.list_mcp_servers().await.map_err(HttpApiProblem::from)?;
+    let total = servers.len();
+    Ok(Json(McpServersResponse { servers, total }))
 }
 
 /// List MCP snapshot versions for one server (GET /repository/mcp/servers/{server_id}/versions).

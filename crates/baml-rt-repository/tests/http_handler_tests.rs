@@ -741,6 +741,23 @@ async fn mcp_snapshot_import_and_read_routes_work() {
     assert_eq!(imported["version"]["server_id"], "meteo");
     assert_eq!(imported["version"]["version"], 1);
 
+    let servers = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/mcp/servers")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(servers.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(servers.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let servers: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(servers["servers"].as_array().unwrap().len(), 1);
+
     let versions = app
         .clone()
         .oneshot(

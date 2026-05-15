@@ -26,7 +26,10 @@ use crate::{
     lineage::{
         AncestryNode, EdgeDescription, LineageEdge, LineageKind, LineageSubgraph, Parentage,
     },
-    mcp::{McpRegistryServerVersion, McpRegistryToolVersion, compute_snapshot_digest},
+    mcp::{
+        McpRegistryServer, McpRegistryServerVersion, McpRegistryToolVersion,
+        compute_snapshot_digest,
+    },
     search::{LineageRelation, SearchOrder, SearchQuery},
     storage::{BlobStore, LineageStore, McpRegistryStore, MetadataStore, SearchStore},
 };
@@ -1064,6 +1067,18 @@ impl LineageStore for SurrealStore {
 
 #[async_trait]
 impl McpRegistryStore for SurrealStore {
+    async fn list_mcp_servers(&self) -> Result<Vec<McpRegistryServer>> {
+        let mut resp = self
+            .db
+            .query(format!(
+                "SELECT * FROM {TBL_MCP_SERVERS} ORDER BY server_id ASC"
+            ))
+            .await
+            .map_err(map_surreal_read)?;
+        let rows: Vec<Value> = resp.take(0).map_err(map_surreal_read)?;
+        rows.iter().map(row_to_mcp_server).collect()
+    }
+
     async fn put_mcp_snapshot(
         &self,
         snapshot: &McpServerSnapshot,
@@ -1346,6 +1361,19 @@ impl McpRegistryStore for SurrealStore {
             .map_err(map_surreal_write)?;
         Ok(())
     }
+}
+
+fn row_to_mcp_server(row: &Value) -> Result<McpRegistryServer> {
+    Ok(McpRegistryServer {
+        server_id: get_required_str(row, "server_id")?.to_string(),
+        tenant_id: get_optional_str(row, "tenant_id"),
+        display_name: get_optional_str(row, "display_name"),
+        created_at: get_required_str(row, "created_at")?.to_string(),
+        latest_version: row
+            .get("latest_version")
+            .and_then(Value::as_u64)
+            .map(|v| v as u32),
+    })
 }
 
 fn row_to_mcp_server_version(row: &Value) -> Result<McpRegistryServerVersion> {

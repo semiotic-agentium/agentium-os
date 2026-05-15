@@ -39,6 +39,34 @@ fn run_builder(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+pub fn list(repository_url: &str, json: bool) -> Result<()> {
+    let body = get_json(repository_url, "/mcp/servers")?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&body)?);
+        return Ok(());
+    }
+    println!("{}", style("MCP servers:").bold());
+    for server in body
+        .get("servers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let latest = server
+            .get("latest_version")
+            .and_then(Value::as_u64)
+            .map(|v| format!("v{v}"))
+            .unwrap_or_else(|| "<none>".into());
+        println!(
+            "  {}  latest={}  created_at={}",
+            value_str(server, "server_id").unwrap_or("<server>"),
+            latest,
+            value_str(server, "created_at").unwrap_or("<unknown>"),
+        );
+    }
+    Ok(())
+}
+
 pub fn enable(
     server_id: &str,
     config: Option<&str>,
