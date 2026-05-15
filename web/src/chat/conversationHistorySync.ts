@@ -139,22 +139,20 @@ export function applyConversationHistoryIngress(
   }
 
   // Delta: never treat partial `items` as a full transcript for lag detection (snapshot-only heuristic).
-  if (kind === "delta") {
-    if (liveAgentBubbleBlocksHistoryReplace(msgs)) {
-      deps.extendLlmFromPage(page);
-      // Observe pane updates from `extendLlmFromPage` + trace refresh; merge structural rows only
-      // so Primary tool/session_step traces keep pace without double-applying assistant prose.
-      applyConversationHistoryDelta(deps.messages, page, "structural_only");
-      deps.setHistoryVersion(page.version);
-      deps.setSelectedContextId(page.contextId);
-      deps.setHydrateState("ready");
-      return { kind: "applied_delta" };
-    }
-    applyConversationHistoryDelta(deps.messages, page);
+  if (liveAgentBubbleBlocksHistoryReplace(msgs)) {
     deps.extendLlmFromPage(page);
+    // Observe pane updates from `extendLlmFromPage` + trace refresh; merge structural rows only
+    // so Primary tool/session_step traces keep pace without double-applying assistant prose.
+    applyConversationHistoryDelta(deps.messages, page, "structural_only");
     deps.setHistoryVersion(page.version);
     deps.setSelectedContextId(page.contextId);
     deps.setHydrateState("ready");
     return { kind: "applied_delta" };
   }
+  applyConversationHistoryDelta(deps.messages, page);
+  deps.extendLlmFromPage(page);
+  deps.setHistoryVersion(page.version);
+  deps.setSelectedContextId(page.contextId);
+  deps.setHydrateState("ready");
+  return { kind: "applied_delta" };
 }
