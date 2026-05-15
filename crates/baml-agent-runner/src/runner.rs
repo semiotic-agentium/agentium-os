@@ -74,6 +74,12 @@ fn parse_repository_entry_version(value: &serde_json::Value) -> Option<u32> {
     None
 }
 
+fn blocking_join_error(operation: &str, err: tokio::task::JoinError) -> BamlRtError {
+    BamlRtError::Io(std::io::Error::other(format!(
+        "{operation} blocking task failed: {err}"
+    )))
+}
+
 pub(crate) struct AgentRunnerConfig {
     pub(crate) provenance_config: ProvenanceConfig,
     pub(crate) deployment_state: Arc<crate::deployment_state::DeploymentStateStore>,
@@ -371,18 +377,25 @@ impl AgentRunner {
 
     pub(crate) async fn boot_from_blob_bytes(
         &self,
-        bytes: &[u8],
+        bytes: Arc<[u8]>,
         content_hash: &DeploymentContentHash,
         repository_version: u32,
     ) -> Result<(String, AgentRouteKey, BootedAgent)> {
-        let mut package_file = tempfile::Builder::new()
-            .prefix("baml-deploy-")
-            .suffix(".tar.gz")
-            .tempfile()
-            .map_err(BamlRtError::Io)?;
-        use std::io::Write as _;
-        package_file.write_all(bytes).map_err(BamlRtError::Io)?;
-        package_file.flush().map_err(BamlRtError::Io)?;
+        let package_file = tokio::task::spawn_blocking(move || {
+            let mut package_file = tempfile::Builder::new()
+                .prefix("baml-deploy-")
+                .suffix(".tar.gz")
+                .tempfile()
+                .map_err(BamlRtError::Io)?;
+            use std::io::Write as _;
+            package_file
+                .write_all(bytes.as_ref())
+                .map_err(BamlRtError::Io)?;
+            package_file.flush().map_err(BamlRtError::Io)?;
+            Ok::<_, BamlRtError>(package_file)
+        })
+        .await
+        .map_err(|e| blocking_join_error("write agent package temp file", e))??;
 
         let package = AgentPackage::load_from_file(package_file.path()).await?;
         let name = package.name().to_string();
@@ -842,10 +855,20 @@ impl DeploymentManager for AgentRunner {
             }
         };
 
-        let bytes = self.fetch_blob_from_repository(content_hash).await?;
-        AgentRunner::verify_artifact_integrity(content_hash, &bytes, repository_version)?;
+        let bytes: Arc<[u8]> = Arc::from(
+            self.fetch_blob_from_repository(content_hash)
+                .await?
+                .into_boxed_slice(),
+        );
+        AgentRunner::verify_artifact_integrity(content_hash, bytes.as_ref(), repository_version)?;
 
-        let package_name = manifest_package_name_from_tar_gz(&bytes).map_err(|e| {
+        let manifest_bytes = Arc::clone(&bytes);
+        let package_name = tokio::task::spawn_blocking(move || {
+            manifest_package_name_from_tar_gz(manifest_bytes.as_ref())
+        })
+        .await
+        .map_err(|e| blocking_join_error("read agent package manifest", e))?
+        .map_err(|e| {
             BamlRtError::InvalidArgument(format!(
                 "Failed to read agent package manifest from artifact: {e}"
             ))
@@ -880,7 +903,7 @@ impl DeploymentManager for AgentRunner {
         }
 
         let (name, route_key, booted) = self
-            .boot_from_blob_bytes(&bytes, content_hash, repository_version)
+            .boot_from_blob_bytes(bytes, content_hash, repository_version)
             .await?;
 
         {

@@ -24,17 +24,31 @@ pub async fn publish_with_build(
         .map_err(HttpApiProblem::from)?;
 
     let source_versioned = cmd.source.with_manifest_version(next_version);
-    let built = build_artifact(&source_versioned).await.map_err(|e| {
-        HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR)
-            .title("Artifact build failed")
-            .detail(e.to_string())
-    })?;
+    let built: Arc<[u8]> = Arc::from(
+        build_artifact(source_versioned)
+            .await
+            .map_err(|e| {
+                HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR)
+                    .title("Artifact build failed")
+                    .detail(e.to_string())
+            })?
+            .into_boxed_slice(),
+    );
 
-    let (_, extracted) = source_bundle_from_tar_gz(&built).map_err(|e| {
-        HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR)
-            .title("Built artifact did not parse as a source bundle")
-            .detail(e.to_string())
-    })?;
+    let parse_bytes = Arc::clone(&built);
+    let (_, extracted) =
+        tokio::task::spawn_blocking(move || source_bundle_from_tar_gz(parse_bytes.as_ref()))
+            .await
+            .map_err(|e| {
+                HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR)
+                    .title("Artifact parse task failed")
+                    .detail(e.to_string())
+            })?
+            .map_err(|e| {
+                HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR)
+                    .title("Built artifact did not parse as a source bundle")
+                    .detail(e.to_string())
+            })?;
 
     let expected = extracted.with_manifest_version(next_version).compute_hash();
 
@@ -57,14 +71,21 @@ pub async fn publish_with_build(
         );
     }
 
-    svc.put_built_blob(&result.hash, &built)
+    svc.put_built_blob(&result.hash, built.as_ref())
         .await
         .map_err(HttpApiProblem::from)?;
 
     Ok(Json(result))
 }
 
-async fn build_artifact(source: &SourceBundle) -> anyhow::Result<Vec<u8>> {
+async fn build_artifact(source: SourceBundle) -> anyhow::Result<Vec<u8>> {
+    let handle = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || handle.block_on(build_artifact_inner(&source)))
+        .await
+        .map_err(|e| anyhow::anyhow!("artifact build task failed: {e}"))?
+}
+
+async fn build_artifact_inner(source: &SourceBundle) -> anyhow::Result<Vec<u8>> {
     let workspace = unique_temp_dir("baml-repository-publish");
     fs::create_dir_all(&workspace)?;
 

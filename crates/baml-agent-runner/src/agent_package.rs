@@ -284,31 +284,34 @@ impl AgentPackage {
 
     async fn initialize_js_phase(&self, built: JsInitialized) -> Result<JsInitialized> {
         let entry_point_path = self.extract_dir.join(&self.manifest.entry_point);
-        if entry_point_path.exists() {
-            let agent_code = std::fs::read_to_string(&entry_point_path).map_err(BamlRtError::Io)?;
-            info!(
-                entry_point = self.manifest.entry_point,
-                "Loading agent JavaScript code"
-            );
-            async {
-                let bridge = built.agent.bridge();
-                let mut bridge_guard = bridge.lock().await;
-                match bridge_guard.eval_sync(&agent_code).await {
-                    Ok(_) => info!("Agent code executed successfully"),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Agent code execution returned an error (may be expected)");
-                    }
+        let agent_code = match tokio::fs::read_to_string(&entry_point_path).await {
+            Ok(agent_code) => agent_code,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                info!(
+                    entry_point = self.manifest.entry_point,
+                    "Agent entry point not found, skipping JavaScript initialization"
+                );
+                return Ok(built);
+            }
+            Err(e) => return Err(BamlRtError::Io(e)),
+        };
+        info!(
+            entry_point = self.manifest.entry_point,
+            "Loading agent JavaScript code"
+        );
+        async {
+            let bridge = built.agent.bridge();
+            let mut bridge_guard = bridge.lock().await;
+            match bridge_guard.eval_sync(&agent_code).await {
+                Ok(_) => info!("Agent code executed successfully"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "Agent code execution returned an error (may be expected)");
                 }
             }
-            .instrument(spans::evaluate_agent_code(&self.manifest.entry_point))
-            .await;
-            info!("Agent JavaScript code loaded and initialized");
-        } else {
-            info!(
-                entry_point = self.manifest.entry_point,
-                "Agent entry point not found, skipping JavaScript initialization"
-            );
         }
+        .instrument(spans::evaluate_agent_code(&self.manifest.entry_point))
+        .await;
+        info!("Agent JavaScript code loaded and initialized");
         Ok(built)
     }
 
