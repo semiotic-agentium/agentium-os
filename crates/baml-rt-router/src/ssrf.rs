@@ -163,6 +163,49 @@ pub fn origin_url(url: &url::Url) -> String {
     )
 }
 
+/// Build a reqwest client and the resolved URL for an outbound cluster-peer
+/// call. Centralizes SSRF validation, IPv6/IPv4/domain host extraction, URL
+/// path rewriting (any attacker-controlled path/query/fragment is stripped),
+/// and DNS-pinning (`resolve_to_addrs`) so security-sensitive plumbing lives
+/// in one place rather than three near-identical copies across handlers,
+/// agent fan-out, and deploy fan-out.
+///
+/// `path_segment` is appended as a single segment (percent-encoded) under
+/// the validated origin, e.g. `path_segment = "agents"` yields
+/// `https://host:port/agents`.
+///
+/// Returned `(client, url)` is ready for `.get(url)` / `.post(url).json(...)`;
+/// callers add any per-route headers (e.g. `X-Runner-Token`) and bodies.
+pub async fn build_validated_peer_client(
+    endpoint: &str,
+    path_segment: &str,
+    timeout: std::time::Duration,
+) -> Result<(reqwest::Client, url::Url), String> {
+    let (validated, resolved_addrs) = resolve_and_validate_cluster_endpoint(endpoint).await?;
+    let host = match validated.host() {
+        Some(url::Host::Domain(d)) => d.to_string(),
+        Some(url::Host::Ipv4(ip)) => ip.to_string(),
+        Some(url::Host::Ipv6(ip)) => ip.to_string(),
+        None => return Err("endpoint has no host".to_string()),
+    };
+    let mut target_url = validated;
+    target_url.set_query(None);
+    target_url.set_fragment(None);
+    target_url
+        .path_segments_mut()
+        .map_err(|()| "endpoint URL is not a base".to_string())?
+        .clear()
+        .push(path_segment);
+    let client = reqwest::Client::builder()
+        .connect_timeout(timeout)
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve_to_addrs(&host, &resolved_addrs)
+        .build()
+        .map_err(|e| format!("client build: {e}"))?;
+    Ok((client, target_url))
+}
+
 /// Truncate a string to at most `max_bytes` bytes (on a char boundary).
 pub fn truncate_body(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {

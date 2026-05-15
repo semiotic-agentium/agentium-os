@@ -71,7 +71,7 @@ type HttpResult<T> = Result<T, HttpApiProblem>;
 /// is dropped. If the request handler future is cancelled (client disconnect),
 /// the deploy continues to completion — the durable preference for partial-
 /// state-bad operations like deploy.
-async fn run_off_worker<C, F, T>(builder: C) -> HttpResult<T>
+pub(crate) async fn run_off_worker<C, F, T>(builder: C) -> HttpResult<T>
 where
     C: FnOnce() -> F + Send + 'static,
     F: std::future::Future<Output = T>,

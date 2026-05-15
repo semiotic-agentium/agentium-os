@@ -162,6 +162,13 @@ pub async fn post_cluster_deploy(
 /// deterministic peer-call stub without spinning up real HTTP servers.
 pub(crate) type DeployOutcome = Result<bool, String>;
 
+/// Boxed pinned future that yields `(runner, outcome)` once the per-runner
+/// deploy completes. Used so the local short-circuit and the remote
+/// fan-out paths share one `FuturesUnordered` queue and therefore poll
+/// concurrently instead of serializing.
+type DeployFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = (ClusterRunnerInfo, DeployOutcome)> + Send>>;
+
 /// Build the response by dispatching one deploy per runner: local through
 /// the in-process [`DeploymentManager`], remote via HTTP `POST /deploy`.
 async fn fan_out_deploy(
@@ -172,32 +179,32 @@ async fn fan_out_deploy(
     hash: &str,
     content_hash: &DeploymentContentHash,
 ) -> ClusterDeployResponseDto {
-    let (local_runners, remote_runners): (Vec<_>, Vec<_>) = runners
-        .iter()
-        .cloned()
-        .partition(|r| r.runner_id == local_runner_id);
-    let local_runner = local_runners.into_iter().next();
-
-    let mut in_flight = FuturesUnordered::new();
-    for runner in remote_runners {
-        let url = runner.endpoint.clone();
-        let token = runner_token.map(str::to_string);
-        let hash_for_peer = hash.to_string();
-        in_flight.push(async move {
-            let outcome = deploy_remote(&url, token.as_deref(), &hash_for_peer, &runner).await;
-            (runner, outcome)
-        });
+    // Push every runner's deploy — local and remote — into the same
+    // FuturesUnordered so the self-deploy runs concurrently with the
+    // remote fan-out. Earlier shape awaited the local deploy serially
+    // before draining the remote queue, which doubled wall time for
+    // operators on a real cluster.
+    let mut in_flight: FuturesUnordered<DeployFuture> = FuturesUnordered::new();
+    for runner in runners.iter().cloned() {
+        if runner.runner_id == local_runner_id {
+            let state = Arc::clone(state);
+            let content_hash = content_hash.clone();
+            in_flight.push(Box::pin(async move {
+                let outcome = deploy_local(&state, &content_hash, &runner).await;
+                (runner, outcome)
+            }));
+        } else {
+            let url = runner.endpoint.clone();
+            let token = runner_token.map(str::to_string);
+            let hash_for_peer = hash.to_string();
+            in_flight.push(Box::pin(async move {
+                let outcome = deploy_remote(&url, token.as_deref(), &hash_for_peer, &runner).await;
+                (runner, outcome)
+            }));
+        }
     }
 
-    let local_pair = match local_runner {
-        Some(runner) => {
-            let outcome = deploy_local(state, content_hash, &runner).await;
-            Some((runner, outcome))
-        }
-        None => None,
-    };
-
-    let mut results = build_results(local_pair);
+    let mut results: Vec<ClusterDeployRunnerResultDto> = Vec::with_capacity(runners.len());
     while let Some((runner, outcome)) = in_flight.next().await {
         results.push(result_from_outcome(runner, outcome));
     }
@@ -207,15 +214,6 @@ async fn fan_out_deploy(
         hash: hash.to_string(),
         runners: results,
         all_succeeded,
-    }
-}
-
-fn build_results(
-    local_pair: Option<(ClusterRunnerInfo, DeployOutcome)>,
-) -> Vec<ClusterDeployRunnerResultDto> {
-    match local_pair {
-        Some((runner, outcome)) => vec![result_from_outcome(runner, outcome)],
-        None => Vec::new(),
     }
 }
 
@@ -266,20 +264,34 @@ async fn deploy_local(
         destination = "local",
     );
     let deploy_hash = content_hash.clone();
-    async move {
-        let handle = tokio::runtime::Handle::current();
-        let join = tokio::task::spawn_blocking(move || {
-            handle.block_on(async move { manager.deploy_by_hash(&deploy_hash).await })
-        })
-        .await;
-        match join {
-            Ok(Ok(result)) => Ok(result.already_deployed),
-            Ok(Err(e)) => Err(format!("local deploy: {e}")),
-            Err(e) => Err(format!("local deploy task failed: {e}")),
-        }
+    let started = Instant::now();
+    let join = async move {
+        // Reuse `handlers::run_off_worker` so the "deploy boot is `!Send`,
+        // run on a blocking thread" invariant lives in one place. The
+        // worker future returns Result<DeployResult, BamlRtError>; we
+        // flatten that plus the JoinError into the local `DeployOutcome`
+        // string-error shape.
+        handlers::run_off_worker(move || async move { manager.deploy_by_hash(&deploy_hash).await })
+            .await
     }
     .instrument(span)
-    .await
+    .await;
+    let elapsed = started.elapsed();
+    let outcome = match join {
+        Ok(Ok(result)) => Ok(result.already_deployed),
+        Ok(Err(e)) => Err(format!("local deploy: {e}")),
+        Err(problem) => Err(format!(
+            "local deploy task failed: {detail}",
+            detail = problem.detail.unwrap_or_default(),
+        )),
+    };
+    let label = match &outcome {
+        Ok(true) => "already_deployed",
+        Ok(false) => "deployed",
+        Err(_) => "failed",
+    };
+    metrics::record_request("cluster_deploy_runner", label, elapsed);
+    outcome
 }
 
 async fn deploy_remote(
@@ -295,13 +307,14 @@ async fn deploy_remote(
         destination_endpoint = %endpoint,
     );
     async move {
+        let started = Instant::now();
         let outcome = deploy_remote_inner(endpoint, token, hash).await;
         let label = match &outcome {
             Ok(true) => "already_deployed",
             Ok(false) => "deployed",
             Err(_) => "failed",
         };
-        metrics::record_request("cluster_deploy_runner", label, std::time::Duration::ZERO);
+        metrics::record_request("cluster_deploy_runner", label, started.elapsed());
         outcome
     }
     .instrument(span)
@@ -309,39 +322,10 @@ async fn deploy_remote(
 }
 
 async fn deploy_remote_inner(endpoint: &str, token: Option<&str>, hash: &str) -> DeployOutcome {
-    let (validated_url, resolved_addrs) =
-        match baml_rt_router::ssrf::resolve_and_validate_cluster_endpoint(endpoint).await {
-            Ok(pair) => pair,
-            Err(e) => return Err(format!("endpoint validation: {e}")),
-        };
-    let host = match validated_url.host() {
-        Some(url::Host::Domain(d)) => d.to_string(),
-        Some(url::Host::Ipv4(ip)) => ip.to_string(),
-        Some(url::Host::Ipv6(ip)) => ip.to_string(),
-        None => return Err("endpoint has no host".to_string()),
-    };
-    let mut deploy_url = validated_url.clone();
-    deploy_url.set_query(None);
-    deploy_url.set_fragment(None);
-    if deploy_url.path_segments_mut().is_err() {
-        return Err("endpoint URL is not a base".to_string());
-    }
-    deploy_url
-        .path_segments_mut()
-        .expect("path_segments_mut succeeded above")
-        .clear()
-        .push("deploy");
-
-    let client = match reqwest::Client::builder()
-        .connect_timeout(PEER_DEPLOY_TIMEOUT)
-        .timeout(PEER_DEPLOY_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .resolve_to_addrs(&host, &resolved_addrs)
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => return Err(format!("client build: {e}")),
-    };
+    let (client, deploy_url) =
+        baml_rt_router::ssrf::build_validated_peer_client(endpoint, "deploy", PEER_DEPLOY_TIMEOUT)
+            .await
+            .map_err(|e| format!("peer client setup: {e}"))?;
 
     let mut req = client.post(deploy_url.as_str()).json(&serde_json::json!({
         "hash": hash,
@@ -356,7 +340,10 @@ async fn deploy_remote_inner(endpoint: &str, token: Option<&str>, hash: &str) ->
     };
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|e| format!("<body read error: {e}>"));
         let body = baml_rt_router::ssrf::truncate_body(&body, 512);
         return Err(format!("status {status}: {body}"));
     }
