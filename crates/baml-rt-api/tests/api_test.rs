@@ -2317,6 +2317,46 @@ async fn get_mermaid_context_emits_http_and_handler_spans() {
 
 // ── Auth boundary tests ──────────────────────────────────────────────
 
+/// Stub `ClusterDirectoryService` used by auth-tier boundary tests, which
+/// need to construct a `ClusterTopology::Cluster` to verify the auth gate
+/// but do not exercise `/cluster/agents` itself.
+struct StubClusterDirectory;
+
+#[async_trait]
+impl baml_rt_api::ClusterDirectoryService for StubClusterDirectory {
+    fn local_runner_id(&self) -> &str {
+        ""
+    }
+
+    async fn list_runners(
+        &self,
+    ) -> std::result::Result<Vec<baml_rt_api::ClusterRunnerInfo>, baml_rt_api::ClusterDirectoryError>
+    {
+        Ok(Vec::new())
+    }
+
+    async fn list_placements(
+        &self,
+    ) -> std::result::Result<
+        Vec<baml_rt_api::ClusterPlacementInfo>,
+        baml_rt_api::ClusterDirectoryError,
+    > {
+        Ok(Vec::new())
+    }
+}
+
+/// Project a `ClusterMode` knob (the only auth-relevant axis) into a
+/// `ClusterTopology` with stubs in cluster mode.
+fn cluster_topology_for_test(mode: ClusterMode) -> baml_rt_api::ClusterTopology {
+    match mode {
+        ClusterMode::Standalone => baml_rt_api::ClusterTopology::Standalone,
+        ClusterMode::Cluster => baml_rt_api::ClusterTopology::Cluster {
+            directory: Arc::new(StubClusterDirectory),
+            heartbeat: baml_rt_api::ClusterHeartbeatHealth::new(std::time::Duration::from_secs(5)),
+        },
+    }
+}
+
 /// Build a router with explicit auth configuration for boundary tests.
 async fn authed_test_router(token: Option<&str>, mode: ClusterMode) -> axum::Router {
     let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
@@ -2324,7 +2364,7 @@ async fn authed_test_router(token: Option<&str>, mode: ClusterMode) -> axum::Rou
         registry,
         ApiServerConfig {
             runner_token: token.map(String::from),
-            cluster_mode: mode,
+            cluster: cluster_topology_for_test(mode),
             ..test_api_server_config().await
         },
     )
@@ -2566,7 +2606,7 @@ async fn authed_test_router_with_repo(token: Option<&str>, mode: ClusterMode) ->
         ApiServerConfig {
             repository_service: Some(repo_service),
             runner_token: token.map(String::from),
-            cluster_mode: mode,
+            cluster: cluster_topology_for_test(mode),
             ..test_api_server_config().await
         },
     )

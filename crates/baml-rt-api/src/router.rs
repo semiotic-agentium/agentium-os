@@ -40,8 +40,55 @@ use utoipa_axum::router::OpenApiRouter;
 use crate::{
     ClusterHeartbeatHealth, ContextIndexService, ContextMetricsService, ConversationHistoryService,
     EpisodeService, HeartbeatStatus, MermaidService, PlanningService, ProvenanceOpsService,
-    RuntimeProgressMeter, config_handlers, handlers, metrics, otel_middleware, repository_publish,
+    RuntimeProgressMeter, cluster_agents, cluster_agents::ClusterDirectoryService, config_handlers,
+    handlers, metrics, otel_middleware, repository_publish,
 };
+
+/// Cluster-mode topology: either standalone (single runner, no peer awareness)
+/// or a cluster of runners sharing a SurrealDB registry, in which case both
+/// the directory (peer enumeration for `/cluster/agents`) and the heartbeat
+/// monitor (surfaced via `/diagnose`) must be wired together.
+///
+/// Pairing them in a single enum makes the invariant "cluster mode iff both
+/// dependencies present" impossible to violate in code. Match on this once
+/// at the handler boundary instead of separately probing two `Option`s and
+/// a flag, which would let a future caller wire one without the other.
+#[derive(Clone)]
+pub enum ClusterTopology {
+    Standalone,
+    Cluster {
+        directory: Arc<dyn ClusterDirectoryService>,
+        heartbeat: Arc<ClusterHeartbeatHealth>,
+    },
+}
+
+impl ClusterTopology {
+    /// Project to the `ClusterMode` the existing `ClusterAuthLayer` consumes.
+    /// The auth layer only needs to know cluster-vs-standalone, not the
+    /// directory/heartbeat handles — keep its API shape stable.
+    pub fn mode(&self) -> ClusterMode {
+        match self {
+            Self::Standalone => ClusterMode::Standalone,
+            Self::Cluster { .. } => ClusterMode::Cluster,
+        }
+    }
+
+    /// Borrow the directory + heartbeat when in cluster mode.
+    pub fn cluster_handles(
+        &self,
+    ) -> Option<(
+        &Arc<dyn ClusterDirectoryService>,
+        &Arc<ClusterHeartbeatHealth>,
+    )> {
+        match self {
+            Self::Standalone => None,
+            Self::Cluster {
+                directory,
+                heartbeat,
+            } => Some((directory, heartbeat)),
+        }
+    }
+}
 
 /// Shared state for API handlers: registry, OpenAPI spec, and **injected** config/catalog/resolver.
 #[derive(Clone)]
@@ -68,14 +115,15 @@ pub struct ApiState {
     pub ready: Arc<AtomicBool>,
     /// Shared secret for authenticating control-plane requests (e.g. `/control/migrate`).
     pub runner_token: Option<String>,
-    /// Deployment topology: standalone (single runner) or cluster (shared SurrealDB).
-    /// Controls whether control endpoints require a configured runner token.
-    pub cluster_mode: ClusterMode,
+    /// Deployment topology. `Cluster` pairs the directory used by
+    /// `GET /cluster/agents` with the heartbeat monitor surfaced by
+    /// `GET /diagnose`; `Standalone` has neither. The enum prevents the
+    /// "cluster mode but missing directory" invariant violation that
+    /// flat option fields used to allow.
+    pub cluster: ClusterTopology,
     /// Continuously observable signal of tokio-runtime progress; surfaced by `GET /diagnose`.
     /// Distinct from [`ApiState::ready`], which is a one-shot boot latch.
     pub runtime_progress: Arc<RuntimeProgressMeter>,
-    /// `None` in standalone mode (no heartbeat task).
-    pub cluster_heartbeat: Option<Arc<ClusterHeartbeatHealth>>,
 }
 
 async fn serve_openapi_json(
@@ -149,14 +197,15 @@ async fn diagnose(
     axum::extract::State(state): axum::extract::State<Arc<ApiState>>,
 ) -> axum::Json<DiagnoseResponse> {
     let start = Instant::now();
-    let cluster_heartbeat = state
-        .cluster_heartbeat
-        .as_ref()
-        .map(|h| ClusterHeartbeatDiagnose {
-            status: h.status(),
-            lag_ms: h.lag_millis(),
-            last_error_kind: h.last_error_kind().map(|k| k.as_code()),
-        });
+    let cluster_heartbeat =
+        state
+            .cluster
+            .cluster_handles()
+            .map(|(_, h)| ClusterHeartbeatDiagnose {
+                status: h.status(),
+                lag_ms: h.lag_millis(),
+                last_error_kind: h.last_error_kind().map(|k| k.as_code()),
+            });
     let body = DiagnoseResponse {
         runtime_progress_lag_ms: state.runtime_progress.lag_millis(),
         event_producers_loaded: state.ready.load(Ordering::Acquire),
@@ -230,9 +279,8 @@ pub struct ApiServerConfig {
     pub runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
     pub ready: Arc<AtomicBool>,
     pub runner_token: Option<String>,
-    pub cluster_mode: ClusterMode,
+    pub cluster: ClusterTopology,
     pub runtime_progress: Arc<RuntimeProgressMeter>,
-    pub cluster_heartbeat: Option<Arc<ClusterHeartbeatHealth>>,
     pub web_dir: Option<std::path::PathBuf>,
 }
 
@@ -264,9 +312,8 @@ impl ApiServerConfig {
             runtime_secret_store: None,
             ready: Arc::new(AtomicBool::new(true)),
             runner_token: None,
-            cluster_mode: ClusterMode::Standalone,
+            cluster: ClusterTopology::Standalone,
             runtime_progress,
-            cluster_heartbeat: None,
             web_dir: None,
         }
     }
@@ -328,11 +375,11 @@ pub fn api_router_with_services_and_deploy(
         runtime_secret_store,
         ready,
         runner_token,
-        cluster_mode,
+        cluster,
         runtime_progress,
-        cluster_heartbeat,
         web_dir,
     } = config;
+
     let http_trace_layer =
         TraceLayer::new_for_http().make_span_with(otel_middleware::http_request_span);
 
@@ -394,11 +441,12 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(handlers::post_undeploy))
         .routes(utoipa_axum::routes!(handlers::get_deployments))
         .routes(utoipa_axum::routes!(handlers::post_migrate))
+        .routes(utoipa_axum::routes!(cluster_agents::get_cluster_agents))
         .split_for_parts();
 
     let auth_layer = ClusterAuthLayer::new(ClusterAuthConfig {
         runner_token: runner_token.clone(),
-        cluster_mode,
+        cluster_mode: cluster.mode(),
     });
     // Use `route_layer` so the auth check only runs for operator routes and
     // does NOT cover the fallback 404 handler. With `layer` the merged router
@@ -458,6 +506,11 @@ pub fn api_router_with_services_and_deploy(
     let mut tag_control = utoipa::openapi::Tag::new("control");
     tag_control.description =
         Some("Operational control plane: agent migration between runners.".to_string());
+    let mut tag_cluster = utoipa::openapi::Tag::new("cluster");
+    tag_cluster.description = Some(
+        "Cluster-wide read views (e.g. /cluster/agents) that fan out across runner replicas."
+            .to_string(),
+    );
     let mut tags = vec![
         tag_agents,
         tag_mermaid,
@@ -465,6 +518,7 @@ pub fn api_router_with_services_and_deploy(
         tag_deployments,
         tag_config,
         tag_control,
+        tag_cluster,
     ];
     if has_repository {
         let mut tag_repository = utoipa::openapi::Tag::new("repository");
@@ -495,9 +549,8 @@ pub fn api_router_with_services_and_deploy(
         runtime_secret_store,
         ready,
         runner_token,
-        cluster_mode,
+        cluster,
         runtime_progress,
-        cluster_heartbeat,
     });
 
     let mut router = api_router

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AgentEventSubscriptionDto {
     // Keep these fields in sync with the system-tool `AgentEventSubscriptionDto`.
     // `/agents` uses snake_case because this HTTP API mirrors the core discovery JSON.
@@ -15,7 +15,7 @@ pub struct AgentEventSubscriptionDto {
 }
 
 /// Cut-down agent card (included in every GET /agents item).
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AgentCardDto {
     pub name: String,
     pub version: String,
@@ -38,7 +38,7 @@ pub struct AgentCardDto {
 }
 
 /// Discovery entry for one running agent (GET /agents response item).
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AgentDiscoveryEntryDto {
     pub agent_package: String,
     pub agent_instance_id: String,

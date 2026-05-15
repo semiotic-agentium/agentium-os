@@ -9,8 +9,8 @@ use axum::{
 };
 use baml_rt_a2a::AgentRegistry;
 use baml_rt_api::{
-    ApiServerConfig, ClusterHeartbeatHealth, ClusterMode, HeartbeatErrorKind,
-    READYZ_LAG_THRESHOLD_MS, RuntimeProgressMeter, api_router, api_router_with_services_and_deploy,
+    ApiServerConfig, ClusterHeartbeatHealth, HeartbeatErrorKind, READYZ_LAG_THRESHOLD_MS,
+    RuntimeProgressMeter, api_router, api_router_with_services_and_deploy,
 };
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentDiscoveryEntry, AgentDispatchAck, AgentDispatchRequest,
@@ -45,6 +45,31 @@ struct StubRegistry;
 impl AgentLister for StubRegistry {
     fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
         Vec::new()
+    }
+}
+
+struct StubClusterDirectory;
+
+#[async_trait]
+impl baml_rt_api::ClusterDirectoryService for StubClusterDirectory {
+    fn local_runner_id(&self) -> &str {
+        ""
+    }
+
+    async fn list_runners(
+        &self,
+    ) -> std::result::Result<Vec<baml_rt_api::ClusterRunnerInfo>, baml_rt_api::ClusterDirectoryError>
+    {
+        Ok(Vec::new())
+    }
+
+    async fn list_placements(
+        &self,
+    ) -> std::result::Result<
+        Vec<baml_rt_api::ClusterPlacementInfo>,
+        baml_rt_api::ClusterDirectoryError,
+    > {
+        Ok(Vec::new())
     }
 }
 
@@ -125,8 +150,10 @@ async fn base_router_config(meter: Arc<RuntimeProgressMeter>) -> ApiServerConfig
 async fn cluster_router_with_heartbeat(health: Arc<ClusterHeartbeatHealth>) -> axum::Router {
     let registry: Arc<dyn AgentRegistry> = Arc::new(StubRegistry);
     let config = ApiServerConfig {
-        cluster_mode: ClusterMode::Cluster,
-        cluster_heartbeat: Some(health),
+        cluster: baml_rt_api::ClusterTopology::Cluster {
+            directory: Arc::new(StubClusterDirectory),
+            heartbeat: health,
+        },
         ..base_router_config(RuntimeProgressMeter::spawn_in_current_runtime()).await
     };
     api_router_with_services_and_deploy(registry, config)

@@ -8,7 +8,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use baml_rt_api::ClusterHeartbeatHealth;
+use baml_rt_api::{
+    ClusterDirectoryError, ClusterDirectoryService, ClusterHeartbeatHealth, ClusterPlacementInfo,
+    ClusterRunnerInfo,
+};
 use baml_rt_core::{AgentRouteKey, BamlRtError, DeploymentContentHash, HeartbeatErrorKind};
 use baml_rt_observability::UNKNOWN_SERVICE_INSTANCE_ID;
 use surrealdb::{Surreal, engine::any::Any};
@@ -225,29 +228,9 @@ impl ClusterEndpointResolver for PlacementResolver {
                     "cluster runner identity lookup for {runner_id}: {e}"
                 )))
             })?;
-        // Rollout-safe degradation. Post-PR runners write `service_instance_id`
-        // directly. Pre-PR runners only wrote `pod_name`, so mid-rollout peers
-        // still resolve — the observability label is imprecise until the old
-        // runner restarts, but forwarding never fails purely because a peer
-        // hasn't been redeployed yet.
-        let field = |key: &str| -> Option<&str> {
-            runner_row
-                .as_ref()
-                .and_then(|v| v.get(key))
-                .and_then(|v| v.as_str())
-        };
-        let service_instance_id = match field("service_instance_id") {
-            Some(sid) => sid.to_string(),
-            None => {
-                let fallback = field("pod_name").unwrap_or(UNKNOWN_SERVICE_INSTANCE_ID);
-                tracing::warn!(
-                    runner_id = runner_id,
-                    fallback = fallback,
-                    "cluster_runners row missing service_instance_id; falling back \
-                     (likely a peer running a pre-rollout build — re-register on restart)"
-                );
-                fallback.to_string()
-            }
+        let service_instance_id = match runner_row.as_ref() {
+            Some(row) => parse_service_instance_id(row, runner_id),
+            None => UNKNOWN_SERVICE_INSTANCE_ID.to_string(),
         };
 
         Ok(Some(Placement {
@@ -473,6 +456,16 @@ impl ClusterManager {
         )
     }
 
+    /// Build a `ClusterDirectory` that exposes the registry as a
+    /// `ClusterDirectoryService` for `GET /cluster/agents`.
+    pub(crate) fn directory(&self) -> ClusterDirectory {
+        ClusterDirectory {
+            db: self.db.clone(),
+            local_runner_id: self.identity.runner_id.to_string(),
+            placement_ttl_ms: self.placement_ttl_ms,
+        }
+    }
+
     /// Spawn a background heartbeat task (5s interval) that records its
     /// success/failure state on the supplied [`ClusterHeartbeatHealth`] so
     /// `GET /diagnose` can surface degraded heartbeats to operators.
@@ -521,6 +514,132 @@ impl ClusterManager {
             }
         });
         (stop_tx, handle)
+    }
+}
+
+/// Placement status indicating the agent is currently hosted on a runner.
+/// Writers (`record_placement`, the resolver's lookup) still inline the
+/// literal because they predate this constant; reads filter on it so a
+/// future soft-delete flow (writing some non-`"active"` status) excludes
+/// those rows without changing the read path again.
+const PLACEMENT_STATUS_ACTIVE: &str = "active";
+
+/// Resolve a `service_instance_id` from a `cluster_runners` row with the
+/// rollout-safe fallback used by both the placement resolver and the
+/// cluster-directory read paths. Pre-PR runners may have only written
+/// `pod_name`; the warning fires while a mid-rollout peer is missing the
+/// canonical OTEL identity.
+fn parse_service_instance_id(row: &serde_json::Value, runner_id: &str) -> String {
+    let field = |key: &str| -> Option<&str> { row.get(key).and_then(|v| v.as_str()) };
+    if let Some(sid) = field("service_instance_id") {
+        return sid.to_string();
+    }
+    let fallback = field("pod_name").unwrap_or(UNKNOWN_SERVICE_INSTANCE_ID);
+    tracing::warn!(
+        runner_id = runner_id,
+        fallback = fallback,
+        "cluster_runners row missing service_instance_id; falling back \
+         (likely a peer running a pre-rollout build — re-register on restart)"
+    );
+    fallback.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Cluster directory (read-only view for /cluster/agents)
+// ---------------------------------------------------------------------------
+
+/// Read-only adapter that exposes `cluster_runners` and
+/// `cluster_agent_placements` as a [`ClusterDirectoryService`] so the API
+/// layer can render `GET /cluster/agents` without depending on the runner's
+/// SurrealDB types.
+pub(crate) struct ClusterDirectory {
+    db: Arc<Surreal<Any>>,
+    local_runner_id: String,
+    placement_ttl_ms: u64,
+}
+
+#[async_trait]
+impl ClusterDirectoryService for ClusterDirectory {
+    fn local_runner_id(&self) -> &str {
+        &self.local_runner_id
+    }
+
+    async fn list_runners(&self) -> Result<Vec<ClusterRunnerInfo>, ClusterDirectoryError> {
+        let ttl = self.placement_ttl_ms as i64;
+        let rows: Vec<serde_json::Value> = self
+            .db
+            .query(
+                "SELECT runner_id, endpoint, service_instance_id, pod_name, last_heartbeat_ms \
+                 FROM cluster_runners \
+                 WHERE last_heartbeat_ms > (time::millis(time::now()) - $ttl)",
+            )
+            .bind(("ttl", ttl))
+            .await
+            .and_then(|mut r| r.take(0))
+            .map_err(|e| ClusterDirectoryError(format!("query cluster_runners: {e}")))?;
+
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let runner_id = row.get("runner_id").and_then(|v| v.as_str())?.to_string();
+                let endpoint = row.get("endpoint").and_then(|v| v.as_str())?.to_string();
+                let service_instance_id = parse_service_instance_id(&row, &runner_id);
+                let last_heartbeat_ms = row.get("last_heartbeat_ms").and_then(|v| v.as_i64());
+                Some(ClusterRunnerInfo {
+                    runner_id,
+                    endpoint,
+                    service_instance_id,
+                    last_heartbeat_ms,
+                })
+            })
+            .collect())
+    }
+
+    async fn list_placements(&self) -> Result<Vec<ClusterPlacementInfo>, ClusterDirectoryError> {
+        let rows: Vec<serde_json::Value> = self
+            .db
+            .query(
+                "SELECT agent_package, agent_instance_id, runner_id, runner_endpoint, \
+                 content_hash, status, updated_at_ms \
+                 FROM cluster_agent_placements \
+                 WHERE status = $status",
+            )
+            .bind(("status", PLACEMENT_STATUS_ACTIVE.to_string()))
+            .await
+            .and_then(|mut r| r.take(0))
+            .map_err(|e| ClusterDirectoryError(format!("query cluster_agent_placements: {e}")))?;
+
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                Some(ClusterPlacementInfo {
+                    agent_package: row
+                        .get("agent_package")
+                        .and_then(|v| v.as_str())?
+                        .to_string(),
+                    agent_instance_id: row
+                        .get("agent_instance_id")
+                        .and_then(|v| v.as_str())?
+                        .to_string(),
+                    runner_id: row.get("runner_id").and_then(|v| v.as_str())?.to_string(),
+                    runner_endpoint: row
+                        .get("runner_endpoint")
+                        .and_then(|v| v.as_str())?
+                        .to_string(),
+                    content_hash: row
+                        .get("content_hash")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    status: row
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(PLACEMENT_STATUS_ACTIVE)
+                        .to_string(),
+                    updated_at_ms: row.get("updated_at_ms").and_then(|v| v.as_i64()),
+                })
+            })
+            .collect())
     }
 }
 

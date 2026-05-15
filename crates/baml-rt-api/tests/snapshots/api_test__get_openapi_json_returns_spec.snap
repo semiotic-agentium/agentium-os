@@ -1,5 +1,6 @@
 ---
 source: crates/baml-rt-api/tests/api_test.rs
+assertion_line: 1222
 expression: snapshot
 ---
 {
@@ -154,6 +155,42 @@ expression: snapshot
               "description": "Agent not found"
             }
           }
+        }
+      },
+      "/cluster/agents": {
+        "get": {
+          "tags": [
+            "cluster"
+          ],
+          "summary": "`GET /cluster/agents` — list every package known to the cluster.",
+          "description": "The response is the union of each runner's local `/agents` (for reachable\nrunners) plus the `cluster_agent_placements` table (as a fallback for\nunreachable ones). `version_skew` is set per row when more than one\ndistinct `content_hash` is observed across the runners hosting that\npackage+instance.\n\nOperator-authenticated in cluster mode: aggregating cluster topology\n(runner endpoints, service-instance ids, and per-runner content hashes)\nexposes operational layout beyond what the per-runner `/agents`\ndiscovery view reveals, so the route lives behind `X-Runner-Token` next\nto the deployment-lifecycle endpoints. Returns `404` in standalone mode\n(no cluster directory).",
+          "operationId": "get_cluster_agents",
+          "responses": {
+            "200": {
+              "description": "Cluster-wide agent view with version skew",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ClusterAgentsResponseDto"
+                  }
+                }
+              }
+            },
+            "401": {
+              "description": "Missing or invalid runner token (cluster mode)"
+            },
+            "404": {
+              "description": "Standalone mode — no cluster directory"
+            },
+            "500": {
+              "description": "Cluster directory backend failed"
+            }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
         }
       },
       "/config": {
@@ -1658,6 +1695,151 @@ expression: snapshot
             }
           }
         },
+        "ClusterAgentPlacementDto": {
+          "type": "object",
+          "description": "One placement of an agent on a specific runner.",
+          "required": [
+            "runner_id",
+            "service_instance_id",
+            "endpoint",
+            "source"
+          ],
+          "properties": {
+            "content_hash": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "`None` when the runner's agent card had no content hash. Such rows\nare excluded from the `version_skew` calculation so an unknown hash\nnever collapses with another unknown one and falsely reports parity."
+            },
+            "endpoint": {
+              "type": "string"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Display name from the runner's agent card; absent when only the\nplacement table reported this entry."
+            },
+            "runner_id": {
+              "type": "string"
+            },
+            "service_instance_id": {
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/components/schemas/PlacementSourceDto",
+              "description": "`\"runner\"` when the data came from a successful `/agents` fan-out;\n`\"placement\"` when only the placement table knew about it."
+            },
+            "updated_at_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "description": "When the placement row was last written. Set only for\n`source = \"placement\"` rows so operators can judge how stale the\nfallback is. Absent for `source = \"runner\"` rows (the runner's live\nresponse makes write-time meaningless)."
+            },
+            "version": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Display version from the runner's agent card; absent when only the\nplacement table reported this entry."
+            }
+          }
+        },
+        "ClusterAgentRowDto": {
+          "type": "object",
+          "description": "One row in the cluster-wide agent view, aggregated by package+instance.",
+          "required": [
+            "agent_package",
+            "agent_instance_id",
+            "version_skew",
+            "placements"
+          ],
+          "properties": {
+            "agent_instance_id": {
+              "type": "string"
+            },
+            "agent_package": {
+              "type": "string"
+            },
+            "placements": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ClusterAgentPlacementDto"
+              }
+            },
+            "version_skew": {
+              "type": "boolean",
+              "description": "`true` when the placements report more than one distinct `content_hash`."
+            }
+          }
+        },
+        "ClusterAgentsResponseDto": {
+          "type": "object",
+          "description": "Cluster-wide agent view (`GET /cluster/agents` response body).",
+          "required": [
+            "runners",
+            "agents"
+          ],
+          "properties": {
+            "agents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ClusterAgentRowDto"
+              },
+              "description": "One entry per `(agent_package, agent_instance_id)` observed in the\ncluster, with the per-runner placements that back it."
+            },
+            "runners": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ClusterRunnerStatusDto"
+              },
+              "description": "One entry per known runner, with reachability for this fan-out."
+            }
+          }
+        },
+        "ClusterRunnerStatusDto": {
+          "type": "object",
+          "description": "Status of a runner during this fan-out attempt.",
+          "required": [
+            "runner_id",
+            "service_instance_id",
+            "endpoint",
+            "reachable"
+          ],
+          "properties": {
+            "endpoint": {
+              "type": "string"
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Error detail when `reachable` is false."
+            },
+            "last_heartbeat_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            },
+            "reachable": {
+              "type": "boolean",
+              "description": "`true` if this runner's `/agents` fetch succeeded."
+            },
+            "runner_id": {
+              "type": "string"
+            },
+            "service_instance_id": {
+              "type": "string"
+            }
+          }
+        },
         "ConfigVersionDto": {
           "type": "object",
           "description": "Config at a specific version.",
@@ -2692,6 +2874,13 @@ expression: snapshot
             }
           }
         },
+        "PlacementSourceDto": {
+          "type": "string",
+          "enum": [
+            "runner",
+            "placement"
+          ]
+        },
         "PlanRevisionDto": {
           "type": "object",
           "description": "Plan revision for UI display.",
@@ -3251,6 +3440,10 @@ expression: snapshot
       {
         "name": "control",
         "description": "Operational control plane: agent migration between runners."
+      },
+      {
+        "name": "cluster",
+        "description": "Cluster-wide read views (e.g. /cluster/agents) that fan out across runner replicas."
       }
     ]
   }
