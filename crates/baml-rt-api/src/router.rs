@@ -40,8 +40,8 @@ use utoipa_axum::router::OpenApiRouter;
 use crate::{
     ClusterHeartbeatHealth, ContextIndexService, ContextMetricsService, ConversationHistoryService,
     EpisodeService, HeartbeatStatus, MermaidService, PlanningService, ProvenanceOpsService,
-    RuntimeProgressMeter, cluster_agents, cluster_agents::ClusterDirectoryService, config_handlers,
-    handlers, metrics, otel_middleware, repository_publish,
+    RuntimeProgressMeter, cluster_agents, cluster_agents::ClusterDirectoryService, cluster_deploy,
+    config_handlers, handlers, metrics, otel_middleware, repository_publish,
 };
 
 /// Cluster-mode topology: either standalone (single runner, no peer awareness)
@@ -442,6 +442,7 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(handlers::get_deployments))
         .routes(utoipa_axum::routes!(handlers::post_migrate))
         .routes(utoipa_axum::routes!(cluster_agents::get_cluster_agents))
+        .routes(utoipa_axum::routes!(cluster_deploy::post_cluster_deploy))
         .split_for_parts();
 
     let auth_layer = ClusterAuthLayer::new(ClusterAuthConfig {

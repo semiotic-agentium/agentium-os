@@ -5,6 +5,7 @@
 //! (A2A JSON-RPC forward). Delegates to an internal [`AgentRegistry`](baml_rt_a2a::AgentRegistry) implementation.
 
 pub mod cluster_agents;
+pub mod cluster_deploy;
 pub mod cluster_heartbeat;
 mod config_handlers;
 mod context_index;
@@ -30,6 +31,7 @@ pub use cluster_agents::{
     ClusterDirectoryService, ClusterPlacementInfo, ClusterRunnerInfo, ClusterRunnerStatusDto,
     PlacementSourceDto,
 };
+pub use cluster_deploy::{ClusterDeployResponseDto, ClusterDeployRunnerResultDto};
 pub use cluster_heartbeat::{ClusterHeartbeatHealth, HeartbeatStatus};
 pub use context_index::{
     ContextIndexCursorToken, ContextIndexError, ContextIndexQueryParams, ContextIndexRequest,

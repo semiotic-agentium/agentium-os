@@ -1,6 +1,6 @@
 ---
 source: crates/baml-rt-api/tests/api_test.rs
-assertion_line: 1222
+assertion_line: 1226
 expression: snapshot
 ---
 {
@@ -175,6 +175,55 @@ expression: snapshot
                   }
                 }
               }
+            },
+            "401": {
+              "description": "Missing or invalid runner token (cluster mode)"
+            },
+            "404": {
+              "description": "Standalone mode — no cluster directory"
+            },
+            "500": {
+              "description": "Cluster directory backend failed"
+            }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
+        }
+      },
+      "/cluster/deploy": {
+        "post": {
+          "tags": [
+            "cluster"
+          ],
+          "summary": "`POST /cluster/deploy` — fan out one deploy to every runner in the cluster.",
+          "description": "Resolves the request hash (or name/version → hash via the local\nrepository) once, then forwards the resolved hash to every runner\nknown to the [`ClusterDirectoryService`]. The local runner is served\nfrom the in-process [`DeploymentManager`] without a loopback HTTP\nround-trip. Peer runners get a `POST /deploy` request with the local\nrunner token forwarded — the cluster shares one token, so this is\nauthenticated cluster-internal traffic.\n\nPartial failures do not roll back: `POST /deploy` is idempotent, so\nan operator retrying after a transient peer failure converges. The\nresponse carries per-runner detail; clients should inspect\n`all_succeeded` plus the `runners` array rather than relying on a\nsingle status code.",
+          "operationId": "post_cluster_deploy",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeployRequestDto"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Per-runner deploy results (inspect all_succeeded)",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ClusterDeployResponseDto"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "Invalid request (missing hash or name+version, bad hash format)"
             },
             "401": {
               "description": "Missing or invalid runner token (cluster mode)"
@@ -1798,6 +1847,71 @@ expression: snapshot
                 "$ref": "#/components/schemas/ClusterRunnerStatusDto"
               },
               "description": "One entry per known runner, with reachability for this fan-out."
+            }
+          }
+        },
+        "ClusterDeployResponseDto": {
+          "type": "object",
+          "description": "Cluster-wide deploy result (`POST /cluster/deploy` response body).",
+          "required": [
+            "hash",
+            "runners",
+            "all_succeeded"
+          ],
+          "properties": {
+            "all_succeeded": {
+              "type": "boolean",
+              "description": "`true` when every runner reports success. False when any runner\nfailed — partial deploys do not roll back successes, since\n`POST /deploy` is idempotent on subsequent attempts."
+            },
+            "hash": {
+              "type": "string",
+              "description": "Resolved content hash that was fanned out to every runner."
+            },
+            "runners": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ClusterDeployRunnerResultDto"
+              },
+              "description": "One entry per runner the deploy was attempted on."
+            }
+          }
+        },
+        "ClusterDeployRunnerResultDto": {
+          "type": "object",
+          "description": "Per-runner deploy outcome.",
+          "required": [
+            "runner_id",
+            "service_instance_id",
+            "endpoint",
+            "ok"
+          ],
+          "properties": {
+            "already_deployed": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "`Some(true)` when the runner reported the hash was already deployed.\n`Some(false)` when the runner accepted a fresh deploy. `None` when\nthe runner failed (see [`Self::error`])."
+            },
+            "endpoint": {
+              "type": "string"
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Error detail when `ok` is false."
+            },
+            "ok": {
+              "type": "boolean",
+              "description": "`true` when the runner accepted (or already had) the deploy."
+            },
+            "runner_id": {
+              "type": "string"
+            },
+            "service_instance_id": {
+              "type": "string"
             }
           }
         },
