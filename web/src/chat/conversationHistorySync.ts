@@ -2,7 +2,7 @@
  * Single ingress policy for provenance-backed transcript rows (GET merged pages + SSE snapshot/delta).
  *
  * - **full**: HTTP paginated merge or SSE `snapshot` → [`applyConversationHistoryPage`].
- * - **delta**: SSE `delta` only → [`applyConversationHistoryDelta`] (incremental `items`; do not run lag heuristic meant for merged pages).
+ * - **delta**: SSE `delta` only → [`applyConversationHistoryDelta`] (incremental `items`; do not run lag heuristic meant for merged pages). While the tail agent is streaming, apply **structural** rows only (`tool_*`, `session_step`) so Primary matches Observe without double-applying assistant `message` text from provenance.
  *
  * **Modes**
  * - `explicit_restore`: context picker / URL restore — defer sets `skipped` + optional retry.
@@ -139,15 +139,22 @@ export function applyConversationHistoryIngress(
   }
 
   // Delta: never treat partial `items` as a full transcript for lag detection (snapshot-only heuristic).
-  if (liveAgentBubbleBlocksHistoryReplace(msgs)) {
+  if (kind === "delta") {
+    if (liveAgentBubbleBlocksHistoryReplace(msgs)) {
+      deps.extendLlmFromPage(page);
+      // Observe pane updates from `extendLlmFromPage` + trace refresh; merge structural rows only
+      // so Primary tool/session_step traces keep pace without double-applying assistant prose.
+      applyConversationHistoryDelta(deps.messages, page, "structural_only");
+      deps.setHistoryVersion(page.version);
+      deps.setSelectedContextId(page.contextId);
+      deps.setHydrateState("ready");
+      return { kind: "applied_delta" };
+    }
+    applyConversationHistoryDelta(deps.messages, page);
     deps.extendLlmFromPage(page);
-    applyDeferSideEffects(deps, mode, allowRetry && mode !== "evented");
-    return { kind: "deferred", reason: "streaming_or_input_required" };
+    deps.setHistoryVersion(page.version);
+    deps.setSelectedContextId(page.contextId);
+    deps.setHydrateState("ready");
+    return { kind: "applied_delta" };
   }
-  applyConversationHistoryDelta(deps.messages, page);
-  deps.extendLlmFromPage(page);
-  deps.setHistoryVersion(page.version);
-  deps.setSelectedContextId(page.contextId);
-  deps.setHydrateState("ready");
-  return { kind: "applied_delta" };
 }

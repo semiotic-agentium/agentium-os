@@ -328,9 +328,18 @@ export function applyConversationHistoryPage(
   syncResumeHintsFromPage(messages, page);
 }
 
+/**
+ * - **`full`**: apply every delta row (default).
+ * - **`structural_only`**: while the tail agent row is streaming, merge only `tool_*` and
+ *   `session_step` rows from provenance — skip user rows and assistant `message` text so POST /a2a
+ *   stream text remains authoritative. Keeps Primary tool/session traces aligned with Observe.
+ */
+export type ConversationHistoryDeltaApplyMode = "full" | "structural_only";
+
 export function applyConversationHistoryDelta(
   messages: Ref<ChatMessage[]>,
   page: ConversationHistoryPage,
+  applyMode: ConversationHistoryDeltaApplyMode = "full",
 ): void {
   if (Array.isArray(page.items) && page.items.length > 0) {
     const sorted = [...page.items].sort((a, b) => a.timestampMs - b.timestampMs);
@@ -339,6 +348,9 @@ export function applyConversationHistoryDelta(
       const ts = new Date(normalizeEpochMs(item.timestampMs));
       const content = item.content;
       if (isUser) {
+        if (applyMode === "structural_only") {
+          continue;
+        }
         const text = content.type === "message" ? content.text : "";
         const sk = inferUserSpeakerKind(item);
         messages.value.push({
@@ -352,6 +364,10 @@ export function applyConversationHistoryDelta(
       }
 
       if (content.type === "message" && isWorkflowStatusText(content.text ?? "")) {
+        continue;
+      }
+
+      if (applyMode === "structural_only" && content.type === "message") {
         continue;
       }
 

@@ -219,7 +219,7 @@ describe("applyConversationHistoryIngress", () => {
     expect(deps.extendLlmFromPage).toHaveBeenCalledWith(page);
   });
 
-  it("delta defers when agent is streaming", () => {
+  it("delta merges structural rows while agent is streaming (Primary tracks Observe)", () => {
     const agent: ChatMessage = {
       id: "live",
       role: "agent",
@@ -228,17 +228,33 @@ describe("applyConversationHistoryIngress", () => {
       isStreaming: true,
       contentBlocks: [],
     };
-    const { deps, hydrateStates, scheduledRetries } = makeDeps([agent]);
-    const page = basePage("v-d2", [messageItem("user", "u", "u2")]);
+    const { deps, hydrateStates } = makeDeps([agent]);
+    const page = basePage("v-d2-stream", [
+      messageItem("user", "should-skip-in-structural", "u2", 2),
+      {
+        timestampMs: 3,
+        activityAnchor: "tc1",
+        role: "assistant",
+        content: {
+          type: "tool_call",
+          tool_name: "support/notion",
+          args: { x: 1 },
+          fsm_phase: "active",
+        },
+      },
+    ]);
     const effect = applyConversationHistoryIngress(deps, {
       kind: "delta",
       mode: "evented",
       page,
     });
-    expect(effect).toEqual({ kind: "deferred", reason: "streaming_or_input_required" });
+    expect(effect).toEqual({ kind: "applied_delta" });
     expect(deps.extendLlmFromPage).toHaveBeenCalledWith(page);
-    expect(hydrateStates).not.toContain("skipped");
-    expect(scheduledRetries.length).toBe(0);
+    expect(deps.messages.value).toHaveLength(1);
+    const last = deps.messages.value[0]!;
+    expect(last.role).toBe("agent");
+    expect(last.contentBlocks?.some((b) => b.type === "tool")).toBe(true);
+    expect(hydrateStates[hydrateStates.length - 1]).toBe("ready");
   });
 
   it("evented full defers while A2A POST stream is in flight (guard initial snapshot)", () => {
@@ -264,6 +280,28 @@ describe("applyConversationHistoryIngress", () => {
     expect(effect).toEqual({ kind: "deferred", reason: "streaming_or_input_required" });
     expect(deps.messages.value).toHaveLength(1);
     expect(hydrateStates).not.toContain("skipped");
+  });
+
+  it("delta structural mode skips assistant message text while streaming", () => {
+    const agent: ChatMessage = {
+      id: "live",
+      role: "agent",
+      text: "",
+      timestamp: new Date(),
+      isStreaming: true,
+      contentBlocks: [],
+    };
+    const { deps } = makeDeps([agent]);
+    const page = basePage("v-d-msg", [messageItem("assistant", "from provenance only", "a99", 5)]);
+    const effect = applyConversationHistoryIngress(deps, {
+      kind: "delta",
+      mode: "evented",
+      page,
+    });
+    expect(effect).toEqual({ kind: "applied_delta" });
+    const last = deps.messages.value[0]!;
+    const textBlocks = last.contentBlocks?.filter((b) => b.type === "text") ?? [];
+    expect(textBlocks.length).toBe(0);
   });
 
   it("evented full defer does not schedule hydrate retry", () => {
