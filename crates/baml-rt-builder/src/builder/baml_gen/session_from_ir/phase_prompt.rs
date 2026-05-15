@@ -242,6 +242,28 @@ client DefaultClient {
     }
 
     #[test]
+    fn phase_executor_prompt_body_active_hop_includes_no_open_phase_policy() {
+        let legal = vec![
+            "FooSendStep".to_string(),
+            "FooSearchReadStep".to_string(),
+            "FooFinishStep".to_string(),
+        ];
+        let ir = test_ir_signature();
+        let out = phase_executor_prompt_body(
+            "TestClient",
+            "Body.\n{{ ctx.output_format }}",
+            PhaseHop::Active,
+            &legal,
+            None,
+            &ir,
+        );
+        assert!(
+            out.contains("no `Open` variant"),
+            "expected active-hop phase policy: {out}"
+        );
+    }
+
+    #[test]
     fn phase_executor_prompt_body_includes_archive_preamble_before_template() {
         let legal = vec!["ArchiveSearchReadStep".to_string(), "XOpenStep".to_string()];
         let ir = test_ir_signature();
