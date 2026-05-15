@@ -126,14 +126,22 @@ async fn base_router_config(meter: Arc<RuntimeProgressMeter>) -> ApiServerConfig
     ApiServerConfig::empty(tool_catalog, config_service, secret_resolver, meter)
 }
 
+/// Build a cluster-mode router around a caller-supplied heartbeat. The
+/// runtime-progress meter is the deterministic (non-ticker) variant with
+/// one prior `tick()` so it doesn't fight whichever gate the test is
+/// trying to exercise — readyz tests want the heartbeat as the sole
+/// failing signal, and the `/diagnose` shape test doesn't care about
+/// the meter at all.
 async fn cluster_router_with_heartbeat(health: Arc<ClusterHeartbeatHealth>) -> axum::Router {
     let registry: Arc<dyn AgentRegistry> = Arc::new(StubRegistry);
+    let meter = RuntimeProgressMeter::new_without_ticker();
+    meter.tick();
     let config = ApiServerConfig {
         cluster: baml_rt_api::ClusterTopology::Cluster {
             directory: Arc::new(StubClusterDirectory),
             heartbeat: health,
         },
-        ..base_router_config(RuntimeProgressMeter::spawn_in_current_runtime()).await
+        ..base_router_config(meter).await
     };
     api_router_with_services_and_deploy(registry, config)
 }
@@ -273,30 +281,13 @@ async fn readyz_returns_503_when_runtime_progress_lag_exceeds_threshold() {
     drop(probe);
 }
 
-/// Build a router with cluster mode wired so the heartbeat gate is in play.
-/// Caller drives the supplied `health` through state transitions and observes
-/// `/readyz`'s response.
-async fn cluster_router(health: Arc<ClusterHeartbeatHealth>) -> axum::Router {
-    let registry: Arc<dyn AgentRegistry> = Arc::new(StubRegistry);
-    let meter = RuntimeProgressMeter::new_without_ticker();
-    meter.tick();
-    let config = ApiServerConfig {
-        cluster: baml_rt_api::ClusterTopology::Cluster {
-            directory: Arc::new(StubClusterDirectory),
-            heartbeat: health,
-        },
-        ..base_router_config(meter).await
-    };
-    api_router_with_services_and_deploy(registry, config)
-}
-
 /// A pod that has never had a successful heartbeat must stay readyable.
 /// Boot-window SurrealDB connectivity failures must not pin a fresh pod at
 /// `503` — that's the cascade-risk middle-ground from issue #449.
 #[tokio::test]
 async fn readyz_passes_when_heartbeat_is_starting() {
     let health = ClusterHeartbeatHealth::new(Duration::from_secs(5));
-    let app = cluster_router(health.clone()).await;
+    let app = cluster_router_with_heartbeat(health.clone()).await;
     assert_eq!(
         readyz_status(app).await,
         StatusCode::OK,
@@ -311,7 +302,7 @@ async fn readyz_passes_when_heartbeat_is_starting() {
 async fn readyz_passes_when_first_heartbeat_attempt_failed() {
     let health = ClusterHeartbeatHealth::new(Duration::from_secs(5));
     health.record_error(HeartbeatErrorKind::Connection);
-    let app = cluster_router(health.clone()).await;
+    let app = cluster_router_with_heartbeat(health.clone()).await;
     assert_eq!(
         readyz_status(app).await,
         StatusCode::OK,
@@ -328,7 +319,7 @@ async fn readyz_blocks_when_heartbeat_degrades_after_prior_success() {
     let health = ClusterHeartbeatHealth::new(Duration::from_secs(5));
     health.record_ok();
     health.record_error(HeartbeatErrorKind::Connection);
-    let app = cluster_router(health.clone()).await;
+    let app = cluster_router_with_heartbeat(health.clone()).await;
     assert_eq!(
         readyz_status(app).await,
         StatusCode::SERVICE_UNAVAILABLE,
@@ -345,7 +336,7 @@ async fn readyz_reopens_after_heartbeat_recovery() {
     health.record_ok();
     health.record_error(HeartbeatErrorKind::Connection);
     health.record_ok();
-    let app = cluster_router(health.clone()).await;
+    let app = cluster_router_with_heartbeat(health.clone()).await;
     assert_eq!(
         readyz_status(app).await,
         StatusCode::OK,
