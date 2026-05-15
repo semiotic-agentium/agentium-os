@@ -20,8 +20,9 @@ use baml_rt_core::ids::ContextId;
 use proptest::prelude::*;
 use serde_json::json;
 use test_support::common::{
-    CalculatorTool, agent_fixture, chunks_from_responses, ensure_fixture_runtime_types,
-    first_message_text_from_stream, is_error_response, message_visible_content_from_chunks,
+    CalculatorTool, agent_fixture, await_first_match, chunks_from_responses,
+    ensure_fixture_runtime_types, first_message_text_from_stream, is_error_response,
+    message_visible_content_from_chunks, response_has_final_chunk, response_has_input_required,
     send_stream_request,
 };
 use tokio::{
@@ -69,18 +70,6 @@ async fn collect_responses(
         .into_iter()
         .map(baml_rt_core::A2aStreamChunk::into_inner)
         .collect())
-}
-
-fn response_has_input_required(response: &serde_json::Value) -> bool {
-    response
-        .get("result")
-        .and_then(|r| r.get("chunk"))
-        .and_then(|c| c.get("task"))
-        .and_then(|t| t.get("status"))
-        .and_then(|s| s.get("state"))
-        .and_then(serde_json::Value::as_str)
-        .map(|s| s == "TASK_STATE_INPUT_REQUIRED")
-        .unwrap_or(false)
 }
 
 struct StubChooseCalcToolInterceptor;
@@ -209,7 +198,8 @@ async fn test_input_required_resume_single_context() {
     let context_id = ContextId::new(901, 1);
     let jitter_ms = 0u64;
 
-    // Turn 1: ask for input, stop collection once INPUT_REQUIRED appears.
+    // Turn 1: drive the stream chunk-by-chunk until INPUT_REQUIRED arrives; tally any
+    // pre-sentinel final markers (must be zero — INPUT_REQUIRED is a turn boundary).
     let ask_req = send_stream_request(
         "msg-ir-ask-0",
         &format!("input-ask:{jitter_ms}:{}", context_id.as_str()),
@@ -220,31 +210,22 @@ async fn test_input_required_resume_single_context() {
         .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(ask_req))
         .await
         .expect("open input-required stream");
-    let ask_responses: Vec<baml_rt_core::A2aStreamChunk> = timeout(
+    let mut ask_final_count = 0usize;
+    let saw_input_required = timeout(
         scaled_timeout_secs(15),
-        baml_rt_core::collect_a2a_stream_until(ask_stream, |c| {
-            response_has_input_required(c.as_ref())
+        await_first_match(ask_stream, |env| {
+            if response_has_final_chunk(env).is_some() {
+                ask_final_count += 1;
+            }
+            response_has_input_required(env)
         }),
     )
     .await
     .expect("input-required stream timed out");
     assert!(
-        ask_responses
-            .iter()
-            .any(|c| response_has_input_required(c.as_ref())),
+        saw_input_required.is_some(),
         "first turn must emit TASK_STATE_INPUT_REQUIRED"
     );
-    let ask_final_count = ask_responses
-        .iter()
-        .filter(|chunk| {
-            chunk
-                .as_ref()
-                .get("result")
-                .and_then(|result| result.get("final"))
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-        })
-        .count();
     assert_eq!(
         ask_final_count, 0,
         "input-required turn must not auto-finalize"
@@ -268,13 +249,7 @@ async fn test_input_required_resume_single_context() {
     .expect("resumed stream failed");
     let answer_final_count = answer_responses
         .iter()
-        .filter(|value| {
-            value
-                .get("result")
-                .and_then(|result| result.get("final"))
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-        })
+        .filter(|value| response_has_final_chunk(value).is_some())
         .count();
     assert_eq!(
         answer_final_count, 1,
@@ -391,13 +366,7 @@ proptest! {
                 assert!(!responses.is_empty(), "responses must not be empty");
                 let final_count = responses
                     .iter()
-                    .filter(|value| {
-                        value
-                            .get("result")
-                            .and_then(|result| result.get("final"))
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false)
-                    })
+                    .filter(|value| response_has_final_chunk(value).is_some())
                     .count();
                 assert_eq!(final_count, 1, "stream must include exactly one final marker");
 
@@ -447,7 +416,8 @@ proptest! {
             for (idx, jitter_raw) in jitters.iter().copied().enumerate() {
                 let context_id = ContextId::new(901, (idx as u64) + 1);
                 let jitter_ms = (jitter_raw as u64) + ((idx as u64) % 3);
-                // Turn 1: ask for input, stop collection once INPUT_REQUIRED appears.
+                // Turn 1: drive chunk-by-chunk to INPUT_REQUIRED; pre-sentinel final markers
+                // must be zero (INPUT_REQUIRED is a turn boundary, not a terminal state).
                 let ask_req = send_stream_request(
                     &format!("msg-ir-ask-{idx}"),
                     &format!("input-ask:{jitter_ms}:{}", context_id.as_str()),
@@ -458,31 +428,22 @@ proptest! {
                     .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(ask_req))
                     .await
                     .expect("open input-required stream");
-                let ask_responses: Vec<baml_rt_core::A2aStreamChunk> = timeout(
+                let mut ask_final_count = 0usize;
+                let saw_input_required = timeout(
                     per_turn_timeout,
-                    baml_rt_core::collect_a2a_stream_until(ask_stream, |c| {
-                        response_has_input_required(c.as_ref())
+                    await_first_match(ask_stream, |env| {
+                        if response_has_final_chunk(env).is_some() {
+                            ask_final_count += 1;
+                        }
+                        response_has_input_required(env)
                     }),
                 )
                 .await
                 .expect("input-required stream timed out");
                 assert!(
-                    ask_responses
-                        .iter()
-                        .any(|c| response_has_input_required(c.as_ref())),
+                    saw_input_required.is_some(),
                     "first turn must emit TASK_STATE_INPUT_REQUIRED"
                 );
-                let ask_final_count = ask_responses
-                    .iter()
-                    .filter(|chunk| {
-                        chunk
-                            .as_ref()
-                            .get("result")
-                            .and_then(|result| result.get("final"))
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false)
-                    })
-                    .count();
                 assert_eq!(
                     ask_final_count, 0,
                     "input-required turn must not auto-finalize"
@@ -506,13 +467,7 @@ proptest! {
                 .expect("resumed stream failed");
                 let answer_final_count = answer_responses
                     .iter()
-                    .filter(|value| {
-                        value
-                            .get("result")
-                            .and_then(|result| result.get("final"))
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false)
-                    })
+                    .filter(|value| response_has_final_chunk(value).is_some())
                     .count();
                 assert_eq!(
                     answer_final_count, 1,
