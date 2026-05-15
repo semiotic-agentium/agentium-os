@@ -22,7 +22,14 @@ use test_support::common::{
     build_fixture_package_to_temp, ensure_fixture_runtime_types, send_stream_request,
 };
 
-const FORBIDDEN_OPS: &[&str] = &["fetch", "require", "WebSocket", "XMLHttpRequest"];
+const FORBIDDEN_OPS: &[&str] = &[
+    "fetch",
+    "require",
+    "WebSocket",
+    "XMLHttpRequest",
+    "process",
+    "Deno",
+];
 
 // Bracketing markers around the JSON payload, mirrored in the fixture's
 // index.ts. Sentinel slicing keeps the parser stable even if a future stream
