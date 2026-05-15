@@ -184,9 +184,12 @@ fn connection_error_to_session(err: ConnectionError) -> ToolSessionError {
         ConnectionError::InitializeTimeout(_) => {
             ToolSessionError::Tool(ToolFailure::execution_failed(err.to_string()))
         }
-        ConnectionError::IdentityMismatch { .. } | ConnectionError::MissingPeerInfo { .. } => {
+        ConnectionError::IdentityMismatch { .. }
+        | ConnectionError::MissingPeerInfo { .. }
+        | ConnectionError::IdentitySerializeFailed { .. } => {
             // Fail-closed: the live server's advertised identity does not
-            // match the approved snapshot. Treat as transport failure so the
+            // match the approved snapshot, was missing, or could not be
+            // serialized for the digest. Treat as transport failure so the
             // runtime does not surface this to the LLM as a recoverable
             // tool error.
             ToolSessionError::Transport(BamlRtError::InvalidArgument(err.to_string()))

@@ -130,7 +130,23 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
             server_config_digest: server_config_digest.to_string(),
             secret_identity_hash,
         };
-        let mut guard = self.connections.lock().unwrap();
+        // Recover from a poisoned mutex rather than propagating panic: a
+        // single panic inside `or_insert_with` would otherwise turn every
+        // future MCP resolve into a panic for the lifetime of the process.
+        // The pool's invariant is "every entry is a live `Arc<McpConnection>`",
+        // which is preserved across poison because we only ever insert.
+        let mut guard = match self.connections.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::error!(
+                    target: "mcp.resolver",
+                    event = "mcp.pool_mutex_poisoned",
+                    mcp_server_id = %server_id,
+                    "MCP connection pool mutex was poisoned by a prior panic; recovering inner state",
+                );
+                poisoned.into_inner()
+            }
+        };
         let conn = guard
             .entry(key)
             .or_insert_with(|| Arc::new(McpConnection::new(launch)))

@@ -23,6 +23,16 @@ pub struct NormalizedSchema {
     pub opaque_fallback_reason: Option<String>,
 }
 
+/// Canonical digest of an MCP tool's `inputSchema`. Both the importer (when
+/// constructing `McpImportedTool.input_schema_digest`) and the runtime drift
+/// handler (when comparing a live `tools/list` against the approved
+/// snapshot) MUST go through this helper so the two paths cannot drift on
+/// canonicalisation choices. Any future change to how schemas are hashed
+/// happens here, in one place.
+pub fn digest_input_schema(raw: &Value) -> Digest {
+    normalize(raw).digest
+}
+
 pub fn normalize(input: &Value) -> NormalizedSchema {
     let canonical_bytes = serde_jcs::to_vec(input).unwrap_or_else(|_| b"null".to_vec());
     let mut hasher = Sha256::new();

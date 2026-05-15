@@ -387,6 +387,74 @@ async fn list_changed_without_schema_drift_is_treated_as_spurious() {
 }
 
 #[tokio::test]
+async fn list_changed_is_spurious_for_opaque_fallback_schema() {
+    // Regression: tools whose `inputSchema` triggers `opaque_fallback_reason`
+    // (e.g. uses `$ref`) must still produce the same canonical digest at
+    // import time and at drift-handler time. A no-op `tools/list_changed`
+    // for such a tool must not flip the snapshot to stale.
+    let cache = tempfile::tempdir().unwrap();
+    let opaque_schema = json!({
+        "type": "object",
+        "properties": { "child": { "$ref": "#/definitions/Foo" } }
+    });
+    assert!(
+        normalize(&opaque_schema).opaque_fallback_reason.is_some(),
+        "test precondition: schema must trigger opaque fallback"
+    );
+    write_snapshot(
+        cache.path(),
+        &approved_snapshot(vec![approved_tool(
+            "search_dashboards",
+            opaque_schema.clone(),
+        )]),
+    )
+    .unwrap();
+    let fixture_path = cache.path().join("fixture.json");
+    let mut fixture = sample_fixture();
+    fixture.tools = vec![FakeMcpTool {
+        name: "search_dashboards".into(),
+        description: Some("search".into()),
+        input_schema: opaque_schema,
+        call_result: json!({
+            "content": [{ "type": "text", "text": "ok" }],
+            "isError": false
+        }),
+    }];
+    fixture.drift_mode = true;
+    fixture.drift_changes_schema = false;
+    write_fixture(&fixture_path, &fixture);
+
+    let resolver = build_resolver(&fixture_path, cache.path());
+    let name = ToolName::parse("mcp/grafana/search_dashboards").unwrap();
+    let (_metadata, handler) = resolver.resolve(&name).unwrap().expect("resolved");
+
+    {
+        let mut session = handler
+            .open_session(session_context(&name), json!({}))
+            .await
+            .unwrap();
+        session.send(json!({})).await.unwrap();
+        let _ = session.read(json!({})).await.unwrap();
+        session.finish().await.unwrap();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let mut session = handler
+        .open_session(session_context(&name), json!({}))
+        .await
+        .unwrap();
+    session
+        .send(json!({}))
+        .await
+        .expect("no-op list_changed on opaque-fallback schema must not flip stale");
+    let _ = session.read(json!({})).await.unwrap();
+    session.finish().await.unwrap();
+
+    let record = read_server(cache.path(), "grafana").expect("server record");
+    assert_eq!(record.approval.state, McpApprovalState::Approved);
+}
+
+#[tokio::test]
 async fn http_transport_is_rejected_at_resolve() {
     let cache = tempfile::tempdir().unwrap();
     let mut snap = approved_snapshot(vec![approved_tool(

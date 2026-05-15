@@ -18,7 +18,7 @@ use std::{
 
 use baml_rt_tools::{
     mcp_cache::mark_server_stale,
-    mcp_schema_normalize::normalize,
+    mcp_schema_normalize::digest_input_schema,
     mcp_snapshot::{compute_server_identity_digest, compute_tools_digest_from_entries},
 };
 use rmcp::{
@@ -68,11 +68,11 @@ pub enum ConnectionError {
     #[error("MCP call timed out after {0:?}")]
     CallTimeout(Duration),
     #[error(
-        "MCP server `{server_id}` is stale (tools/list_changed received); operator must re-run mcp-review/mcp-enable"
+        "MCP server `{server_id}` is stale (tools/list_changed received); operator must re-import and approve a new registry snapshot"
     )]
     Stale { server_id: String },
     #[error(
-        "MCP server `{server_id}` identity digest mismatch (expected `{expected}`, observed `{observed}`); operator must re-run mcp-review/mcp-enable"
+        "MCP server `{server_id}` identity digest mismatch (expected `{expected}`, observed `{observed}`); operator must re-import and approve a new registry snapshot"
     )]
     IdentityMismatch {
         server_id: String,
@@ -81,6 +81,14 @@ pub enum ConnectionError {
     },
     #[error("MCP server `{server_id}` did not return peer_info after initialize")]
     MissingPeerInfo { server_id: String },
+    #[error(
+        "MCP server `{server_id}` peer_info failed to serialize for identity digest: {source}"
+    )]
+    IdentitySerializeFailed {
+        server_id: String,
+        #[source]
+        source: serde_json::Error,
+    },
 }
 
 /// Spawn parameters frozen at registration time. The runtime never reads MCP
@@ -213,7 +221,7 @@ impl ClientHandler for RuntimeClientHandler {
                 expected = %expected.as_ref(),
                 observed = %observed_digest,
                 event = "mcp.tools_list_changed",
-                "MCP server tool set digest changed; marking snapshot stale, operator must re-run mcp-review",
+                "MCP server tool set digest changed; marking snapshot stale, operator must re-import and approve a new registry snapshot",
             );
             mark_drifted_and_persist(&server_id, &drifted, &cache_root);
         }
@@ -230,7 +238,7 @@ fn digest_from_live_tools(tools: &[rmcp::model::Tool]) -> baml_rt_tools::mcp_sna
         .map(|tool| {
             let schema =
                 serde_json::to_value(tool.input_schema.as_ref()).unwrap_or(serde_json::Value::Null);
-            (tool.name.to_string(), normalize(&schema).digest)
+            (tool.name.to_string(), digest_input_schema(&schema))
         })
         .collect();
     compute_tools_digest_from_entries(
@@ -407,8 +415,26 @@ async fn verify_server_identity(
             server_id: launch.server_id.clone(),
         });
     };
-    let capabilities = to_value(&peer_info.capabilities).unwrap_or(Value::Null);
-    let server_info = to_value(&peer_info.server_info).unwrap_or(Value::Null);
+    let capabilities = match to_value(&peer_info.capabilities) {
+        Ok(value) => value,
+        Err(err) => {
+            cancel_service_best_effort(service).await;
+            return Err(ConnectionError::IdentitySerializeFailed {
+                server_id: launch.server_id.clone(),
+                source: err,
+            });
+        }
+    };
+    let server_info = match to_value(&peer_info.server_info) {
+        Ok(value) => value,
+        Err(err) => {
+            cancel_service_best_effort(service).await;
+            return Err(ConnectionError::IdentitySerializeFailed {
+                server_id: launch.server_id.clone(),
+                source: err,
+            });
+        }
+    };
     let observed = compute_server_identity_digest(&capabilities, &server_info);
     if observed.as_str() != launch.expected_identity_digest {
         tracing::warn!(
