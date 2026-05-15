@@ -1948,6 +1948,7 @@ dependencies = [
  "baml-runtime",
  "baml-types",
  "dashmap 6.1.0",
+ "futures-util",
  "insta",
  "internal-baml-core",
  "internal-llm-client",
