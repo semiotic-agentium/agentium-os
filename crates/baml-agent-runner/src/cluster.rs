@@ -629,8 +629,8 @@ impl ClusterDirectoryService for ClusterDirectory {
                     content_hash: row
                         .get("content_hash")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string(),
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string),
                     status: row
                         .get("status")
                         .and_then(|v| v.as_str())

@@ -66,7 +66,10 @@ pub struct ClusterPlacementInfo {
     pub agent_instance_id: String,
     pub runner_id: String,
     pub runner_endpoint: String,
-    pub content_hash: String,
+    /// `None` when the row carries no content hash (legacy or partial write).
+    /// Carrying optionality through the type avoids an empty-string sentinel
+    /// that callers would otherwise have to normalize on every read.
+    pub content_hash: Option<String>,
     pub status: String,
     pub updated_at_ms: Option<i64>,
 }
@@ -328,18 +331,13 @@ where
         if per_runner.contains_key(&placement.runner_id) {
             continue;
         }
-        let content_hash = if placement.content_hash.is_empty() {
-            None
-        } else {
-            Some(placement.content_hash.clone())
-        };
         per_runner.insert(
             placement.runner_id.clone(),
             ClusterAgentPlacementDto {
                 runner_id: placement.runner_id.clone(),
                 service_instance_id,
                 endpoint: placement.runner_endpoint.clone(),
-                content_hash,
+                content_hash: placement.content_hash.clone(),
                 name: None,
                 version: None,
                 source: PlacementSourceDto::Placement,
@@ -644,7 +642,7 @@ mod tests {
             agent_instance_id: "default".to_string(),
             runner_id: "r1".to_string(),
             runner_endpoint: "http://r1:18080".to_string(),
-            content_hash: "hash-from-placement".to_string(),
+            content_hash: Some("hash-from-placement".to_string()),
             status: "active".to_string(),
             updated_at_ms: Some(500),
         }];
@@ -700,7 +698,7 @@ mod tests {
             agent_instance_id: "default".to_string(),
             runner_id: "r0".to_string(),
             runner_endpoint: "http://r0:18080".to_string(),
-            content_hash: "stale-hash".to_string(),
+            content_hash: Some("stale-hash".to_string()),
             status: "active".to_string(),
             updated_at_ms: Some(500),
         }];
@@ -760,7 +758,7 @@ mod tests {
             agent_instance_id: "default".to_string(),
             runner_id: "ghost-uuid".to_string(),
             runner_endpoint: "http://10.0.0.99:18080".to_string(),
-            content_hash: "hash-from-dead-runner".to_string(),
+            content_hash: Some("hash-from-dead-runner".to_string()),
             status: "active".to_string(),
             updated_at_ms: Some(7_777),
         }];
@@ -839,7 +837,7 @@ mod tests {
             agent_instance_id: "default".to_string(),
             runner_id: "r0".to_string(),
             runner_endpoint: "http://r0:18080".to_string(),
-            content_hash: "h".to_string(),
+            content_hash: Some("h".to_string()),
             status: "active".to_string(),
             updated_at_ms: Some(12_345),
         }];
@@ -868,7 +866,7 @@ mod tests {
             agent_instance_id: "default".to_string(),
             runner_id: "r0".to_string(),
             runner_endpoint: "http://r0:18080".to_string(),
-            content_hash: "tombstone-hash".to_string(),
+            content_hash: Some("tombstone-hash".to_string()),
             status: "removed".to_string(),
             updated_at_ms: Some(500),
         }];

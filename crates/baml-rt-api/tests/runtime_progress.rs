@@ -1,5 +1,8 @@
 //! Integration tests for the `/diagnose` endpoint.
 
+#[path = "common/mod.rs"]
+mod common;
+
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
@@ -16,6 +19,7 @@ use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentDiscoveryEntry, AgentDispatchAck, AgentDispatchRequest,
     AgentLister, AgentRouteKey, BamlRtError, BusStream, Result,
 };
+use common::StubClusterDirectory;
 use serde::Deserialize;
 use tower::ServiceExt;
 
@@ -45,31 +49,6 @@ struct StubRegistry;
 impl AgentLister for StubRegistry {
     fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
         Vec::new()
-    }
-}
-
-struct StubClusterDirectory;
-
-#[async_trait]
-impl baml_rt_api::ClusterDirectoryService for StubClusterDirectory {
-    fn local_runner_id(&self) -> &str {
-        ""
-    }
-
-    async fn list_runners(
-        &self,
-    ) -> std::result::Result<Vec<baml_rt_api::ClusterRunnerInfo>, baml_rt_api::ClusterDirectoryError>
-    {
-        Ok(Vec::new())
-    }
-
-    async fn list_placements(
-        &self,
-    ) -> std::result::Result<
-        Vec<baml_rt_api::ClusterPlacementInfo>,
-        baml_rt_api::ClusterDirectoryError,
-    > {
-        Ok(Vec::new())
     }
 }
 

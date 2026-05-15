@@ -1,6 +1,9 @@
 //! HTTP API tests: discovery, A2A forward, and error mapping.
 //! Uses insta snapshots with selective redaction for variant parts (IDs, instance URLs, etc.).
 
+#[path = "common/mod.rs"]
+mod common;
+
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, OnceLock},
@@ -33,6 +36,7 @@ use baml_rt_provenance::{
     ProvenanceOpsQueryResponse, ProvenanceWriter, SurrealStoreBuilder, events::LlmDriftInfo,
     serialized_prompt_utf8_len,
 };
+use common::cluster_topology_for_test;
 use futures_util::stream;
 use opentelemetry::{global, trace::TracerProvider as _};
 use opentelemetry_sdk::{testing::trace::InMemorySpanExporterBuilder, trace::TracerProvider};
@@ -2316,46 +2320,6 @@ async fn get_mermaid_context_emits_http_and_handler_spans() {
 }
 
 // ── Auth boundary tests ──────────────────────────────────────────────
-
-/// Stub `ClusterDirectoryService` used by auth-tier boundary tests, which
-/// need to construct a `ClusterTopology::Cluster` to verify the auth gate
-/// but do not exercise `/cluster/agents` itself.
-struct StubClusterDirectory;
-
-#[async_trait]
-impl baml_rt_api::ClusterDirectoryService for StubClusterDirectory {
-    fn local_runner_id(&self) -> &str {
-        ""
-    }
-
-    async fn list_runners(
-        &self,
-    ) -> std::result::Result<Vec<baml_rt_api::ClusterRunnerInfo>, baml_rt_api::ClusterDirectoryError>
-    {
-        Ok(Vec::new())
-    }
-
-    async fn list_placements(
-        &self,
-    ) -> std::result::Result<
-        Vec<baml_rt_api::ClusterPlacementInfo>,
-        baml_rt_api::ClusterDirectoryError,
-    > {
-        Ok(Vec::new())
-    }
-}
-
-/// Project a `ClusterMode` knob (the only auth-relevant axis) into a
-/// `ClusterTopology` with stubs in cluster mode.
-fn cluster_topology_for_test(mode: ClusterMode) -> baml_rt_api::ClusterTopology {
-    match mode {
-        ClusterMode::Standalone => baml_rt_api::ClusterTopology::Standalone,
-        ClusterMode::Cluster => baml_rt_api::ClusterTopology::Cluster {
-            directory: Arc::new(StubClusterDirectory),
-            heartbeat: baml_rt_api::ClusterHeartbeatHealth::new(std::time::Duration::from_secs(5)),
-        },
-    }
-}
 
 /// Build a router with explicit auth configuration for boundary tests.
 async fn authed_test_router(token: Option<&str>, mode: ClusterMode) -> axum::Router {

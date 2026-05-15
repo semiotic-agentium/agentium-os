@@ -1783,20 +1783,8 @@ mod cluster {
 /// from the original while remaining build-equivalent.
 #[cfg(feature = "cluster-tests")]
 fn copy_fixture_with_perturbation(src: &Path, dst: &Path) {
-    fn copy_recursive(src: &Path, dst: &Path) {
-        fs::create_dir_all(dst).expect("create dst dir");
-        for entry in fs::read_dir(src).expect("read src dir") {
-            let entry = entry.expect("dir entry");
-            let path = entry.path();
-            let target = dst.join(entry.file_name());
-            if path.is_dir() {
-                copy_recursive(&path, &target);
-            } else {
-                fs::copy(&path, &target).expect("copy file");
-            }
-        }
-    }
-    copy_recursive(src, dst);
+    test_support::common::copy_agent_tree_for_build(src, dst)
+        .expect("clone fixture into perturbation temp dir");
     let index_path = dst.join("src").join("index.ts");
     let mut existing = fs::read_to_string(&index_path).expect("read index.ts");
     existing.push_str("\n// perturbation marker for cluster_agents skew test\n");
