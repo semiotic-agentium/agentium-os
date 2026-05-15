@@ -45,10 +45,10 @@ SURREAL_POD_0=""
 RUNNER_HEADLESS_DNS=""  # ${RUNNER_FULLNAME}.${NAMESPACE}.svc
 
 # Populated by ensure_runner_image_available (registry branch) from the
-# canonical `<tag>: digest: sha256:<hex> size: <n>` line in `docker push`
-# output. Consumed by verify_pod_image_digests to compare against each
-# runner pod's containerStatuses[].imageID. Empty for non-registry
-# strategies, which the assertion already skips.
+# registry's Docker-Content-Digest header for the pushed manifest.
+# Consumed by verify_pod_image_digests to compare against each runner
+# pod's containerStatuses[].imageID. Empty for non-registry strategies,
+# which the assertion already skips.
 PUSHED_IMAGE_DIGEST=""
 
 # Populated at runtime
@@ -726,16 +726,51 @@ ensure_runner_image_available() {
       if docker push --help 2>&1 | grep -q -- "--tls-verify"; then
         push_args+=("--tls-verify=false")
       fi
-      # Tee push output so the final "<tag>: digest: sha256:<hex> size: <n>"
-      # line can be parsed for PUSHED_IMAGE_DIGEST while the progress
-      # stream still reaches the operator's terminal.
-      local push_log
-      push_log="$(mktemp -t agentium-push.XXXXXX.log)"
-      docker push "${push_args[@]}" "$host_ref" | tee "$push_log"
-      PUSHED_IMAGE_DIGEST="$(awk '$2 == "digest:" {d=$3} END{print d}' "$push_log")"
-      rm -f "$push_log"
+      docker push "${push_args[@]}" "$host_ref"
+
+      # Query the registry for the manifest digest rather than parsing
+      # client output: docker prints `<tag>: digest: sha256:<hex> size: <n>`
+      # at the end of a push, but podman does not, so any client-side
+      # parser breaks for podman users (issue #469). The registry's
+      # Docker-Content-Digest header is authoritative and client-agnostic,
+      # and matches the digest the kubelet records in containerStatuses[].imageID.
+      #
+      # The Accept headers mirror what the kubelet sends so the registry
+      # returns the manifest variant the cluster will actually pull.
+      #
+      # Retry around the lookup: the local registry has been observed to
+      # transiently 404 the manifest-by-tag endpoint immediately after a
+      # push under CI load. Mirrors the /v2/ liveness probe pattern above.
+      local manifest_url="http://localhost:${REGISTRY_HOST_PORT}/v2/${IMAGE_NAME}/manifests/${IMAGE_TAG}"
+      local hdr_file
+      hdr_file="$(mktemp -t agentium-manifest.XXXXXX.hdr)"
+      local deadline=$((SECONDS + 30))
+      local last_status="000"
+      PUSHED_IMAGE_DIGEST=""
+      while (( SECONDS < deadline )); do
+        : > "$hdr_file"
+        last_status="$(
+          curl -sI -o "$hdr_file" -w '%{http_code}' \
+            -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+            -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+            -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+            -H 'Accept: application/vnd.oci.image.index.v1+json' \
+            "$manifest_url" 2>/dev/null
+        )" || last_status="000"
+        if [[ "$last_status" == "200" ]]; then
+          PUSHED_IMAGE_DIGEST="$(
+            awk 'tolower($1) == "docker-content-digest:" {print $2}' "$hdr_file" \
+              | tr -d '\r'
+          )"
+          if [[ -n "$PUSHED_IMAGE_DIGEST" ]]; then
+            break
+          fi
+        fi
+        sleep 0.5
+      done
+      rm -f "$hdr_file"
       if [[ -z "$PUSHED_IMAGE_DIGEST" ]]; then
-        log_fail "Could not parse pushed-image digest from docker push output"
+        log_fail "Could not resolve pushed-image digest from registry at ${manifest_url} (last HTTP status: ${last_status})"
         return 1
       fi
       log_info "Pushed image digest: ${PUSHED_IMAGE_DIGEST}"
@@ -883,11 +918,12 @@ wait_for_runner_readyz() {
 # regression where pullPolicy silently slips back to IfNotPresent and
 # kubelet reuses a stale cached layer.
 #
-# Source of truth is PUSHED_IMAGE_DIGEST, captured at push time by
-# ensure_runner_image_available from `docker push`'s own canonical
-# "<tag>: digest: sha256:<hex>" line. The earlier registry-HTTP variant
-# was abandoned because the local registry transiently 404s the
-# manifest-by-tag endpoint right after a push in CI.
+# Source of truth is PUSHED_IMAGE_DIGEST, populated by
+# ensure_runner_image_available from the registry's Docker-Content-Digest
+# header. The earlier `docker push | awk` approach was switched out
+# because podman's push doesn't emit the canonical "<tag>: digest:
+# sha256:<hex>" summary line (#469); the registry HEAD lookup now
+# retries to absorb the transient post-push 404 race observed in CI.
 #
 # Only meaningful for the registry strategy. local-k3d-import goes through
 # `k3d image import` + pullPolicy=Never, so the pod imageID does not carry
