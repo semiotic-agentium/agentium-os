@@ -9,7 +9,7 @@ use axum::{
 };
 use baml_rt_a2a::AgentRegistry;
 use baml_rt_api::{
-    ApiServerConfig, ClusterHeartbeatHealth, ClusterMode, HeartbeatErrorKind,
+    ApiServerConfig, ClusterHeartbeatHealth, ClusterTopology, HeartbeatErrorKind,
     READYZ_LAG_THRESHOLD_MS, RuntimeProgressMeter, api_router, api_router_with_services_and_deploy,
 };
 use baml_rt_core::{
@@ -18,6 +18,9 @@ use baml_rt_core::{
 };
 use serde::Deserialize;
 use tower::ServiceExt;
+
+mod common;
+use common::StubClusterDirectory;
 
 /// Test mirror of `DiagnoseResponse`. `deny_unknown_fields` makes the test
 /// fail if a new field is added to the production response without a
@@ -125,8 +128,10 @@ async fn base_router_config(meter: Arc<RuntimeProgressMeter>) -> ApiServerConfig
 async fn cluster_router_with_heartbeat(health: Arc<ClusterHeartbeatHealth>) -> axum::Router {
     let registry: Arc<dyn AgentRegistry> = Arc::new(StubRegistry);
     let config = ApiServerConfig {
-        cluster_mode: ClusterMode::Cluster,
-        cluster_heartbeat: Some(health),
+        cluster_topology: ClusterTopology::Cluster {
+            directory: Arc::new(StubClusterDirectory),
+            heartbeat: health,
+        },
         ..base_router_config(RuntimeProgressMeter::spawn_in_current_runtime()).await
     };
     api_router_with_services_and_deploy(registry, config)

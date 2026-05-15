@@ -183,7 +183,7 @@ pub async fn get_cluster_agents(
     State(state): State<Arc<ApiState>>,
 ) -> Result<(AxumStatus, Json<ClusterAgentsResponseDto>), HttpApiProblem> {
     let start = Instant::now();
-    let directory = state.cluster_directory.as_ref().ok_or_else(|| {
+    let directory = state.cluster_topology.directory().ok_or_else(|| {
         metrics::record_request("get_cluster_agents", "not_found", start.elapsed());
         HttpApiProblem::try_new(404)
             .expect("404 is valid")

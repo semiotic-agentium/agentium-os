@@ -527,14 +527,14 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         let runtime_secret_store = prov_config.runtime_secret_store();
         let readyz_for_http = readyz.clone();
         let runner_token = config.runner_token.clone();
-        let cluster_mode = if cluster_mgr.is_some() {
-            baml_rt_api::ClusterMode::Cluster
-        } else {
-            baml_rt_api::ClusterMode::Standalone
+        let cluster_topology = match (cluster_mgr.as_ref(), cluster_heartbeat_health) {
+            (Some(mgr), Some(heartbeat)) => baml_rt_api::ClusterTopology::Cluster {
+                directory: Arc::new(mgr.directory())
+                    as Arc<dyn baml_rt_api::ClusterDirectoryService>,
+                heartbeat,
+            },
+            _ => baml_rt_api::ClusterTopology::Standalone,
         };
-        let cluster_directory = cluster_mgr
-            .as_ref()
-            .map(|mgr| Arc::new(mgr.directory()) as Arc<dyn baml_rt_api::ClusterDirectoryService>);
         let api_config = baml_rt_api::ApiServerConfig {
             mermaid,
             context_metrics,
@@ -550,9 +550,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             runtime_secret_store,
             ready: readyz_for_http,
             runner_token,
-            cluster_mode,
-            cluster_heartbeat: cluster_heartbeat_health,
-            cluster_directory,
+            cluster_topology,
             web_dir,
             ..baml_rt_api::ApiServerConfig::empty(
                 tool_catalog,

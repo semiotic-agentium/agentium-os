@@ -44,6 +44,41 @@ use crate::{
     handlers, metrics, otel_middleware, repository_publish,
 };
 
+/// Cluster-related dependencies for the HTTP API. The `Cluster` variant
+/// pairs the directory and heartbeat handle that cluster mode requires, so a
+/// cluster-mode router cannot be built without both.
+#[derive(Clone)]
+pub enum ClusterTopology {
+    Standalone,
+    Cluster {
+        directory: Arc<dyn ClusterDirectoryService>,
+        heartbeat: Arc<ClusterHeartbeatHealth>,
+    },
+}
+
+impl ClusterTopology {
+    pub fn mode(&self) -> ClusterMode {
+        match self {
+            ClusterTopology::Standalone => ClusterMode::Standalone,
+            ClusterTopology::Cluster { .. } => ClusterMode::Cluster,
+        }
+    }
+
+    pub fn directory(&self) -> Option<&Arc<dyn ClusterDirectoryService>> {
+        match self {
+            ClusterTopology::Standalone => None,
+            ClusterTopology::Cluster { directory, .. } => Some(directory),
+        }
+    }
+
+    pub fn heartbeat(&self) -> Option<&Arc<ClusterHeartbeatHealth>> {
+        match self {
+            ClusterTopology::Standalone => None,
+            ClusterTopology::Cluster { heartbeat, .. } => Some(heartbeat),
+        }
+    }
+}
+
 /// Shared state for API handlers: registry, OpenAPI spec, and **injected** config/catalog/resolver.
 #[derive(Clone)]
 pub struct ApiState {
@@ -69,17 +104,13 @@ pub struct ApiState {
     pub ready: Arc<AtomicBool>,
     /// Shared secret for authenticating control-plane requests (e.g. `/control/migrate`).
     pub runner_token: Option<String>,
-    /// Deployment topology: standalone (single runner) or cluster (shared SurrealDB).
-    /// Controls whether control endpoints require a configured runner token.
-    pub cluster_mode: ClusterMode,
+    /// Deployment topology: standalone (single runner) or cluster (shared
+    /// SurrealDB). Gates operator-tier auth, `/diagnose` heartbeat fields,
+    /// and `/cluster/agents`.
+    pub cluster_topology: ClusterTopology,
     /// Continuously observable signal of tokio-runtime progress; surfaced by `GET /diagnose`.
     /// Distinct from [`ApiState::ready`], which is a one-shot boot latch.
     pub runtime_progress: Arc<RuntimeProgressMeter>,
-    /// `None` in standalone mode (no heartbeat task).
-    pub cluster_heartbeat: Option<Arc<ClusterHeartbeatHealth>>,
-    /// Cluster directory used by `GET /cluster/agents`. `None` in standalone
-    /// mode; the endpoint returns `404` until set.
-    pub cluster_directory: Option<Arc<dyn ClusterDirectoryService>>,
 }
 
 async fn serve_openapi_json(
@@ -143,8 +174,8 @@ struct ClusterHeartbeatDiagnose {
 struct DiagnoseResponse {
     runtime_progress_lag_ms: u64,
     event_producers_loaded: bool,
-    /// `None` in standalone mode; populated once per request from
-    /// [`ApiState::cluster_heartbeat`] in cluster mode.
+    /// `None` in standalone mode; populated once per request from the
+    /// cluster topology's heartbeat handle in cluster mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     cluster_heartbeat: Option<ClusterHeartbeatDiagnose>,
 }
@@ -154,8 +185,8 @@ async fn diagnose(
 ) -> axum::Json<DiagnoseResponse> {
     let start = Instant::now();
     let cluster_heartbeat = state
-        .cluster_heartbeat
-        .as_ref()
+        .cluster_topology
+        .heartbeat()
         .map(|h| ClusterHeartbeatDiagnose {
             status: h.status(),
             lag_ms: h.lag_millis(),
@@ -234,17 +265,15 @@ pub struct ApiServerConfig {
     pub runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
     pub ready: Arc<AtomicBool>,
     pub runner_token: Option<String>,
-    pub cluster_mode: ClusterMode,
+    pub cluster_topology: ClusterTopology,
     pub runtime_progress: Arc<RuntimeProgressMeter>,
-    pub cluster_heartbeat: Option<Arc<ClusterHeartbeatHealth>>,
-    pub cluster_directory: Option<Arc<dyn ClusterDirectoryService>>,
     pub web_dir: Option<std::path::PathBuf>,
 }
 
 impl ApiServerConfig {
     /// Build a minimal config with only the four required infrastructure
     /// dependencies. All optional service injections default to `None`,
-    /// `ready` to a latched `true`, and `cluster_mode` to standalone.
+    /// `ready` to a latched `true`, and `cluster_topology` to standalone.
     pub fn empty(
         tool_catalog: Arc<dyn ToolCatalog>,
         config_service: Arc<dyn ConfigService>,
@@ -269,10 +298,8 @@ impl ApiServerConfig {
             runtime_secret_store: None,
             ready: Arc::new(AtomicBool::new(true)),
             runner_token: None,
-            cluster_mode: ClusterMode::Standalone,
+            cluster_topology: ClusterTopology::Standalone,
             runtime_progress,
-            cluster_heartbeat: None,
-            cluster_directory: None,
             web_dir: None,
         }
     }
@@ -334,29 +361,10 @@ pub fn api_router_with_services_and_deploy(
         runtime_secret_store,
         ready,
         runner_token,
-        cluster_mode,
+        cluster_topology,
         runtime_progress,
-        cluster_heartbeat,
-        cluster_directory,
         web_dir,
     } = config;
-
-    // Cluster-mode invariant: when the topology is `Cluster`, the directory
-    // should be wired so `/cluster/agents` can serve real data. A mismatch
-    // (cluster mode without a directory) only surfaces today via the
-    // endpoint's 404 with a misleading "standalone mode" detail; surface it
-    // loudly at construction so production misconfigurations don't sit
-    // dormant. This stays a log line rather than a panic because several
-    // unit tests construct cluster-mode routers to verify auth-tier
-    // semantics without exercising `/cluster/agents`; a follow-up will
-    // collapse the two fields into a typestate so the impossible state
-    // cannot be expressed at all.
-    if matches!(cluster_mode, ClusterMode::Cluster) && cluster_directory.is_none() {
-        tracing::error!(
-            "ApiServerConfig invariant violation: cluster_mode = Cluster but cluster_directory \
-             is None — GET /cluster/agents will return 404 even though the topology is cluster"
-        );
-    }
 
     let http_trace_layer =
         TraceLayer::new_for_http().make_span_with(otel_middleware::http_request_span);
@@ -424,7 +432,7 @@ pub fn api_router_with_services_and_deploy(
 
     let auth_layer = ClusterAuthLayer::new(ClusterAuthConfig {
         runner_token: runner_token.clone(),
-        cluster_mode,
+        cluster_mode: cluster_topology.mode(),
     });
     // Use `route_layer` so the auth check only runs for operator routes and
     // does NOT cover the fallback 404 handler. With `layer` the merged router
@@ -527,10 +535,8 @@ pub fn api_router_with_services_and_deploy(
         runtime_secret_store,
         ready,
         runner_token,
-        cluster_mode,
+        cluster_topology,
         runtime_progress,
-        cluster_heartbeat,
-        cluster_directory,
     });
 
     let mut router = api_router

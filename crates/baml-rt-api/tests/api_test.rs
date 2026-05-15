@@ -40,6 +40,9 @@ use serde_json::Value;
 use tower::ServiceExt;
 use tracing_subscriber::layer::SubscriberExt;
 
+mod common;
+use common::topology_for_test_mode;
+
 /// Snapshot-friendly response: status + body with variant parts redacted.
 fn response_snapshot(status: StatusCode, body: &[u8]) -> Value {
     let body_value: Value = serde_json::from_slice(body)
@@ -2324,7 +2327,7 @@ async fn authed_test_router(token: Option<&str>, mode: ClusterMode) -> axum::Rou
         registry,
         ApiServerConfig {
             runner_token: token.map(String::from),
-            cluster_mode: mode,
+            cluster_topology: topology_for_test_mode(mode),
             ..test_api_server_config().await
         },
     )
@@ -2566,7 +2569,7 @@ async fn authed_test_router_with_repo(token: Option<&str>, mode: ClusterMode) ->
         ApiServerConfig {
             repository_service: Some(repo_service),
             runner_token: token.map(String::from),
-            cluster_mode: mode,
+            cluster_topology: topology_for_test_mode(mode),
             ..test_api_server_config().await
         },
     )
