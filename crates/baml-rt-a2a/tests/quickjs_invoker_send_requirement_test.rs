@@ -2,10 +2,10 @@
 //! concurrent collection, including INPUT_REQUIRED turn boundaries.
 
 use baml_rt_core::A2aRequestHandler;
+use futures_util::StreamExt;
 use test_support::common::{
-    await_first_match, build_minimal_a2a_agent_with_stream_idle_secs, chunk_content,
-    message_texts_from_chunks, response_has_final_chunk, response_has_input_required,
-    send_stream_request,
+    build_minimal_a2a_agent_with_stream_idle_secs, chunk_content, message_texts_from_chunks,
+    response_has_final_chunk, response_has_input_required, send_stream_request,
 };
 use tokio::time::{Duration, timeout};
 
@@ -35,42 +35,59 @@ struct StreamOutcome {
     chunk_count: usize,
     has_tag: bool,
     term: Option<Terminator>,
+    /// True if a `final: true` chunk arrived AFTER INPUT_REQUIRED in the same turn.
+    /// INPUT_REQUIRED is an A2A turn boundary; the bridge must filter subsequent same-turn
+    /// yields. The JS fixture deliberately yields `{ final: true }` after INPUT_REQUIRED
+    /// (see the agent JS below) so this flag exercises the bridge's filter.
+    final_after_input_required: bool,
 }
 
-/// Stops at the first terminator (final marker or INPUT_REQUIRED) so the underlying stream
-/// is dropped without buffering the rest. `outcome.term == None` means the stream completed
-/// without either terminator — caller asserts that as a liveness failure.
+/// Stops at the first `Final` terminator (drops the stream as soon as it arrives). On
+/// `InputRequired`, continues draining the stream to natural close so a leaked post-sentinel
+/// `final: true` is observable as a bridge contract violation. `outcome.term == None` means
+/// the stream completed without either terminator — caller asserts liveness.
 async fn drive_stream(
     agent: baml_rt_a2a::A2aAgent,
     request: serde_json::Value,
     tag: &'static str,
 ) -> StreamOutcome {
-    let stream = agent
+    let mut stream = agent
         .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(request))
         .await
         .expect("handle_a2a_stream");
     let mut outcome = StreamOutcome::default();
-    let term = await_first_match(stream, |env| {
+    while let Some(chunk) = stream.next().await {
+        let env = chunk.as_ref();
         outcome.chunk_count += 1;
         if !outcome.has_tag {
-            let chunk = chunk_content(env).unwrap_or(env);
-            if message_texts_from_chunks(&[chunk])
+            let chunk_val = chunk_content(env).unwrap_or(env);
+            if message_texts_from_chunks(&[chunk_val])
                 .iter()
                 .any(|text| text.contains(tag))
             {
                 outcome.has_tag = true;
             }
         }
-        if response_has_final_chunk(env).is_some() {
-            return Some(Terminator::Final);
+        match outcome.term {
+            None => {
+                if response_has_final_chunk(env).is_some() {
+                    outcome.term = Some(Terminator::Final);
+                    break;
+                }
+                if response_has_input_required(env).is_some() {
+                    outcome.term = Some(Terminator::InputRequired);
+                    // Fall through and keep draining: any later `final` in the same turn
+                    // would be a bridge filter regression.
+                }
+            }
+            Some(Terminator::InputRequired) => {
+                if response_has_final_chunk(env).is_some() {
+                    outcome.final_after_input_required = true;
+                }
+            }
+            Some(Terminator::Final) => unreachable!("loop breaks on Final"),
         }
-        if response_has_input_required(env).is_some() {
-            return Some(Terminator::InputRequired);
-        }
-        None
-    })
-    .await;
-    outcome.term = term;
+    }
     outcome
 }
 
@@ -164,7 +181,14 @@ async fn concurrent_stream_phase_matrix_regression_under_load() {
 
             match (&case.expect, outcome.term.as_ref()) {
                 (Terminator::Final, Some(Terminator::Final)) => {}
-                (Terminator::InputRequired, Some(Terminator::InputRequired)) => {}
+                (Terminator::InputRequired, Some(Terminator::InputRequired)) => {
+                    assert!(
+                        !outcome.final_after_input_required,
+                        "stream {} emitted final after INPUT_REQUIRED — bridge must filter \
+                         post-sentinel yields in the same turn",
+                        case.tag
+                    );
+                }
                 (Terminator::Final, Some(Terminator::InputRequired)) => {
                     panic!("stream {} unexpected INPUT_REQUIRED before final", case.tag)
                 }
