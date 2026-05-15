@@ -994,6 +994,20 @@ mod tests {
             "strict prompt error should mention the missing prompt payload, got: {err}",
         );
 
+        task_store
+            .record_status_update(
+                task_id.clone(),
+                context_id.clone(),
+                TaskStatus {
+                    state: Some(TaskState::String(S_SUBMITTED.to_string())),
+                    message: None,
+                    timestamp: Some("1000".to_string()),
+                    extra: HashMap::new(),
+                },
+            )
+            .await
+            .expect("submitted before bare failed status");
+
         let err = task_store
             .record_status_update(
                 task_id,
@@ -1006,10 +1020,11 @@ mod tests {
                 },
             )
             .await
-            .expect_err("missing failed reason must be rejected");
+            .expect_err("TASK_STATE_FAILED without a failure reason must be rejected");
+        let s = err.to_string();
         assert!(
-            err.to_string().contains("TASK_STATE_FAILED requires"),
-            "strict failure error should mention the missing reason payload, got: {err}",
+            s.contains("TASK_STATE_FAILED") && s.contains("non-empty"),
+            "unexpected error: {s}",
         );
     }
 }

@@ -61,6 +61,9 @@ impl StepStatus {
             "sent" => Some(Self::Sent),
             "streaming" => Some(Self::Streaming),
             "suspended" => Some(Self::Suspended),
+            // Recoverable tool/archive failures returned as JSON (not thrown) — treat like Done
+            // for strict graph / FSM so the LLM can emit a corrective next hop.
+            "error" => Some(Self::Done),
             _ => None,
         }
     }

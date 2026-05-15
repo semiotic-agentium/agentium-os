@@ -16,6 +16,7 @@ import type { ChatMessage, ConversationHistoryPage, HistoryHydrateState } from "
 import {
   applyConversationHistoryDelta,
   applyConversationHistoryPage,
+  explicitRestoreMayIgnoreEmptyLivePlaceholder,
   liveAgentBubbleBlocksHistoryReplace,
   shouldDeferProvenanceHistoryRebuild,
 } from "./conversationHistoryHydration";
@@ -47,6 +48,11 @@ export interface ConversationHistoryIngressDeps {
   extendLlmFromPage: (page: ConversationHistoryPage) => void;
   /** Used when deferring merged GET hydrate (not SSE). */
   scheduleHydrateRetry?: () => void;
+  /**
+   * While POST /a2a is in flight, the first conversation-history SSE `snapshot` can otherwise
+   * replace the transcript before the streaming agent row exists — defer full snapshots until this is false.
+   */
+  deferFullSnapshotWhileA2aInFlight?: () => boolean;
 }
 
 function deferReasonFromFull(messages: ChatMessage[]): ConversationHistoryIngressDeferReason {
@@ -104,11 +110,24 @@ export function applyConversationHistoryIngress(
     if (input.syncTaskIdFromPageBeforeDefer) {
       deps.setTaskId?.(page.taskId ?? null);
     }
-    if (shouldDeferProvenanceHistoryRebuild(msgs, page)) {
+    if (mode === "evented" && deps.deferFullSnapshotWhileA2aInFlight?.() === true) {
+      return { kind: "deferred", reason: "streaming_or_input_required" };
+    }
+    /** URL restore / context picker clears the pane first — never defer a full page when there is no live transcript to protect. */
+    const bypassDeferEmptyLocal =
+      mode === "explicit_restore" && msgs.length === 0;
+    const allowExplicitRestore =
+      mode === "explicit_restore" && explicitRestoreMayIgnoreEmptyLivePlaceholder(msgs, page);
+    if (
+      !bypassDeferEmptyLocal &&
+      !allowExplicitRestore &&
+      shouldDeferProvenanceHistoryRebuild(msgs, page)
+    ) {
+      const reason = deferReasonFromFull(msgs);
       applyDeferSideEffects(deps, mode, allowRetry && mode !== "evented");
       return {
         kind: "deferred",
-        reason: deferReasonFromFull(msgs),
+        reason,
       };
     }
     applyConversationHistoryPage(deps.messages, page);
@@ -121,6 +140,7 @@ export function applyConversationHistoryIngress(
 
   // Delta: never treat partial `items` as a full transcript for lag detection (snapshot-only heuristic).
   if (liveAgentBubbleBlocksHistoryReplace(msgs)) {
+    deps.extendLlmFromPage(page);
     applyDeferSideEffects(deps, mode, allowRetry && mode !== "evented");
     return { kind: "deferred", reason: "streaming_or_input_required" };
   }

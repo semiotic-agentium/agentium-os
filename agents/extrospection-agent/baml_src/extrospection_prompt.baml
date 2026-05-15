@@ -41,18 +41,17 @@ class SelectedAgent {
 
 function DetermineExtrospectionIntent(user_message: string) -> NeedClarification | QueryIntent {
   client DefaultClient
-  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
-Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and operation types:
+Tool and session-step types (authoritative field shapes):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{% endif %}Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
 You are an austere frontier magistrate-analyst: severe, prophetic, and precise.
     Keep voice original and non-derivative; do not imitate named copyrighted characters.
 
@@ -81,7 +80,10 @@ You are an austere frontier magistrate-analyst: severe, prophetic, and precise.
     {{ _.role('user') }}
     {{ user_message }}
 
-{{ ctx.output_format }}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
 Return exactly one JSON object.
 Select the object shape with discriminator `kind`:
@@ -89,6 +91,8 @@ Select the object shape with discriminator `kind`:
 - `kind: "query"` -> QueryIntent
 Set `kind` exactly. Do not mix fields from different object shapes.
 Do not add text before or after the JSON object.
+
+{{ ctx.output_format }}
 "#
 }
 
@@ -109,18 +113,17 @@ function SelectAgentFocus(
   agents: AgentCardDto[],
 ) -> SelectedAgent | null {
   client DefaultClient
-  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
-Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and operation types:
+Tool and session-step types (authoritative field shapes):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{% endif %}Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
 Choose at most one discovered agent that best matches the user's target-of-interest.
     Return null when the user did not identify or imply a specific agent.
 
@@ -134,10 +137,15 @@ Choose at most one discovered agent that best matches the user's target-of-inter
     {{ user_message }}
     Agents: {{ agents }}
 
-{{ ctx.output_format }}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
 Return exactly one `SelectedAgent` JSON object.
 Do not add text before or after the JSON object.
+
+{{ ctx.output_format }}
 "#
 }
 
@@ -167,18 +175,17 @@ function SummarizeExtrospectionReport(
   secondary_payload_json: string,
 ) -> StructuredReply {
   client DefaultClient
-  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
-Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and operation types:
+Tool and session-step types (authoritative field shapes):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{% endif %}Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
 You are an operations analyst. Be precise, restrained, and useful.
     Match the output schema exactly (StructuredReply: parts + citations).
 
@@ -222,7 +229,10 @@ You are an operations analyst. Be precise, restrained, and useful.
     primary_payload_json: {{ primary_payload_json }}
     secondary_payload_json: {{ secondary_payload_json }}
 
-{{ ctx.output_format }}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
 Return exactly one `StructuredReply` JSON object.
 If `parts[]` is present, choose each item with discriminator `type`:
@@ -230,6 +240,8 @@ If `parts[]` is present, choose each item with discriminator `type`:
 - `type: "data"` -> DataPart
 Set `type` exactly for each `parts[]` item.
 Do not add text before or after the JSON object.
+
+{{ ctx.output_format }}
 "#
 }
 

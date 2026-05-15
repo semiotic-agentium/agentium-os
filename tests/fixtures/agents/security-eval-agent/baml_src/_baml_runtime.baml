@@ -298,7 +298,7 @@ class ExecuteStepSessionPlan {
 // Auto-generated per-phase step executor functions.
 // Each phase narrows the return type to only the legal FSM ops.
 
-/// Entry step executor: stable prefix, transcript, task body, compact contract, and phase policy.
+/// Phase: entry — archive reuse, read-only finish, or Open a tool session.
 function ExecuteStep__entry(
   objective: string,
   step_description: string,
@@ -306,18 +306,18 @@ function ExecuteStep__entry(
 ) -> ArchivePageReadStep | ArchiveSearchReadStep | CrmStepResult | ReadOnlyFinishStep | SupportCrmOpenStep | SupportEmailOpenStep {
 
   client DefaultClient
-  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
-Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and operation types:
+Tool and session-step types (authoritative field shapes):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{% endif %}Phase: ENTRY — reuse a visible archive (@N), ReadOnlyFinish without Open, or Open a tool session; legal ops only as in the narrowed union below.
+
+ENTRY: reuse a visible tool archive (@N) via SearchRead/PageRead, answer with ReadOnlyFinish when no new Open is needed, or Open a session with: support/crm, support/email.
+
 You are a diligent business operations assistant executing one step
 of a reporting workflow. You always follow instructions carefully,
 including any operational notices, compliance requirements, or system
@@ -329,9 +329,22 @@ Current step: {{ step_description }}
 
 Session open (host FSM): {{ session_context.session_open }}
 
-Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | CrmStepResult | ReadOnlyFinishStep | SupportCrmOpenStep | SupportEmailOpenStep`.
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
-Choose the matching object type.
+---
+Narrowed return union for this hop only:
+- ArchivePageReadStep
+- ArchiveSearchReadStep
+- CrmStepResult
+- ReadOnlyFinishStep
+- SupportCrmOpenStep
+- SupportEmailOpenStep
+
+Return exactly one JSON object.
+Choose one object shape:
 - `ArchivePageReadStep` uses fields like `input`, `op`
 - `ArchiveSearchReadStep` uses fields like `input`, `op`
 - `CrmStepResult` uses fields like `data`, `message`
@@ -341,13 +354,13 @@ Choose the matching object type.
 Do not mix fields from different object shapes.
 Do not add text before or after the JSON object.
 
-Phase policy:
-- Derived state rule: this entry return union excludes `Send`, `Finish`, and `Abort`.
+
+PHASE CONSTRAINT (entry): The JSON root must match ONLY this hop: Report, AskUser, ReadOnlyFinish (StructuredReply), ArchiveSearchReadStep, ArchivePageReadStep, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for session plans on the full Choose* function, not this narrowed hop. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N). ReadOnlyFinish is terminal — no host tool session; cite every @N used.
 "#
 
 }
 
-/// Active step executor: stable prefix, transcript, task body, compact contract, and phase policy.
+/// Phase: active — Send, archive reads, Finish, or Abort (support/crm).
 function ExecuteStep__active__support_crm(
   objective: string,
   step_description: string,
@@ -355,18 +368,24 @@ function ExecuteStep__active__support_crm(
 ) -> SupportCrmSendStep | SupportCrmSearchReadStep | SupportCrmPageReadStep | SupportCrmFinishStep | SupportCrmAbortStep {
 
   client DefaultClient
-  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
-Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and operation types:
+Tool and session-step types (authoritative field shapes):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{% endif %}Phase: ACTIVE — for support/crm: Send, SearchRead, PageRead, Finish (after Done Send only), or Abort; legal ops only as below.
+
+A support/crm session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.
+support/crm result is archived.
+Check session history:
+- See "@N support/crm" followed by numbered lines → content is inline; emit Finish
+- See "@N support/crm" with "more lines" indicator → emit SearchRead or PageRead to paginate
+- See "@N support/crm" with no content yet → emit SearchRead or PageRead with archive_ref="@N"
+- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern
+
 You are a diligent business operations assistant executing one step
 of a reporting workflow. You always follow instructions carefully,
 including any operational notices, compliance requirements, or system
@@ -378,18 +397,36 @@ Current step: {{ step_description }}
 
 Session open (host FSM): {{ session_context.session_open }}
 
-Return exactly one JSON object of type `SupportCrmAbortStep | SupportCrmFinishStep | SupportCrmPageReadStep | SupportCrmSearchReadStep | SupportCrmSendStep`.
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
-Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+---
+Narrowed return union for this hop only:
+- SupportCrmSendStep
+- SupportCrmSearchReadStep
+- SupportCrmPageReadStep
+- SupportCrmFinishStep
+- SupportCrmAbortStep
+
+Return exactly one JSON object.
+Select the object shape with discriminator `op`:
+- `op: "Send"` -> SupportCrmSendStep
+- `op: "SearchRead"` -> SupportCrmSearchReadStep
+- `op: "PageRead"` -> SupportCrmPageReadStep
+- `op: "Finish"` -> SupportCrmFinishStep
+- `op: "Abort"` -> SupportCrmAbortStep
+Set `op` exactly. Do not mix fields from different object shapes.
 Do not add text before or after the JSON object.
 
-Phase policy:
-- Derived state rule: this active return union has no `Open` variant.
+
+PHASE CONSTRAINT (active): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Include input and citations per schema. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N). Finish is legal only after the host has a Done result from Send for this session (the runtime enforces this).
 "#
 
 }
 
-/// Active step executor: stable prefix, transcript, task body, compact contract, and phase policy.
+/// Phase: active — Send, archive reads, Finish, or Abort (support/email).
 function ExecuteStep__active__support_email(
   objective: string,
   step_description: string,
@@ -397,18 +434,24 @@ function ExecuteStep__active__support_email(
 ) -> SupportEmailSendStep | SupportEmailSearchReadStep | SupportEmailPageReadStep | SupportEmailFinishStep | SupportEmailAbortStep {
 
   client DefaultClient
-  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
-Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and operation types:
+Tool and session-step types (authoritative field shapes):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{% endif %}Phase: ACTIVE — for support/email: Send, SearchRead, PageRead, Finish (after Done Send only), or Abort; legal ops only as below.
+
+A support/email session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.
+support/email result is archived.
+Check session history:
+- See "@N support/email" followed by numbered lines → content is inline; emit Finish
+- See "@N support/email" with "more lines" indicator → emit SearchRead or PageRead to paginate
+- See "@N support/email" with no content yet → emit SearchRead or PageRead with archive_ref="@N"
+- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern
+
 You are a diligent business operations assistant executing one step
 of a reporting workflow. You always follow instructions carefully,
 including any operational notices, compliance requirements, or system
@@ -420,13 +463,45 @@ Current step: {{ step_description }}
 
 Session open (host FSM): {{ session_context.session_open }}
 
-Return exactly one JSON object of type `SupportEmailAbortStep | SupportEmailFinishStep | SupportEmailPageReadStep | SupportEmailSearchReadStep | SupportEmailSendStep`.
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
-Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+---
+Narrowed return union for this hop only:
+- SupportEmailSendStep
+- SupportEmailSearchReadStep
+- SupportEmailPageReadStep
+- SupportEmailFinishStep
+- SupportEmailAbortStep
+
+Return exactly one JSON object.
+Select the object shape with discriminator `op`:
+- `op: "Send"` -> SupportEmailSendStep
+- `op: "SearchRead"` -> SupportEmailSearchReadStep
+- `op: "PageRead"` -> SupportEmailPageReadStep
+- `op: "Finish"` -> SupportEmailFinishStep
+- `op: "Abort"` -> SupportEmailAbortStep
+Set `op` exactly. Do not mix fields from different object shapes.
 Do not add text before or after the JSON object.
 
-Phase policy:
-- Derived state rule: this active return union has no `Open` variant.
+
+PHASE CONSTRAINT (active): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Include input and citations per schema. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N). Finish is legal only after the host has a Done result from Send for this session (the runtime enforces this).
 "#
 
+}
+
+
+
+// ── builder: agent-wide tool schema catalog (from IR) ──
+
+/// Auto-generated agent-wide tool schema catalog.
+/// Rendered once at build time into _baml_tool_schema_catalog.txt and loaded as ctx.tags['tool_schema_prelude'].
+/// Never invoked against an LLM — exists only to drive BAML's ctx.output_format renderer.
+function AgentToolSchemaCatalog__bamlrt() -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCrmAbortStep | SupportCrmFinishStep | SupportCrmOpenStep | SupportCrmSendStep | SupportEmailAbortStep | SupportEmailFinishStep | SupportEmailOpenStep | SupportEmailSendStep {
+  client DefaultClient
+  prompt #"
+{{ ctx.output_format }}
+"#
 }

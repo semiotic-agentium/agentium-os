@@ -1,172 +1,112 @@
-Generated from compiled BAML IR.
-Tool metadata selects availability only; field shapes and nested types come from IR.
-
-Available tool types for this agent:
-
-tool system/discover_agents
-  purpose: Browse available agents. You can optionally filter by query, requiredCapabilities, or matching event subscriptions. Omit filters to list all agents.
-  open: DiscoverAgentsOpenInput
-  send: DiscoverAgentsSendInput
-  operations: SystemDiscoverAgentsOpenStep | SystemDiscoverAgentsSendStep | SystemDiscoverAgentsSearchReadStep | SystemDiscoverAgentsPageReadStep | SystemDiscoverAgentsFinishStep | SystemDiscoverAgentsAbortStep
-
-tool system/extrospection
-  purpose: Queries provenance rows across contexts and agents with compact token-aware output. Open session, send filters/grouping, then read() returns one result page.
-  open: ProvenanceQueryOpenInput
-  send: ProvenanceQuerySendInput
-  operations: SystemExtrospectionOpenStep | SystemExtrospectionSendStep | SystemExtrospectionSearchReadStep | SystemExtrospectionPageReadStep | SystemExtrospectionFinishStep | SystemExtrospectionAbortStep
-
-Type definitions:
-
-type ArchivePageReadInput = {
-  archive_ref: string @description("Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.")
-  offset?: int @description("0-based offset over full rendered archive lines (no grep). First window: offset=0; next: previous next_offset while lines remain.")
-  limit?: int @description("Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).")
-}
-
-type ArchivePageReadStep = {
-  op: "PageRead"
-  input: ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
-}
-
-type ArchiveSearchReadInput = {
-  archive_ref: string @description("Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.")
-  grep: string @description("Non-empty filter over rendered archive lines. SearchRead is for locating lines that match; use when you have a concrete term. Shape: substring or regex per host (e.g. name, -i error). For full contiguous slices without filtering, use PageRead.")
-  offset?: int @description("0-based offset over grep matches (after the filter). First window: offset=0; next: previous next_offset while matches remain.")
-  limit?: int @description("Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).")
-}
-
-type ArchiveSearchReadStep = {
-  op: "SearchRead"
-  input: ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
-}
-
-type DataPart = {
-  type: "data"
-  data: string @description("Serialised content (e.g. JSON string, CSV string).")
-  media_type: ReplyMediaType @description("MIME type of the data field.")
-}
-
-type DiscoverAgentsOpenInput = {
-  reason?: string
-}
-
-type DiscoverAgentsSendInput = {
-  query?: string
-  required_capabilities?: string[]
-  required_schema_versions?: string[]
-  required_source_kinds?: string[]
-  limit?: int
-  offset?: int
-}
-
-type ProvenanceQueryOpenInput = {
-  reason?: string
-}
-
-type ProvenanceQuerySendInput = {
-  read?: SessionReadEnvelope
-  resource: string
-  context_id?: string
-  task_id?: string
-  agent_id?: string
-  provider?: string
-  model?: string
-  tool_name?: string
-  baml_prompt?: string
-  payload_text?: string
-  group_by?: string[]
-  sort_by?: string
-  sort_dir?: string
-  outcome?: string
-  page_size?: int
-  cursor?: string
-  top_k?: int
-}
-
-type ReadOnlyFinishStep = {
-  op: "ReadOnlyFinish"
-  reply: StructuredReply @description("User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.")
-}
-
-type ReplyMediaType = "TextPlain" | "TextMarkdown" | "ApplicationJson" | "TextCsv"
-
-type ReplyPart = (TextPart | DataPart)
-
-type SessionReadEnvelope = {
-  mode?: SessionReadEnvelopeMode
-  ref_id: string
-  projection?: string
-  budget_hint?: int
-}
-
-type SessionReadEnvelopeMode = "RetrieveRef"
-
-type StructuredReply = {
-  parts: (TextPart | DataPart)[] @description("Ordered parts: start with TextPart (type \"text\") — set media_type TextMarkdown for rich answers (see TextPart); optionally append DataPart (type \"data\", media_type ApplicationJson) with a JSON string for machine-readable UI payloads.")
-  citations: string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
-}
-
-type SystemDiscoverAgentsAbortStep = {
-  op: "Abort"
-}
-
-type SystemDiscoverAgentsFinishStep = {
-  op: "Finish"
-}
-
-type SystemDiscoverAgentsOpenStep = {
-  op: "Open"
-  tool_name: "system/discover_agents" @description("Tool to open")
-  initial_input?: DiscoverAgentsOpenInput @description("Optional open payload.")
-}
-
-type SystemDiscoverAgentsPageReadStep = {
-  op: "PageRead"
-  input: ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
-}
-
-type SystemDiscoverAgentsSearchReadStep = {
-  op: "SearchRead"
-  input: ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
-}
-
-type SystemDiscoverAgentsSendStep = {
-  op: "Send"
-  input: DiscoverAgentsSendInput @description("Payload for this step.")
-  citations: string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
-}
-
-type SystemExtrospectionAbortStep = {
-  op: "Abort"
-}
-
-type SystemExtrospectionFinishStep = {
-  op: "Finish"
-}
-
-type SystemExtrospectionOpenStep = {
-  op: "Open"
-  tool_name: "system/extrospection" @description("Tool to open")
-  initial_input?: ProvenanceQueryOpenInput @description("Optional open payload.")
-}
-
-type SystemExtrospectionPageReadStep = {
-  op: "PageRead"
-  input: ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
-}
-
-type SystemExtrospectionSearchReadStep = {
-  op: "SearchRead"
-  input: ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
-}
-
-type SystemExtrospectionSendStep = {
-  op: "Send"
-  input: ProvenanceQuerySendInput @description("Payload for this step.")
-  citations: string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
-}
-
-type TextPart = {
-  type: "text"
-  text: string
+Answer in JSON using any of these schemas:
+{
+  op: "PageRead",
+  // Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.
+  input: {
+    // Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.
+    archive_ref: string,
+    // 0-based offset over full rendered archive lines (no grep). First window: offset=0; next: previous next_offset while lines remain.
+    offset: int or null,
+    // Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).
+    limit: int or null,
+  },
+} or {
+  op: "SearchRead",
+  // Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.
+  input: {
+    // Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.
+    archive_ref: string,
+    // Non-empty filter over rendered archive lines. SearchRead is for locating lines that match; use when you have a concrete term. Shape: substring or regex per host (e.g. name, -i error). For full contiguous slices without filtering, use PageRead.
+    grep: string,
+    // 0-based offset over grep matches (after the filter). First window: offset=0; next: previous next_offset while matches remain.
+    offset: int or null,
+    // Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).
+    limit: int or null,
+  },
+} or {
+  op: "ReadOnlyFinish",
+  // User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.
+  reply: {
+    // Ordered parts: start with TextPart (type "text") — set media_type TextMarkdown for rich answers (see TextPart); optionally append DataPart (type "data", media_type ApplicationJson) with a JSON string for machine-readable UI payloads.
+    parts: [
+      {
+        type: "text",
+        text: string,
+      } or {
+        type: "data",
+        // Serialised content (e.g. JSON string, CSV string).
+        data: string,
+        // MIME type of the data field.
+        media_type: 'text/plain' or 'text/markdown' or 'application/json' or 'text/csv',
+      }
+    ],
+    // Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.
+    citations: string[],
+  },
+} or {
+  op: "Abort",
+} or {
+  op: "Finish",
+} or {
+  op: "Open",
+  // Tool to open
+  tool_name: "system/discover_agents",
+  // Optional open payload.
+  initial_input: {
+    reason: string or null,
+  } or null,
+} or {
+  op: "Send",
+  // Payload for this step.
+  input: {
+    query: string or null,
+    required_capabilities: string[] or null,
+    required_schema_versions: string[] or null,
+    required_source_kinds: string[] or null,
+    limit: int or null,
+    offset: int or null,
+  },
+  // Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.
+  citations: string[],
+} or {
+  op: "Abort",
+} or {
+  op: "Finish",
+} or {
+  op: "Open",
+  // Tool to open
+  tool_name: "system/extrospection",
+  // Optional open payload.
+  initial_input: {
+    reason: string or null,
+  } or null,
+} or {
+  op: "Send",
+  // Payload for this step.
+  input: {
+    read: {
+      mode: 'retrieve_ref' or null,
+      ref_id: string,
+      projection: string or null,
+      budget_hint: int or null,
+    } or null,
+    resource: string,
+    context_id: string or null,
+    task_id: string or null,
+    agent_id: string or null,
+    provider: string or null,
+    model: string or null,
+    tool_name: string or null,
+    baml_prompt: string or null,
+    payload_text: string or null,
+    group_by: string[] or null,
+    sort_by: string or null,
+    sort_dir: string or null,
+    outcome: string or null,
+    page_size: int or null,
+    cursor: string or null,
+    top_k: int or null,
+  },
+  // Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.
+  citations: string[],
 }

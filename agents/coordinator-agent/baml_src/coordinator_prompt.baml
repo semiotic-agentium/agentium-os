@@ -29,18 +29,17 @@ class CoordinatorMetaOnly {
 
 function ClassifyCoordinatorTurn(user_message: string) -> CoordinatorReadyIntent | CoordinatorNeedTaskClarification | CoordinatorMetaOnly {
   client DefaultClient
-  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
-Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and operation types:
+Tool and session-step types (authoritative field shapes):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{% endif %}Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
 You classify this turn for a **coordinator agent** that routes **real work** to specialist agents (after discovery). **Discovery of specialists runs only after** a delegatable task exists OR the user explicitly asks what agents or tools exist (capabilities orientation).
 
     Classify the latest turn using the conversation history for context.
@@ -63,7 +62,10 @@ You classify this turn for a **coordinator agent** that routes **real work** to 
     {{ _.role('user') }}
     {{ user_message }}
 
-{{ ctx.output_format }}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
 Return exactly one JSON object.
 Select the object shape with discriminator `kind`:
@@ -72,6 +74,8 @@ Select the object shape with discriminator `kind`:
 - `kind: "meta"` -> CoordinatorMetaOnly
 Set `kind` exactly. Do not mix fields from different object shapes.
 Do not add text before or after the JSON object.
+
+{{ ctx.output_format }}
 "#
 }
 
@@ -81,18 +85,17 @@ Do not add text before or after the JSON object.
 // The session history carries the Read result from the preceding GetDiscoverAgentsPlan call.
 function FormatCapabilities(user_message: string) -> StructuredReply {
   client DefaultClient
-  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
-Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and operation types:
+Tool and session-step types (authoritative field shapes):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{% endif %}Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
 You are the coordinator agent: calm, precise, and brief. Use prior turns from the transcript below when present for continuity.
 
     If the session history includes a tool discovery **Read** result, summarize those agents in clear professional language (what each is for, major capabilities).
@@ -102,7 +105,10 @@ You are the coordinator agent: calm, precise, and brief. Use prior turns from th
     {{ _.role('user') }}
     {{ user_message }}
 
-{{ ctx.output_format }}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
 Return exactly one `StructuredReply` JSON object.
 If `parts[]` is present, choose each item with discriminator `type`:
@@ -110,6 +116,8 @@ If `parts[]` is present, choose each item with discriminator `type`:
 - `type: "data"` -> DataPart
 Set `type` exactly for each `parts[]` item.
 Do not add text before or after the JSON object.
+
+{{ ctx.output_format }}
 "#
 }
 
@@ -118,18 +126,17 @@ Do not add text before or after the JSON object.
 // Never plan a step for coordinator-agent. For capability/meta requests, return plan_steps as [].
 function MakeStructuredPlan(user_message: string) -> StandardStructuredPlan {
   client DefaultClient
-  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
-Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and operation types:
+Tool and session-step types (authoritative field shapes):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{% endif %}Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
 You are PLANNING what to do; you do not perform the task yourself.
     When discovery ran, the session history contains the list of available agents; when it did **not** run (greeting/meta-only path), there may be **no** agent listing — treat `plan_steps` as `[]` unless the user clearly stated routable work that implies delegation without that listing.
 
@@ -154,10 +161,15 @@ You are PLANNING what to do; you do not perform the task yourself.
     {{ _.role('user') }}
     {{ user_message }}
 
-{{ ctx.output_format }}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
 Return exactly one `StandardStructuredPlan` JSON object.
 Do not add text before or after the JSON object.
+
+{{ ctx.output_format }}
 "#
 }
 
@@ -182,18 +194,17 @@ function CoordinatorSynthesizeReply(
   plan_objective: string,
 ) -> StructuredReply {
   client DefaultClient
-  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
-Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and operation types:
+Tool and session-step types (authoritative field shapes):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{% endif %}Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
 You are the coordinator agent: professional, concise, and accurate. Use prior turns from the transcript below when present for continuity.
 
     The user asked: {{ user_message }}
@@ -203,7 +214,10 @@ You are the coordinator agent: professional, concise, and accurate. Use prior tu
     Match the output schema exactly (StructuredReply: parts + citations).
     Synthesize across steps when needed; prefer bullet structure in markdown only when it improves clarity.
 
-{{ ctx.output_format }}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
 Return exactly one `StructuredReply` JSON object.
 If `parts[]` is present, choose each item with discriminator `type`:
@@ -211,6 +225,8 @@ If `parts[]` is present, choose each item with discriminator `type`:
 - `type: "data"` -> DataPart
 Set `type` exactly for each `parts[]` item.
 Do not add text before or after the JSON object.
+
+{{ ctx.output_format }}
 "#
 }
 

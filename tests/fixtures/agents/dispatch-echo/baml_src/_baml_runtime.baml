@@ -121,18 +121,18 @@ enum CallbackToolInputVariant1Continuation {
 }
 
 class CallbackToolInputVariant1 {
-  after_ms int @description("Delay before the callback event is emitted, in milliseconds.")
-  source_key string @description("Stable event source key for subscription matching, for example `workflow-intake:follow-up`.")
-  payload OpaqueJson @description("Opaque JSON payload delivered back through onDispatch.")
-  dedupe_key string | null? @description("Optional idempotency key scoped to the sourceKey. A pending callback with the same sourceKey + dedupeKey is reused instead of creating another row.")
-  continuation CallbackToolInputVariant1Continuation | null? @description("Optional continuation policy. Omit it for a detached callback. Use `resume_current_task` to re-enter the current task later in the same context after the current turn has quiesced.")
+  after_ms int
+  source_key string
+  payload OpaqueJson @description("Opaque JSON transport value. Direct host callers may send raw JSON; generated BAML callers should use the OpaqueJson wrapper.")
+  dedupe_key string | null?
+  continuation CallbackToolInputVariant1Continuation | null?
   op string
 }
 
 class CallbackToolInputVariant2 {
-  callback_id string | null? @description("Exact callback id to cancel.")
-  source_key string | null? @description("Source key for dedupe-key cancellation. Required when cancelling by dedupeKey.")
-  dedupe_key string | null? @description("Optional dedupe key to cancel instead of a callback id. Requires sourceKey.")
+  callback_id string | null?
+  source_key string | null?
+  dedupe_key string | null?
   op string
 }
 

@@ -202,11 +202,11 @@ class DiscoverToolsSendInput {
 }
 
 class ConversationPart {
-  text string | null? @description("Plain text content for this conversation part.")
-  raw string | null? @description("Raw provider-native content when plain text would be lossy or unavailable.")
-  url string | null? @description("Remote URL for this part when the content points to a web or attachment resource.")
-  filename string | null? @description("Attachment filename when this part refers to a file.")
-  media_type string | null? @description("MIME type for this part, for example text/plain or image/png.")
+  text string | null?
+  raw string | null?
+  url string | null?
+  filename string | null?
+  media_type string | null?
 }
 
 class ConversationMessage {
@@ -392,7 +392,7 @@ class SystemInternalA2aSessionPlan {
 // Auto-generated per-phase step executor functions.
 // Each phase narrows the return type to only the legal FSM ops.
 
-/// Entry step executor: stable prefix, transcript, task body, compact contract, and phase policy.
+/// Phase: entry — archive reuse, read-only finish, or Open a tool session.
 function DecideDelegationAction__entry(
   goal: string,
   agent_package: string,
@@ -401,33 +401,49 @@ function DecideDelegationAction__entry(
 ) -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SystemInternalA2aOpenStep {
 
   client DefaultClient
-  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
-Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and operation types:
+Tool and session-step types (authoritative field shapes):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}
+{% endif %}Phase: ENTRY — reuse a visible archive (@N), ReadOnlyFinish without Open, or Open a tool session; legal ops only as in the narrowed union below.
+
+ENTRY: reuse a visible tool archive (@N) via SearchRead/PageRead, answer with ReadOnlyFinish when no new Open is needed, or Open a session with: system/internal_a2a.
+
+Goal: Coordinate with agent {{ agent_package }}/{{ agent_instance_id }} to achieve: {{ goal }}
+Return `null` when the goal is satisfied or after 2+ exchanges.
+
 {% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
-Goal: Coordinate with agent {{ agent_package }}/{{ agent_instance_id }} to achieve: {{ goal }}
-Return `null` when the goal is satisfied or after 2+ exchanges.
 
-Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SystemInternalA2aOpenStep`.
+---
+Narrowed return union for this hop only:
+- ArchivePageReadStep
+- ArchiveSearchReadStep
+- ReadOnlyFinishStep
+- SystemInternalA2aOpenStep
 
-Use `op` as the discriminator: "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
+Return exactly one JSON object.
+Select the object shape with discriminator `op`:
+- `op: "PageRead"` -> ArchivePageReadStep
+- `op: "SearchRead"` -> ArchiveSearchReadStep
+- `op: "ReadOnlyFinish"` -> ReadOnlyFinishStep
+- `op: "Open"` -> SystemInternalA2aOpenStep
+Set `op` exactly. Do not mix fields from different object shapes.
 Do not add text before or after the JSON object.
 
-Phase policy:
-- Derived state rule: this entry return union excludes `Send`, `Finish`, and `Abort`.
+
+PHASE CONSTRAINT (entry): The JSON root must match ONLY this hop: Report, AskUser, ReadOnlyFinish (StructuredReply), ArchiveSearchReadStep, ArchivePageReadStep, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for session plans on the full Choose* function, not this narrowed hop. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N). ReadOnlyFinish is terminal — no host tool session; cite every @N used.
 "#
 
 }
 
-/// Active step executor: stable prefix, transcript, task body, compact contract, and phase policy.
+/// Phase: active — Send, archive reads, Finish, or Abort (system/internal_a2a).
 function DecideDelegationAction__active__system_internal_a2a(
   goal: string,
   agent_package: string,
@@ -436,94 +452,182 @@ function DecideDelegationAction__active__system_internal_a2a(
 ) -> SystemInternalA2aSendStep | SystemInternalA2aSearchReadStep | SystemInternalA2aPageReadStep | SystemInternalA2aFinishStep | SystemInternalA2aAbortStep {
 
   client DefaultClient
-  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
-Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and operation types:
+Tool and session-step types (authoritative field shapes):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}
+{% endif %}Phase: ACTIVE — for system/internal_a2a: Send, SearchRead, PageRead, Finish (after Done Send only), or Abort; legal ops only as below.
+
+A system/internal_a2a session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.
+system/internal_a2a result is archived.
+Check session history:
+- See "@N system/internal_a2a" followed by numbered lines → content is inline; emit Finish
+- See "@N system/internal_a2a" with "more lines" indicator → emit SearchRead or PageRead to paginate
+- See "@N system/internal_a2a" with no content yet → emit SearchRead or PageRead with archive_ref="@N"
+- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern
+
+Goal: Coordinate with agent {{ agent_package }}/{{ agent_instance_id }} to achieve: {{ goal }}
+Return `null` when the goal is satisfied or after 2+ exchanges.
+
 {% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
-Goal: Coordinate with agent {{ agent_package }}/{{ agent_instance_id }} to achieve: {{ goal }}
-Return `null` when the goal is satisfied or after 2+ exchanges.
 
-Return exactly one JSON object of type `SystemInternalA2aAbortStep | SystemInternalA2aFinishStep | SystemInternalA2aPageReadStep | SystemInternalA2aSearchReadStep | SystemInternalA2aSendStep`.
+---
+Narrowed return union for this hop only:
+- SystemInternalA2aSendStep
+- SystemInternalA2aSearchReadStep
+- SystemInternalA2aPageReadStep
+- SystemInternalA2aFinishStep
+- SystemInternalA2aAbortStep
 
-Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+Return exactly one JSON object.
+Select the object shape with discriminator `op`:
+- `op: "Send"` -> SystemInternalA2aSendStep
+- `op: "SearchRead"` -> SystemInternalA2aSearchReadStep
+- `op: "PageRead"` -> SystemInternalA2aPageReadStep
+- `op: "Finish"` -> SystemInternalA2aFinishStep
+- `op: "Abort"` -> SystemInternalA2aAbortStep
+Set `op` exactly. Do not mix fields from different object shapes.
 Do not add text before or after the JSON object.
 
-Phase policy:
-- Derived state rule: this active return union has no `Open` variant.
+
+PHASE CONSTRAINT (active): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Include input and citations per schema. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N). Finish is legal only after the host has a Done result from Send for this session (the runtime enforces this).
 "#
 
 }
 
-/// Entry step executor: stable prefix, transcript, task body, compact contract, and phase policy.
+/// Phase: entry — archive reuse, read-only finish, or Open a tool session.
 function GetDiscoverAgentsPlan__entry(
   inferred_intent: string,
   session_context: SessionContext
 ) -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SystemDiscoverAgentsOpenStep {
 
   client DefaultClient
-  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
-Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and operation types:
+Tool and session-step types (authoritative field shapes):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}
+{% endif %}Phase: ENTRY — reuse a visible archive (@N), ReadOnlyFinish without Open, or Open a tool session; legal ops only as in the narrowed union below.
+
+ENTRY: reuse a visible tool archive (@N) via SearchRead/PageRead, answer with ReadOnlyFinish when no new Open is needed, or Open a session with: system/discover_agents.
+
+Discover available agents to match the user's intent.
+Inferred intent: {{ inferred_intent }}
+
 {% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
-Discover available agents to match the user's intent.
-Inferred intent: {{ inferred_intent }}
 
-Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SystemDiscoverAgentsOpenStep`.
+---
+Narrowed return union for this hop only:
+- ArchivePageReadStep
+- ArchiveSearchReadStep
+- ReadOnlyFinishStep
+- SystemDiscoverAgentsOpenStep
 
-Use `op` as the discriminator: "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
+Return exactly one JSON object.
+Select the object shape with discriminator `op`:
+- `op: "PageRead"` -> ArchivePageReadStep
+- `op: "SearchRead"` -> ArchiveSearchReadStep
+- `op: "ReadOnlyFinish"` -> ReadOnlyFinishStep
+- `op: "Open"` -> SystemDiscoverAgentsOpenStep
+Set `op` exactly. Do not mix fields from different object shapes.
 Do not add text before or after the JSON object.
 
-Phase policy:
-- Derived state rule: this entry return union excludes `Send`, `Finish`, and `Abort`.
+
+PHASE CONSTRAINT (entry): The JSON root must match ONLY this hop: Report, AskUser, ReadOnlyFinish (StructuredReply), ArchiveSearchReadStep, ArchivePageReadStep, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for session plans on the full Choose* function, not this narrowed hop. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N). ReadOnlyFinish is terminal — no host tool session; cite every @N used.
 "#
 
 }
 
-/// Active step executor: stable prefix, transcript, task body, compact contract, and phase policy.
+/// Phase: active — Send, archive reads, Finish, or Abort (system/discover_agents).
 function GetDiscoverAgentsPlan__active__system_discover_agents(
   inferred_intent: string,
   session_context: SessionContext
 ) -> SystemDiscoverAgentsSendStep | SystemDiscoverAgentsSearchReadStep | SystemDiscoverAgentsPageReadStep | SystemDiscoverAgentsFinishStep | SystemDiscoverAgentsAbortStep {
 
   client DefaultClient
-  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
-Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and operation types:
+Tool and session-step types (authoritative field shapes):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}
+{% endif %}Phase: ACTIVE — for system/discover_agents: Send, SearchRead, PageRead, Finish (after Done Send only), or Abort; legal ops only as below.
+
+A system/discover_agents session is open. Emit Send for a new query, or SearchRead/PageRead an existing @N archive from history when listing output is already fetched — do not re-Send the same discover_agents listing without trying SearchRead/PageRead pagination first.
+
+DISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
+
+PAGING BEFORE RE-SEND: When a prior Send for this tool already archived an agents listing at @N, prefer SearchRead or PageRead on that @N (grep/limit/offset) to page or narrow — do not re-Send discover_agents with the same broad query as a substitute for pagination.
+system/discover_agents result is archived.
+Check session history:
+- See "@N system/discover_agents" followed by numbered lines → content is inline; emit Finish
+- See "@N system/discover_agents" with "more lines" indicator → emit SearchRead or PageRead to paginate
+- See "@N system/discover_agents" with no content yet → emit SearchRead or PageRead with archive_ref="@N"
+- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern
+
+DISCOVERY INPUT RULE: For broad listing and routing, set only the `query` field (free-text match on name, package, description). Leave `required_capabilities`, `required_schema_versions`, and `required_source_kinds` null or omit them unless the user explicitly asked to filter by capability or event subscription. Do not add filters to narrow a vague intent — that often yields zero agents.
+
+PAGING BEFORE RE-SEND: When a prior Send for this tool already archived an agents listing at @N, prefer SearchRead or PageRead on that @N (grep/limit/offset) to page or narrow — do not re-Send discover_agents with the same broad query as a substitute for pagination.
+
+FINISH DEFAULT ON ACTIVE: When history already shows a completed discover_agents archive (@N) and the listing is visible or confirmed empty (including zero agents), default to Finish — do not Send again with the same broad query unless deliberately refining filters per DISCOVERY INPUT RULE. Use SearchRead/PageRead only when line-level archive inspection or pagination is required.
+
+Discover available agents to match the user's intent.
+Inferred intent: {{ inferred_intent }}
+
 {% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
-Discover available agents to match the user's intent.
-Inferred intent: {{ inferred_intent }}
 
-Return exactly one JSON object of type `SystemDiscoverAgentsAbortStep | SystemDiscoverAgentsFinishStep | SystemDiscoverAgentsPageReadStep | SystemDiscoverAgentsSearchReadStep | SystemDiscoverAgentsSendStep`.
+---
+Narrowed return union for this hop only:
+- SystemDiscoverAgentsSendStep
+- SystemDiscoverAgentsSearchReadStep
+- SystemDiscoverAgentsPageReadStep
+- SystemDiscoverAgentsFinishStep
+- SystemDiscoverAgentsAbortStep
 
-Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+Return exactly one JSON object.
+Select the object shape with discriminator `op`:
+- `op: "Send"` -> SystemDiscoverAgentsSendStep
+- `op: "SearchRead"` -> SystemDiscoverAgentsSearchReadStep
+- `op: "PageRead"` -> SystemDiscoverAgentsPageReadStep
+- `op: "Finish"` -> SystemDiscoverAgentsFinishStep
+- `op: "Abort"` -> SystemDiscoverAgentsAbortStep
+Set `op` exactly. Do not mix fields from different object shapes.
 Do not add text before or after the JSON object.
 
-Phase policy:
-- Derived state rule: this active return union has no `Open` variant.
+
+PHASE CONSTRAINT (active): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Include input and citations per schema. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N). Finish is legal only after the host has a Done result from Send for this session (the runtime enforces this).
 "#
 
+}
+
+
+
+// ── builder: agent-wide tool schema catalog (from IR) ──
+
+/// Auto-generated agent-wide tool schema catalog.
+/// Rendered once at build time into _baml_tool_schema_catalog.txt and loaded as ctx.tags['tool_schema_prelude'].
+/// Never invoked against an LLM — exists only to drive BAML's ctx.output_format renderer.
+function AgentToolSchemaCatalog__bamlrt() -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SystemDiscoverAgentsAbortStep | SystemDiscoverAgentsFinishStep | SystemDiscoverAgentsOpenStep | SystemDiscoverAgentsSendStep | SystemDiscoverToolsAbortStep | SystemDiscoverToolsFinishStep | SystemDiscoverToolsOpenStep | SystemDiscoverToolsSendStep | SystemInternalA2aAbortStep | SystemInternalA2aFinishStep | SystemInternalA2aOpenStep | SystemInternalA2aSendStep {
+  client DefaultClient
+  prompt #"
+{{ ctx.output_format }}
+"#
 }

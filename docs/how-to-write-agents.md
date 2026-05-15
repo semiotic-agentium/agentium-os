@@ -462,7 +462,7 @@ Some agents **classify first** with a BAML union such as `SlackIntent | NeedClar
 - **Tools** return **structured data** (validated JSON shapes).
 - The **agent** owns **UX**: formatting, headings, and what the operator sees.
 
-Internal step execution (`runGeneratedStepExecutor`) returns **FSM telemetry** (`last`, `steps`, `session_context`, …). That is **not** the canonical operator-facing message for provenance or product UX.
+Internal step execution (`runGeneratedStepExecutor`) resolves with a **discriminated envelope** (`outcome`: `completed` | `agent_correctable` | `fatal`). On `completed`, `last`, `steps`, and `session_context` are the same FSM telemetry as before. On `agent_correctable`, the host returns structured `recovery` (`code`, `mistake`, `invariant`, `fix_steps`) — the JS promise **still fulfilled**; branch on `recovery.code` instead of parsing `Error.message`. Malformed session-plan steps from the model (e.g. missing `archive_ref` on `PageRead`) surface here as `agent_correctable`, not as a bridge throw.
 
 The **single** user-facing artifact the platform surfaces for a turn is the chat handler's return: `**SessionResult.message`**, a `**StructuredReply**` with `**parts**` and `**citations**`. Synthesize that **once** at session completion (the reporting agent does this with `PresentReportingToUser`). Do not treat step telemetry as the user reply or duplicate prose onto step records.
 

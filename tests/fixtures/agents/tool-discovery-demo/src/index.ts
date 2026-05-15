@@ -41,6 +41,13 @@ __chat_register({
 
     const run = await runGeneratedStepExecutor("ChooseDiscoverToolsQuery", { user_message: text }, { max_steps: 6 });
 
+    if (run.outcome !== "completed") {
+      if (run.outcome === "agent_correctable") {
+        return { error: `[${run.recovery.code}] ${run.recovery.mistake}` };
+      }
+      return { error: run.message };
+    }
+
     // Check run.last first (blocking Send result is the primary source)
     const last = run.last as unknown;
     const lastTools = extractTools(last);

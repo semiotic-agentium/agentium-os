@@ -71,6 +71,34 @@ export function chatMessagesHaveStreamedAgentBody(messages: ChatMessage[]): bool
   });
 }
 
+function agentMessageHasRenderableBody(message: ChatMessage): boolean {
+  if (message.role !== "agent") return false;
+  if (message.text?.trim()) return true;
+  const blocks = message.contentBlocks;
+  if (!blocks?.length) return false;
+  return blocks.some((b) => {
+    if (b.type === "text") return (b.text ?? "").trim().length > 0;
+    return true;
+  });
+}
+
+/**
+ * Explicit restore should not let an empty live placeholder veto a real persisted transcript page.
+ * Preserve only visible streamed content or genuine INPUT_REQUIRED suspension.
+ */
+export function explicitRestoreMayIgnoreEmptyLivePlaceholder(
+  messages: ChatMessage[],
+  page: ConversationHistoryPage,
+): boolean {
+  if (!Array.isArray(page.items) || page.items.length === 0) return false;
+  const hasLocalUserTurn = messages.some((m) => m.role === "user" && (m.text ?? "").trim().length > 0);
+  if (!hasLocalUserTurn) return false;
+  if (messages.some((m) => m.role === "agent" && m.awaitingInput === true)) return false;
+  const hasStreamingAgent = messages.some((m) => m.role === "agent" && m.isStreaming === true);
+  if (!hasStreamingAgent) return false;
+  return !messages.some(agentMessageHasRenderableBody);
+}
+
 /** Live assistant row is mid-stream or suspended for INPUT_REQUIRED — never replace from provenance. */
 export function liveAgentBubbleBlocksHistoryReplace(messages: ChatMessage[]): boolean {
   return messages.some(
@@ -154,6 +182,14 @@ export function applyConversationHistoryPage(
   messages: Ref<ChatMessage[]>,
   page: ConversationHistoryPage,
 ): void {
+  const traceTranscript = (...args: unknown[]) => {
+    if (typeof window !== "undefined" && window.location.hostname === "localhost") {
+      console.debug(
+        "[transcript]",
+        ...args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))),
+      );
+    }
+  };
   const sorted = [...page.items].sort((a, b) => a.timestampMs - b.timestampMs);
   const rebuilt: ChatMessage[] = [];
   let turnOrdinal = 0;
@@ -278,6 +314,17 @@ export function applyConversationHistoryPage(
   }
 
   messages.value = rebuilt;
+  traceTranscript("applyPage.commit", {
+    contextId: page.contextId,
+    version: page.version,
+    items: sorted.length,
+    rebuilt: rebuilt.length,
+    sample: rebuilt.slice(0, 4).map((m) => ({
+      id: m.id,
+      role: m.role,
+      text: (m.text ?? "").slice(0, 60),
+    })),
+  });
   syncResumeHintsFromPage(messages, page);
 }
 

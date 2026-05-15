@@ -788,7 +788,8 @@ pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridg
 
     // __run_step_executor: Rust-hosted step executor loop.
     // Takes (function_name, args_json, options_json?) from JS, runs the multi-hop
-    // FSM loop entirely in Rust, returns StepExecutorResult as JSON string.
+    // FSM loop entirely in Rust, returns [`StepExecutorOutcome`] as JSON (always resolves the promise).
+    // Host supplement auto-retry (phase 2) remains disabled until metrics warrant it.
     // That payload is execution telemetry only; the canonical user reply is SessionResult.message.
     let manager_clone4 = bridge.baml_manager().clone();
     let registry_clone = bridge.invocation_context_registry().clone();
@@ -835,7 +836,7 @@ pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridg
                             .map(|n| n as usize)
                             .unwrap_or(8);
 
-                        let result =
+                        let loop_result =
                             crate::step_executor_loop::run_step_executor_loop(
                                 &manager,
                                 &scope,
@@ -846,20 +847,16 @@ pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridg
                             )
                             .await;
 
-                        match result {
-                            Ok(step_result) => {
-                                let json =
-                                    serde_json::to_string(&step_result).map_err(|e| {
-                                        quickjs_runtime::jsutils::JsError::new_str(&format!(
-                                            "__run_step_executor: serialize error: {e}"
-                                        ))
-                                    })?;
-                                Ok(JsValueFacade::new_string(json))
-                            }
-                            Err(e) => Err(quickjs_runtime::jsutils::JsError::new_str(
-                                &format!("__run_step_executor: {e}"),
-                            )),
-                        }
+                        let outcome =
+                            crate::step_executor_outcome_bridge::step_executor_outcome_from_loop_result(
+                                loop_result,
+                            );
+                        let json = serde_json::to_string(&outcome).map_err(|e| {
+                            quickjs_runtime::jsutils::JsError::new_str(&format!(
+                                "__run_step_executor: serialize error: {e}"
+                            ))
+                        })?;
+                        Ok(JsValueFacade::new_string(json))
                     },
                 ))
             },

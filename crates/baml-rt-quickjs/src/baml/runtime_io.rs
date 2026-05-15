@@ -18,6 +18,7 @@ pub(crate) fn completion_error_from(err: &BamlRtError) -> BamlRtError {
         BamlRtError::SessionLifecycle(lifecycle) => {
             BamlRtError::SessionLifecycle(lifecycle.clone())
         }
+        BamlRtError::StepPlanCorrectable(r) => BamlRtError::StepPlanCorrectable(r.clone()),
         _ => BamlRtError::InvalidArgument(err.to_string()),
     }
 }

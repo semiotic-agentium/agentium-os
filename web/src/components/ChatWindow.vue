@@ -27,7 +27,9 @@ const props = defineProps<{
 const emit = defineEmits<{ send: [text: string]; cancel: [] }>();
 
 const input = ref("");
+const chatWindowEl = ref<HTMLElement>();
 const messagesContainer = ref<HTMLElement>();
+const inputBarEl = ref<HTMLElement>();
 const textarea = ref<HTMLTextAreaElement>();
 const userAtBottom = ref(true);
 const scrollThreshold = 80;
@@ -132,6 +134,44 @@ watch(
   { immediate: true },
 );
 
+watch(
+  () => props.messages,
+  async (messages) => {
+    if (window.location.hostname !== "localhost") return;
+    await nextTick();
+    console.debug(
+      "[transcript]",
+      JSON.stringify({
+        chatWindowCount: messages.length,
+        sample: messages.slice(0, 4).map((m) => ({
+          id: m.id,
+          role: m.role,
+          text: (m.text ?? "").slice(0, 60),
+        })),
+        container: messagesContainer.value
+          ? {
+              childElementCount: messagesContainer.value.childElementCount,
+              clientHeight: messagesContainer.value.clientHeight,
+              scrollHeight: messagesContainer.value.scrollHeight,
+            }
+          : null,
+        chatWindow: chatWindowEl.value
+          ? {
+              clientHeight: chatWindowEl.value.clientHeight,
+            }
+          : null,
+        inputBar: inputBarEl.value
+          ? {
+              clientHeight: inputBarEl.value.clientHeight,
+            }
+          : null,
+        viewportHeight: window.innerHeight,
+      }),
+    );
+  },
+  { immediate: true, deep: true },
+);
+
 // Auto-scroll to bottom when user is at bottom and content updates (messages, text, or tool/status events)
 watch(
   () => {
@@ -150,7 +190,7 @@ watch(
 </script>
 
 <template>
-  <div class="chat-window">
+  <div ref="chatWindowEl" class="chat-window">
     <WorkflowProgress
       v-if="
         workflowProgress && workflowProgress.phase !== 'idle' && workflowProgress.pipelineActive
@@ -187,7 +227,7 @@ watch(
       <span class="working-dots" aria-hidden="true"><span></span><span></span><span></span></span>
       <span class="working-text">Agent is responding…</span>
     </div>
-    <form class="input-bar" @submit.prevent="handleSend">
+    <form ref="inputBarEl" class="input-bar" @submit.prevent="handleSend">
       <div
         v-if="awaitingInput"
         id="reply-needed-strip"

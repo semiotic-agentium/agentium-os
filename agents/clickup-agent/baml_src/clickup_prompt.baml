@@ -23,18 +23,17 @@ class ClickUpIntent {
 
 function InferClickUpIntent(user_message: string) -> NeedClarification | NotRelevant | ClickUpIntent {
   client DefaultClient
-  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
-Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and operation types:
+Tool and session-step types (authoritative field shapes):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{% endif %}Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
 You are the intent classifier for a ClickUp workspace assistant.
     Your only job is to categorise the user's message — do NOT fetch data or execute actions.
 
@@ -73,7 +72,10 @@ You are the intent classifier for a ClickUp workspace assistant.
     {{ _.role('user') }}
     {{ user_message }}
 
-{{ ctx.output_format }}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
 Return exactly one JSON object.
 Select the object shape with discriminator `kind`:
@@ -82,6 +84,8 @@ Select the object shape with discriminator `kind`:
 - `kind: "intent"` -> ClickUpIntent
 Set `kind` exactly. Do not mix fields from different object shapes.
 Do not add text before or after the JSON object.
+
+{{ ctx.output_format }}
 "#
 }
 
@@ -89,18 +93,17 @@ Do not add text before or after the JSON object.
 /// Sentinels are host-local: clickup-execute vs clickup-format.
 function PlanClickUpWork(intent: string, operation_kind: string) -> StandardStructuredPlan {
   client DefaultClient
-  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
-Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
 
 {% if ctx.tags['tool_schema_prelude'] %}
-Tool and operation types:
+Tool and session-step types (authoritative field shapes):
 {{ ctx.tags['tool_schema_prelude'] }}
 
-{% endif %}
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
+{% endif %}Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
 You are the planner for a ClickUp workspace assistant.
     Validated intent: {{ intent }}
     Operation kind: {{ operation_kind }}
@@ -127,10 +130,15 @@ You are the planner for a ClickUp workspace assistant.
     - citations (optional): when the session transcript below is present, set citations to #N line refs; you may shorten later
       execute sub_messages when IDs are already in history, but you MUST still include ≥1 clickup-execute before clickup-format.
 
-{{ ctx.output_format }}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
 Return exactly one `StandardStructuredPlan` JSON object.
 Do not add text before or after the JSON object.
+
+{{ ctx.output_format }}
 "#
 }
 

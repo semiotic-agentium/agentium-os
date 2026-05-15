@@ -126,7 +126,18 @@ __chat_register({
           : null;
 
         await discoveryExecutable?.startStep("step-discover");
-        await runGeneratedStepExecutor("GetDiscoverAgentsPlan", { inferred_intent: intentText }, { max_steps: 8 });
+        const discoverRun = await runGeneratedStepExecutor(
+          "GetDiscoverAgentsPlan",
+          { inferred_intent: intentText },
+          { max_steps: 8 },
+        );
+        if (discoverRun.outcome !== "completed") {
+          throw new Error(
+            discoverRun.outcome === "fatal"
+              ? discoverRun.message
+              : `[${discoverRun.recovery.code}] ${discoverRun.recovery.mistake}`,
+          );
+        }
         await discoveryExecutable?.completeStep("step-discover");
         await discoveryExecutable?.finish();
       } catch (e) {
@@ -194,7 +205,18 @@ __chat_register({
         }
 
         await delegateExecutable?.startStep(stepId);
-        await runGeneratedStepExecutor("DecideDelegationAction", { goal, agent_package, agent_instance_id }, { max_steps: 10 });
+        const delegateRun = await runGeneratedStepExecutor(
+          "DecideDelegationAction",
+          { goal, agent_package, agent_instance_id },
+          { max_steps: 10 },
+        );
+        if (delegateRun.outcome !== "completed") {
+          throw new Error(
+            delegateRun.outcome === "fatal"
+              ? delegateRun.message
+              : `[${delegateRun.recovery.code}] ${delegateRun.recovery.mistake}`,
+          );
+        }
         await delegateExecutable?.completeStep(stepId);
       }
 

@@ -30,6 +30,7 @@ pub mod progress_probe;
 pub mod retry_after;
 pub mod semantics;
 pub mod serde_one_or_many;
+pub mod step_executor_outcome;
 pub mod stream_completion;
 pub mod time;
 pub mod types;
@@ -93,5 +94,8 @@ pub use package::AgentManifest;
 pub use progress_probe::{ProgressProbe, ProgressProbeRegistry, register_progress_probe};
 pub use retry_after::{RetryAfter, parse_retry_after};
 pub use semantics::{ActivityOutcome, ErrorDisposition, InvocationKind, Outcome, Retryability};
+pub use step_executor_outcome::{
+    MAX_STEP_PLAN_FIX_STEPS, StepExecutorOutcome, StepPlanRecovery, StepPlanViolationCode,
+};
 pub use stream_completion::{StreamCompletion, StreamResult};
 pub use time::{now_unix_ms, now_unix_secs};

@@ -155,10 +155,17 @@ function formatLastToolOutputFromChunks(chunks: ClaudeNextOutput[]): string {
 function formatLastToolOutputFromExecutorRun(rawRun: unknown): string {
   const candidates: unknown[] = [];
   if (isObject(rawRun)) {
-    const run = rawRun as { last?: unknown; steps?: unknown[] };
-    candidates.push(run.last);
-    if (Array.isArray(run.steps)) {
-      candidates.push(...run.steps.slice().reverse());
+    const r = rawRun as Record<string, unknown>;
+    if (r.outcome === "completed") {
+      candidates.push(r.last);
+      const steps = r.steps;
+      if (Array.isArray(steps)) candidates.push(...(steps as unknown[]).slice().reverse());
+    } else {
+      const run = rawRun as { last?: unknown; steps?: unknown[] };
+      candidates.push(run.last);
+      if (Array.isArray(run.steps)) {
+        candidates.push(...run.steps.slice().reverse());
+      }
     }
   } else {
     candidates.push(rawRun);
@@ -315,8 +322,22 @@ __chat_register({
           },
           { max_steps: MAX_DEV_ACTIONS },
         );
+        if (run.outcome !== "completed") {
+          if (executionExecutable != null) {
+            await executionExecutable.completeStep?.("step-development");
+            await executionExecutable.abort?.(
+              run.outcome === "fatal" ? run.message : `[${run.recovery.code}] ${run.recovery.mistake}`,
+            );
+          }
+          return {
+            error:
+              run.outcome === "fatal"
+                ? run.message
+                : `[${run.recovery.code}] ${run.recovery.mistake}`,
+          };
+        }
 
-        const result = isObject(run) ? (run as { last?: unknown }).last : run;
+        const result = run.last;
         if (isClaudeDevReport(result)) {
           if (executionExecutable != null) {
             await executionExecutable.completeStep?.("step-development");

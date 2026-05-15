@@ -1,0 +1,19 @@
+---
+source: crates/baml-rt-core/src/step_executor_outcome.rs
+expression: json
+---
+{
+  "last": {
+    "status": "done"
+  },
+  "outcome": "completed",
+  "selected_tool": "support/notion",
+  "session_context": {
+    "contract_version": "session_context_v2"
+  },
+  "steps": [
+    {
+      "op": "open"
+    }
+  ]
+}

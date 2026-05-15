@@ -4,7 +4,7 @@
 //! then resolved from the registry via `ToolFunctionMetadata::class_name`.
 //! Single tool calls still resolve by input schema when exactly one tool matches.
 
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{BamlRtError, Result, StepPlanRecovery};
 use baml_rt_tools::{SessionPlanTypeName, ToolName, ToolRegistry as ConcreteToolRegistry};
 use serde_json::Value;
 
@@ -239,7 +239,7 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
     // (e.g. SupportCrmOpenStep) without a SessionPlan wrapper.
     let step_obj = if let Some(step_value) = obj.get("step") {
         step_value.as_object().ok_or_else(|| {
-            BamlRtError::InvalidArgument("ToolSessionPlan.step must be an object".to_string())
+            BamlRtError::from(StepPlanRecovery::tool_session_plan_step_not_object())
         })?
     } else if obj.contains_key("op") {
         obj
@@ -259,8 +259,8 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
         Some(s) => s.to_ascii_lowercase(),
         None => {
             tracing::warn!(raw_step = ?step_obj, "ToolSessionPlan step missing op");
-            return Err(BamlRtError::InvalidArgument(
-                "ToolSessionPlan step missing op".to_string(),
+            return Err(BamlRtError::from(
+                StepPlanRecovery::tool_session_step_missing_op(),
             ));
         }
     };
@@ -287,17 +287,10 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
             let input = step_obj
                 .get("input")
                 .cloned()
-                .ok_or_else(|| {
-                    BamlRtError::InvalidArgument(
-                        "Send step missing required input field".to_string(),
-                    )
-                })
+                .ok_or_else(|| BamlRtError::from(StepPlanRecovery::send_missing_input()))
                 .and_then(|v| {
                     if v.is_null() {
-                        Err(BamlRtError::InvalidArgument(
-                            "Send step input must not be null — provide a non-empty object"
-                                .to_string(),
-                        ))
+                        Err(BamlRtError::from(StepPlanRecovery::send_input_null()))
                     } else {
                         Ok(v)
                     }
@@ -305,10 +298,7 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
             ToolSessionOp::Send { input, reason }
         }
         "read" => {
-            return Err(BamlRtError::InvalidArgument(
-                "Legacy op \"Read\" was removed; emit \"SearchRead\" (requires grep) or \"PageRead\" (no grep) for archive access"
-                    .to_string(),
-            ));
+            return Err(BamlRtError::from(StepPlanRecovery::legacy_read_op_removed()));
         }
         "searchread" => {
             let input = step_obj
@@ -321,10 +311,7 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
                 .filter(|s| !s.is_empty())
                 .and_then(baml_rt_tools::archive_read::ShortRef::parse)
                 .ok_or_else(|| {
-                    BamlRtError::InvalidArgument(
-                        "SearchRead step: missing required archive_ref (expected e.g. \"@1\")"
-                            .to_string(),
-                    )
+                    BamlRtError::from(StepPlanRecovery::missing_archive_ref_search_read())
                 })?;
             let offset = input
                 .get("offset")
@@ -340,15 +327,11 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
                 .get("grep")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| {
-                    BamlRtError::InvalidArgument(
-                        "SearchRead step: grep is required (non-empty line filter pattern)"
-                            .to_string(),
-                    )
-                })?;
+                .ok_or_else(|| BamlRtError::from(StepPlanRecovery::missing_search_read_grep()))?;
             let grep = baml_rt_tools::archive_read::GrepPattern::parse(grep_raw).map_err(|e| {
-                BamlRtError::InvalidArgument(format!(
-                    "SearchRead step: invalid grep pattern {grep_raw:?}: {e}"
+                BamlRtError::from(StepPlanRecovery::invalid_search_read_grep(
+                    grep_raw,
+                    &e.to_string(),
                 ))
             })?;
             ToolSessionOp::SearchRead {
@@ -367,9 +350,8 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
             if let Some(g) = input.get("grep").and_then(|v| v.as_str())
                 && !g.is_empty()
             {
-                return Err(BamlRtError::InvalidArgument(
-                    "PageRead step: grep must be omitted or empty; use SearchRead for line filtering"
-                        .to_string(),
+                return Err(BamlRtError::from(
+                    StepPlanRecovery::page_read_grep_forbidden(),
                 ));
             }
             let archive_ref = input
@@ -378,10 +360,7 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
                 .filter(|s| !s.is_empty())
                 .and_then(baml_rt_tools::archive_read::ShortRef::parse)
                 .ok_or_else(|| {
-                    BamlRtError::InvalidArgument(
-                        "PageRead step: missing required archive_ref (expected e.g. \"@1\")"
-                            .to_string(),
-                    )
+                    BamlRtError::from(StepPlanRecovery::missing_archive_ref_page_read())
                 })?;
             let offset = input
                 .get("offset")
@@ -403,10 +382,9 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
         "finish" => ToolSessionOp::Finish { reason },
         "abort" => ToolSessionOp::Abort { reason },
         other => {
-            return Err(BamlRtError::InvalidArgument(format!(
-                "Unknown tool session op {}",
-                other
-            )));
+            return Err(BamlRtError::from(
+                StepPlanRecovery::unknown_tool_session_op(other),
+            ));
         }
     };
 
@@ -419,8 +397,9 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
 /// Normalize plan input (string JSON → parsed Value).
 pub(crate) fn normalize_plan_input(value: Value) -> Result<Value> {
     match value {
-        Value::String(raw) => serde_json::from_str(&raw)
-            .map_err(|e| BamlRtError::InvalidArgument(format!("Invalid plan input JSON: {}", e))),
+        Value::String(raw) => serde_json::from_str(&raw).map_err(|e| {
+            BamlRtError::from(StepPlanRecovery::invalid_plan_input_json(&e.to_string()))
+        }),
         other => Ok(other),
     }
 }

@@ -285,6 +285,12 @@ async function runClickUpStructuredPlan(
           operation_kind: operationKind,
           prior_results: priorResultsText,
         }, { max_steps: MAX_REACT_STEPS });
+        if (run.outcome !== "completed") {
+          if (run.outcome === "agent_correctable") {
+            throw new Error(`[${run.recovery.code}] ${run.recovery.mistake}`);
+          }
+          throw new Error(run.message);
+        }
         allStepOutputsNested.push(run.steps);
         priorResultsText = collectStepResultsForPriorContext(run.steps);
         if (executable) await executable.completeStep?.(stepId);

@@ -1800,6 +1800,7 @@ dependencies = [
  "baml-rt-citation",
  "baml-rt-id",
  "futures-util",
+ "insta",
  "opentelemetry 0.26.0",
  "proptest",
  "serde",

@@ -1,0 +1,17 @@
+---
+source: crates/baml-rt-core/src/step_executor_outcome.rs
+expression: json
+---
+{
+  "outcome": "agent_correctable",
+  "recovery": {
+    "code": "missing_archive_ref_page_read",
+    "disposition": "llm_correctable",
+    "fix_steps": [
+      "Locate the @N header from the last successful Send in conversation history.",
+      "Re-emit PageRead with input.archive_ref set to that @N."
+    ],
+    "invariant": "PageRead.input.archive_ref is required and must be a short ref like \"@1\" from a prior Send in this turn.",
+    "mistake": "PageRead was emitted without a visible archive reference (@N)."
+  }
+}

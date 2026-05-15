@@ -487,6 +487,56 @@ pub(crate) fn transcript_text_from_wire_status_message(msg: &Message) -> Option<
     Some(lines.join("\n"))
 }
 
+/// Success witness for wire `TASK_STATE_FAILED`: a validated, non-empty [`NonEmptyString`] reason.
+/// JSON remains [`TaskStatus`]; callers use [`Self::try_parse`] so `TaskStatusKind::Failed` is only
+/// constructed when the wire carried an explicit failure payload (not a host default).
+#[derive(Debug, Clone)]
+pub(crate) struct WireFailedTaskStatus {
+    pub(crate) reason: NonEmptyString,
+}
+
+impl WireFailedTaskStatus {
+    pub(crate) fn try_parse(status: &TaskStatus) -> Result<Self> {
+        fn reason_from_extra(extra: &HashMap<String, Value>) -> Option<&str> {
+            for key in ["error_reason", "errorReason"] {
+                if let Some(s) = extra.get(key).and_then(Value::as_str) {
+                    let t = s.trim();
+                    if !t.is_empty() {
+                        return Some(t);
+                    }
+                }
+            }
+            None
+        }
+
+        let from_extra = reason_from_extra(&status.extra);
+        let from_message = status
+            .message
+            .as_ref()
+            .and_then(transcript_text_from_wire_status_message)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let reason_str = from_extra
+            .map(str::to_string)
+            .or(from_message)
+            .ok_or_else(|| {
+                BamlRtError::InvalidArgument(
+                    "TASK_STATE_FAILED requires a non-empty failure reason; set `errorReason` (or `error_reason`) on the status object and/or non-empty `message.parts[].text`"
+                        .to_string(),
+                )
+            })?;
+
+        let reason = NonEmptyString::new(reason_str).map_err(|_| {
+            BamlRtError::InvalidArgument(
+                "TASK_STATE_FAILED failure reason was empty after normalization".to_string(),
+            )
+        })?;
+
+        Ok(Self { reason })
+    }
+}
+
 pub(crate) fn wire_status_to_kind(status: &TaskStatus) -> Result<TaskStatusKind> {
     let raw = status_to_string(status).ok_or_else(|| {
         BamlRtError::InvalidArgument(
@@ -509,22 +559,10 @@ pub(crate) fn wire_status_to_kind(status: &TaskStatus) -> Result<TaskStatusKind>
             Ok(TaskStatusKind::InputRequired { prompt })
         }
         S_FAILED => {
-            let reason = status
-                .extra
-                .get("error_reason")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    BamlRtError::InvalidArgument(
-                        "TASK_STATE_FAILED requires non-empty `status.extra.error_reason`"
-                            .to_string(),
-                    )
-                })?;
-            let reason = NonEmptyString::new(reason.to_string()).map_err(|_| {
-                BamlRtError::InvalidArgument(
-                    "TASK_STATE_FAILED requires non-empty `status.extra.error_reason`".to_string(),
-                )
-            })?;
-            Ok(TaskStatusKind::Failed { reason })
+            let validated = WireFailedTaskStatus::try_parse(status)?;
+            Ok(TaskStatusKind::Failed {
+                reason: validated.reason,
+            })
         }
         _ => parse_tag_only_task_status_kind(raw.as_str()).ok_or_else(|| {
             BamlRtError::InvalidArgument(format!("unsupported task status state {raw:?}"))
@@ -579,7 +617,12 @@ pub(crate) fn should_strip_wire_task_id_for_message_send_stream(task: Option<&Ta
 mod strip_wire_task_id_tests {
     use std::collections::HashMap;
 
-    use super::{Task, TaskState, TaskStatus, should_strip_wire_task_id_for_message_send_stream};
+    use serde_json::Value;
+
+    use super::{
+        Task, TaskState, TaskStatus, should_strip_wire_task_id_for_message_send_stream,
+        wire_status_to_kind,
+    };
 
     fn task_with_state(state: &str) -> Task {
         Task {
@@ -638,6 +681,82 @@ mod strip_wire_task_id_tests {
         assert!(!should_strip_wire_task_id_for_message_send_stream(Some(
             &task_with_state("TASK_STATE_WORKING",)
         )));
+    }
+
+    #[test]
+    fn wire_status_failed_accepts_message_text_as_reason() {
+        use baml_rt_core::ids::ExternalId;
+        use baml_rt_provenance::metamodel::TaskStatusKind;
+
+        use crate::a2a_types::{A2aMessageId, Message, MessageRole, Part, TaskState, TaskStatus};
+
+        let status = TaskStatus {
+            state: Some(TaskState::String("TASK_STATE_FAILED".to_string())),
+            message: Some(Message {
+                message_id: A2aMessageId::incoming(ExternalId::new("m")),
+                role: MessageRole::Agent,
+                parts: vec![Part {
+                    text: Some("boom from agent".to_string()),
+                    ..Default::default()
+                }],
+                context_id: None,
+                task_id: None,
+                reference_task_ids: Vec::new(),
+                extensions: Vec::new(),
+                metadata: None,
+                extra: HashMap::new(),
+            }),
+            timestamp: None,
+            extra: HashMap::new(),
+        };
+        match wire_status_to_kind(&status).expect("parses") {
+            TaskStatusKind::Failed { reason } => {
+                assert_eq!(reason.as_str(), "boom from agent");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wire_status_failed_without_reason_or_message_is_rejected() {
+        use crate::a2a_types::{TaskState, TaskStatus};
+
+        let status = TaskStatus {
+            state: Some(TaskState::String("TASK_STATE_FAILED".to_string())),
+            message: None,
+            timestamp: None,
+            extra: HashMap::new(),
+        };
+        let err =
+            wire_status_to_kind(&status).expect_err("missing failure payload must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("TASK_STATE_FAILED") && msg.contains("non-empty"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn wire_status_failed_accepts_error_reason_camel_case_in_extra() {
+        use baml_rt_provenance::metamodel::TaskStatusKind;
+
+        use crate::a2a_types::{TaskState, TaskStatus};
+
+        let mut extra = HashMap::new();
+        extra.insert(
+            "errorReason".to_string(),
+            Value::String("quota".to_string()),
+        );
+        let status = TaskStatus {
+            state: Some(TaskState::String("TASK_STATE_FAILED".to_string())),
+            message: None,
+            timestamp: None,
+            extra,
+        };
+        match wire_status_to_kind(&status).expect("parses") {
+            TaskStatusKind::Failed { reason } => assert_eq!(reason.as_str(), "quota"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
     }
 }
 

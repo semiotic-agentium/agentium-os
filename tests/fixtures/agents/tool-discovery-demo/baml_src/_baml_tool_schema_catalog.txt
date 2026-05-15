@@ -1,146 +1,91 @@
-Generated from compiled BAML IR.
-Tool metadata selects availability only; field shapes and nested types come from IR.
-
-Available tool types for this agent:
-
-tool support/calculate
-  purpose: Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division.
-  open: None
-  send: CalculatorInput
-  operations: SupportCalculateOpenStep | SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep
-
-tool system/discover_tools
-  purpose: Searches registered tools by lexical rank. Open session, then send query/limit; read() returns results. Send can be called multiple times.
-  open: DiscoverToolsOpenInput
-  send: DiscoverToolsSendInput
-  operations: SystemDiscoverToolsOpenStep | SystemDiscoverToolsSendStep | SystemDiscoverToolsSearchReadStep | SystemDiscoverToolsPageReadStep | SystemDiscoverToolsFinishStep | SystemDiscoverToolsAbortStep
-
-Type definitions:
-
-type ArchivePageReadInput = {
-  archive_ref: string @description("Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.")
-  offset?: int @description("0-based offset over full rendered archive lines (no grep). First window: offset=0; next: previous next_offset while lines remain.")
-  limit?: int @description("Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).")
-}
-
-type ArchivePageReadStep = {
-  op: "PageRead"
-  input: ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
-}
-
-type ArchiveSearchReadInput = {
-  archive_ref: string @description("Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.")
-  grep: string @description("Non-empty filter over rendered archive lines. SearchRead is for locating lines that match; use when you have a concrete term. Shape: substring or regex per host (e.g. name, -i error). For full contiguous slices without filtering, use PageRead.")
-  offset?: int @description("0-based offset over grep matches (after the filter). First window: offset=0; next: previous next_offset while matches remain.")
-  limit?: int @description("Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).")
-}
-
-type ArchiveSearchReadStep = {
-  op: "SearchRead"
-  input: ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
-}
-
-type CalculatorInput = {
-  expression: Expression @description("The binary expression to evaluate.")
-}
-
-type DataPart = {
-  type: "data"
-  data: string @description("Serialised content (e.g. JSON string, CSV string).")
-  media_type: ReplyMediaType @description("MIME type of the data field.")
-}
-
-type DiscoverToolsOpenInput = {
-  reason?: string
-}
-
-type DiscoverToolsSendInput = {
-  query?: string
-  limit?: int
-}
-
-type Expression = {
-  left: int @description("Left-hand integer operand.")
-  operation: MathOperation @description("Arithmetic operation to apply.")
-  right: int @description("Right-hand integer operand. Must not be 0 when operation is Divide.")
-}
-
-type MathOperation = "Add" | "Subtract" | "Multiply" | "Divide"
-
-type ReadOnlyFinishStep = {
-  op: "ReadOnlyFinish"
-  reply: StructuredReply @description("User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.")
-}
-
-type ReplyMediaType = "TextPlain" | "TextMarkdown" | "ApplicationJson" | "TextCsv"
-
-type ReplyPart = (TextPart | DataPart)
-
-type StructuredReply = {
-  parts: (TextPart | DataPart)[] @description("Ordered parts: start with TextPart (type \"text\") — set media_type TextMarkdown for rich answers (see TextPart); optionally append DataPart (type \"data\", media_type ApplicationJson) with a JSON string for machine-readable UI payloads.")
-  citations: string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
-}
-
-type SupportCalculateAbortStep = {
-  op: "Abort"
-}
-
-type SupportCalculateFinishStep = {
-  op: "Finish"
-}
-
-type SupportCalculateOpenStep = {
-  op: "Open"
-  tool_name: "support/calculate" @description("Tool to open")
-}
-
-type SupportCalculatePageReadStep = {
-  op: "PageRead"
-  input: ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
-}
-
-type SupportCalculateSearchReadStep = {
-  op: "SearchRead"
-  input: ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
-}
-
-type SupportCalculateSendStep = {
-  op: "Send"
-  input: CalculatorInput @description("Payload for this step.")
-  citations: string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
-}
-
-type SystemDiscoverToolsAbortStep = {
-  op: "Abort"
-}
-
-type SystemDiscoverToolsFinishStep = {
-  op: "Finish"
-}
-
-type SystemDiscoverToolsOpenStep = {
-  op: "Open"
-  tool_name: "system/discover_tools" @description("Tool to open")
-  initial_input?: DiscoverToolsOpenInput @description("Optional open payload.")
-}
-
-type SystemDiscoverToolsPageReadStep = {
-  op: "PageRead"
-  input: ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
-}
-
-type SystemDiscoverToolsSearchReadStep = {
-  op: "SearchRead"
-  input: ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
-}
-
-type SystemDiscoverToolsSendStep = {
-  op: "Send"
-  input: DiscoverToolsSendInput @description("Payload for this step.")
-  citations: string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
-}
-
-type TextPart = {
-  type: "text"
-  text: string
+Answer in JSON using any of these schemas:
+{
+  op: "PageRead",
+  // Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.
+  input: {
+    // Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.
+    archive_ref: string,
+    // 0-based offset over full rendered archive lines (no grep). First window: offset=0; next: previous next_offset while lines remain.
+    offset: int or null,
+    // Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).
+    limit: int or null,
+  },
+} or {
+  op: "SearchRead",
+  // Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.
+  input: {
+    // Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.
+    archive_ref: string,
+    // Non-empty filter over rendered archive lines. SearchRead is for locating lines that match; use when you have a concrete term. Shape: substring or regex per host (e.g. name, -i error). For full contiguous slices without filtering, use PageRead.
+    grep: string,
+    // 0-based offset over grep matches (after the filter). First window: offset=0; next: previous next_offset while matches remain.
+    offset: int or null,
+    // Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).
+    limit: int or null,
+  },
+} or {
+  op: "ReadOnlyFinish",
+  // User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.
+  reply: {
+    // Ordered parts: start with TextPart (type "text") — set media_type TextMarkdown for rich answers (see TextPart); optionally append DataPart (type "data", media_type ApplicationJson) with a JSON string for machine-readable UI payloads.
+    parts: [
+      {
+        type: "text",
+        text: string,
+      } or {
+        type: "data",
+        // Serialised content (e.g. JSON string, CSV string).
+        data: string,
+        // MIME type of the data field.
+        media_type: 'text/plain' or 'text/markdown' or 'application/json' or 'text/csv',
+      }
+    ],
+    // Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.
+    citations: string[],
+  },
+} or {
+  op: "Abort",
+} or {
+  op: "Finish",
+} or {
+  op: "Open",
+  // Tool to open
+  tool_name: "support/calculate",
+} or {
+  op: "Send",
+  // Payload for this step.
+  input: {
+    // The binary expression to evaluate.
+    expression: {
+      // Left-hand integer operand.
+      left: int,
+      // Arithmetic operation to apply.
+      operation: '+' or '-' or '*' or '/',
+      // Right-hand integer operand. Must not be 0 when operation is Divide.
+      right: int,
+    },
+  },
+  // Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.
+  citations: string[],
+} or {
+  op: "Abort",
+} or {
+  op: "Finish",
+} or {
+  op: "Open",
+  // Tool to open
+  tool_name: "system/discover_tools",
+  // Optional open payload.
+  initial_input: {
+    reason: string or null,
+  } or null,
+} or {
+  op: "Send",
+  // Payload for this step.
+  input: {
+    query: string or null,
+    limit: int or null,
+  },
+  // Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.
+  citations: string[],
 }

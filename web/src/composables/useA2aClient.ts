@@ -11,6 +11,9 @@ import {
   pushTextBlock,
 } from "../chat/chatMessageBlocks";
 import { appendExecutionErrorCard, parseExecutionErrorText } from "../chat/executionErrorCard";
+import { readA2aSseJsonRpcStream } from "../chat/a2aSse";
+import { collectChunkAssistantPlainText, extractWireMessageText } from "../chat/a2aStreamAssistantText";
+import { digestA2aProcessEvent } from "../chat/a2aStreamChunkDigest";
 import {
   deriveToolStatus,
   detectToolAppendMode,
@@ -45,38 +48,6 @@ function nextId(prefix: string): string {
   return `${prefix}-${Date.now()}-${++counter}`;
 }
 
-/** Extract `data:` payloads from one SSE event block (between blank-line separators). */
-function sseEventDataPayload(block: string): string | null {
-  const lines = block.split("\n");
-  const parts: string[] = [];
-  for (const line of lines) {
-    const t = line.trimEnd();
-    if (t.startsWith("data:")) {
-      parts.push(t.slice(5).trimStart());
-    }
-  }
-  if (parts.length === 0) return null;
-  return parts.join("\n");
-}
-
-/**
- * Parse a full `text/event-stream` body into JSON-RPC objects (aligned with
- * `baml_rt_core::parse_a2a_sse_json_rpc_chunks`). We use `response.text()` rather than
- * ReadableStream parsing so dev proxies (Vite) and gzip cannot break SSE framing.
- */
-function parseA2aSseJsonRpcBody(body: string): JSONRPCResponse[] {
-  const normalized = body.replace(/\r\n/g, "\n");
-  const out: JSONRPCResponse[] = [];
-  for (const rawEvent of normalized.split("\n\n")) {
-    const trimmed = rawEvent.trim();
-    if (!trimmed) continue;
-    const payload = sseEventDataPayload(trimmed);
-    if (!payload?.trim()) continue;
-    out.push(JSON.parse(payload) as JSONRPCResponse);
-  }
-  return out;
-}
-
 function sortLlmPromptOperations(a: LlmPromptOperation, b: LlmPromptOperation): number {
   return a.eventOrder - b.eventOrder || a.activityAnchor.localeCompare(b.activityAnchor);
 }
@@ -99,9 +70,16 @@ function updateMessage(
   updater: (msg: ChatMessage) => void,
 ): void {
   const idx = messages.value.findIndex((m) => m.id === id);
-  if (idx !== -1) {
-    updater(messages.value[idx]!);
+  if (idx === -1) {
+    if (typeof window !== "undefined" && window.location.hostname === "localhost") {
+      console.warn(
+        "[transcript] updateMessage skipped: unknown message id (orphan streaming row?)",
+        id,
+      );
+    }
+    return;
   }
+  updater(messages.value[idx]!);
 }
 
 function tryApplyStructuredMessage(msg: ChatMessage, wire: A2aMessage): boolean {
@@ -124,6 +102,7 @@ function tryApplyStructuredMessage(msg: ChatMessage, wire: A2aMessage): boolean 
 }
 
 export function useA2aClient() {
+  const clientId = nextId("client");
   const agents: Ref<AgentDiscoveryEntry[]> = ref([]);
   const selectedAgent: Ref<AgentDiscoveryEntry | null> = ref(null);
   const messages: Ref<ChatMessage[]> = ref([]);
@@ -191,6 +170,7 @@ export function useA2aClient() {
     },
     replaceLlmFromPage: replaceLlmPromptStateFromPage,
     extendLlmFromPage: extendLlmPromptStateFromPage,
+    deferFullSnapshotWhileA2aInFlight: () => isLoading.value,
   };
 
   /** Incremented (debounced) when SSE implies new provenance rows; ProvenancePane watches this */
@@ -202,6 +182,22 @@ export function useA2aClient() {
 
   /** One-shot retry when hydration is skipped because provenance lags behind the live stream. */
   let pendingHydrateRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const traceTranscript = (...args: unknown[]) => {
+    if (typeof window !== "undefined" && window.location.hostname === "localhost") {
+      console.debug(
+        "[transcript]",
+        ...args.map((arg) =>
+          typeof arg === "string"
+            ? `[${clientId}] ${arg}`
+            : JSON.stringify({
+                clientId,
+                payload: arg,
+              }),
+        ),
+      );
+    }
+  };
 
   function scheduleTraceRefreshBump(): void {
     if (!_contextId.value) return;
@@ -344,6 +340,11 @@ export function useA2aClient() {
   }
 
   function selectAgent(agent: AgentDiscoveryEntry): void {
+    traceTranscript("selectAgent.clear", {
+      agent: `${agent.agent_package}/${agent.agent_instance_id}`,
+      priorMessages: messages.value.length,
+      priorContextId: _contextId.value ?? null,
+    });
     selectedAgent.value = agent;
     historyHydrateState.value = "idle";
     messages.value = [];
@@ -462,7 +463,6 @@ export function useA2aClient() {
     }
     if (_contextId.value) message.contextId = _contextId.value;
     if (_taskId.value) message.taskId = _taskId.value;
-    ensureConversationHistoryStream();
 
     const request = {
       jsonrpc: "2.0",
@@ -486,6 +486,10 @@ export function useA2aClient() {
       contentBlocks: [],
     });
 
+    // Open provenance SSE only after the streaming row exists; otherwise the initial `snapshot`
+    // can full-replace [user] and orphan `agentMsgId` before POST /a2a chunks arrive.
+    ensureConversationHistoryStream();
+
     const controller = new AbortController();
     _abortController = controller;
 
@@ -502,23 +506,21 @@ export function useA2aClient() {
       }
 
       const ct = response.headers.get("content-type") ?? "";
-      const bodyText = await response.text();
-      if (bodyText.trimStart().startsWith("<")) {
+      if (!response.body) {
         throw new Error(
-          `Unexpected HTML from /a2a — proxy or runner URL misconfigured (content-type: ${ct || "missing"})`,
+          `POST /a2a returned no response body; expected streaming SSE (content-type: ${ct || "missing"})`,
         );
       }
-      if (!ct.toLowerCase().includes("text/event-stream") && bodyText.trim().length > 0) {
-        console.warn(`POST /a2a unexpected Content-Type: ${ct || "(missing)"}; parsing as SSE anyway`);
+      if (!ct.toLowerCase().includes("text/event-stream")) {
+        console.warn(`POST /a2a unexpected Content-Type: ${ct || "(missing)"}; streaming parse anyway`);
       }
-      const events = parseA2aSseJsonRpcBody(bodyText);
-      if (events.length === 0 && bodyText.trim().length > 0) {
+      const eventCount = await readA2aSseJsonRpcStream(response.body, (event) => {
+        processEvent(event, agentMsgId);
+      });
+      if (eventCount === 0) {
         throw new Error(
           `No JSON-RPC events parsed from /a2a body (content-type: ${ct || "missing"})`,
         );
-      }
-      for (const event of events) {
-        processEvent(event, agentMsgId);
       }
       updateMessage(messages, agentMsgId, (msg) => {
         msg.isStreaming = false;
@@ -637,6 +639,37 @@ export function useA2aClient() {
         markWorkflowNodeCompleted(baseName);
         scheduleTraceRefreshBump();
       }
+      let appliedAssistantFromWire = false;
+      updateMessage(messages, agentMsgId, (msg) => {
+        if (chunk.message && tryApplyStructuredMessage(msg, chunk.message)) {
+          appliedAssistantFromWire = true;
+          return;
+        }
+        if (
+          chunk.task?.status?.message &&
+          tryApplyStructuredMessage(msg, chunk.task.status.message)
+        ) {
+          appliedAssistantFromWire = true;
+        }
+      });
+      if (!appliedAssistantFromWire) {
+        const direct = collectChunkAssistantPlainText(chunk);
+        if (direct?.trim()) {
+          const dtrim = direct.trim();
+          if (
+            !shouldSuppressAgentTranscriptText(dtrim) &&
+            !parseExecutionErrorText(dtrim)
+          ) {
+            updateMessage(messages, agentMsgId, (msg) => {
+              if (msg.contentBlocks) {
+                pushTextBlock(msg, direct);
+              } else {
+                msg.text = msg.text ? `${msg.text}\n\n${direct}` : direct;
+              }
+            });
+          }
+        }
+      }
       sawProvenanceMutation = true;
     } else if (result.toolStreamChunk) {
       // Relay may still mark toolStreamChunk while attaching real assistant prose on chunk.message.
@@ -655,8 +688,7 @@ export function useA2aClient() {
         }
       });
       if (!appliedAssistantFromWire) {
-        const direct =
-          extractText(chunk.message) ?? extractText(chunk.task?.status?.message);
+        const direct = collectChunkAssistantPlainText(chunk);
         if (direct?.trim()) {
           const dtrim = direct.trim();
           if (
@@ -705,6 +737,7 @@ export function useA2aClient() {
 
       if (!appliedStructured) {
         const text =
+          collectChunkAssistantPlainText(chunk) ??
           extractText(chunk.message) ??
           extractText(chunk.task?.status?.message) ??
           extractText(chunk.statusUpdate?.status?.message) ??
@@ -782,6 +815,7 @@ export function useA2aClient() {
         msg.isStreaming = false;
         msg.awaitingInput = true;
         const prompt =
+          collectChunkAssistantPlainText(chunk) ??
           extractTextFromStatusUpdate(chunk) ??
           extractText(chunk.statusUpdate?.status?.message) ??
           extractText(chunk.task?.status?.message);
@@ -798,6 +832,10 @@ export function useA2aClient() {
           }
         }
       });
+    }
+
+    if (typeof window !== "undefined" && window.location.hostname === "localhost") {
+      traceTranscript("processEvent.digest", digestA2aProcessEvent(chunk, result));
     }
   }
 
@@ -827,16 +865,7 @@ export function useA2aClient() {
   function extractText(
     message: { parts?: { text?: string }[] } | undefined | null,
   ): string | undefined {
-    const parts = message?.parts;
-    if (!parts?.length) return undefined;
-    const texts: string[] = [];
-    for (const p of parts) {
-      if (typeof p?.text === "string" && p.text.length > 0) {
-        texts.push(p.text);
-      }
-    }
-    if (texts.length === 0) return undefined;
-    return texts.join("\n\n");
+    return extractWireMessageText(message as A2aMessage | undefined);
   }
 
   async function fetchProvenanceDiagram(): Promise<void> {
@@ -1006,6 +1035,13 @@ export function useA2aClient() {
     lastSeenTaskState = undefined;
     isLoading.value = false;
     selectedHistoryContextId.value = contextId;
+    traceTranscript("loadContext.clear", {
+      contextId,
+      priorMessages: messages.value.length,
+      selectedAgent: selectedAgent.value
+        ? `${selectedAgent.value.agent_package}/${selectedAgent.value.agent_instance_id}`
+        : null,
+    });
     messages.value = [];
     historyHydrateState.value = "loading";
     await Promise.all([
@@ -1055,6 +1091,7 @@ export function useA2aClient() {
   }
 
   return {
+    clientId,
     agents,
     selectedAgent,
     messages,

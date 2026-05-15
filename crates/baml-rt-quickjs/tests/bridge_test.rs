@@ -985,6 +985,48 @@ async fn test_tool_session_plan_open_send_next_finish_runs_finish() {
     );
 }
 
+/// Unknown `@N` must not fail the invoke boundary — the model receives a recoverable error payload.
+#[tokio::test]
+async fn page_read_unknown_archive_ref_returns_recoverable_json() {
+    use baml_rt::baml::BamlRuntimeManager;
+    use serde_json::json;
+
+    let mut manager = BamlRuntimeManager::builder().build().unwrap();
+    manager.register_tool(ScopeEchoTool).await.unwrap();
+    let mut map = std::collections::HashMap::new();
+    map.insert(
+        "EchoPlanFn".to_string(),
+        vec![baml_rt_tools::SessionPlanTypeName::new("TestScopeEchoSessionPlan").unwrap()],
+    );
+    manager.set_session_plan_functions(Some(map));
+
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000022").unwrap());
+    let scope = InvocationScope::synthetic_message(agent_id);
+
+    let miss = context::with_scope(scope.as_scope().clone(), async {
+        manager
+            .execute_tool_from_baml_result_or_value(
+                scope.as_scope(),
+                json!({ "step": { "op": "PageRead", "input": { "archive_ref": "@999" } } }),
+                Some("EchoPlanFn"),
+                None,
+            )
+            .await
+    })
+    .await
+    .expect("missing archive ref must return Ok(recoverable error), not Err");
+    assert_eq!(miss.get("status").and_then(Value::as_str), Some("error"));
+    let msg = miss
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        msg.contains("@999"),
+        "message should name the ref; got {miss:?}"
+    );
+}
+
 /// End-to-end test of `run_step_executor_loop` with interceptor-substituted LLM responses.
 /// Exercises the real path: loop calls invoke_function per hop, which hits the interceptor,
 /// parses the result, executes the tool session plan fragment, and returns the tool output.

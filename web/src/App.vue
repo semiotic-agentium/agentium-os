@@ -238,6 +238,30 @@ function onPopState(): void {
   void applyRouteStateFromUrl();
 }
 
+watch(
+  [
+    () => activeClient.value?.clientId ?? null,
+    () => selectedAgent.value?.agent_package ?? null,
+    () => selectedAgent.value?.agent_instance_id ?? null,
+    () => selectedHistoryContextId.value ?? contextId.value ?? null,
+    () => messages.value.length,
+  ],
+  ([clientId, agentPackage, agentInstance, currentContextId, messageCount]) => {
+    if (window.location.hostname !== "localhost") return;
+    console.debug(
+      "[transcript]",
+      JSON.stringify({
+        activeClientId: clientId,
+        agentPackage,
+        agentInstance,
+        contextId: currentContextId,
+        messageCount,
+      }),
+    );
+  },
+  { immediate: true },
+);
+
 // Trace pane only displays the first diagram; avoid parsing/rendering all agent mermaid blocks.
 const provenancePaneDiagrams = computed(() => {
   const prov = provenanceDiagram.value.trim();

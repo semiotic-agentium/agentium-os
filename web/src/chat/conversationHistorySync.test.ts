@@ -104,6 +104,45 @@ describe("applyConversationHistoryIngress", () => {
     expect(scheduledRetries.length).toBe(1);
   });
 
+  it("explicit restore applies when only blocker is an empty streaming placeholder", () => {
+    const msgs: ChatMessage[] = [
+      {
+        id: "user-msg-restore-1",
+        role: "user",
+        speakerKind: "human",
+        text: "hi",
+        timestamp: new Date(),
+      },
+      {
+        id: "live",
+        role: "agent",
+        text: "",
+        timestamp: new Date(),
+        isStreaming: true,
+        contentBlocks: [],
+      },
+    ];
+    const { deps, hydrateStates, scheduledRetries } = makeDeps(msgs);
+    const page = basePage("v-restore", [
+      messageItem("user", "hi", "u1", 10),
+      messageItem("assistant", "reply", "a1", 20),
+    ]);
+    const effect = applyConversationHistoryIngress(deps, {
+      kind: "full",
+      mode: "explicit_restore",
+      page,
+      respectDuplicateVersion: false,
+      syncTaskIdFromPageBeforeDefer: true,
+    });
+    expect(effect).toEqual({ kind: "applied_full" });
+    expect(deps.messages.value.some((m) => m.role === "user" && m.text === "hi")).toBe(true);
+    expect(deps.messages.value.some((m) => m.role === "agent" && m.text.includes("reply"))).toBe(
+      true,
+    );
+    expect(hydrateStates[hydrateStates.length - 1]).toBe("ready");
+    expect(scheduledRetries.length).toBe(0);
+  });
+
   it("full defers when provenance lags streamed assistant body", () => {
     const agent: ChatMessage = {
       id: "live",
@@ -197,9 +236,34 @@ describe("applyConversationHistoryIngress", () => {
       page,
     });
     expect(effect).toEqual({ kind: "deferred", reason: "streaming_or_input_required" });
-    expect(deps.extendLlmFromPage).not.toHaveBeenCalled();
+    expect(deps.extendLlmFromPage).toHaveBeenCalledWith(page);
     expect(hydrateStates).not.toContain("skipped");
     expect(scheduledRetries.length).toBe(0);
+  });
+
+  it("evented full defers while A2A POST stream is in flight (guard initial snapshot)", () => {
+    const { deps, hydrateStates } = makeDeps([
+      {
+        id: "user-msg-1",
+        role: "user",
+        speakerKind: "human",
+        text: "hi",
+        timestamp: new Date(),
+      },
+    ]);
+    const depsWithA2a = {
+      ...deps,
+      deferFullSnapshotWhileA2aInFlight: () => true,
+    };
+    const page = basePage("v-snap", [messageItem("user", "hi", "u1", 10)]);
+    const effect = applyConversationHistoryIngress(depsWithA2a, {
+      kind: "full",
+      mode: "evented",
+      page,
+    });
+    expect(effect).toEqual({ kind: "deferred", reason: "streaming_or_input_required" });
+    expect(deps.messages.value).toHaveLength(1);
+    expect(hydrateStates).not.toContain("skipped");
   });
 
   it("evented full defer does not schedule hydrate retry", () => {

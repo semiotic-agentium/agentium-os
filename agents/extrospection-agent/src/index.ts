@@ -263,6 +263,12 @@ __chat_register({
         },
         { max_steps: 6 },
       );
+      if (extrospectionRun.outcome !== "completed") {
+        if (extrospectionRun.outcome === "agent_correctable") {
+          return { error: `[${extrospectionRun.recovery.code}] ${extrospectionRun.recovery.mistake}` };
+        }
+        return { error: extrospectionRun.message };
+      }
 
       const payloadCandidates: unknown[] = [extrospectionRun.last, ...extrospectionRun.steps.slice().reverse()];
       const payloads: string[] = [];
