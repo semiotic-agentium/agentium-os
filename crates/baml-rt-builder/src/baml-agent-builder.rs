@@ -137,6 +137,34 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Push a local MCP snapshot into the repository registry.
+    McpRegistryPush {
+        /// Server id to push from the local snapshot cache.
+        server_id: String,
+        /// Repository URL (e.g. http://127.0.0.1:18080/repository).
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
+        repository_url: String,
+        /// Snapshot cache root (default: $HOME/.agentium-os/mcp).
+        #[arg(long)]
+        cache_root: Option<PathBuf>,
+        /// Runner token for authenticated operator access (falls back to RUNNER_TOKEN env).
+        #[arg(long)]
+        runner_token: Option<String>,
+    },
+    /// Pull an MCP snapshot from the repository registry into the local cache.
+    McpRegistryPull {
+        /// Server id to pull.
+        server_id: String,
+        /// Registry version to pull. Defaults to latest.
+        #[arg(long)]
+        version: Option<u32>,
+        /// Repository URL (e.g. http://127.0.0.1:18080/repository).
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
+        repository_url: String,
+        /// Snapshot cache root (default: $HOME/.agentium-os/mcp).
+        #[arg(long)]
+        cache_root: Option<PathBuf>,
+    },
     /// Import and approve an MCP server's tool schemas into the local snapshot cache.
     McpEnable {
         /// Server id to enable (must match an entry under `mcpServers` in the config file).
@@ -214,6 +242,28 @@ async fn main() -> Result<()> {
                 runner_token.as_deref(),
             )
             .await?;
+        }
+        Commands::McpRegistryPush {
+            server_id,
+            repository_url,
+            cache_root,
+            runner_token,
+        } => {
+            mcp_registry_push(
+                &server_id,
+                &repository_url,
+                cache_root.as_deref(),
+                runner_token.as_deref(),
+            )
+            .await?;
+        }
+        Commands::McpRegistryPull {
+            server_id,
+            version,
+            repository_url,
+            cache_root,
+        } => {
+            mcp_registry_pull(&server_id, version, &repository_url, cache_root.as_deref()).await?;
         }
         Commands::McpEnable {
             server_id,
@@ -758,6 +808,99 @@ async fn load_agent_package(
         agent_id: temp_agent_id,
         js_bridge: Arc::new(Mutex::new(js_bridge)),
     })
+}
+
+async fn mcp_registry_push(
+    server_id: &str,
+    repository_url: &str,
+    cache_root: Option<&std::path::Path>,
+    runner_token_flag: Option<&str>,
+) -> Result<()> {
+    use baml_rt_repository::http::ImportMcpSnapshotRequest;
+    use baml_rt_tools::mcp_cache::{default_cache_root, read_snapshot};
+
+    let cache_root: PathBuf = match cache_root {
+        Some(p) => p.to_path_buf(),
+        None => default_cache_root()
+            .ok_or_else(|| anyhow::anyhow!("HOME is not set; pass --cache-root explicitly"))?,
+    };
+    let snapshot = read_snapshot(&cache_root, server_id)
+        .with_context(|| format!("reading MCP snapshot for `{server_id}`"))?;
+    let token = resolve_builder_token(runner_token_flag)?;
+    let url = format!(
+        "{}/mcp/snapshots/import",
+        repository_url.trim_end_matches('/')
+    );
+    let http = reqwest::Client::new();
+    let mut request = http
+        .post(url.as_str())
+        .json(&ImportMcpSnapshotRequest { snapshot });
+    if let Some(ref token) = token {
+        request = request.header("X-Runner-Token", token.as_str());
+    }
+    let response = request
+        .send()
+        .await
+        .with_context(|| format!("posting MCP snapshot to {url}"))?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    check_response(status, &body, "MCP registry push", token.is_some())?;
+    let body: serde_json::Value =
+        serde_json::from_str(&body).context("Failed to parse MCP registry push response")?;
+    let version = body
+        .get("version")
+        .and_then(|v| v.get("version"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "<unknown>".into());
+    println!("✅ Pushed MCP snapshot `{server_id}` as registry version {version}");
+    Ok(())
+}
+
+async fn mcp_registry_pull(
+    server_id: &str,
+    version: Option<u32>,
+    repository_url: &str,
+    cache_root: Option<&std::path::Path>,
+) -> Result<()> {
+    use baml_rt_tools::mcp_cache::{default_cache_root, write_snapshot};
+
+    let cache_root: PathBuf = match cache_root {
+        Some(p) => p.to_path_buf(),
+        None => default_cache_root()
+            .ok_or_else(|| anyhow::anyhow!("HOME is not set; pass --cache-root explicitly"))?,
+    };
+    let url = match version {
+        Some(version) => format!(
+            "{}/mcp/servers/{server_id}/versions/{version}",
+            repository_url.trim_end_matches('/')
+        ),
+        None => format!(
+            "{}/mcp/servers/{server_id}",
+            repository_url.trim_end_matches('/')
+        ),
+    };
+    let response = reqwest::Client::new()
+        .get(url.as_str())
+        .send()
+        .await
+        .with_context(|| format!("fetching MCP snapshot from {url}"))?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    check_response(status, &body, "MCP registry pull", false)?;
+    let snapshot: baml_rt_tools::mcp_snapshot::McpServerSnapshot =
+        serde_json::from_str(&body).context("Failed to parse MCP registry snapshot")?;
+    fs::create_dir_all(&cache_root)
+        .with_context(|| format!("creating cache root at {}", cache_root.display()))?;
+    write_snapshot(&cache_root, &snapshot)
+        .with_context(|| format!("writing snapshot under {}", cache_root.display()))?;
+    println!(
+        "✅ Pulled MCP snapshot `{}` with {} tool(s) into {}",
+        snapshot.server_id,
+        snapshot.tools.len(),
+        cache_root.display()
+    );
+    Ok(())
 }
 
 async fn mcp_enable(
