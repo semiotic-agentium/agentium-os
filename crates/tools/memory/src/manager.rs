@@ -449,6 +449,11 @@ impl MemoryManager {
     ///
     /// Serialization runs inline under the caller's write lock; the filesystem write and
     /// atomic rename run on `spawn_blocking` to keep the tokio executor responsive.
+    ///
+    /// Cancellation: if the calling future is dropped at `.await`, the in-memory mutation
+    /// persists but the on-disk write may not — `spawn_blocking` is detached and the caller's
+    /// snapshot is gone, so the rollback path is unreachable. Acceptable for shutdown; do not
+    /// rely on cancellation rolling back persistence.
     async fn persist(&self, graph: &MemoryGraph) -> Result<()> {
         let writer = AmemWriter::new(graph.dimension());
         let mut buf = Vec::new();
