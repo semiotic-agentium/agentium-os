@@ -437,6 +437,8 @@ OUTPUT FORMAT: Respond with ONLY a single JSON object. No reasoning, no markdown
 Return exactly one JSON object of type `ClaudeDevAbortStep | ClaudeDevFinishStep | ClaudeDevPageReadStep | ClaudeDevSearchReadStep | ClaudeDevSendStep`.
 
 Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.
+Calculator Send: set input.expression.operation to exactly one JSON string token: "+", "-", "*", "/", or Add|Subtract|Multiply|Divide — never an object or sentence.
 Do not add text before or after the JSON object.
 
 Phase policy:

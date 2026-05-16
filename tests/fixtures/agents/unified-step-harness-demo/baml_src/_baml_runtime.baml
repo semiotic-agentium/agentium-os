@@ -216,6 +216,7 @@ Evaluate this calculation: {{ user_message }}
 Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateOpenStep`.
 
 Use `op` as the discriminator: "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
+Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.
 Do not add text before or after the JSON object.
 
 Phase policy:
@@ -248,6 +249,8 @@ Evaluate this calculation: {{ user_message }}
 Return exactly one JSON object of type `SupportCalculateAbortStep | SupportCalculateFinishStep | SupportCalculatePageReadStep | SupportCalculateSearchReadStep | SupportCalculateSendStep`.
 
 Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.
+Calculator Send: set input.expression.operation to exactly one JSON string token: "+", "-", "*", "/", or Add|Subtract|Multiply|Divide — never an object or sentence.
 Do not add text before or after the JSON object.
 
 Phase policy:

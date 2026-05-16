@@ -270,6 +270,7 @@ One round trip only: send Cleese’s line once; when Chapman’s reply appears i
 Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SystemInternalA2aOpenStep`.
 
 Use `op` as the discriminator: "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
+Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.
 Do not add text before or after the JSON object.
 
 Phase policy:
@@ -311,6 +312,8 @@ One round trip only: send Cleese’s line once; when Chapman’s reply appears i
 Return exactly one JSON object of type `SystemInternalA2aAbortStep | SystemInternalA2aFinishStep | SystemInternalA2aPageReadStep | SystemInternalA2aSearchReadStep | SystemInternalA2aSendStep`.
 
 Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.
+Calculator Send: set input.expression.operation to exactly one JSON string token: "+", "-", "*", "/", or Add|Subtract|Multiply|Divide — never an object or sentence.
 Do not add text before or after the JSON object.
 
 Phase policy:

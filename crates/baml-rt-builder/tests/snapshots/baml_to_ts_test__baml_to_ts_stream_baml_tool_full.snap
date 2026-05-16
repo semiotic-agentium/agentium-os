@@ -1,6 +1,5 @@
 ---
 source: crates/baml-rt-builder/tests/baml_to_ts_test.rs
-assertion_line: 65
 expression: ts
 ---
 /**
@@ -16,10 +15,18 @@ offset: number | null;
 limit: number | null;
  }
 
+export interface ArchivePageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
+ }
+
 export interface ArchiveSearchReadInput { archive_ref: string;
 grep: string;
 offset: number | null;
 limit: number | null;
+ }
+
+export interface ArchiveSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
  }
 
 export interface CalculatorInput { expression: Expression;
@@ -31,6 +38,10 @@ right: number;
  }
 
 export type MathOperation = "Add" | "Subtract" | "Multiply" | "Divide";
+
+export interface ReadOnlyFinishStep { op: "ReadOnlyFinish";
+reply: StructuredReply;
+ }
 
 export interface SessionContext { contract_version: string;
 session_open: boolean;
@@ -77,11 +88,9 @@ declare function ChooseCalcTool(args: { user_message: string; session_context: S
 
 declare function ChooseCalcToolStream(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<string>;
 
-declare function ChooseCalcTool__act__support_calculate(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep | SupportCalculateAbortStep>;
+declare function ChooseCalcTool__active__support_calculate(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep>;
 
-declare function ChooseCalcTool__continue__support_calculate(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep>;
-
-declare function ChooseCalcTool__select(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SupportCalculateOpenStep>;
+declare function ChooseCalcTool__entry(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateOpenStep>;
 
 }
 
@@ -444,17 +453,30 @@ export interface StepExecutorRunOptions {
     max_steps?: number;
 }
 
+export type ErrorDisposition =
+    | "host_retriable"
+    | "llm_correctable"
+    | "inform_and_continue"
+    | "fatal";
+
+export interface StepPlanRecovery {
+    code: string;
+    disposition: ErrorDisposition;
+    mistake: string;
+    invariant: string;
+    fix_steps?: string[];
+}
+
+export type StepExecutorRunEnvelope<R = unknown> = { outcome: "completed", last: R, steps: R[], session_context: SessionContext, selected_tool: string | null } | { outcome: "agent_correctable", recovery: StepPlanRecovery } | { outcome: "fatal", message: string, code?: string | null };
+
 /**
- * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
- * User-facing replies are synthesized once at session completion (and recorded there).
+ * Result of runGeneratedStepExecutor: discriminated envelope (`outcome`).
+ * On `completed`, fields match the former flat telemetry shape.
+ * `agent_correctable` carries structured recovery — not a thrown JS error.
+ * User-facing replies are still SessionResult.message from the chat handler.
  */
 
-export interface StepExecutorRunResult<R = unknown> {
-    last: R;
-    steps: R[];
-    session_context: SessionContext;
-    selected_tool: string | null;
-}
+export type StepExecutorRunResult<R = unknown> = StepExecutorRunEnvelope<R>;
 
 export interface StepExecutorFunctionMap {
   ChooseCalcTool: { args: Parameters<typeof ChooseCalcTool>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalcTool>>; };
@@ -465,5 +487,5 @@ declare global {
     stepExecutor: F,
     args: Omit<StepExecutorFunctionMap[F]["args"], keyof StepExecutorStateInput>,
     options?: StepExecutorRunOptions
-  ): Promise<StepExecutorRunResult<StepExecutorFunctionMap[F]["result"]>>;
+  ): Promise<StepExecutorRunEnvelope<StepExecutorFunctionMap[F]["result"]>>;
 }

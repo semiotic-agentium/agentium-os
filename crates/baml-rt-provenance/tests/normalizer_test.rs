@@ -385,7 +385,7 @@ fn normalize_llm_call_rejects_unknown_provider_type() {
         "unknown".to_string(),
         "RequirementsPhase".to_string(),
         serde_json::json!({
-            "model": "x-ai/grok-4.1-fast",
+            "model": "x-ai/grok-4.3",
             "messages": [{"role": "user", "content": "hi"}]
         }),
         serde_json::json!({
@@ -419,7 +419,7 @@ fn normalize_llm_call_backfills_model_from_prompt() {
         "unknown".to_string(),
         "RequirementsPhase".to_string(),
         serde_json::json!({
-            "model": "x-ai/grok-4.1-fast",
+            "model": "x-ai/grok-4.3",
             "messages": [{"role": "user", "content": "hi"}]
         }),
         serde_json::json!({
@@ -457,7 +457,7 @@ fn normalize_llm_call_backfills_model_from_prompt() {
         .unwrap_or_default();
 
     assert_eq!(client, "openrouter");
-    assert_eq!(model, "x-ai/grok-4.1-fast");
+    assert_eq!(model, "x-ai/grok-4.3");
 }
 
 #[test]

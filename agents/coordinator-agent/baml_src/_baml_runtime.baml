@@ -419,6 +419,7 @@ Return `null` when the goal is satisfied or after 2+ exchanges.
 Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SystemInternalA2aOpenStep`.
 
 Use `op` as the discriminator: "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
+Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.
 Do not add text before or after the JSON object.
 
 Phase policy:
@@ -454,6 +455,8 @@ Return `null` when the goal is satisfied or after 2+ exchanges.
 Return exactly one JSON object of type `SystemInternalA2aAbortStep | SystemInternalA2aFinishStep | SystemInternalA2aPageReadStep | SystemInternalA2aSearchReadStep | SystemInternalA2aSendStep`.
 
 Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.
+Calculator Send: set input.expression.operation to exactly one JSON string token: "+", "-", "*", "/", or Add|Subtract|Multiply|Divide — never an object or sentence.
 Do not add text before or after the JSON object.
 
 Phase policy:
@@ -487,6 +490,7 @@ Inferred intent: {{ inferred_intent }}
 Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SystemDiscoverAgentsOpenStep`.
 
 Use `op` as the discriminator: "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
+Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.
 Do not add text before or after the JSON object.
 
 Phase policy:
@@ -520,6 +524,8 @@ Inferred intent: {{ inferred_intent }}
 Return exactly one JSON object of type `SystemDiscoverAgentsAbortStep | SystemDiscoverAgentsFinishStep | SystemDiscoverAgentsPageReadStep | SystemDiscoverAgentsSearchReadStep | SystemDiscoverAgentsSendStep`.
 
 Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.
+Calculator Send: set input.expression.operation to exactly one JSON string token: "+", "-", "*", "/", or Add|Subtract|Multiply|Divide — never an object or sentence.
 Do not add text before or after the JSON object.
 
 Phase policy:

@@ -110,11 +110,29 @@ fn render_compact_tagged_union_hint(tagged: &TaggedUnionShape) -> String {
         .collect();
     values.sort();
     values.dedup();
-    format!(
+    let mut out = format!(
         "Use `{}` as the discriminator: {}.\n",
         tagged.discriminator,
         values.join(" | ")
-    )
+    );
+    // Step-executor hops use `op`-discriminated session rows. If the model nests an object
+    // where a string enum belongs (e.g. `operation`), jsonish stringifies it and substring enum
+    // matching can tie across variants ("Too many matches for MathOperation").
+    if tagged.discriminator == "op" {
+        out.push_str(
+            "Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.\n",
+        );
+        let has_tool_send = tagged
+            .variants
+            .iter()
+            .any(|v| v.type_name.ends_with("SendStep"));
+        if has_tool_send {
+            out.push_str(
+                "Calculator Send: set input.expression.operation to exactly one JSON string token: \"+\", \"-\", \"*\", \"/\", or Add|Subtract|Multiply|Divide — never an object or sentence.\n",
+            );
+        }
+    }
+    out
 }
 
 fn render_untagged_union_hint(union: &UntaggedUnionShape) -> String {
@@ -284,5 +302,27 @@ mod tests {
         assert!(hint.contains("Use `kind` as the discriminator: \"clarify\" | \"ready\"."));
         assert!(!hint.contains("Select the object shape"));
         assert!(!hint.contains("Return exactly one JSON object."));
+    }
+
+    #[test]
+    fn compact_op_discriminator_hint_warns_scalar_enum_for_send_steps() {
+        let hint =
+            render_step_executor_selection_hint(&ReturnShape::TaggedUnion(TaggedUnionShape {
+                discriminator: "op".to_string(),
+                variants: vec![
+                    TaggedVariantShape {
+                        type_name: "SupportCalculateSendStep".to_string(),
+                        literal_value: "Send".to_string(),
+                    },
+                    TaggedVariantShape {
+                        type_name: "SupportCalculateFinishStep".to_string(),
+                        literal_value: "Finish".to_string(),
+                    },
+                ],
+            }));
+        assert!(hint.contains("Use `op` as the discriminator:"));
+        assert!(hint.contains("Scalar leaves:"));
+        assert!(hint.contains("Calculator Send:"));
+        assert!(hint.contains("input.expression.operation"));
     }
 }
