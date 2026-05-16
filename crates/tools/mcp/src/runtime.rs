@@ -81,9 +81,7 @@ pub enum ConnectionError {
     },
     #[error("MCP server `{server_id}` did not return peer_info after initialize")]
     MissingPeerInfo { server_id: String },
-    #[error(
-        "MCP server `{server_id}` peer_info failed to serialize for identity digest: {source}"
-    )]
+    #[error("MCP server `{server_id}` peer_info failed to serialize for identity digest: {source}")]
     IdentitySerializeFailed {
         server_id: String,
         #[source]

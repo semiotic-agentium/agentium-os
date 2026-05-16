@@ -182,7 +182,10 @@ fn connection_error_to_session(err: ConnectionError) -> ToolSessionError {
             // this arm means the runtime received a malformed payload — surface
             // as a transport/infra error so the LLM does not get prompted to
             // "retry with different inputs," which would mask the codegen bug.
-            debug_assert!(false, "MCP runtime received non-object tool arguments: {err}");
+            debug_assert!(
+                false,
+                "MCP runtime received non-object tool arguments: {err}"
+            );
             ToolSessionError::Transport(BamlRtError::InvalidArgument(err.to_string()))
         }
         ConnectionError::CallTool(ref service_err) => classify_service_error(&err, service_err),

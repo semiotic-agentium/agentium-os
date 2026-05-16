@@ -301,7 +301,6 @@ fn serialize_tool(tool: &FakeMcpTool) -> Value {
     Value::Object(obj)
 }
 
-
 #[cfg(test)]
 mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};

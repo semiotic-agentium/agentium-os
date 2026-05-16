@@ -279,6 +279,7 @@ const MCP_SERVERS_CONFIG_DEFAULT: &str = ".agentium-os/mcp-servers.json";
 /// `mcp-servers.json` is located from (in order):
 ///   1. `BAML_MCP_SERVERS_CONFIG` env var,
 ///   2. `$HOME/.agentium-os/mcp-servers.json`.
+///
 /// Missing or unreadable config is a hard error: an agent whose package
 /// carries snapshots must always have a paired operator launch config.
 pub fn default_mcp_resolver<R: SecretResolver + Send + Sync>(
