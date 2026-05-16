@@ -28,11 +28,13 @@ pub async fn load_package(package_path: &Path) -> Result<(PathBuf, AgentManifest
     let package_path = package_path.to_path_buf();
     tokio::task::spawn_blocking(move || load_package_blocking(&package_path))
         .await
-        .map_err(|e| {
-            BamlRtError::Io(std::io::Error::other(format!(
-                "agent package load task failed: {e}"
-            )))
-        })?
+        .map_err(|e| blocking_join_error("agent package load", e))?
+}
+
+pub(crate) fn blocking_join_error(operation: &str, err: tokio::task::JoinError) -> BamlRtError {
+    BamlRtError::Io(std::io::Error::other(format!(
+        "{operation} blocking task failed: {err}"
+    )))
 }
 
 fn load_package_blocking(package_path: &Path) -> Result<(PathBuf, AgentManifest)> {

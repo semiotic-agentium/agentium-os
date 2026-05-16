@@ -24,16 +24,11 @@ pub async fn publish_with_build(
         .map_err(HttpApiProblem::from)?;
 
     let source_versioned = cmd.source.with_manifest_version(next_version);
-    let built: Arc<[u8]> = Arc::from(
-        build_artifact(source_versioned)
-            .await
-            .map_err(|e| {
-                HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR)
-                    .title("Artifact build failed")
-                    .detail(e.to_string())
-            })?
-            .into_boxed_slice(),
-    );
+    let built: Arc<[u8]> = Arc::from(build_artifact(source_versioned).await.map_err(|e| {
+        HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR)
+            .title("Artifact build failed")
+            .detail(e.to_string())
+    })?);
 
     let parse_bytes = Arc::clone(&built);
     let (_, extracted) =

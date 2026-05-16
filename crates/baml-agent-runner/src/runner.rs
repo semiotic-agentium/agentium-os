@@ -32,6 +32,7 @@ use crate::{
         SnapshotAgentLister,
     },
     config::ProvenanceConfig,
+    package::blocking_join_error,
     routing::{InternalA2aRouter, LiveAgentLister, ScopedInternalA2aRouter, scope_from_request},
     stdio::{
         is_a2a_method, map_a2a_error, select_implicit_stdio_agent, serialize_a2a_response,
@@ -72,12 +73,6 @@ fn parse_repository_entry_version(value: &serde_json::Value) -> Option<u32> {
         return s.strip_prefix('v').unwrap_or(s).parse::<u32>().ok();
     }
     None
-}
-
-fn blocking_join_error(operation: &str, err: tokio::task::JoinError) -> BamlRtError {
-    BamlRtError::Io(std::io::Error::other(format!(
-        "{operation} blocking task failed: {err}"
-    )))
 }
 
 pub(crate) struct AgentRunnerConfig {
@@ -855,11 +850,7 @@ impl DeploymentManager for AgentRunner {
             }
         };
 
-        let bytes: Arc<[u8]> = Arc::from(
-            self.fetch_blob_from_repository(content_hash)
-                .await?
-                .into_boxed_slice(),
-        );
+        let bytes: Arc<[u8]> = Arc::from(self.fetch_blob_from_repository(content_hash).await?);
         AgentRunner::verify_artifact_integrity(content_hash, bytes.as_ref(), repository_version)?;
 
         let manifest_bytes = Arc::clone(&bytes);
