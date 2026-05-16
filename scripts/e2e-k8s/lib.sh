@@ -540,6 +540,8 @@ dump_logs() {
   surreal_query "SELECT * FROM cluster_agent_placements" \
     > "${dir}/cluster_agent_placements.json" || true
 
+  dump_runner_kernel_state "$dir"
+
   # Settle, then re-tail: pod logs above are a single snapshot, and the
   # diagnostic 5xx body / panic typically lands in the seconds between
   # the snapshot and pod teardown.
@@ -551,6 +553,73 @@ dump_logs() {
   done
 
   log_info "Log dump complete: ${dir}/"
+}
+
+# dump_runner_kernel_state <directory>
+# Per-runner-pod kernel and cgroup state snapshot. Lives under each pod's
+# mount/network namespace so it must be read via `kubectl exec`, not from
+# the host. Captured paths and the questions they answer:
+#
+#   /proc/net/tcp[6]       — was the listener in LISTEN? accept-queue depth?
+#   /proc/net/netstat      — ListenOverflows / ListenDrops / TcpExt:*
+#   /sys/fs/cgroup/cpu.stat        — nr_throttled, throttled_time (CFS)
+#   /sys/fs/cgroup/memory.current  — current memory usage
+#   /sys/fs/cgroup/memory.events   — OOM and memory.high events
+#
+# Each file is its own `kubectl exec`: a single missing path on an older
+# kernel or non-runner image must not take down the rest of the snapshot.
+# A per-call --request-timeout caps the exec at 10s so a wedged or
+# terminating pod cannot stall the dump for minutes. Stderr is merged into
+# the captured file; on failure the file carries the error text so the
+# operator can see what went wrong without a second .err sidecar per path.
+#
+# Runner pods are identified preferentially from RUNNER_POD_0/RUNNER_POD_1
+# (resolved by resolve_chart_names) and fall back to label-based lookup
+# when the dump fires before chart names are resolved (e.g. bringup
+# failure). SurrealDB pods are deliberately excluded — the question is
+# the runner's listener, and exec'ing into the database is unrelated to
+# the USE-method evidence this capture exists to provide.
+dump_runner_kernel_state() {
+  local dir="$1"
+  local runner_pods=()
+  if [[ -n "${RUNNER_POD_0:-}" ]]; then runner_pods+=("$RUNNER_POD_0"); fi
+  if [[ -n "${RUNNER_POD_1:-}" ]]; then runner_pods+=("$RUNNER_POD_1"); fi
+  if (( ${#runner_pods[@]} == 0 )); then
+    while read -r p; do
+      [[ -n "$p" ]] && runner_pods+=("$p")
+    done < <(
+      kubectl -n "$NAMESPACE" get pods \
+        -l "app.kubernetes.io/instance=${RELEASE_NAME},app.kubernetes.io/component=runner" \
+        -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n'
+    )
+  fi
+  if (( ${#runner_pods[@]} == 0 )); then
+    return 0
+  fi
+
+  local paths=(
+    /proc/net/tcp
+    /proc/net/tcp6
+    /proc/net/netstat
+    /sys/fs/cgroup/cpu.stat
+    /sys/fs/cgroup/memory.current
+    /sys/fs/cgroup/memory.events
+  )
+  local suffixes=(
+    proc-net-tcp.txt
+    proc-net-tcp6.txt
+    proc-net-netstat.txt
+    cgroup-cpu.stat
+    cgroup-memory.current
+    cgroup-memory.events
+  )
+  local pod i
+  for pod in "${runner_pods[@]}"; do
+    for ((i = 0; i < ${#paths[@]}; i++)); do
+      kubectl exec --request-timeout=10s -n "$NAMESPACE" "$pod" -c runner -- \
+        cat "${paths[$i]}" > "${dir}/${pod}-${suffixes[$i]}" 2>&1 || true
+    done
+  done
 }
 
 # ---------------------------------------------------------------------------
