@@ -43,6 +43,8 @@ pub enum MemoryError {
     },
     #[error("unknown memory health status from agentic-memory: {0}")]
     UnknownStatsStatus(String),
+    #[error("memory persist task failed: {0}")]
+    PersistTaskFailed(#[from] tokio::task::JoinError),
 }
 
 #[derive(Debug)]
@@ -240,7 +242,7 @@ impl MemoryManager {
                 actual,
             });
         }
-        if let Err(err) = self.persist(&graph) {
+        if let Err(err) = self.persist(&graph).await {
             *graph = snapshot;
             return Err(err);
         }
@@ -410,7 +412,7 @@ impl MemoryManager {
             count += 1;
         }
         graph.ensure_adjacency();
-        if let Err(err) = self.persist(&graph) {
+        if let Err(err) = self.persist(&graph).await {
             *graph = snapshot;
             return Err(err);
         }
@@ -444,11 +446,20 @@ impl MemoryManager {
     }
 
     /// Persist the graph to disk via temp-file replace (Unix atomic rename; Windows fallback).
-    fn persist(&self, graph: &MemoryGraph) -> Result<()> {
+    ///
+    /// Serialization runs inline under the caller's write lock; the filesystem write and
+    /// atomic rename run on `spawn_blocking` to keep the tokio executor responsive.
+    async fn persist(&self, graph: &MemoryGraph) -> Result<()> {
         let writer = AmemWriter::new(graph.dimension());
-        let tmp_path = path_with_appended_suffix(&self.file_path, ".tmp");
-        writer.write_to_file(graph, &tmp_path)?;
-        replace_file_portable(&tmp_path, &self.file_path)?;
+        let mut buf = Vec::new();
+        writer.write_to(graph, &mut buf)?;
+        let file_path = self.file_path.clone();
+        let tmp_path = path_with_appended_suffix(&file_path, ".tmp");
+        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            std::fs::write(&tmp_path, &buf)?;
+            replace_file_portable(&tmp_path, &file_path)
+        })
+        .await??;
         debug!(path = %self.file_path.display(), "memory persisted");
         Ok(())
     }
