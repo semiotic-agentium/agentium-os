@@ -1454,6 +1454,7 @@ dependencies = [
  "baml-rt-core",
  "baml-rt-embedding",
  "baml-rt-llm-config",
+ "baml-rt-mcp",
  "baml-rt-observability",
  "baml-rt-provenance",
  "baml-rt-quickjs",
@@ -1463,7 +1464,6 @@ dependencies = [
  "baml-rt-tools-claude",
  "baml-tools-calculator",
  "baml-tools-clickup",
- "baml-tools-mcp",
  "baml-tools-memory",
  "baml-tools-notion",
  "baml-tools-security-eval",
@@ -1729,6 +1729,7 @@ dependencies = [
  "async-trait",
  "baml-rt",
  "baml-rt-core",
+ "baml-rt-mcp",
  "baml-rt-observability",
  "baml-rt-quickjs",
  "baml-rt-repository",
@@ -1737,7 +1738,6 @@ dependencies = [
  "baml-runtime",
  "baml-tools-calculator",
  "baml-tools-clickup",
- "baml-tools-mcp",
  "baml-tools-memory",
  "baml-tools-notion",
  "baml-tools-security-eval",
@@ -1881,6 +1881,24 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "baml-rt-mcp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "baml-rt-core",
+ "baml-rt-tools",
+ "libc",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -2296,24 +2314,6 @@ dependencies = [
  "inventory",
  "serde",
  "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "baml-tools-mcp"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "baml-rt-core",
- "baml-rt-tools",
- "libc",
- "rmcp",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]

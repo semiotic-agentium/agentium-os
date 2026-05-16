@@ -18,6 +18,10 @@ use baml_rt_core::{
     context::{InvocationScope, generate_context_id},
     ids::AgentId,
 };
+use baml_rt_mcp::{
+    composite::CompositeResolver, importer::SecretResolver as McpSecretResolver,
+    resolver::default_mcp_resolver,
+};
 use baml_rt_observability::spans;
 use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, index_tools};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, SecretResolverToLlmAdapter};
@@ -32,10 +36,6 @@ use baml_rt_tools::{
         resolver::SandboxRuntimeWiring,
     },
     register_manifest_tools_with_fallback,
-};
-use baml_tools_mcp::{
-    composite::CompositeResolver, importer::SecretResolver as McpSecretResolver,
-    resolver::default_mcp_resolver,
 };
 
 /// Bridges the LLM-side `SecretResolver` (returns `SecretValue`) into the

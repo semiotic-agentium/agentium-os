@@ -2,14 +2,14 @@
 
 use std::collections::BTreeMap;
 
+use baml_rt_mcp::{
+    fixture::{FakeMcpConfig, FakeMcpTool},
+    importer::{EnvSecretResolver, ImportError, ImportOptions, Importer, SecretResolver},
+};
 use baml_rt_tools::{
     mcp_cache::{read_snapshot, write_snapshot},
     mcp_config::{McpServerConfig, SandboxConfig, SecretDecl},
     mcp_snapshot::{McpApprovalState, McpTransportRef},
-};
-use baml_tools_mcp::{
-    fixture::{FakeMcpConfig, FakeMcpTool},
-    importer::{EnvSecretResolver, ImportError, ImportOptions, Importer, SecretResolver},
 };
 use serde_json::json;
 

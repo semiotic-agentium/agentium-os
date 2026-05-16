@@ -3,7 +3,7 @@
 
 use std::process::ExitCode;
 
-use baml_tools_mcp::fixture::{FakeMcpConfig, new_state, run_fake_server};
+use baml_rt_mcp::fixture::{FakeMcpConfig, new_state, run_fake_server};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {

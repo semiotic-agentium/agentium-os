@@ -40,7 +40,7 @@ members = [
   "crates/tools/notion",
   "crates/tools/system",
   "crates/tools/memory",
-  "crates/tools/mcp",
+  "crates/baml-rt-mcp",
   "crates/baml-tool-derive",
 ]
 default-members = [

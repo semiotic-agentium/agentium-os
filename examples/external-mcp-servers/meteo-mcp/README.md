@@ -76,7 +76,7 @@ To exercise PR5 push-drift, edit `main.py` to change `INPUT_SCHEMA`, restart
 the server, and call the tool — the runner will surface
 `ConnectionError::Stale` on the next call after `notifications/tools/list_changed`.
 (`main.py` does not emit that notification today; see the fake fixture under
-`crates/tools/mcp/src/fixture.rs` for a server that does.)
+`crates/baml-rt-mcp/src/fixture.rs` for a server that does.)
 
 When drift is detected, re-import and approve a new registry snapshot after
 reviewing the changed server/tool schemas.

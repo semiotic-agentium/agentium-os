@@ -4,6 +4,12 @@
 use std::path::Path;
 
 use baml_rt_core::ids::{AgentId, ContextId, UuidId};
+use baml_rt_mcp::{
+    composite::CompositeResolver,
+    fixture::{FakeMcpConfig, FakeMcpTool},
+    importer::EnvSecretResolver,
+    resolver::McpResolver,
+};
 use baml_rt_tools::{
     ExternalToolResolver,
     mcp_cache::{read_server, write_snapshot},
@@ -15,12 +21,6 @@ use baml_rt_tools::{
     },
     tool_fsm::{ToolSessionId, ToolStep},
     tools::{ToolAccess, ToolName, ToolSessionContext},
-};
-use baml_tools_mcp::{
-    composite::CompositeResolver,
-    fixture::{FakeMcpConfig, FakeMcpTool},
-    importer::EnvSecretResolver,
-    resolver::McpResolver,
 };
 use serde_json::json;
 

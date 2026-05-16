@@ -1,7 +1,7 @@
 //! MCP client + importer for the BAML runtime.
 //!
 //! Public types live in their submodules. Callers reach them via the module
-//! path (`baml_tools_mcp::resolver::McpResolver`, etc.) rather than crate-root
+//! path (`baml_rt_mcp::resolver::McpResolver`, etc.) rather than crate-root
 //! re-exports so each type has exactly one canonical public path.
 
 pub mod client;

@@ -780,8 +780,8 @@ async fn import_mcp_snapshot_from_config(
     config_path: Option<&std::path::Path>,
 ) -> Result<baml_rt_tools::mcp_snapshot::McpServerSnapshot> {
     use anyhow::bail;
+    use baml_rt_mcp::importer::{EnvSecretResolver, ImportOptions, Importer};
     use baml_rt_tools::mcp_config::McpServersFile;
-    use baml_tools_mcp::importer::{EnvSecretResolver, ImportOptions, Importer};
 
     let config_path = match config_path {
         Some(p) => p.to_path_buf(),
