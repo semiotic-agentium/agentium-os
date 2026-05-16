@@ -1,6 +1,7 @@
-use std::{collections::HashSet, io::Write, path::Path};
+use std::{collections::HashSet, path::Path};
 
 use anyhow::Result;
+use baml_rt_core::atomic_io::atomic_write;
 
 /// Sync generated runtime BAML files from build_dir to agent's baml_src.
 pub fn sync_generated_baml_files(
@@ -35,10 +36,8 @@ pub fn sync_generated_baml_files(
             generated_names.insert(file_name.to_string());
         }
         let data = std::fs::read(&path)?;
-        let mut tmp = tempfile::NamedTempFile::new_in(dest_baml_src)?;
-        tmp.write_all(&data)?;
         let dest_path = dest_baml_src.join(file_name);
-        tmp.persist(&dest_path).map_err(|e| e.error)?;
+        atomic_write(&dest_path, &data)?;
     }
 
     // Remove stale generated_*.baml files that are no longer emitted by the builder

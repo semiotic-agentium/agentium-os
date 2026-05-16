@@ -4,6 +4,7 @@ pub mod a2a_handler;
 pub mod a2a_sse;
 pub mod a2a_wire;
 pub mod agent_routing;
+pub mod atomic_io;
 pub mod backoff;
 pub mod bus;
 pub(crate) mod bus_spans;
