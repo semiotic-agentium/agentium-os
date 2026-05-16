@@ -460,8 +460,10 @@ impl MemoryManager {
         let mut buf = Vec::new();
         writer.write_to(graph, &mut buf)?;
         let file_path = self.file_path.clone();
-        tokio::task::spawn_blocking(move || baml_rt_core::atomic_io::atomic_write(&file_path, &buf))
-            .await??;
+        tokio::task::spawn_blocking(move || {
+            baml_rt_core::atomic_io::atomic_write(&file_path, &buf)
+        })
+        .await??;
         debug!(path = %self.file_path.display(), "memory persisted");
         Ok(())
     }
