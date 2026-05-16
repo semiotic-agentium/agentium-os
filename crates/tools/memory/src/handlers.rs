@@ -21,7 +21,8 @@ fn map_err(e: crate::manager::MemoryError) -> baml_rt_core::BamlRtError {
         crate::manager::MemoryError::LockBusy(_)
         | crate::manager::MemoryError::RegistryPoisoned
         | crate::manager::MemoryError::Amem(_)
-        | crate::manager::MemoryError::UnknownStatsStatus(_) => {
+        | crate::manager::MemoryError::UnknownStatsStatus(_)
+        | crate::manager::MemoryError::PersistTaskFailed(_) => {
             baml_rt_core::BamlRtError::ToolExecution(e.to_string())
         }
     }
