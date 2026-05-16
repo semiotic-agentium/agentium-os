@@ -1,13 +1,5 @@
 #!/usr/bin/env bash
-# Placement-consistency assertion for the Kubernetes pilot rehearsal.
-# Hits `/cluster/agents` and fails the rehearsal if the cluster-wide
-# agent view shows skew between the live runners and the placement table.
-# See `--help` for usage.
-#
-# Customer-facing invariant from issue #391: at demo steady-state,
-# `cluster_agent_placements` must reflect exactly what `/agents` on
-# each pod reports — no version skew, no orphan placements, no
-# unreachable runners.
+# Placement-consistency assertion for the Kubernetes pilot rehearsal. See `--help`.
 
 set -euo pipefail
 
@@ -62,6 +54,7 @@ LOCAL_PORT=18080
 DO_PORT_FORWARD=0
 PF_PID=""
 PF_LOG=""
+RESPONSE_FILE=""
 
 log()  { printf '==> %s\n' "$*"; }
 fail() { printf '  x %s\n' "$1" >&2; exit "${2:-1}"; }
@@ -94,14 +87,13 @@ cleanup() {
     kill "$PF_PID" 2>/dev/null || true
     wait "$PF_PID" 2>/dev/null || true
   fi
-  if [[ -n "$PF_LOG" && -f "$PF_LOG" ]]; then
-    rm -f "$PF_LOG"
-  fi
+  [[ -n "$PF_LOG" && -f "$PF_LOG" ]] && rm -f "$PF_LOG"
+  [[ -n "$RESPONSE_FILE" && -f "$RESPONSE_FILE" ]] && rm -f "$RESPONSE_FILE"
   exit "$code"
 }
 trap cleanup EXIT INT TERM
 
-log "step 1: resolving runner token"
+log "resolving runner token"
 if [[ -z "${RUNNER_TOKEN:-}" ]]; then
   if ! RUNNER_TOKEN="$(kubectl -n "$NAMESPACE" get secret "$SECRET_NAME" \
         -o "jsonpath={.data.$SECRET_KEY}" 2>/dev/null | base64 -d)"; then
@@ -114,7 +106,7 @@ fi
 export RUNNER_TOKEN
 
 if [[ "$DO_PORT_FORWARD" -eq 1 ]]; then
-  log "step 2: opening port-forward to svc/$API_SERVICE on localhost:$LOCAL_PORT"
+  log "opening port-forward to svc/$API_SERVICE on localhost:$LOCAL_PORT"
   if curl -sf -o /dev/null --connect-timeout 1 "http://localhost:$LOCAL_PORT/healthz" 2>/dev/null; then
     fail "localhost:$LOCAL_PORT already responds to /healthz — another process is bound here. Stop it or re-run with --local-port <port>." 1
   fi
@@ -123,27 +115,29 @@ if [[ "$DO_PORT_FORWARD" -eq 1 ]]; then
     >"$PF_LOG" 2>&1 &
   PF_PID=$!
   RUNNER_URL="http://localhost:$LOCAL_PORT"
+  pf_ready=0
   for _ in $(seq 1 60); do
     if ! kill -0 "$PF_PID" 2>/dev/null; then
       fail "kubectl port-forward exited before becoming ready: $(cat "$PF_LOG")" 1
     fi
     if curl -sf -o /dev/null --connect-timeout 1 "$RUNNER_URL/healthz" 2>/dev/null; then
+      pf_ready=1
       break
     fi
     sleep 0.5
   done
-  if ! curl -sf -o /dev/null --connect-timeout 1 "$RUNNER_URL/healthz" 2>/dev/null; then
+  if [[ "$pf_ready" -ne 1 ]]; then
     fail "port-forward did not become ready within 30s: $(cat "$PF_LOG")" 1
   fi
 fi
 
-log "step 3: fetching /cluster/agents"
+log "fetching /cluster/agents"
 RESPONSE_FILE="$(mktemp)"
-# The EXIT trap already runs cleanup() on script exit; extend it to also
-# unlink the response body so success and failure paths agree without a
-# rm -f scattered through every fail call.
-trap 'rm -f "$RESPONSE_FILE"; cleanup' EXIT
+# `--retry 2 --retry-connrefused --retry-delay 1` absorbs a transient TCP blip
+# during the peer fan-out (each runner has a 5s timeout inside the handler) so
+# a single network hiccup does not fail the rehearsal.
 http_code="$(curl -sS -o "$RESPONSE_FILE" -w '%{http_code}' \
+  --retry 2 --retry-connrefused --retry-delay 1 \
   -H "X-Runner-Token: $RUNNER_TOKEN" \
   "$RUNNER_URL/cluster/agents" || true)"
 
@@ -152,7 +146,7 @@ if [[ "$http_code" != "200" ]]; then
   fail "GET /cluster/agents returned HTTP $http_code (expected 200). Body: $body" 1
 fi
 
-log "step 4: asserting cluster-wide consistency"
+log "asserting cluster-wide consistency"
 
 # I1 — every runner reachable.
 unreachable_count="$(jq '[.runners[] | select(.reachable == false)] | length' "$RESPONSE_FILE")"

@@ -696,7 +696,7 @@ demo-rehearsal-no-llm:
     just verify-k8s-pilot-package --image-strategy registry --keep-cluster --smoke-keep-deployed
     just demo-rehearsal-assert
 
-# Customer-facing placement-consistency check (issue #391 I2): hits
+# Customer-facing placement-consistency check (issue #391): hits
 # /cluster/agents and fails the rehearsal on unreachable runners,
 # orphan placements, or version skew. Opens a port-forward against
 # the runner API service for the duration of the request.
