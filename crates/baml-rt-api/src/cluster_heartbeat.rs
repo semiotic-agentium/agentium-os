@@ -127,6 +127,26 @@ impl ClusterHeartbeatHealth {
         Some(decode_kind(self.last_error_kind.load(Ordering::Relaxed)))
     }
 
+    /// Whether this heartbeat's current state should leave `/readyz` passing.
+    ///
+    /// Returns `false` only when the heartbeat has previously succeeded **and**
+    /// is now [`HeartbeatStatus::Degraded`] — i.e. "this runner was healthy
+    /// and is now not." Once a pod has confirmed it CAN talk to the cluster
+    /// registry, subsequent `Degraded` blocks new traffic so kubelet stops
+    /// routing sessions to a pod whose placement updates will not durably land.
+    ///
+    /// Fresh pods are intentionally allowed through: a never-succeeded pod
+    /// in `Starting` or `Degraded` keeps `/readyz` at `200`. SurrealDB-slow-
+    /// during-boot must not pin a fresh pod at `503` forever, and an
+    /// initial heartbeat failure is part of normal boot-window behaviour.
+    #[must_use]
+    pub fn is_within_readyz_threshold(&self) -> bool {
+        if !self.has_ever_succeeded.load(Ordering::Acquire) {
+            return true;
+        }
+        self.status() != HeartbeatStatus::Degraded
+    }
+
     #[must_use]
     pub fn status(&self) -> HeartbeatStatus {
         if !self.has_ever_attempted.load(Ordering::Acquire) {
@@ -223,6 +243,57 @@ mod tests {
             health.last_error_kind(),
             None,
             "after recovery the field hides until the next failure"
+        );
+    }
+
+    #[test]
+    fn readyz_gate_passes_fresh_pod_in_starting() {
+        let health = ClusterHeartbeatHealth::new(Duration::from_secs(5));
+        assert_eq!(health.status(), HeartbeatStatus::Starting);
+        assert!(
+            health.is_within_readyz_threshold(),
+            "fresh pod (no heartbeat attempt yet) must not 503 /readyz"
+        );
+    }
+
+    #[test]
+    fn readyz_gate_passes_never_succeeded_pod_in_degraded() {
+        let health = ClusterHeartbeatHealth::new(Duration::from_secs(5));
+        health.record_error(HeartbeatErrorKind::Connection);
+        assert_eq!(health.status(), HeartbeatStatus::Degraded);
+        assert!(
+            health.is_within_readyz_threshold(),
+            "boot-window heartbeat failure (no prior success) must not 503 /readyz — \
+             SurrealDB-slow-during-boot can't pin fresh pods forever"
+        );
+    }
+
+    #[test]
+    fn readyz_gate_blocks_degraded_after_prior_success() {
+        let health = ClusterHeartbeatHealth::new(Duration::from_secs(5));
+        health.record_ok();
+        health.record_error(HeartbeatErrorKind::Connection);
+        assert_eq!(health.status(), HeartbeatStatus::Degraded);
+        assert!(
+            !health.is_within_readyz_threshold(),
+            "a pod that was healthy and is now degraded must 503 /readyz so kubelet \
+             stops routing to it"
+        );
+    }
+
+    #[test]
+    fn readyz_gate_passes_after_recovery() {
+        let health = ClusterHeartbeatHealth::new(Duration::from_secs(5));
+        health.record_ok();
+        health.record_error(HeartbeatErrorKind::Connection);
+        assert!(
+            !health.is_within_readyz_threshold(),
+            "degraded after success blocks"
+        );
+        health.record_ok();
+        assert!(
+            health.is_within_readyz_threshold(),
+            "next successful heartbeat clears the gate so the pod takes traffic again"
         );
     }
 
