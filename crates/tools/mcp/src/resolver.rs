@@ -262,44 +262,63 @@ fn hash_secret_identity(secrets: &BTreeMap<String, String>) -> String {
     format!("sha256:{:x}", hasher.finalize())
 }
 
-/// Convenience: build an `McpResolver` from the default cache + config paths.
+/// Env-var override for the operator's `mcp-servers.json` path.
+pub const MCP_SERVERS_CONFIG_ENV: &str = "BAML_MCP_SERVERS_CONFIG";
+
+/// Default `mcp-servers.json` path when the env-var override is unset.
+const MCP_SERVERS_CONFIG_DEFAULT: &str = ".agentium-os/mcp-servers.json";
+
+/// Build an `McpResolver` from a registry-derived snapshot cache and the
+/// operator's launch config (`mcp-servers.json`).
+///
+/// `cache_root` MUST point at the package's `<extract_dir>/mcp/` directory
+/// — there is no `$HOME` fallback. Snapshots come from the registry,
+/// projected into the package at build time, and the runner refuses to
+/// resolve MCP tools against any other source.
+///
+/// `mcp-servers.json` is located from (in order):
+///   1. `BAML_MCP_SERVERS_CONFIG` env var,
+///   2. `$HOME/.agentium-os/mcp-servers.json`.
+/// Missing or unreadable config is a hard error: an agent whose package
+/// carries snapshots must always have a paired operator launch config.
 pub fn default_mcp_resolver<R: SecretResolver + Send + Sync>(
-    cache_root: Option<&Path>,
-    config_path: Option<&Path>,
+    cache_root: &Path,
     secret_resolver: R,
-) -> Result<Option<McpResolver<R>>> {
-    let cache_root = match cache_root {
-        Some(path) => path.to_path_buf(),
-        None => match baml_rt_tools::mcp_cache::default_cache_root() {
-            Some(path) => path,
-            None => return Ok(None),
-        },
-    };
-    let config_path: PathBuf = match config_path {
-        Some(path) => path.to_path_buf(),
-        None => {
-            let Some(home) = std::env::var_os("HOME") else {
-                return Ok(None);
-            };
-            PathBuf::from(home)
-                .join(".agentium-os")
-                .join("mcp-servers.json")
+) -> Result<McpResolver<R>> {
+    let config_path = resolve_servers_config_path()?;
+    let raw = std::fs::read_to_string(&config_path).map_err(|err| {
+        BamlRtError::InvalidArgumentWithSource {
+            message: format!(
+                "MCP servers config required but unreadable at {} \
+                 (set {MCP_SERVERS_CONFIG_ENV} or place the file at the default path)",
+                config_path.display()
+            ),
+            source: Box::new(err),
         }
-    };
-    let raw = match std::fs::read_to_string(&config_path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(BamlRtError::InvalidArgumentWithSource {
-                message: format!("failed to read {}", config_path.display()),
-                source: Box::new(err),
-            });
-        }
-    };
+    })?;
     let parsed =
         McpServersFile::parse(&raw).map_err(|err| BamlRtError::InvalidArgumentWithSource {
             message: format!("parsing {}", config_path.display()),
             source: Box::new(err),
         })?;
-    Ok(Some(McpResolver::new(cache_root, parsed, secret_resolver)))
+    Ok(McpResolver::new(
+        cache_root.to_path_buf(),
+        parsed,
+        secret_resolver,
+    ))
+}
+
+fn resolve_servers_config_path() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os(MCP_SERVERS_CONFIG_ENV)
+        && !path.is_empty()
+    {
+        return Ok(PathBuf::from(path));
+    }
+    let Some(home) = std::env::var_os("HOME") else {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "MCP servers config required but neither {MCP_SERVERS_CONFIG_ENV} \
+             nor HOME is set; cannot locate mcp-servers.json"
+        )));
+    };
+    Ok(PathBuf::from(home).join(MCP_SERVERS_CONFIG_DEFAULT))
 }

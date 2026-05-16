@@ -216,20 +216,21 @@ impl AgentPackage {
         // PR5 wiring: chain the dev-mode external resolver with the MCP
         // resolver via CompositeResolver so manifest entries like
         // `mcp/grafana/search_dashboards` bind to live MCP child processes.
-        // Fail-closed: when the manifest references `mcp/...` tools but the
-        // operator never approved them (no snapshot, no mcp-servers.json),
-        // register_manifest_tools_with_fallback returns an error.
+        //
+        // Snapshots are sourced **only** from the package's `mcp/` directory,
+        // which is projected from the registry at build time. There is no
+        // `$HOME`-level snapshot fallback: a package without `mcp/` simply
+        // skips wiring the MCP resolver, and a manifest that lists `mcp/...`
+        // tools then fails closed in `register_manifest_tools_with_fallback`.
         let package_mcp_root = self.extract_dir.join("mcp");
-        let mcp_cache_root = if package_mcp_root.exists() {
-            Some(package_mcp_root.as_path())
+        let mcp_resolver = if package_mcp_root.exists() {
+            Some(default_mcp_resolver(
+                &package_mcp_root,
+                LlmSecretResolverToMcpAdapter::new(llm_secret_resolver),
+            )?)
         } else {
             None
         };
-        let mcp_resolver = default_mcp_resolver(
-            mcp_cache_root,
-            None,
-            LlmSecretResolverToMcpAdapter::new(llm_secret_resolver),
-        )?;
         let mut composite = CompositeResolver::new();
         if let Some(boxed) = external_resolver {
             composite.push(boxed as Box<dyn ExternalToolResolver>);
