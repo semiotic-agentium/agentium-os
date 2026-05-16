@@ -445,10 +445,11 @@ impl MemoryManager {
         })
     }
 
-    /// Persist the graph to disk via temp-file replace (Unix atomic rename; Windows fallback).
+    /// Persist the graph to disk atomically.
     ///
     /// Serialization runs inline under the caller's write lock; the filesystem write and
-    /// atomic rename run on `spawn_blocking` to keep the tokio executor responsive.
+    /// atomic rename (via `baml_rt_core::atomic_io::atomic_write`) run on `spawn_blocking`
+    /// to keep the tokio executor responsive.
     ///
     /// Cancellation: if the calling future is dropped at `.await`, the in-memory mutation
     /// persists but the on-disk write may not — `spawn_blocking` is detached and the caller's
@@ -459,10 +460,8 @@ impl MemoryManager {
         let mut buf = Vec::new();
         writer.write_to(graph, &mut buf)?;
         let file_path = self.file_path.clone();
-        let tmp_path = path_with_appended_suffix(&file_path, ".tmp");
-        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-            std::fs::write(&tmp_path, &buf)?;
-            replace_file_portable(&tmp_path, &file_path)
+        tokio::task::spawn_blocking(move || {
+            baml_rt_core::atomic_io::atomic_write(&file_path, &buf)
         })
         .await??;
         debug!(path = %self.file_path.display(), "memory persisted");
@@ -492,28 +491,6 @@ fn path_with_appended_suffix(path: &Path, suffix: &str) -> PathBuf {
     file_name.push(suffix);
     out.set_file_name(file_name);
     out
-}
-
-fn replace_file_portable(src: &Path, dst: &Path) -> std::io::Result<()> {
-    #[cfg(windows)]
-    {
-        match std::fs::rename(src, dst) {
-            Ok(()) => Ok(()),
-            Err(err) if dst.exists() => {
-                std::fs::remove_file(dst)?;
-                std::fs::rename(src, dst).map_err(|rename_err| {
-                    // Prefer the retry failure since that is the post-fallback result.
-                    let _ = err;
-                    rename_err
-                })
-            }
-            Err(err) => Err(err),
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        std::fs::rename(src, dst)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -995,12 +972,8 @@ mod tests {
 
         let db_lock = path_with_appended_suffix(&db, ".lock");
         let json_lock = path_with_appended_suffix(&json, ".lock");
-        let db_tmp = path_with_appended_suffix(&db, ".tmp");
-        let json_tmp = path_with_appended_suffix(&json, ".tmp");
 
         assert_ne!(db_lock, json_lock, "lock paths must not collide by stem");
-        assert_ne!(db_tmp, json_tmp, "temp paths must not collide by stem");
         assert!(db_lock.ends_with("foo.db.lock"));
-        assert!(db_tmp.ends_with("foo.db.tmp"));
     }
 }
