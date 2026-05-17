@@ -3,6 +3,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/k8s-pilot-common.sh
+source "${SCRIPT_DIR}/lib/k8s-pilot-common.sh"
+
 usage() {
   cat <<'EOF'
 Placement-consistency assertion for the Kubernetes pilot rehearsal.
@@ -16,6 +20,8 @@ if any of these invariants is broken:
 
 The intent is to fail fast in the demo-rehearsal flow when the
 cluster's placement table has drifted from the live `/agents` view.
+The cluster must be installed in cluster mode (multi-runner); standalone
+runners return 404 on /cluster/agents.
 
 Usage:
   bash scripts/k8s-pilot-assert-placement-consistency.sh [options]
@@ -56,9 +62,6 @@ PF_PID=""
 PF_LOG=""
 RESPONSE_FILE=""
 
-log()  { printf '==> %s\n' "$*"; }
-fail() { printf '  x %s\n' "$1" >&2; exit "${2:-1}"; }
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --namespace)      NAMESPACE="$2"; shift 2 ;;
@@ -72,10 +75,6 @@ while [[ $# -gt 0 ]]; do
     *)                fail "unknown argument: $1" 1 ;;
   esac
 done
-
-require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1 (install it and re-run)" 1
-}
 
 require_cmd kubectl
 require_cmd curl
@@ -94,52 +93,22 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 log "resolving runner token"
-if [[ -z "${RUNNER_TOKEN:-}" ]]; then
-  if ! RUNNER_TOKEN="$(kubectl -n "$NAMESPACE" get secret "$SECRET_NAME" \
-        -o "jsonpath={.data.$SECRET_KEY}" 2>/dev/null | base64 -d)"; then
-    fail "could not read secret ${NAMESPACE}/${SECRET_NAME} key=${SECRET_KEY}. Set RUNNER_TOKEN or pass --secret." 1
-  fi
-  if [[ -z "$RUNNER_TOKEN" ]]; then
-    fail "secret ${NAMESPACE}/${SECRET_NAME} key=${SECRET_KEY} is empty" 1
-  fi
-fi
-export RUNNER_TOKEN
+resolve_runner_token "$NAMESPACE" "$SECRET_NAME" "$SECRET_KEY"
 
 if [[ "$DO_PORT_FORWARD" -eq 1 ]]; then
   log "opening port-forward to svc/$API_SERVICE on localhost:$LOCAL_PORT"
-  if curl -sf -o /dev/null --connect-timeout 1 "http://localhost:$LOCAL_PORT/healthz" 2>/dev/null; then
-    fail "localhost:$LOCAL_PORT already responds to /healthz — another process is bound here. Stop it or re-run with --local-port <port>." 1
-  fi
+  precheck_local_port_unbound "$LOCAL_PORT"
   PF_LOG="$(mktemp)"
   kubectl -n "$NAMESPACE" port-forward "svc/$API_SERVICE" "$LOCAL_PORT:$API_PORT" \
     >"$PF_LOG" 2>&1 &
   PF_PID=$!
   RUNNER_URL="http://localhost:$LOCAL_PORT"
-  pf_ready=0
-  for _ in $(seq 1 60); do
-    if ! kill -0 "$PF_PID" 2>/dev/null; then
-      fail "kubectl port-forward exited before becoming ready: $(cat "$PF_LOG")" 1
-    fi
-    if curl -sf -o /dev/null --connect-timeout 1 "$RUNNER_URL/healthz" 2>/dev/null; then
-      pf_ready=1
-      break
-    fi
-    sleep 0.5
-  done
-  if [[ "$pf_ready" -ne 1 ]]; then
-    fail "port-forward did not become ready within 30s: $(cat "$PF_LOG")" 1
-  fi
+  wait_pilot_port_forward_ready "$PF_PID" "$LOCAL_PORT" "$PF_LOG"
 fi
 
 log "fetching /cluster/agents"
 RESPONSE_FILE="$(mktemp)"
-# `--retry 2 --retry-connrefused --retry-delay 1` absorbs a transient TCP blip
-# during the peer fan-out (each runner has a 5s timeout inside the handler) so
-# a single network hiccup does not fail the rehearsal.
-http_code="$(curl -sS -o "$RESPONSE_FILE" -w '%{http_code}' \
-  --retry 2 --retry-connrefused --retry-delay 1 \
-  -H "X-Runner-Token: $RUNNER_TOKEN" \
-  "$RUNNER_URL/cluster/agents" || true)"
+http_code="$(fetch_cluster_agents "$RUNNER_URL" "$RUNNER_TOKEN" "$RESPONSE_FILE")"
 
 if [[ "$http_code" != "200" ]]; then
   body="$(cat "$RESPONSE_FILE" 2>/dev/null || true)"
@@ -147,30 +116,7 @@ if [[ "$http_code" != "200" ]]; then
 fi
 
 log "asserting cluster-wide consistency"
-
-# I1 — every runner reachable.
-unreachable_count="$(jq '[.runners[] | select(.reachable == false)] | length' "$RESPONSE_FILE")"
-if [[ "$unreachable_count" -gt 0 ]]; then
-  detail="$(jq -r '[.runners[] | select(.reachable == false) | "\(.runner_id) (\(.error))"] | join(", ")' "$RESPONSE_FILE")"
-  fail "[FAIL I1] $unreachable_count runner(s) unreachable from /cluster/agents fan-out: $detail" 2
-fi
-
-# I2 — no orphan-placement entries (runner_id in cluster_agent_placements but
-# not in cluster_runners). The /cluster/agents handler labels these in the
-# `error` field with this substring; matching it keeps this script wedged to
-# the server's contract rather than re-implementing the detection here.
-orphan_count="$(jq '[.runners[] | select(.error and (.error | contains("orphan placement")))] | length' "$RESPONSE_FILE")"
-if [[ "$orphan_count" -gt 0 ]]; then
-  detail="$(jq -r '[.runners[] | select(.error and (.error | contains("orphan placement"))) | .runner_id] | join(", ")' "$RESPONSE_FILE")"
-  fail "[FAIL I2] $orphan_count orphan placement(s) found (placement-table runner_id not in cluster_runners): $detail" 2
-fi
-
-# I3 — no version skew across placements of the same agent.
-skew_count="$(jq '[.agents[] | select(.version_skew == true)] | length' "$RESPONSE_FILE")"
-if [[ "$skew_count" -gt 0 ]]; then
-  detail="$(jq -r '[.agents[] | select(.version_skew == true) | "\(.agent_package)/\(.agent_instance_id)"] | join(", ")' "$RESPONSE_FILE")"
-  fail "[FAIL I3] $skew_count agent(s) with version skew across placements: $detail" 2
-fi
+assert_placement_consistency "$RESPONSE_FILE"
 
 runners_n="$(jq '.runners | length' "$RESPONSE_FILE")"
 agents_n="$(jq '.agents | length' "$RESPONSE_FILE")"

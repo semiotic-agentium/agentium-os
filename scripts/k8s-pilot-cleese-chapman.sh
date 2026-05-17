@@ -79,9 +79,9 @@ CHAPMAN_REPLY=""
 FIXTURE_CLEESE="tests/fixtures/agents/argument-cleese"
 FIXTURE_CHAPMAN="tests/fixtures/agents/argument-chapman"
 
-log()  { printf '==> %s\n' "$*"; }
-warn() { printf '  ! %s\n' "$*" >&2; }
-fail() { printf '  x %s\n' "$1" >&2; exit "${2:-1}"; }
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/k8s-pilot-common.sh
+source "${SCRIPT_DIR}/lib/k8s-pilot-common.sh"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -100,10 +100,6 @@ while [[ $# -gt 0 ]]; do
     *)                fail "unknown argument: $1" 1 ;;
   esac
 done
-
-require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1" 1
-}
 
 require_cmd kubectl
 require_cmd curl
@@ -385,13 +381,7 @@ log "step 2: enforcing supported fnox credential path"
 ensure_fnox_openrouter_default
 
 log "step 3: resolving runner token"
-if [[ -z "$RUNNER_TOKEN" ]]; then
-  RUNNER_TOKEN="$(
-    kubectl -n "$NAMESPACE" get secret "$SECRET_NAME" \
-      -o "jsonpath={.data.${SECRET_KEY}}" 2>/dev/null | base64 -d
-  )" || fail "could not read secret ${NAMESPACE}/${SECRET_NAME} key=${SECRET_KEY}" 1
-  [[ -n "$RUNNER_TOKEN" ]] || fail "runner token secret is empty" 1
-fi
+resolve_runner_token "$NAMESPACE" "$SECRET_NAME" "$SECRET_KEY"
 
 SURREAL_USER="$(
   kubectl -n "$NAMESPACE" get secret "$SURREAL_SECRET_NAME" \
@@ -410,12 +400,8 @@ build_cli
 
 PF_LOG_0="$(mktemp)"
 PF_LOG_1="$(mktemp)"
-if curl -sf -o /dev/null --connect-timeout 1 "http://localhost:${RUNNER0_PORT}/healthz" 2>/dev/null; then
-  fail "localhost:${RUNNER0_PORT} already responds to /healthz; choose a different --runner0-port" 1
-fi
-if curl -sf -o /dev/null --connect-timeout 1 "http://localhost:${RUNNER1_PORT}/healthz" 2>/dev/null; then
-  fail "localhost:${RUNNER1_PORT} already responds to /healthz; choose a different --runner1-port" 1
-fi
+precheck_local_port_unbound "$RUNNER0_PORT"
+precheck_local_port_unbound "$RUNNER1_PORT"
 kubectl -n "$NAMESPACE" port-forward "pod/${RUNNER_POD_0}" "${RUNNER0_PORT}:${REMOTE_PORT}" >"$PF_LOG_0" 2>&1 &
 PF_PID_0=$!
 kubectl -n "$NAMESPACE" port-forward "pod/${RUNNER_POD_1}" "${RUNNER1_PORT}:${REMOTE_PORT}" >"$PF_LOG_1" 2>&1 &
