@@ -20,6 +20,25 @@ require_cmd() {
     || fail "required command not found: $1 (install it and re-run)" 1
 }
 
+# Enumerate every pod from a Helm release into a bash array variable. Uses
+# the standard `app.kubernetes.io/instance` label set by the chart.
+#
+# Args: namespace, release_name, array_var_name
+# Example: discover_release_pods agentium agentium pods
+#          for pod in "${pods[@]}"; do ... done
+discover_release_pods() {
+  local namespace="$1" release_name="$2" array_var="$3"
+  local raw
+  raw="$(kubectl -n "$namespace" get pods \
+    -l "app.kubernetes.io/instance=${release_name}" \
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)"
+  if [[ -z "$raw" ]]; then
+    fail "no pods found for release '${release_name}' in namespace '${namespace}'" 1
+  fi
+  # shellcheck disable=SC2206  # jsonpath emits space-separated names; word-split is intentional
+  eval "$array_var=( \$raw )"
+}
+
 # Resolve RUNNER_TOKEN: honour the env var if set, otherwise read from the
 # named Kubernetes secret. Exports RUNNER_TOKEN; fails on missing/empty.
 #
