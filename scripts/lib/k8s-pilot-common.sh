@@ -79,6 +79,47 @@ fetch_cluster_agents() {
     "$runner_url/cluster/agents" || true
 }
 
+# Default threshold for `assert_heartbeat_freshness` — six heartbeat
+# intervals (the runner heartbeats every 5s). The directory query already
+# filters out placements whose runner heartbeat is past `placement_ttl_ms`
+# (default 90s, so dead runners surface as orphans via I2). I4 catches a
+# narrower regression: a runner that is still heartbeating but slow.
+DEFAULT_HEARTBEAT_FRESHNESS_THRESHOLD_MS=30000
+
+# Assert heartbeat freshness from a fetched /cluster/agents response.
+# Fails with `[FAIL I4]` and exit 2 on:
+#   - any runner with `last_heartbeat_ms` older than $threshold_ms vs `now`
+#   - any non-orphan runner where `last_heartbeat_ms` is absent (the
+#     heartbeat task never wrote, which would be a regression)
+#
+# Args: response_file, threshold_ms (optional; defaults to 30000)
+assert_heartbeat_freshness() {
+  local response_file="$1"
+  local threshold_ms="${2:-$DEFAULT_HEARTBEAT_FRESHNESS_THRESHOLD_MS}"
+  local stale_detail never_detail messages=()
+  stale_detail="$(jq -r --argjson t "$threshold_ms" \
+    '[.runners[] | select(.last_heartbeat_ms != null) | select((now * 1000 - .last_heartbeat_ms) > $t) | "\(.runner_id) (lag=\(((now * 1000 - .last_heartbeat_ms) | floor) | tostring)ms)"] | join(", ")' \
+    "$response_file")"
+  if [[ -n "$stale_detail" ]]; then
+    messages+=("stale heartbeats (>${threshold_ms}ms): $stale_detail")
+  fi
+  # A live runner row (not an orphan placement) with no last_heartbeat_ms
+  # would mean the directory returned a row without ever writing a heartbeat.
+  never_detail="$(jq -r \
+    '[.runners[] | select(.last_heartbeat_ms == null) | select((.error // "") | contains("orphan placement") | not) | .runner_id] | join(", ")' \
+    "$response_file")"
+  if [[ -n "$never_detail" ]]; then
+    messages+=("live runners with no last_heartbeat_ms (heartbeat task never wrote): $never_detail")
+  fi
+  if [[ "${#messages[@]}" -gt 0 ]]; then
+    # `${arr[*]}` with multi-char IFS collapses to the first char only — join
+    # explicitly with printf so multi-error operator output stays readable.
+    local joined
+    printf -v joined ' | %s' "${messages[@]}"
+    fail "[FAIL I4] ${joined# | }" 2
+  fi
+}
+
 # Assert placement consistency from a fetched /cluster/agents response.
 # Fails with `[FAIL I{1,2,3}]` and exit 2 on:
 #   I1 — any runner with `reachable: false`
