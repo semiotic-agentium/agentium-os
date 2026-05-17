@@ -53,8 +53,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 require_cmd kubectl
-require_cmd grep
-require_cmd sed
 
 # Allowlist: extended-regex patterns matched against each WARN-line. Keep
 # narrow — every entry here is an operator promise that the WARN is known,
@@ -68,34 +66,30 @@ WARN_ALLOWLIST=(
 )
 WARN_ALLOWLIST+=("${EXTRA_ALLOW[@]}")
 
-# Join the allowlist into one `grep -E` alternation pattern.
-join_pattern() {
-  local IFS='|'
-  printf '%s' "${WARN_ALLOWLIST[*]}"
-}
+# Empty allowlist would make `grep -Ev ""` match every line as expected — but
+# we still want a clear failure mode if a future maintainer deletes the
+# hardcoded entry. Refuse to run with no allowlist.
+if [[ "${#WARN_ALLOWLIST[@]}" -eq 0 ]]; then
+  fail "WARN_ALLOWLIST is empty — refusing to run (grep -Ev \"\" would silently pass). Add an entry or pass --extra-allow." 1
+fi
 
-# Print any WARN lines from $pod that do not match the allowlist. ANSI
-# escape codes from tracing-fmt are stripped before matching so the
-# allowlist patterns work against the raw message text.
+# Build the grep-extended-regex alternation once; reused across every pod.
+ALLOWED_PATTERN="$(IFS='|'; printf '%s' "${WARN_ALLOWLIST[*]}")"
+
+# Print any WARN lines from $pod that do not match the allowlist. The
+# `grep WARN` filter runs before the ANSI-strip sed so the sed only sees
+# matching lines (negligible for 3 pods, MB-saving for long-lived clusters).
 scan_pod() {
-  local pod="$1" allowed
-  allowed="$(join_pattern)"
+  local pod="$1"
   kubectl -n "$NAMESPACE" logs "$pod" 2>&1 \
-    | sed -E 's/\x1b\[[0-9;]*m//g' \
     | grep -E 'WARN' \
-    | grep -Ev "$allowed" \
+    | sed -E 's/\x1b\[[0-9;]*m//g' \
+    | grep -Ev "$ALLOWED_PATTERN" \
     || true
 }
 
 log "discovering pods in release '$RELEASE_NAME' (namespace '$NAMESPACE')"
-pods_raw="$(kubectl -n "$NAMESPACE" get pods \
-  -l "app.kubernetes.io/instance=${RELEASE_NAME}" \
-  -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)"
-if [[ -z "$pods_raw" ]]; then
-  fail "no pods found for release '${RELEASE_NAME}' in namespace '${NAMESPACE}'" 1
-fi
-# shellcheck disable=SC2206  # intentional word-split — `jsonpath={.items[*].metadata.name}` returns space-separated names
-pods=( $pods_raw )
+discover_release_pods "$NAMESPACE" "$RELEASE_NAME" pods
 
 log "scanning ${#pods[@]} pod(s) for unexpected WARN lines"
 # Build per-pod report; collect into a single fail message at the end so
