@@ -74,10 +74,7 @@ fn approved_snapshot(tools: Vec<McpImportedTool>) -> McpServerSnapshot {
         server_config_digest: Digest::new("sha256:server"),
         server_identity_digest: fixture_identity_digest(),
         tools_digest: compute_tools_digest(&tools),
-        secret_refs: vec![SecretRef {
-            name: "GRAFANA_TOKEN".into(),
-            version: None,
-        }],
+        secret_refs: vec![SecretRef::stdio_env("GRAFANA_TOKEN")],
         approval: ApprovalRecord {
             state: McpApprovalState::Approved,
             owner: Some("op@example.com".into()),
@@ -105,8 +102,12 @@ fn patch_snapshot_config_digest(fixture_path: &Path, cache_root: &Path) {
     let Ok(mut snapshot) = read_snapshot(cache_root, "grafana") else {
         return;
     };
-    snapshot.server_config_digest =
-        baml_rt_tools::mcp_config::compute_server_config_digest("grafana", config);
+    snapshot.server_config_digest = baml_rt_tools::mcp_snapshot::compute_server_config_digest(
+        "grafana",
+        &snapshot.protocol_version,
+        config,
+        Some(&snapshot.tools_digest),
+    );
     write_snapshot(cache_root, &snapshot).unwrap();
 }
 

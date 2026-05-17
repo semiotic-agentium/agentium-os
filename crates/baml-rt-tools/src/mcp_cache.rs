@@ -304,10 +304,7 @@ mod tests {
             server_config_digest: Digest::new("sha256:server"),
             server_identity_digest: Digest::new("sha256:identity"),
             tools_digest: Digest::new("sha256:tools"),
-            secret_refs: vec![SecretRef {
-                name: "fake/token".into(),
-                version: None,
-            }],
+            secret_refs: vec![SecretRef::stdio_env("fake/token")],
             approval: ApprovalRecord {
                 state: McpApprovalState::Approved,
                 owner: Some("op@example.com".into()),

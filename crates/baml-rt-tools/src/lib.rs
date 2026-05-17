@@ -21,6 +21,7 @@ pub mod mcp_builder_catalog;
 pub mod mcp_cache;
 pub mod mcp_config;
 pub mod mcp_schema_normalize;
+pub mod mcp_secrets;
 pub mod mcp_snapshot;
 mod metrics;
 pub mod opaque_json;

@@ -1530,8 +1530,8 @@ mod tests {
             server_identity_digest: Digest::new("sha256:identity"),
             tools_digest: compute_tools_digest(&tools),
             secret_refs: vec![SecretRef {
-                name: "meteo/token".into(),
                 version: Some("1".into()),
+                ..SecretRef::stdio_env("meteo/token")
             }],
             approval: approved(),
             sandbox_profile: Some("restricted".into()),

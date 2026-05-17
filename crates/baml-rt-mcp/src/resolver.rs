@@ -12,8 +12,8 @@ use baml_rt_tools::{
     ExternalToolResolver,
     mcp_builder_catalog::project_tool,
     mcp_cache::{ToolRecord, read_server, read_tool},
-    mcp_config::{McpServersFile, compute_server_config_digest},
-    mcp_snapshot::McpTransportRef,
+    mcp_config::McpServersFile,
+    mcp_snapshot::{Digest as McpDigest, McpTransportRef, compute_server_config_digest},
     tools::{ToolFunctionMetadata, ToolHandler, ToolName},
 };
 use sha2::{Digest as _, Sha256};
@@ -80,7 +80,18 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
         let Some(server_config) = self.servers.servers.get(server_id) else {
             return Ok(None);
         };
-        let observed_config_digest = compute_server_config_digest(server_id, server_config);
+        // Recompute the launch-config digest from current operator config and
+        // refuse to bind on mismatch. Uses the same digest inputs the importer
+        // sealed at approval time: protocol version + the approved tool-set
+        // digest. Any drift in command/args/env-keys/auth shape/policy here
+        // means the running config no longer matches what was approved.
+        let tools_digest = McpDigest::new(expected_tools_digest.to_string());
+        let observed_config_digest = compute_server_config_digest(
+            server_id,
+            protocol_version,
+            server_config,
+            Some(&tools_digest),
+        );
         if observed_config_digest.as_str() != server_config_digest {
             return Err(BamlRtError::InvalidArgument(format!(
                 "MCP server `{server_id}` launch config digest mismatch (expected `{server_config_digest}`, observed `{observed_config_digest}`); operator must re-import and approve a new registry snapshot"

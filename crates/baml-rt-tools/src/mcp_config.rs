@@ -12,8 +12,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
-use crate::mcp_snapshot::{Digest, canonical_digest};
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpServersFile {
     #[serde(rename = "mcpServers", default)]
@@ -99,6 +97,62 @@ pub struct HttpSecretRef {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SecretSource {
     Env { name: String },
+}
+
+impl SecretSource {
+    /// Stable identity token used in pool keys and logs. Never contains the
+    /// resolved value. Phase 2 only supports `env`; the prefix discriminates
+    /// future sources so a future `vault:` source can't collide with an `env:`
+    /// source that happens to share a name.
+    pub fn identity(&self) -> String {
+        match self {
+            SecretSource::Env { name } => format!("env:{name}"),
+        }
+    }
+}
+
+/// Injection target. Closed by construction: query-string, path-segment, and
+/// cookie injection (all forbidden in Phase 2) are not representable.
+/// Username-as-secret (also forbidden) is not representable either —
+/// `HttpBasicPassword` carries a literal `username`, not a ref.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SecretInjection {
+    /// Stdio: inject as child-process env variable `name`.
+    Env { name: String },
+    /// Streamable HTTP: inject as `name: <value>` request header.
+    HttpHeader { name: String },
+    /// Streamable HTTP: inject as `Authorization: Bearer <value>`.
+    HttpAuthorizationBearer,
+    /// Streamable HTTP: inject as `Authorization: Basic base64(username:value)`.
+    HttpBasicPassword { username: String },
+}
+
+/// Canonical, transport-agnostic description of one secret a server needs.
+///
+/// `id` is server-scoped and stable across runs; used as the key in the
+/// resolved-value map. `source` describes where the runtime looks up the
+/// value; `inject` describes where the runtime puts the resolved value.
+///
+/// Built from operator config via [`McpServerConfig::secret_specs`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretSpec {
+    pub id: String,
+    pub source: SecretSource,
+    pub inject: SecretInjection,
+    pub version: Option<String>,
+}
+
+impl SecretSpec {
+    /// Stable identity+version token. Hashes/pool keys built from this token
+    /// change on credential rotation (new version) and on source rebind, but
+    /// never depend on the resolved secret value.
+    pub fn identity_token(&self) -> String {
+        match &self.version {
+            Some(v) => format!("{}@{v}", self.source.identity()),
+            None => self.source.identity(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -272,21 +326,68 @@ pub enum McpConfigError {
     EmptyHttpAuthHeaderName { server: String },
 }
 
-/// Computes the approved launch-config digest for one MCP server.
-///
-/// Covers launch-shaping fields, secret identities, and sandbox policy, but
-/// deliberately excludes raw non-secret env values so host-specific endpoints
-/// do not leak into snapshots.
-pub fn compute_server_config_digest(server_id: &str, config: &McpServerConfig) -> Digest {
-    let canonical = serde_json::json!({
-        "server_id": server_id,
-        "command": config.command,
-        "args": config.args,
-        "env_keys": config.env.keys().collect::<Vec<_>>(),
-        "secret_names": config.secrets.iter().map(|s| &s.name).collect::<Vec<_>>(),
-        "sandbox": config.sandbox,
-    });
-    canonical_digest(&canonical)
+impl McpServerConfig {
+    /// Normalize the operator config's secret needs into a transport-agnostic
+    /// list of `SecretSpec`. Importer, resolver, and runtime all consume this
+    /// shape so injection-site changes never re-parse raw config.
+    ///
+    /// Stdio: each `SecretDecl { name }` becomes an env-source/env-inject
+    /// spec with `id = name`.
+    ///
+    /// Streamable HTTP auth helpers compile to:
+    ///   - `bearer` -> `HttpAuthorizationBearer`
+    ///   - `header` -> `HttpHeader { name }`
+    ///   - `basic`  -> `HttpBasicPassword { username }`
+    ///
+    /// Order is deterministic: stdio `secrets` first (declaration order),
+    /// then HTTP auth.
+    pub fn secret_specs(&self) -> Vec<SecretSpec> {
+        let mut specs = Vec::new();
+        for decl in &self.secrets {
+            specs.push(SecretSpec {
+                id: decl.name.clone(),
+                source: SecretSource::Env {
+                    name: decl.name.clone(),
+                },
+                inject: SecretInjection::Env {
+                    name: decl.name.clone(),
+                },
+                version: None,
+            });
+        }
+        if let Some(McpServerTransportConfig::StreamableHttp(http)) = &self.transport
+            && let Some(auth) = &http.auth
+        {
+            match auth {
+                HttpAuthConfig::Bearer { token_ref } => specs.push(SecretSpec {
+                    id: "auth.bearer".to_string(),
+                    source: token_ref.source.clone(),
+                    inject: SecretInjection::HttpAuthorizationBearer,
+                    version: None,
+                }),
+                HttpAuthConfig::Header { header, value_ref } => specs.push(SecretSpec {
+                    id: format!("auth.header.{header}"),
+                    source: value_ref.source.clone(),
+                    inject: SecretInjection::HttpHeader {
+                        name: header.clone(),
+                    },
+                    version: None,
+                }),
+                HttpAuthConfig::Basic {
+                    username,
+                    password_ref,
+                } => specs.push(SecretSpec {
+                    id: format!("auth.basic.{username}"),
+                    source: password_ref.source.clone(),
+                    inject: SecretInjection::HttpBasicPassword {
+                        username: username.clone(),
+                    },
+                    version: None,
+                }),
+            }
+        }
+        specs
+    }
 }
 
 impl McpServersFile {
@@ -525,7 +626,7 @@ mod tests {
         assert_eq!(http.headers[0].name, "X-Client-Name");
         assert!(matches!(http.auth, Some(HttpAuthConfig::Bearer { .. })));
         assert_eq!(http.timeouts.connect_ms, 5000);
-        assert_eq!(http.pooling.share_safe, true);
+        assert!(http.pooling.share_safe);
         assert_eq!(
             http.network_policy.allow_hosts,
             vec!["mcp.grafana.example.com"]
@@ -566,6 +667,159 @@ mod tests {
         let err = McpServersFile::parse(json).expect_err("reject");
         assert!(matches!(err, McpConfigError::InvalidHttpUrl { .. }));
         assert!(!err.to_string().contains("abc"));
+    }
+
+    #[test]
+    fn secret_specs_stdio_maps_decls_to_env_inject() {
+        let cfg = McpServerConfig {
+            transport: None,
+            command: "uvx".into(),
+            args: vec![],
+            env: BTreeMap::new(),
+            secrets: vec![
+                SecretDecl {
+                    name: "GRAFANA_TOKEN".into(),
+                    description: None,
+                    reason: None,
+                },
+                SecretDecl {
+                    name: "OTHER".into(),
+                    description: None,
+                    reason: None,
+                },
+            ],
+            sandbox: None,
+            description: None,
+        };
+        let specs = cfg.secret_specs();
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].id, "GRAFANA_TOKEN");
+        assert!(matches!(
+            specs[0].source,
+            SecretSource::Env { ref name } if name == "GRAFANA_TOKEN"
+        ));
+        assert!(matches!(
+            specs[0].inject,
+            SecretInjection::Env { ref name } if name == "GRAFANA_TOKEN"
+        ));
+        assert_eq!(specs[0].identity_token(), "env:GRAFANA_TOKEN");
+    }
+
+    #[test]
+    fn secret_specs_http_bearer_compiles_to_authorization_inject() {
+        let cfg = McpServerConfig {
+            transport: Some(McpServerTransportConfig::StreamableHttp(
+                StreamableHttpConfig {
+                    url: "https://example.com/mcp".into(),
+                    headers: vec![],
+                    auth: Some(HttpAuthConfig::Bearer {
+                        token_ref: HttpSecretRef {
+                            source: SecretSource::Env {
+                                name: "TOKEN".into(),
+                            },
+                        },
+                    }),
+                    timeouts: Default::default(),
+                    pooling: Default::default(),
+                    network_policy: Default::default(),
+                },
+            )),
+            command: String::new(),
+            args: vec![],
+            env: BTreeMap::new(),
+            secrets: vec![],
+            sandbox: None,
+            description: None,
+        };
+        let specs = cfg.secret_specs();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].id, "auth.bearer");
+        assert!(matches!(
+            specs[0].inject,
+            SecretInjection::HttpAuthorizationBearer
+        ));
+        assert!(matches!(
+            specs[0].source,
+            SecretSource::Env { ref name } if name == "TOKEN"
+        ));
+    }
+
+    #[test]
+    fn secret_specs_http_header_and_basic_compile_correctly() {
+        let header_cfg = McpServerConfig {
+            transport: Some(McpServerTransportConfig::StreamableHttp(
+                StreamableHttpConfig {
+                    url: "https://example.com/mcp".into(),
+                    headers: vec![],
+                    auth: Some(HttpAuthConfig::Header {
+                        header: "X-API-Key".into(),
+                        value_ref: HttpSecretRef {
+                            source: SecretSource::Env {
+                                name: "API_KEY".into(),
+                            },
+                        },
+                    }),
+                    timeouts: Default::default(),
+                    pooling: Default::default(),
+                    network_policy: Default::default(),
+                },
+            )),
+            command: String::new(),
+            args: vec![],
+            env: BTreeMap::new(),
+            secrets: vec![],
+            sandbox: None,
+            description: None,
+        };
+        let s = header_cfg.secret_specs();
+        assert_eq!(s[0].id, "auth.header.X-API-Key");
+        assert!(matches!(
+            s[0].inject,
+            SecretInjection::HttpHeader { ref name } if name == "X-API-Key"
+        ));
+
+        let basic_cfg = McpServerConfig {
+            transport: Some(McpServerTransportConfig::StreamableHttp(
+                StreamableHttpConfig {
+                    url: "https://example.com/mcp".into(),
+                    headers: vec![],
+                    auth: Some(HttpAuthConfig::Basic {
+                        username: "grafana".into(),
+                        password_ref: HttpSecretRef {
+                            source: SecretSource::Env {
+                                name: "PWD".into(),
+                            },
+                        },
+                    }),
+                    timeouts: Default::default(),
+                    pooling: Default::default(),
+                    network_policy: Default::default(),
+                },
+            )),
+            command: String::new(),
+            args: vec![],
+            env: BTreeMap::new(),
+            secrets: vec![],
+            sandbox: None,
+            description: None,
+        };
+        let s = basic_cfg.secret_specs();
+        assert_eq!(s[0].id, "auth.basic.grafana");
+        assert!(matches!(
+            s[0].inject,
+            SecretInjection::HttpBasicPassword { ref username } if username == "grafana"
+        ));
+    }
+
+    #[test]
+    fn identity_token_includes_version_when_present() {
+        let spec = SecretSpec {
+            id: "x".into(),
+            source: SecretSource::Env { name: "T".into() },
+            inject: SecretInjection::HttpAuthorizationBearer,
+            version: Some("v3".into()),
+        };
+        assert_eq!(spec.identity_token(), "env:T@v3");
     }
 
     #[test]
