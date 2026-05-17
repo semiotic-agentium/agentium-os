@@ -247,10 +247,7 @@ mod tests {
             server_config_digest: Digest::new("sha256:server"),
             server_identity_digest: Digest::new("sha256:identity"),
             tools_digest: Digest::new("sha256:tools"),
-            secret_refs: vec![SecretRef {
-                name: "GRAFANA_TOKEN".into(),
-                version: None,
-            }],
+            secret_refs: vec![SecretRef::stdio_env("GRAFANA_TOKEN")],
             approval: ApprovalRecord {
                 state: McpApprovalState::Approved,
                 owner: Some("op@example.com".into()),

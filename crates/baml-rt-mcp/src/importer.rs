@@ -143,13 +143,15 @@ impl<'a, R: SecretResolver + Sync> Importer<'a, R> {
             &initialize_result.capabilities,
             &initialize_result.server_info,
         );
+        // Derive snapshot secret refs from the unified `SecretSpec` view so
+        // stdio and Streamable HTTP imports both record `source` + `inject`
+        // without each importer arm reimplementing the mapping. HTTP import
+        // is still rejected above, but this keeps the projection in one
+        // place ready for PR4.
         let secret_refs = config
-            .secrets
+            .secret_specs()
             .iter()
-            .map(|secret| SecretRef {
-                name: secret.name.clone(),
-                version: None,
-            })
+            .map(SecretRef::from_spec)
             .collect();
 
         Ok(McpServerSnapshot {

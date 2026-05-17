@@ -8,7 +8,10 @@ use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
 use crate::{
-    mcp_config::{HttpAuthConfig, McpServerConfig, McpServerTransportConfig, StreamableHttpConfig},
+    mcp_config::{
+        HttpAuthConfig, McpServerConfig, McpServerTransportConfig, SecretInjection, SecretSource,
+        StreamableHttpConfig,
+    },
     tools::ToolAccess,
 };
 
@@ -130,11 +133,40 @@ pub enum McpTransportRef {
 
 /// Reference to a secret stored outside the snapshot. The runtime resolves
 /// the actual value through the existing secret-resolver chain.
+///
+/// `source` / `inject` carry the canonical injection model from
+/// `mcp_config::SecretSpec` so the snapshot records *how* the runtime
+/// reconstructs the secret without persisting any value-derived material.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct SecretRef {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    pub source: SecretSource,
+    pub inject: SecretInjection,
+}
+
+impl SecretRef {
+    /// Construct from a unified `SecretSpec` from `mcp_config`.
+    pub fn from_spec(spec: &crate::mcp_config::SecretSpec) -> Self {
+        Self {
+            name: spec.id.clone(),
+            version: spec.version.clone(),
+            source: spec.source.clone(),
+            inject: spec.inject.clone(),
+        }
+    }
+
+    /// Convenience: stdio env-source/env-inject ref with matching name.
+    pub fn stdio_env(name: impl Into<String>) -> Self {
+        let name = name.into();
+        Self {
+            name: name.clone(),
+            version: None,
+            source: SecretSource::Env { name: name.clone() },
+            inject: SecretInjection::Env { name },
+        }
+    }
 }
 
 /// Newtype wrapper around a digest string. Format is implementation-defined
@@ -384,10 +416,7 @@ mod tests {
             server_config_digest: Digest::new("sha256:server-config"),
             server_identity_digest: Digest::new("sha256:server-identity"),
             tools_digest: Digest::new("sha256:tools"),
-            secret_refs: vec![SecretRef {
-                name: "fake/api_token".into(),
-                version: None,
-            }],
+            secret_refs: vec![SecretRef::stdio_env("fake/api_token")],
             approval: ApprovalRecord {
                 state,
                 owner: Some("reviewer@example.com".into()),
