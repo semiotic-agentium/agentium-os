@@ -37,7 +37,7 @@ use rmcp::{
 };
 use serde_json::{Value, to_value};
 use thiserror::Error;
-use tokio::sync::OnceCell;
+use tokio::{io::AsyncReadExt, sync::OnceCell};
 
 use crate::sandbox::SpawnSpec;
 
@@ -68,7 +68,7 @@ pub enum ConnectionError {
     #[error("MCP call timed out after {0:?}")]
     CallTimeout(Duration),
     #[error(
-        "MCP server `{server_id}` is stale (tools/list_changed received); operator must re-import and approve a new registry snapshot"
+        "MCP server `{server_id}` is stale (startup tools/list or tools/list_changed observed drift); operator must re-import and approve a new registry snapshot"
     )]
     Stale { server_id: String },
     #[error(
@@ -79,6 +79,16 @@ pub enum ConnectionError {
         expected: String,
         observed: String,
     },
+    #[error(
+        "MCP server `{server_id}` tool surface digest mismatch (expected `{expected}`, observed `{observed}`); operator must re-import and approve a new registry snapshot"
+    )]
+    ToolsDigestMismatch {
+        server_id: String,
+        expected: String,
+        observed: String,
+    },
+    #[error("MCP server `{server_id}` startup tools/list failed: {reason}")]
+    StartupToolsListFailed { server_id: String, reason: String },
     #[error("MCP server `{server_id}` did not return peer_info after initialize")]
     MissingPeerInfo { server_id: String },
     #[error("MCP server `{server_id}` peer_info failed to serialize for identity digest: {source}")]
@@ -110,14 +120,14 @@ pub struct ServerLaunch {
     /// digest from the live `initialize` response and refuses to bind a
     /// connection on mismatch.
     pub expected_identity_digest: String,
-    /// Server-wide tool-set digest recorded at import time. Drift handler
-    /// recomputes it from a live `tools/list` on
-    /// `notifications/tools/list_changed` and marks the snapshot stale on
-    /// mismatch.
+    /// Server-wide tool-set digest recorded at import time. Startup verifies
+    /// it with a live `tools/list` before accepting the connection; the drift
+    /// handler recomputes it again on `notifications/tools/list_changed`.
+    /// Any mismatch marks the snapshot stale and fails closed.
     pub expected_tools_digest: String,
-    /// Cache root the resolver loaded this snapshot from. Drift handler uses
-    /// it to flip the on-disk server record to `Stale` so the runner refuses
-    /// to bind this server on next startup.
+    /// Cache root the resolver loaded this snapshot from. Startup verification
+    /// and the drift handler use it to flip the on-disk server record to `Stale`
+    /// so the runner refuses to bind this server on next startup.
     pub cache_root: PathBuf,
 }
 
@@ -297,8 +307,8 @@ impl McpConnection {
         &self.launch.server_config_digest
     }
 
-    /// Returns true once any `notifications/tools/list_changed` has been
-    /// observed for this connection. Fail-closed signal consumed by the
+    /// Returns true once startup verification or `notifications/tools/list_changed`
+    /// observes drift for this connection. Fail-closed signal consumed by the
     /// handler before every `tools/call`.
     pub fn is_drifted(&self) -> bool {
         self.drifted.load(Ordering::SeqCst)
@@ -353,27 +363,28 @@ impl McpConnection {
         };
         let handler = RuntimeClientHandler {
             server_id: Arc::<str>::from(launch.server_id.clone()),
-            drifted,
+            drifted: drifted.clone(),
             expected_tools_digest: Arc::<str>::from(launch.expected_tools_digest.clone()),
             cache_root: Arc::new(launch.cache_root.clone()),
         };
         let serve = async move {
-            let command = tokio::process::Command::new(&launch.command);
-            let transport = TokioChildProcess::new(command.configure(|cmd| {
-                cmd.args(&launch.args)
-                    .env_clear()
-                    .envs(&launch.env)
-                    .stderr(std::process::Stdio::piped());
-            }))
-            .map_err(|err| ConnectionError::Spawn {
-                command: launch.command.clone(),
-                source: err,
-            })?;
+            let command = tokio::process::Command::new(&launch.command).configure(|cmd| {
+                cmd.args(&launch.args).env_clear().envs(&launch.env);
+            });
+            let (transport, stderr) = TokioChildProcess::builder(command)
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|err| ConnectionError::Spawn {
+                    command: launch.command.clone(),
+                    source: err,
+                })?;
+            spawn_stderr_drain(launch.server_id.clone(), stderr);
             let service = handler
                 .serve(transport)
                 .await
                 .map_err(|err| ConnectionError::InitializeFailed(err.to_string()))?;
             verify_server_identity(&service, &launch).await?;
+            verify_startup_tools_digest(&service, &launch, &drifted).await?;
             Ok(service)
         };
         match tokio::time::timeout(timeout, serve).await {
@@ -479,6 +490,91 @@ async fn verify_server_identity(
         });
     }
     Ok(())
+}
+
+/// Verify live startup tool surface before accepting the connection. This
+/// closes the gap where a restarted server changes schemas but never emits
+/// `notifications/tools/list_changed`.
+async fn verify_startup_tools_digest(
+    service: &RunningService<RoleClient, RuntimeClientHandler>,
+    launch: &ServerLaunch,
+    drifted: &AtomicBool,
+) -> Result<(), ConnectionError> {
+    let observed_tools = match service.peer().list_all_tools().await {
+        Ok(tools) => tools,
+        Err(err) => {
+            signal_cancel(service).await;
+            return Err(ConnectionError::StartupToolsListFailed {
+                server_id: launch.server_id.clone(),
+                reason: err.to_string(),
+            });
+        }
+    };
+    let observed = digest_from_live_tools(&observed_tools);
+    if observed.as_str() != launch.expected_tools_digest {
+        tracing::warn!(
+            target: "mcp.drift",
+            mcp_server_id = %launch.server_id,
+            expected = %launch.expected_tools_digest,
+            observed = %observed,
+            event = "mcp.startup_tools_digest_mismatch",
+            "MCP server tool surface digest does not match approved snapshot at startup; refusing to bind connection",
+        );
+        mark_drifted_and_persist(&launch.server_id, drifted, &launch.cache_root);
+        signal_cancel(service).await;
+        return Err(ConnectionError::ToolsDigestMismatch {
+            server_id: launch.server_id.clone(),
+            expected: launch.expected_tools_digest.clone(),
+            observed: observed.as_str().to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn spawn_stderr_drain(server_id: String, stderr: Option<tokio::process::ChildStderr>) {
+    const MAX_CAPTURED_STDERR: usize = 64 * 1024;
+
+    let Some(mut stderr) = stderr else {
+        return;
+    };
+    tokio::spawn(async move {
+        let mut captured = Vec::new();
+        let mut total = 0usize;
+        let mut chunk = [0u8; 4096];
+        loop {
+            match stderr.read(&mut chunk).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    total = total.saturating_add(n);
+                    let remaining = MAX_CAPTURED_STDERR.saturating_sub(captured.len());
+                    if remaining > 0 {
+                        captured.extend_from_slice(&chunk[..n.min(remaining)]);
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        target: "mcp.stdio",
+                        mcp_server_id = %server_id,
+                        error = %err,
+                        "failed to drain MCP stdio server stderr"
+                    );
+                    return;
+                }
+            }
+        }
+        if captured.is_empty() {
+            return;
+        }
+        let text = String::from_utf8_lossy(&captured);
+        tracing::debug!(
+            target: "mcp.stdio",
+            mcp_server_id = %server_id,
+            stderr = %text,
+            stderr_bytes = total,
+            stderr_truncated = total > captured.len(),
+            "MCP stdio server stderr"
+        );
+    });
 }
 
 /// Signal the rmcp service to wind down without consuming it.

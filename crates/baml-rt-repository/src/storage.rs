@@ -178,7 +178,10 @@ pub trait McpRegistryStore: Send + Sync {
         version: u32,
     ) -> Result<Option<McpServerSnapshot>>;
 
-    /// Retrieve the latest server snapshot for a server id.
+    /// Retrieve the latest approved server snapshot for a server id.
+    ///
+    /// Stale/pending/rejected latest versions are not returned as approved
+    /// build inputs; callers should ask operators to refresh/reapprove.
     async fn get_latest_mcp_snapshot(&self, server_id: &str) -> Result<Option<McpServerSnapshot>>;
 
     /// List registry versions for one server id, newest first.

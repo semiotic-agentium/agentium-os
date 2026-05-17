@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::mcp_snapshot::{Digest, canonical_digest};
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpServersFile {
     #[serde(rename = "mcpServers", default)]
@@ -76,6 +78,23 @@ pub enum McpConfigError {
     InvalidServerId(String),
     #[error("server `{server}` command is empty")]
     EmptyCommand { server: String },
+}
+
+/// Computes the approved launch-config digest for one MCP server.
+///
+/// Covers launch-shaping fields, secret identities, and sandbox policy, but
+/// deliberately excludes raw non-secret env values so host-specific endpoints
+/// do not leak into snapshots.
+pub fn compute_server_config_digest(server_id: &str, config: &McpServerConfig) -> Digest {
+    let canonical = serde_json::json!({
+        "server_id": server_id,
+        "command": config.command,
+        "args": config.args,
+        "env_keys": config.env.keys().collect::<Vec<_>>(),
+        "secret_names": config.secrets.iter().map(|s| &s.name).collect::<Vec<_>>(),
+        "sandbox": config.sandbox,
+    });
+    canonical_digest(&canonical)
 }
 
 impl McpServersFile {

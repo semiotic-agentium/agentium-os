@@ -7,12 +7,12 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use baml_rt_tools::{
-    mcp_config::{McpServerConfig, SecretDecl},
+    mcp_config::{McpServerConfig, SecretDecl, compute_server_config_digest},
     mcp_schema_normalize::normalize,
     mcp_snapshot::{
-        ApprovalRecord, Digest, MCP_SNAPSHOT_SCHEMA_VERSION, McpImportedTool, McpOutputMode,
-        McpServerSnapshot, McpTransportRef, SecretRef, canonical_digest,
-        compute_server_identity_digest, compute_tools_digest,
+        ApprovalRecord, MCP_SNAPSHOT_SCHEMA_VERSION, McpImportedTool, McpOutputMode,
+        McpServerSnapshot, McpTransportRef, SecretRef, compute_server_identity_digest,
+        compute_tools_digest,
     },
     tools::ToolAccess,
 };
@@ -269,18 +269,6 @@ fn project_tools(
         out.push(tool);
     }
     Ok(out)
-}
-
-fn compute_server_config_digest(server_id: &str, config: &McpServerConfig) -> Digest {
-    let canonical = serde_json::json!({
-        "server_id": server_id,
-        "command": config.command,
-        "args": config.args,
-        "env_keys": config.env.keys().collect::<Vec<_>>(),
-        "secret_names": config.secrets.iter().map(|s| &s.name).collect::<Vec<_>>(),
-        "sandbox": config.sandbox,
-    });
-    canonical_digest(&canonical)
 }
 
 #[cfg(test)]

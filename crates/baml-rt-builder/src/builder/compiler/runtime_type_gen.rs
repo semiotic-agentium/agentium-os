@@ -310,7 +310,7 @@ async fn prepare_mcp_registry_cache(
                 })?
                 .ok_or_else(|| {
                     BamlBuilderError::InvalidArgument(format!(
-                        "manifest uses MCP server `{server_id}`, but no registry snapshot was found"
+                        "manifest uses MCP server `{server_id}`, but no approved registry snapshot was found; if the latest snapshot is stale, re-import and approve a new version"
                     ))
                 })?;
             tracing::info!(

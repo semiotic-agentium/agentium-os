@@ -1306,7 +1306,25 @@ impl McpRegistryStore for SurrealStore {
         else {
             return Ok(None);
         };
-        self.get_mcp_snapshot(server_id, version as u32).await
+        let version = version as u32;
+        let mut version_resp = self
+            .db
+            .query(format!(
+                "SELECT approval_state FROM {TBL_MCP_SERVER_VERSIONS} WHERE server_id = $server_id AND version = $version LIMIT 1"
+            ))
+            .bind(("server_id", server_id.to_string()))
+            .bind(("version", version as i64))
+            .await
+            .map_err(map_surreal_read)?;
+        let version_rows: Vec<Value> = version_resp.take(0).map_err(map_surreal_read)?;
+        let approval_state = version_rows
+            .first()
+            .and_then(|r| r.get("approval_state"))
+            .and_then(Value::as_str);
+        if approval_state != Some("approved") {
+            return Ok(None);
+        }
+        self.get_mcp_snapshot(server_id, version).await
     }
 
     async fn list_mcp_server_versions(
@@ -1573,5 +1591,13 @@ mod tests {
         assert!(versions[0].stale_at.is_some());
         let tools = store.find_mcp_tool("mcp/meteo/get_meteo").await.unwrap();
         assert_eq!(tools[0].approval_state, McpApprovalState::Stale);
+        assert!(
+            store
+                .get_latest_mcp_snapshot("meteo")
+                .await
+                .unwrap()
+                .is_none(),
+            "latest lookup must not return a stale snapshot as approved"
+        );
     }
 }

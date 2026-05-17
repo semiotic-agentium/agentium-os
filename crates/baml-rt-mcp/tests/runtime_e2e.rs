@@ -12,7 +12,7 @@ use baml_rt_mcp::{
 };
 use baml_rt_tools::{
     ExternalToolResolver,
-    mcp_cache::{read_server, write_snapshot},
+    mcp_cache::{read_server, read_snapshot, write_snapshot},
     mcp_schema_normalize::normalize,
     mcp_snapshot::{
         ApprovalRecord, Digest, MCP_SNAPSHOT_SCHEMA_VERSION, McpApprovalState, McpImportedTool,
@@ -88,7 +88,31 @@ fn approved_snapshot(tools: Vec<McpImportedTool>) -> McpServerSnapshot {
     }
 }
 
-fn build_resolver(fixture_path: &Path, cache_root: &Path) -> McpResolver<EnvSecretResolver> {
+fn patch_snapshot_config_digest(fixture_path: &Path, cache_root: &Path) {
+    let json = serde_json::json!({
+        "mcpServers": {
+            "grafana": {
+                "command": FAKE_BIN,
+                "args": [fixture_path.to_string_lossy()],
+                "env": {},
+                "secrets": []
+            }
+        }
+    });
+    let servers = baml_rt_tools::mcp_config::McpServersFile::parse(&json.to_string()).unwrap();
+    let config = servers.servers.get("grafana").unwrap();
+    let Ok(mut snapshot) = read_snapshot(cache_root, "grafana") else {
+        return;
+    };
+    snapshot.server_config_digest =
+        baml_rt_tools::mcp_config::compute_server_config_digest("grafana", config);
+    write_snapshot(cache_root, &snapshot).unwrap();
+}
+
+fn build_resolver_no_patch(
+    fixture_path: &Path,
+    cache_root: &Path,
+) -> McpResolver<EnvSecretResolver> {
     let json = serde_json::json!({
         "mcpServers": {
             "grafana": {
@@ -101,6 +125,11 @@ fn build_resolver(fixture_path: &Path, cache_root: &Path) -> McpResolver<EnvSecr
     });
     let servers = baml_rt_tools::mcp_config::McpServersFile::parse(&json.to_string()).unwrap();
     McpResolver::new(cache_root.to_path_buf(), servers, EnvSecretResolver)
+}
+
+fn build_resolver(fixture_path: &Path, cache_root: &Path) -> McpResolver<EnvSecretResolver> {
+    patch_snapshot_config_digest(fixture_path, cache_root);
+    build_resolver_no_patch(fixture_path, cache_root)
 }
 
 fn session_context(name: &ToolName) -> ToolSessionContext {
@@ -478,6 +507,75 @@ async fn http_transport_is_rejected_at_resolve() {
         ),
         Ok(_) => panic!("expected HTTP transport to be rejected"),
     }
+}
+
+#[tokio::test]
+async fn launch_config_digest_mismatch_fails_at_resolve_time() {
+    let cache = tempfile::tempdir().unwrap();
+    write_snapshot(
+        cache.path(),
+        &approved_snapshot(vec![approved_tool(
+            "search_dashboards",
+            json!({"type": "object"}),
+        )]),
+    )
+    .unwrap();
+    let fixture_path = cache.path().join("fixture.json");
+    write_fixture(&fixture_path, &sample_fixture());
+
+    let resolver = build_resolver_no_patch(&fixture_path, cache.path());
+    let name = ToolName::parse("mcp/grafana/search_dashboards").unwrap();
+    let err = match resolver.resolve(&name) {
+        Err(err) => err,
+        Ok(_) => panic!("config digest mismatch must fail closed"),
+    };
+    assert!(
+        err.to_string().contains("launch config digest mismatch"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn startup_tools_digest_mismatch_fails_before_tool_call() {
+    let cache = tempfile::tempdir().unwrap();
+    write_snapshot(
+        cache.path(),
+        &approved_snapshot(vec![approved_tool(
+            "search_dashboards",
+            json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+        )]),
+    )
+    .unwrap();
+    let fixture_path = cache.path().join("fixture.json");
+    let mut fixture = sample_fixture();
+    fixture.tools = vec![FakeMcpTool {
+        name: "search_dashboards".into(),
+        description: Some("search".into()),
+        input_schema: json!({"type": "object", "properties": {"q": {"type": "number"}}}),
+        call_result: json!({
+            "content": [{ "type": "text", "text": "should not execute" }],
+            "isError": false
+        }),
+    }];
+    write_fixture(&fixture_path, &fixture);
+
+    let resolver = build_resolver(&fixture_path, cache.path());
+    let name = ToolName::parse("mcp/grafana/search_dashboards").unwrap();
+    let (_metadata, handler) = resolver.resolve(&name).unwrap().expect("resolved");
+    let mut session = handler
+        .open_session(session_context(&name), json!({}))
+        .await
+        .unwrap();
+
+    let err = session
+        .send(json!({"q": "cpu"}))
+        .await
+        .expect_err("startup tools digest mismatch must fail first send");
+    let display = format!("{err:?}");
+    assert!(
+        display.contains("tool surface digest mismatch"),
+        "unexpected error: {display}"
+    );
 }
 
 #[tokio::test]

@@ -196,6 +196,8 @@ fn connection_error_to_session(err: ConnectionError) -> ToolSessionError {
             ToolSessionError::Tool(ToolFailure::execution_failed(err.to_string()))
         }
         ConnectionError::IdentityMismatch { .. }
+        | ConnectionError::ToolsDigestMismatch { .. }
+        | ConnectionError::StartupToolsListFailed { .. }
         | ConnectionError::MissingPeerInfo { .. }
         | ConnectionError::IdentitySerializeFailed { .. } => {
             // Fail-closed: the live server's advertised identity does not

@@ -27,9 +27,9 @@ pub struct McpServerSnapshot {
     /// changes still fail closed.
     pub server_identity_digest: Digest,
     /// Digest over the full approved tool set: sorted
-    /// `[(mcp_tool_name, input_schema_digest)]`. The drift handler recomputes
-    /// the same digest from a live `tools/list` after a
-    /// `notifications/tools/list_changed` and marks the snapshot stale on
+    /// `[(mcp_tool_name, input_schema_digest)]`. Runtime recomputes the same
+    /// digest from a live `tools/list` during startup and after
+    /// `notifications/tools/list_changed`, then marks the snapshot stale on
     /// mismatch.
     pub tools_digest: Digest,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -198,9 +198,9 @@ pub fn compute_server_identity_digest(capabilities: &Value, server_info: &Value)
 /// excluded — they affect prompts, not the generated agent schema, and
 /// would otherwise produce noisy drift signals on cosmetic upstream edits.
 ///
-/// Importer and runtime drift handler must call this with the same
-/// `McpImportedTool` projection so digests are comparable across the
-/// two code paths.
+/// Importer, startup verification, and runtime drift handler must call this
+/// with the same `McpImportedTool` projection so digests are comparable across
+/// code paths.
 pub fn compute_tools_digest(tools: &[McpImportedTool]) -> Digest {
     compute_tools_digest_from_entries(tools.iter().map(|tool| {
         (
@@ -211,7 +211,7 @@ pub fn compute_tools_digest(tools: &[McpImportedTool]) -> Digest {
 }
 
 /// Lower-level variant of [`compute_tools_digest`] for callers (e.g. the
-/// drift handler) that have `(mcp_tool_name, input_schema_digest)` pairs
+/// startup/drift handler) that have `(mcp_tool_name, input_schema_digest)` pairs
 /// without a full `McpImportedTool` projection.
 pub fn compute_tools_digest_from_entries<'a, I>(entries: I) -> Digest
 where
