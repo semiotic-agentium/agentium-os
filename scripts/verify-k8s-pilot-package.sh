@@ -86,6 +86,8 @@ Verifies (in order):
      (per-pod publish + cluster-wide deploy via POST /cluster/deploy +
      /cluster/agents consistency check + dispatch verification).
   5. Both runners registered in SurrealDB cluster_runners (count = 2).
+  6. scripts/k8s-pilot-assert-no-warn-logs.sh: no unexpected WARN log
+     lines across runner + SurrealDB pods (#391 step 4).
 
 Exit codes:
   0  package validation passed
@@ -93,6 +95,7 @@ Exit codes:
   2  smoke failure (publish/deploy/dispatch)
   3  package-wiring verify failure (cluster_runners count)
   4  pod imageID does not match pushed registry digest
+  5  unexpected WARN log lines detected
 EOF
 }
 
@@ -247,6 +250,16 @@ verify_package_wiring() {
   log_info "cluster_runners endpoints match chart-rendered DNS (${expected_0}, ${expected_1})"
 }
 
+verify_no_warn_logs() {
+  log_step "Scanning runner + SurrealDB logs for unexpected WARN lines (#391 step 4)"
+  (
+    cd "$REPO_ROOT"
+    bash "${REPO_ROOT}/scripts/k8s-pilot-assert-no-warn-logs.sh" \
+      --namespace "$NAMESPACE" \
+      --release "$RELEASE_NAME"
+  )
+}
+
 main() {
   preflight
   build_image
@@ -274,6 +287,10 @@ main() {
   fi
   if ! verify_package_wiring; then
     exit 3
+  fi
+  if ! verify_no_warn_logs; then
+    log_fail "k8s-pilot-assert-no-warn-logs.sh failed"
+    exit 5
   fi
   log_step "Package validation PASSED"
   log_info "Authoritative path: Helm install (chart) -> k8s-pilot-smoke -> cluster_runners verify"
