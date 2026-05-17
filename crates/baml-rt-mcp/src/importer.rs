@@ -7,12 +7,12 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use baml_rt_tools::{
-    mcp_config::{McpServerConfig, SecretDecl, compute_server_config_digest},
+    mcp_config::{McpServerConfig, McpServerTransportConfig, SecretDecl},
     mcp_schema_normalize::normalize,
     mcp_snapshot::{
         ApprovalRecord, MCP_SNAPSHOT_SCHEMA_VERSION, McpImportedTool, McpOutputMode,
-        McpServerSnapshot, McpTransportRef, SecretRef, compute_server_identity_digest,
-        compute_tools_digest,
+        McpServerSnapshot, McpTransportRef, SecretRef, compute_server_config_digest,
+        compute_server_identity_digest, compute_tools_digest,
     },
     tools::ToolAccess,
 };
@@ -41,6 +41,8 @@ pub enum ImportError {
     },
     #[error("server `{server_id}` exposes no tools")]
     NoTools { server_id: String },
+    #[error("MCP import for `{kind}` transport is not implemented in this build")]
+    UnsupportedTransport { kind: &'static str },
     #[error("missing secret value for `{name}` (resolver returned no value)")]
     MissingSecret { name: String },
 }
@@ -84,6 +86,14 @@ impl<'a, R: SecretResolver + Sync> Importer<'a, R> {
         config: &McpServerConfig,
         options: ImportOptions,
     ) -> Result<McpServerSnapshot, ImportError> {
+        if matches!(
+            config.transport,
+            Some(McpServerTransportConfig::StreamableHttp(_))
+        ) {
+            return Err(ImportError::UnsupportedTransport {
+                kind: "streamable_http",
+            });
+        }
         let env = resolve_env(config, self.resolver)?;
         let timeout = Duration::from_secs(
             config
@@ -122,12 +132,17 @@ impl<'a, R: SecretResolver + Sync> Importer<'a, R> {
         }
 
         let tools = project_tools(&options.server_id, descriptors)?;
-        let server_config_digest = compute_server_config_digest(&options.server_id, config);
+        let tools_digest = compute_tools_digest(&tools);
+        let server_config_digest = compute_server_config_digest(
+            &options.server_id,
+            CLIENT_PROTOCOL_VERSION,
+            config,
+            Some(&tools_digest),
+        );
         let server_identity_digest = compute_server_identity_digest(
             &initialize_result.capabilities,
             &initialize_result.server_info,
         );
-        let tools_digest = compute_tools_digest(&tools);
         let secret_refs = config
             .secrets
             .iter()
@@ -273,7 +288,10 @@ fn project_tools(
 
 #[cfg(test)]
 mod tests {
-    use baml_rt_tools::mcp_config::{SandboxConfig, SecretDecl};
+    use baml_rt_tools::{
+        mcp_config::{SandboxConfig, SecretDecl},
+        mcp_snapshot::Digest,
+    };
 
     use super::*;
 
@@ -288,6 +306,7 @@ mod tests {
     #[test]
     fn server_config_digest_is_stable_and_excludes_env_values() {
         let mut config = McpServerConfig {
+            transport: None,
             command: "uvx".into(),
             args: vec!["mcp-grafana".into()],
             env: BTreeMap::from([("GRAFANA_URL".into(), "http://x".into())]),
@@ -299,22 +318,27 @@ mod tests {
             sandbox: Some(SandboxConfig::default()),
             description: None,
         };
-        let a = compute_server_config_digest("grafana", &config);
+        let tools = Digest::new("sha256:tools");
+        let a =
+            compute_server_config_digest("grafana", CLIENT_PROTOCOL_VERSION, &config, Some(&tools));
         // Changing env value (not key) must not change digest.
         config
             .env
             .insert("GRAFANA_URL".into(), "http://other".into());
-        let b = compute_server_config_digest("grafana", &config);
+        let b =
+            compute_server_config_digest("grafana", CLIENT_PROTOCOL_VERSION, &config, Some(&tools));
         assert_eq!(a, b);
         // Adding a new key changes digest.
         config.env.insert("EXTRA".into(), "y".into());
-        let c = compute_server_config_digest("grafana", &config);
+        let c =
+            compute_server_config_digest("grafana", CLIENT_PROTOCOL_VERSION, &config, Some(&tools));
         assert_ne!(a, c);
     }
 
     #[test]
     fn missing_secret_is_reported() {
         let cfg = McpServerConfig {
+            transport: None,
             command: "sh".into(),
             args: vec!["-c".into(), ":".into()],
             env: BTreeMap::new(),

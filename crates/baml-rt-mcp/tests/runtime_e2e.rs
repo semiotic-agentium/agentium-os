@@ -13,6 +13,7 @@ use baml_rt_mcp::{
 use baml_rt_tools::{
     ExternalToolResolver,
     mcp_cache::{read_server, read_snapshot, write_snapshot},
+    mcp_config::StreamableHttpConfig,
     mcp_schema_normalize::normalize,
     mcp_snapshot::{
         ApprovalRecord, Digest, MCP_SNAPSHOT_SCHEMA_VERSION, McpApprovalState, McpImportedTool,
@@ -490,10 +491,14 @@ async fn http_transport_is_rejected_at_resolve() {
         "search_dashboards",
         json!({"type": "object"}),
     )]);
-    snap.transport = McpTransportRef::Http {
+    snap.transport = McpTransportRef::StreamableHttp(StreamableHttpConfig {
         url: "https://example.invalid/mcp".into(),
-        allowlist_digest: None,
-    };
+        headers: vec![],
+        auth: None,
+        timeouts: Default::default(),
+        pooling: Default::default(),
+        network_policy: Default::default(),
+    });
     write_snapshot(cache.path(), &snap).unwrap();
     let fixture_path = cache.path().join("fixture.json");
     write_fixture(&fixture_path, &sample_fixture());

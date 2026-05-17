@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use url::Url;
 
 use crate::mcp_snapshot::{Digest, canonical_digest};
 
@@ -21,6 +22,12 @@ pub struct McpServersFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpServerConfig {
+    /// Omitted for legacy/Claude Desktop stdio configs. Present for transport
+    /// variants with structured config such as Streamable HTTP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<McpServerTransportConfig>,
+    /// Stdio command. Required when `transport` is absent.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub command: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
@@ -38,6 +45,185 @@ pub struct McpServerConfig {
     /// Optional human-readable description shown by MCP registry import commands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum McpServerTransportConfig {
+    StreamableHttp(StreamableHttpConfig),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StreamableHttpConfig {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<HttpHeader>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<HttpAuthConfig>,
+    #[serde(default, skip_serializing_if = "HttpTimeoutsConfig::is_default")]
+    pub timeouts: HttpTimeoutsConfig,
+    #[serde(default, skip_serializing_if = "HttpPoolingConfig::is_default")]
+    pub pooling: HttpPoolingConfig,
+    #[serde(default, skip_serializing_if = "HttpNetworkPolicyConfig::is_default")]
+    pub network_policy: HttpNetworkPolicyConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HttpHeader {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HttpAuthConfig {
+    Bearer {
+        token_ref: HttpSecretRef,
+    },
+    Header {
+        header: String,
+        value_ref: HttpSecretRef,
+    },
+    Basic {
+        username: String,
+        password_ref: HttpSecretRef,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct HttpSecretRef {
+    pub source: SecretSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SecretSource {
+    Env { name: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HttpTimeoutsConfig {
+    #[serde(default = "default_connect_ms")]
+    pub connect_ms: u64,
+    #[serde(default = "default_request_ms")]
+    pub request_ms: u64,
+    #[serde(default = "default_idle_stream_ms")]
+    pub idle_stream_ms: u64,
+}
+
+impl Default for HttpTimeoutsConfig {
+    fn default() -> Self {
+        Self {
+            connect_ms: default_connect_ms(),
+            request_ms: default_request_ms(),
+            idle_stream_ms: default_idle_stream_ms(),
+        }
+    }
+}
+
+impl HttpTimeoutsConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HttpPoolingConfig {
+    #[serde(default = "default_share_safe")]
+    pub share_safe: bool,
+    #[serde(default = "default_max_idle_per_host")]
+    pub max_idle_per_host: u64,
+    #[serde(default = "default_max_concurrent_requests_per_pool_key")]
+    pub max_concurrent_requests_per_pool_key: u64,
+    #[serde(default = "default_max_concurrent_requests_per_agent")]
+    pub max_concurrent_requests_per_agent: u64,
+    #[serde(default = "default_idle_ttl_ms")]
+    pub idle_ttl_ms: u64,
+}
+
+impl Default for HttpPoolingConfig {
+    fn default() -> Self {
+        Self {
+            share_safe: default_share_safe(),
+            max_idle_per_host: default_max_idle_per_host(),
+            max_concurrent_requests_per_pool_key: default_max_concurrent_requests_per_pool_key(),
+            max_concurrent_requests_per_agent: default_max_concurrent_requests_per_agent(),
+            idle_ttl_ms: default_idle_ttl_ms(),
+        }
+    }
+}
+
+impl HttpPoolingConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HttpNetworkPolicyConfig {
+    /// Empty means "derive allowlist from URL host".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_hosts: Vec<String>,
+    #[serde(default = "default_allow_private_ips")]
+    pub allow_private_ips: bool,
+    #[serde(default = "default_follow_redirects")]
+    pub follow_redirects: bool,
+}
+
+impl Default for HttpNetworkPolicyConfig {
+    fn default() -> Self {
+        Self {
+            allow_hosts: vec![],
+            allow_private_ips: default_allow_private_ips(),
+            follow_redirects: default_follow_redirects(),
+        }
+    }
+}
+
+impl HttpNetworkPolicyConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+const fn default_connect_ms() -> u64 {
+    5_000
+}
+
+const fn default_request_ms() -> u64 {
+    60_000
+}
+
+const fn default_idle_stream_ms() -> u64 {
+    30_000
+}
+
+const fn default_share_safe() -> bool {
+    false
+}
+
+const fn default_max_idle_per_host() -> u64 {
+    8
+}
+
+const fn default_max_concurrent_requests_per_pool_key() -> u64 {
+    16
+}
+
+const fn default_max_concurrent_requests_per_agent() -> u64 {
+    4
+}
+
+const fn default_idle_ttl_ms() -> u64 {
+    300_000
+}
+
+const fn default_allow_private_ips() -> bool {
+    false
+}
+
+const fn default_follow_redirects() -> bool {
+    false
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -78,6 +264,12 @@ pub enum McpConfigError {
     InvalidServerId(String),
     #[error("server `{server}` command is empty")]
     EmptyCommand { server: String },
+    #[error("server `{server}` streamable_http url is invalid: {reason}")]
+    InvalidHttpUrl { server: String, reason: String },
+    #[error("server `{server}` streamable_http header name is empty")]
+    EmptyHttpHeaderName { server: String },
+    #[error("server `{server}` streamable_http auth header name is empty")]
+    EmptyHttpAuthHeaderName { server: String },
 }
 
 /// Computes the approved launch-config digest for one MCP server.
@@ -109,8 +301,14 @@ impl McpServersFile {
             if !is_valid_server_id(id) {
                 return Err(McpConfigError::InvalidServerId(id.clone()));
             }
-            if config.command.trim().is_empty() {
-                return Err(McpConfigError::EmptyCommand { server: id.clone() });
+            match &config.transport {
+                None if config.command.trim().is_empty() => {
+                    return Err(McpConfigError::EmptyCommand { server: id.clone() });
+                }
+                Some(McpServerTransportConfig::StreamableHttp(http)) => {
+                    validate_streamable_http_config(id, http)?;
+                }
+                None => {}
             }
             for key in config.env.keys() {
                 if looks_like_secret_name(key) {
@@ -132,6 +330,49 @@ impl McpServersFile {
         }
         Ok(())
     }
+}
+
+fn validate_streamable_http_config(
+    server: &str,
+    config: &StreamableHttpConfig,
+) -> Result<(), McpConfigError> {
+    let parsed = Url::parse(&config.url).map_err(|err| McpConfigError::InvalidHttpUrl {
+        server: server.to_string(),
+        reason: err.to_string(),
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err(McpConfigError::InvalidHttpUrl {
+            server: server.to_string(),
+            reason: "url must be absolute http(s) URL with host".into(),
+        });
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(McpConfigError::InvalidHttpUrl {
+            server: server.to_string(),
+            reason: "url must not contain embedded credentials".into(),
+        });
+    }
+    if parsed.query().is_some() {
+        return Err(McpConfigError::InvalidHttpUrl {
+            server: server.to_string(),
+            reason: "url must not contain query parameters".into(),
+        });
+    }
+    for header in &config.headers {
+        if header.name.trim().is_empty() {
+            return Err(McpConfigError::EmptyHttpHeaderName {
+                server: server.to_string(),
+            });
+        }
+    }
+    if let Some(HttpAuthConfig::Header { header, .. }) = &config.auth
+        && header.trim().is_empty()
+    {
+        return Err(McpConfigError::EmptyHttpAuthHeaderName {
+            server: server.to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn is_valid_server_id(id: &str) -> bool {
@@ -183,6 +424,7 @@ mod tests {
         }"#;
         let parsed = McpServersFile::parse(json).expect("parse");
         let server = parsed.servers.get("grafana").expect("server present");
+        assert!(server.transport.is_none());
         assert_eq!(server.command, "uvx");
         assert_eq!(server.args, vec!["mcp-grafana".to_string()]);
         assert_eq!(
@@ -236,6 +478,94 @@ mod tests {
         }"#;
         let err = McpServersFile::parse(json).expect_err("reject");
         assert!(matches!(err, McpConfigError::DuplicateSecret { .. }));
+    }
+
+    #[test]
+    fn parses_streamable_http_transport_shape() {
+        let json = r#"{
+          "mcpServers": {
+            "grafana": {
+              "transport": {
+                "kind": "streamable_http",
+                "url": "https://mcp.grafana.example.com/mcp",
+                "headers": [
+                  { "name": "X-Client-Name", "value": "agent-platform" }
+                ],
+                "auth": {
+                  "kind": "bearer",
+                  "token_ref": { "source": { "kind": "env", "name": "GRAFANA_TOKEN" } }
+                },
+                "timeouts": {
+                  "connect_ms": 5000,
+                  "request_ms": 60000,
+                  "idle_stream_ms": 30000
+                },
+                "pooling": {
+                  "share_safe": true,
+                  "max_idle_per_host": 8,
+                  "max_concurrent_requests_per_pool_key": 32,
+                  "max_concurrent_requests_per_agent": 8,
+                  "idle_ttl_ms": 300000
+                },
+                "network_policy": {
+                  "allow_hosts": ["mcp.grafana.example.com"],
+                  "allow_private_ips": false,
+                  "follow_redirects": false
+                }
+              }
+            }
+          }
+        }"#;
+        let parsed = McpServersFile::parse(json).expect("parse");
+        let server = parsed.servers.get("grafana").expect("server present");
+        let Some(McpServerTransportConfig::StreamableHttp(http)) = &server.transport else {
+            panic!("expected streamable_http transport");
+        };
+        assert_eq!(http.url, "https://mcp.grafana.example.com/mcp");
+        assert_eq!(http.headers[0].name, "X-Client-Name");
+        assert!(matches!(http.auth, Some(HttpAuthConfig::Bearer { .. })));
+        assert_eq!(http.timeouts.connect_ms, 5000);
+        assert_eq!(http.pooling.share_safe, true);
+        assert_eq!(
+            http.network_policy.allow_hosts,
+            vec!["mcp.grafana.example.com"]
+        );
+        let json = serde_json::to_string(server).expect("serialize");
+        assert!(json.contains("streamable_http"));
+        assert!(!json.contains("GRAFANA_TOKEN_VALUE_CANARY"));
+    }
+
+    #[test]
+    fn rejects_streamable_http_url_credentials() {
+        let json = r#"{
+          "mcpServers": {
+            "x": {
+              "transport": {
+                "kind": "streamable_http",
+                "url": "https://user:pass@example.com/mcp"
+              }
+            }
+          }
+        }"#;
+        let err = McpServersFile::parse(json).expect_err("reject");
+        assert!(matches!(err, McpConfigError::InvalidHttpUrl { .. }));
+    }
+
+    #[test]
+    fn rejects_streamable_http_url_query_params() {
+        let json = r#"{
+          "mcpServers": {
+            "x": {
+              "transport": {
+                "kind": "streamable_http",
+                "url": "https://example.com/mcp?token=abc"
+              }
+            }
+          }
+        }"#;
+        let err = McpServersFile::parse(json).expect_err("reject");
+        assert!(matches!(err, McpConfigError::InvalidHttpUrl { .. }));
+        assert!(!err.to_string().contains("abc"));
     }
 
     #[test]
