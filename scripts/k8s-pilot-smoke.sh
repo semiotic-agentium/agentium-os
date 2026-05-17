@@ -256,7 +256,8 @@ if [[ "$placement_count" != "$replicas" ]]; then
   fail "GET /cluster/agents reports ${placement_count} placements, expected ${replicas}" 3
 fi
 assert_placement_consistency "$CLUSTER_AGENTS_FILE"
-log "    /cluster/agents: ${replicas} placements, consistent"
+assert_heartbeat_freshness "$CLUSTER_AGENTS_FILE"
+log "    /cluster/agents: ${replicas} placements, consistent, heartbeats fresh"
 
 log "step 8: sending dispatch smoke request"
 smoke_id="k8s-pilot-smoke-$(date +%s)-$$"

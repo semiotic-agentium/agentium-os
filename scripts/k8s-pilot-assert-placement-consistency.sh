@@ -9,17 +9,22 @@ source "${SCRIPT_DIR}/lib/k8s-pilot-common.sh"
 
 usage() {
   cat <<'EOF'
-Placement-consistency assertion for the Kubernetes pilot rehearsal.
+Cluster-health assertion for the Kubernetes pilot rehearsal.
 
 Hits `GET /cluster/agents` (operator-authenticated) and exits non-zero
 if any of these invariants is broken:
 
-  - every runner in `runners[]` is `reachable: true`
-  - no runner carries an orphan-placement error
-  - no agent row has `version_skew: true`
+  - I1: every runner in `runners[]` is `reachable: true`
+  - I2: no runner carries an orphan-placement error
+  - I3: no agent row has `version_skew: true`
+  - I4: every runner's `last_heartbeat_ms` is within the freshness
+        threshold (default 30s) — catches slow/throttled heartbeats
+        before they cross the 90s placement TTL and become orphans
 
 The intent is to fail fast in the demo-rehearsal flow when the
-cluster's placement table has drifted from the live `/agents` view.
+cluster's placement table has drifted from the live `/agents` view
+or a runner's heartbeat cadence has degraded.
+
 The cluster must be installed in cluster mode (multi-runner); standalone
 runners return 404 on /cluster/agents.
 
@@ -37,6 +42,10 @@ Options:
   --service <name>     API service name for --port-forward
                        (default: agentium-agentium-os-runner-api)
   --local-port <port>  Local port for --port-forward (default: 18080).
+  --heartbeat-threshold-ms <ms>
+                       Max permitted heartbeat lag per runner (default 30000).
+                       Fails I4 if any runner's last_heartbeat_ms is older
+                       than this from now.
   -h, --help           Show this message and exit
 
 Environment:
@@ -61,6 +70,7 @@ DO_PORT_FORWARD=0
 PF_PID=""
 PF_LOG=""
 RESPONSE_FILE=""
+HEARTBEAT_THRESHOLD_MS=30000
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -71,6 +81,7 @@ while [[ $# -gt 0 ]]; do
     --port-forward)   DO_PORT_FORWARD=1; shift ;;
     --service)        API_SERVICE="$2"; shift 2 ;;
     --local-port)     LOCAL_PORT="$2"; shift 2 ;;
+    --heartbeat-threshold-ms) HEARTBEAT_THRESHOLD_MS="$2"; shift 2 ;;
     -h|--help)        usage; exit 0 ;;
     *)                fail "unknown argument: $1" 1 ;;
   esac
@@ -117,7 +128,8 @@ fi
 
 log "asserting cluster-wide consistency"
 assert_placement_consistency "$RESPONSE_FILE"
+assert_heartbeat_freshness "$RESPONSE_FILE" "$HEARTBEAT_THRESHOLD_MS"
 
 runners_n="$(jq '.runners | length' "$RESPONSE_FILE")"
 agents_n="$(jq '.agents | length' "$RESPONSE_FILE")"
-log "OK — $runners_n runner(s), $agents_n agent row(s), no skew"
+log "OK — $runners_n runner(s), $agents_n agent row(s), no skew, heartbeats fresh (<${HEARTBEAT_THRESHOLD_MS}ms)"
