@@ -96,26 +96,27 @@ DEFAULT_HEARTBEAT_FRESHNESS_THRESHOLD_MS=30000
 assert_heartbeat_freshness() {
   local response_file="$1"
   local threshold_ms="${2:-$DEFAULT_HEARTBEAT_FRESHNESS_THRESHOLD_MS}"
-  local stale_count detail never_count
-  stale_count="$(jq --argjson t "$threshold_ms" \
-    '[.runners[] | select(.last_heartbeat_ms != null) | select((now * 1000 - .last_heartbeat_ms) > $t)] | length' \
+  local stale_detail never_detail messages=()
+  stale_detail="$(jq -r --argjson t "$threshold_ms" \
+    '[.runners[] | select(.last_heartbeat_ms != null) | select((now * 1000 - .last_heartbeat_ms) > $t) | "\(.runner_id) (lag=\(((now * 1000 - .last_heartbeat_ms) | floor) | tostring)ms)"] | join(", ")' \
     "$response_file")"
-  if [[ "$stale_count" -gt 0 ]]; then
-    detail="$(jq -r --argjson t "$threshold_ms" \
-      '[.runners[] | select(.last_heartbeat_ms != null) | select((now * 1000 - .last_heartbeat_ms) > $t) | "\(.runner_id) (lag=\(((now * 1000 - .last_heartbeat_ms) | floor) | tostring)ms)"] | join(", ")' \
-      "$response_file")"
-    fail "[FAIL I4] $stale_count runner(s) with heartbeat lag > ${threshold_ms}ms: $detail" 2
+  if [[ -n "$stale_detail" ]]; then
+    messages+=("stale heartbeats (>${threshold_ms}ms): $stale_detail")
   fi
   # A live runner row (not an orphan placement) with no last_heartbeat_ms
   # would mean the directory returned a row without ever writing a heartbeat.
-  never_count="$(jq \
-    '[.runners[] | select(.last_heartbeat_ms == null) | select((.error // "") | contains("orphan placement") | not)] | length' \
+  never_detail="$(jq -r \
+    '[.runners[] | select(.last_heartbeat_ms == null) | select((.error // "") | contains("orphan placement") | not) | .runner_id] | join(", ")' \
     "$response_file")"
-  if [[ "$never_count" -gt 0 ]]; then
-    detail="$(jq -r \
-      '[.runners[] | select(.last_heartbeat_ms == null) | select((.error // "") | contains("orphan placement") | not) | .runner_id] | join(", ")' \
-      "$response_file")"
-    fail "[FAIL I4] $never_count live runner(s) with no last_heartbeat_ms (heartbeat task never wrote): $detail" 2
+  if [[ -n "$never_detail" ]]; then
+    messages+=("live runners with no last_heartbeat_ms (heartbeat task never wrote): $never_detail")
+  fi
+  if [[ "${#messages[@]}" -gt 0 ]]; then
+    # `${arr[*]}` with multi-char IFS collapses to the first char only — join
+    # explicitly with printf so multi-error operator output stays readable.
+    local joined
+    printf -v joined ' | %s' "${messages[@]}"
+    fail "[FAIL I4] ${joined# | }" 2
   fi
 }
 
