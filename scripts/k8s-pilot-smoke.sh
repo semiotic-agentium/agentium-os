@@ -4,6 +4,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/k8s-pilot-common.sh
+source "${SCRIPT_DIR}/lib/k8s-pilot-common.sh"
+
 usage() {
   cat <<'EOF'
 Kubernetes pilot first-run smoke flow.
@@ -61,6 +65,7 @@ DO_PORT_FORWARD=0
 KEEP_DEPLOYED=0
 PF_PID=""
 PF_LOG=""
+CLUSTER_AGENTS_FILE=""
 # Per-pod publish port-forwards (one ephemeral PF per runner pod). Tracked
 # as parallel arrays of "pid|log-path" so the cleanup trap can tear them
 # down in lockstep.
@@ -71,10 +76,6 @@ PUBLISH_PORT_BASE=18181
 FIXTURE_PATH="tests/fixtures/agents/dispatch-echo"
 FIXTURE_PKG="dispatch-echo"
 FIXTURE_INSTANCE="default"
-
-log()     { printf '==> %s\n' "$*"; }
-warn()    { printf '  ! %s\n' "$*" >&2; }
-fail()    { printf '  x %s\n' "$1" >&2; exit "${2:-1}"; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -91,10 +92,6 @@ while [[ $# -gt 0 ]]; do
     *)                fail "unknown argument: $1" 1 ;;
   esac
 done
-
-require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1 (install it and re-run)" 1
-}
 
 require_cmd kubectl
 require_cmd curl
@@ -126,31 +123,18 @@ cleanup() {
       rm -f "$log"
     fi
   done
+  [[ -n "$CLUSTER_AGENTS_FILE" && -f "$CLUSTER_AGENTS_FILE" ]] && rm -f "$CLUSTER_AGENTS_FILE"
   exit "$code"
 }
 trap cleanup EXIT INT TERM
 
 log "step 1: resolving runner token"
-if [[ -z "${RUNNER_TOKEN:-}" ]]; then
-  if ! RUNNER_TOKEN="$(kubectl -n "$NAMESPACE" get secret "$SECRET_NAME" \
-        -o "jsonpath={.data.$SECRET_KEY}" 2>/dev/null | base64 -d)"; then
-    fail "could not read secret ${NAMESPACE}/${SECRET_NAME} key=${SECRET_KEY}. Set RUNNER_TOKEN or pass --secret." 1
-  fi
-  if [[ -z "$RUNNER_TOKEN" ]]; then
-    fail "secret ${NAMESPACE}/${SECRET_NAME} key=${SECRET_KEY} is empty" 1
-  fi
-fi
-export RUNNER_TOKEN
+resolve_runner_token "$NAMESPACE" "$SECRET_NAME" "$SECRET_KEY"
 
 healthz_ok=0
 if [[ "$DO_PORT_FORWARD" -eq 1 ]]; then
   log "step 2: opening port-forward to svc/$API_SERVICE on localhost:$LOCAL_PORT"
-  # Refuse to run if something already binds the local port — otherwise the
-  # /healthz poll below could succeed against a local dev runner and the rest
-  # of the smoke would push/deploy to the wrong process.
-  if curl -sf -o /dev/null --connect-timeout 1 "http://localhost:$LOCAL_PORT/healthz" 2>/dev/null; then
-    fail "localhost:$LOCAL_PORT already responds to /healthz — another process is bound here. Stop it or re-run with --local-port <port>." 1
-  fi
+  precheck_local_port_unbound "$LOCAL_PORT"
   if [[ -n "${K8S_PILOT_PF_LOG_DIR:-}" ]]; then
     mkdir -p "$K8S_PILOT_PF_LOG_DIR"
     PF_LOG="${K8S_PILOT_PF_LOG_DIR}/port-forward.log"
@@ -162,19 +146,8 @@ if [[ "$DO_PORT_FORWARD" -eq 1 ]]; then
     >"$PF_LOG" 2>&1 &
   PF_PID=$!
   RUNNER_URL="http://localhost:$LOCAL_PORT"
-  for _ in $(seq 1 60); do
-    if ! kill -0 "$PF_PID" 2>/dev/null; then
-      fail "kubectl port-forward exited before becoming ready: $(cat "$PF_LOG")" 1
-    fi
-    if curl -sf -o /dev/null --connect-timeout 1 "$RUNNER_URL/healthz" 2>/dev/null; then
-      healthz_ok=1
-      break
-    fi
-    sleep 0.5
-  done
-  if [[ "$healthz_ok" -ne 1 ]]; then
-    fail "port-forward did not become ready within 30s: $(cat "$PF_LOG")" 1
-  fi
+  wait_pilot_port_forward_ready "$PF_PID" "$LOCAL_PORT" "$PF_LOG"
+  healthz_ok=1
 fi
 
 log "step 3: probing runner at $RUNNER_URL"
@@ -211,9 +184,7 @@ content_hash=""
 for ((i=0; i<replicas; i++)); do
   pod="${runner_sts}-${i}"
   pod_port=$((PUBLISH_PORT_BASE + i))
-  if curl -sf -o /dev/null --connect-timeout 1 "http://localhost:${pod_port}/healthz" 2>/dev/null; then
-    fail "localhost:${pod_port} already responds to /healthz; pick a different PUBLISH_PORT_BASE" 1
-  fi
+  precheck_local_port_unbound "$pod_port"
   if [[ -n "${K8S_PILOT_PF_LOG_DIR:-}" ]]; then
     pod_pf_log="${K8S_PILOT_PF_LOG_DIR}/port-forward-${pod}.log"
   else
@@ -225,20 +196,7 @@ for ((i=0; i<replicas; i++)); do
   POD_PF_PIDS+=("$pod_pid")
   POD_PF_LOGS+=("$pod_pf_log")
   pod_url="http://localhost:${pod_port}"
-  pod_healthy=0
-  for _ in $(seq 1 60); do
-    if ! kill -0 "$pod_pid" 2>/dev/null; then
-      fail "kubectl port-forward to pod/${pod} exited before becoming ready: $(cat "$pod_pf_log")" 1
-    fi
-    if curl -sf -o /dev/null --connect-timeout 1 "${pod_url}/healthz" 2>/dev/null; then
-      pod_healthy=1
-      break
-    fi
-    sleep 0.5
-  done
-  if [[ "$pod_healthy" -ne 1 ]]; then
-    fail "port-forward to pod/${pod} did not become ready within 30s" 1
-  fi
+  wait_pilot_port_forward_ready "$pod_pid" "$pod_port" "$pod_pf_log"
 
   publish_output="$(cargo run -q -p cargo-agent-platform -- publish \
     --agent-dir "$FIXTURE_PATH" \
@@ -277,28 +235,28 @@ fi
 log "    cluster-wide deploy ok for hash=${content_hash}"
 
 log "step 7: verifying cluster-wide consistency via GET /cluster/agents"
-cluster_agents="$(curl -sf -H "X-Runner-Token: ${RUNNER_TOKEN}" \
-  "${RUNNER_URL}/cluster/agents" || true)"
-if [[ -z "$cluster_agents" ]]; then
-  fail "GET /cluster/agents returned empty body" 3
+CLUSTER_AGENTS_FILE="$(mktemp)"
+http_code="$(fetch_cluster_agents "$RUNNER_URL" "$RUNNER_TOKEN" "$CLUSTER_AGENTS_FILE")"
+if [[ "$http_code" != "200" ]]; then
+  body="$(cat "$CLUSTER_AGENTS_FILE" 2>/dev/null || true)"
+  fail "GET /cluster/agents returned HTTP $http_code (expected 200). Body: $body" 3
 fi
-fixture_row="$(printf '%s' "$cluster_agents" \
-  | jq --arg pkg "$FIXTURE_PKG" \
-      '.agents[] | select(.agent_package == $pkg)')"
+fixture_row="$(jq --arg pkg "$FIXTURE_PKG" \
+  '.agents[] | select(.agent_package == $pkg)' "$CLUSTER_AGENTS_FILE")"
 if [[ -z "$fixture_row" ]]; then
   fail "$FIXTURE_PKG not listed on /cluster/agents after deploy" 3
 fi
-version_skew="$(printf '%s' "$fixture_row" | jq -r '.version_skew')"
-if [[ "$version_skew" != "false" ]]; then
-  warn "cluster_agents row: $fixture_row"
-  fail "GET /cluster/agents reports version_skew=true after a single-hash install" 3
-fi
+# Smoke-specific invariant: this run just deployed dispatch-echo to all
+# replicas, so the placement count must equal replicas. The cluster-wide
+# invariants (no skew, no orphans, no unreachable runners) are deferred to
+# the assert-placement-consistency script.
 placement_count="$(printf '%s' "$fixture_row" | jq '.placements | length')"
 if [[ "$placement_count" != "$replicas" ]]; then
   warn "cluster_agents row: $fixture_row"
   fail "GET /cluster/agents reports ${placement_count} placements, expected ${replicas}" 3
 fi
-log "    /cluster/agents: ${replicas} placements, version_skew=false"
+assert_placement_consistency "$CLUSTER_AGENTS_FILE"
+log "    /cluster/agents: ${replicas} placements, consistent"
 
 log "step 8: sending dispatch smoke request"
 smoke_id="k8s-pilot-smoke-$(date +%s)-$$"
