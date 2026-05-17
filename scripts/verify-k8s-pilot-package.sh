@@ -87,7 +87,7 @@ Verifies (in order):
      /cluster/agents consistency check + dispatch verification).
   5. Both runners registered in SurrealDB cluster_runners (count = 2).
   6. scripts/k8s-pilot-assert-no-warn-logs.sh: no unexpected WARN log
-     lines across runner + SurrealDB pods (#391 step 4).
+     lines across runner + SurrealDB pods.
 
 Exit codes:
   0  package validation passed
@@ -251,7 +251,7 @@ verify_package_wiring() {
 }
 
 verify_no_warn_logs() {
-  log_step "Scanning runner + SurrealDB logs for unexpected WARN lines (#391 step 4)"
+  log_step "Scanning runner + SurrealDB logs for unexpected WARN lines"
   (
     cd "$REPO_ROOT"
     bash "${REPO_ROOT}/scripts/k8s-pilot-assert-no-warn-logs.sh" \
