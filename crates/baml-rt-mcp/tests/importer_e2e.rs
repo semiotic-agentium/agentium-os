@@ -24,6 +24,7 @@ fn write_config(config: &FakeMcpConfig) -> tempfile::NamedTempFile {
 
 fn server_config_for(fixture_path: &std::path::Path) -> McpServerConfig {
     McpServerConfig {
+        transport: None,
         command: FAKE_BIN.into(),
         args: vec![fixture_path.to_string_lossy().into_owned()],
         env: BTreeMap::new(),

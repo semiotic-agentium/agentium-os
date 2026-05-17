@@ -27,6 +27,7 @@ opentelemetry = { workspace = true }
 dashmap = "6.1.0"
 regex = "1"
 sha2 = { workspace = true }
+url = { workspace = true }
 futures-util = { workspace = true }
 # microsandbox is a beta crate ("expect breaking changes"). Exact pin per
 # tool_sandbox.md §7.3; bumps go through explicit review. Behind the

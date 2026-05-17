@@ -202,10 +202,9 @@ impl<R: SecretResolver + Send + Sync> ExternalToolResolver for McpResolver<R> {
                 record.server_id, server.approval.state
             )));
         }
-        // PR5 hardening: HTTP transport is reserved but not yet bound in the
-        // runtime. Reject explicitly so a snapshot we can parse but not run
-        // does not silently fall through to "missing server config".
-        if matches!(server.transport, McpTransportRef::Http { .. }) {
+        // Streamable HTTP transport is schema-only in PR2. Reject explicitly
+        // until wire-level runtime support lands in PR4.
+        if matches!(server.transport, McpTransportRef::StreamableHttp(_)) {
             return Err(BamlRtError::InvalidArgument(format!(
                 "MCP tool {display} uses HTTP transport which is not enabled in this build"
             )));
