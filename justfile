@@ -696,9 +696,11 @@ demo-rehearsal-no-llm:
     just verify-k8s-pilot-package --image-strategy registry --keep-cluster --smoke-keep-deployed
     just demo-rehearsal-assert
 
-# Customer-facing placement-consistency check (issue #391): hits
-# /cluster/agents and fails the rehearsal on unreachable runners,
-# orphan placements, or version skew. Opens a port-forward against
-# the runner API service for the duration of the request.
+# Customer-facing cluster-health checks (issue #391):
+#   - placement consistency (I1/I2/I3) + heartbeat freshness (I4) via
+#     /cluster/agents on the runner API service.
+#   - no-unexpected-WARN log scan (I5) across runner + SurrealDB pods.
+# Both fail the rehearsal on regression.
 demo-rehearsal-assert:
     ./scripts/k8s-pilot-assert-placement-consistency.sh --port-forward --local-port 18181
+    ./scripts/k8s-pilot-assert-no-warn-logs.sh
