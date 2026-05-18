@@ -696,9 +696,10 @@ mod tests {
             transport: None,
             command: "grafana-mcp".into(),
             args: vec![],
-            env: std::collections::BTreeMap::from([
-                ("GRAFANA_URL".into(), "https://grafana.example/api".into()),
-            ]),
+            env: std::collections::BTreeMap::from([(
+                "GRAFANA_URL".into(),
+                "https://grafana.example/api".into(),
+            )]),
             secrets: vec![],
             sandbox: None,
             description: None,
@@ -711,20 +712,20 @@ mod tests {
         assert_eq!(base, same);
 
         // Routing value changed → digest must change.
-        config.env.insert(
-            "GRAFANA_URL".into(),
-            "https://grafana.other/api".into(),
-        );
+        config
+            .env
+            .insert("GRAFANA_URL".into(), "https://grafana.other/api".into());
         let changed_url =
             compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools));
         assert_ne!(base, changed_url, "non-secret env value must affect digest");
 
         // New non-secret env key added → digest must change.
-        config.env.insert(
-            "GRAFANA_URL".into(),
-            "https://grafana.example/api".into(),
-        );
-        config.env.insert("GRAFANA_REGION".into(), "us-east-1".into());
+        config
+            .env
+            .insert("GRAFANA_URL".into(), "https://grafana.example/api".into());
+        config
+            .env
+            .insert("GRAFANA_REGION".into(), "us-east-1".into());
         let added_key =
             compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools));
         assert_ne!(base, added_key, "new non-secret env key must affect digest");

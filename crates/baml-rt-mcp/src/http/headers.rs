@@ -2,27 +2,28 @@
 //!
 //! The MCP Streamable HTTP transport owns a small set of headers that must
 //! never be set by the operator config: protocol/session correlation
-//! (`mcp-session-id`, `mcp-protocol-version`), content negotiation (`accept`,
-//! `content-type`), and `authorization` (which must always come through the
+//! (`mcp-session-id`, `mcp-protocol-version`, `last-event-id`), content
+//! negotiation (`accept`, `content-type`), and `authorization` (which must always come through the
 //! secret-injection path, never as a plaintext static value).
 //!
 //! Validation is one-shot at launch-config construction. A misconfigured
 //! header at this layer is a fail-closed configuration error, not a runtime
 //! recoverable.
 
+use baml_rt_tools::mcp_config::HttpHeader;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use thiserror::Error;
 
-use baml_rt_tools::mcp_config::HttpHeader;
-
 /// Headers operators may not set via `static_headers`. The transport itself
-/// writes `accept`, `content-type`, and `mcp-protocol-version`; the rmcp
-/// transport writes `mcp-session-id`; `authorization` only legitimately comes
+/// writes `accept`, `content-type`, `mcp-protocol-version`, and
+/// `last-event-id`; the rmcp transport writes `mcp-session-id`;
+/// `authorization` only legitimately comes
 /// from `SecretInjection::HttpAuthorizationBearer` or `HttpBasicPassword`.
 pub const RESERVED_HEADERS: &[&str] = &[
     "accept",
     "authorization",
     "content-type",
+    "last-event-id",
     "mcp-protocol-version",
     "mcp-session-id",
 ];
@@ -45,7 +46,7 @@ pub enum HeaderError {
 /// RFC 7230, so the comparison is too.
 pub fn is_reserved(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    RESERVED_HEADERS.iter().any(|r| *r == lower.as_str())
+    RESERVED_HEADERS.contains(&lower.as_str())
 }
 
 /// Validate operator-supplied static headers and build the baseline header
@@ -106,15 +107,21 @@ mod tests {
 
     #[test]
     fn rejects_reserved_authorization_case_insensitive() {
-        let err =
-            build_validated_static_headers("s", &[header("AUTHORIZATION", "Bearer xyz")])
-                .expect_err("must reject");
+        let err = build_validated_static_headers("s", &[header("AUTHORIZATION", "Bearer xyz")])
+            .expect_err("must reject");
         assert!(matches!(err, HeaderError::Reserved { .. }));
     }
 
     #[test]
     fn rejects_reserved_protocol_version() {
         let err = build_validated_static_headers("s", &[header("mcp-protocol-version", "x")])
+            .expect_err("must reject");
+        assert!(matches!(err, HeaderError::Reserved { .. }));
+    }
+
+    #[test]
+    fn rejects_reserved_last_event_id_case_insensitive() {
+        let err = build_validated_static_headers("s", &[header("Last-Event-ID", "7")])
             .expect_err("must reject");
         assert!(matches!(err, HeaderError::Reserved { .. }));
     }
