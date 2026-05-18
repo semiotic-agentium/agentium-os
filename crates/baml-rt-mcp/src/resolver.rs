@@ -1,9 +1,9 @@
 //! `ExternalToolResolver` implementations for MCP-imported tools.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::Duration,
 };
 
@@ -12,16 +12,21 @@ use baml_rt_tools::{
     ExternalToolResolver,
     mcp_builder_catalog::project_tool,
     mcp_cache::{ToolRecord, read_server, read_tool},
-    mcp_config::McpServersFile,
-    mcp_snapshot::{Digest as McpDigest, McpTransportRef, compute_server_config_digest},
+    mcp_config::{
+        McpServerTransportConfig, McpServersFile, SecretInjection, SecretSource,
+        StreamableHttpConfig,
+    },
+    mcp_secrets::{ResolvedSecret, compute_secret_identity_hash, resolve_secret_specs},
+    mcp_snapshot::{Digest as McpDigest, compute_server_config_digest},
     tools::{ToolFunctionMetadata, ToolHandler, ToolName},
 };
+use dashmap::DashMap;
 use sha2::{Digest as _, Sha256};
 
 use crate::{
     handler::McpToolHandler,
     importer::SecretResolver,
-    runtime::{McpConnection, ServerLaunch},
+    runtime::{HttpLaunchConfig, LaunchKind, McpConnection, ServerLaunch, StdioLaunch},
 };
 
 /// Default per-server startup deadline when not specified in `mcp-servers.json`.
@@ -29,46 +34,75 @@ const DEFAULT_STARTUP_TIMEOUT_SECS: u64 = 30;
 /// Default per-call deadline when not specified.
 const DEFAULT_CALL_TIMEOUT_SECS: u64 = 120;
 
+/// Wire transport discriminant carried on the pool key so a registry rewrite
+/// from stdio to Streamable HTTP (or vice versa) never silently reuses a
+/// stale connection.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum PoolTransport {
+    Stdio,
+    StreamableHttp,
+}
+
 /// Pool isolation key. Two agents that resolve the same `server_id` against
-/// different operator configs or different secret identities get separate
-/// child processes, preserving secret isolation across tenants.
+/// different operator configs, different secret identities, or via a
+/// different transport get separate connections.
+///
+/// `agent_scope` is the resolver-bound agent identity (typically the agent
+/// package name). One `McpResolver` instance is bound to one agent scope at
+/// construction; isolation across agents falls out of that — different
+/// agents construct different resolvers, each with its own pool.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-struct PoolKey {
+pub struct PoolKey {
+    agent_scope: Arc<str>,
     server_id: String,
     server_config_digest: String,
     secret_identity_hash: String,
+    transport: PoolTransport,
+    protocol_version: String,
 }
 
 /// Resolver that loads MCP-imported tools from a snapshot cache and binds
 /// each one to an `McpConnection` whose launch parameters come from an
 /// operator-supplied `mcp-servers.json`.
 ///
-/// Connections are pooled per (server_id, server_config_digest,
-/// secret_identity_hash) — multiple tools from the same server share one MCP
-/// child process iff they were registered with the same operator config and
-/// same resolved secret values.
+/// One resolver per agent scope. Connections are pooled inside the resolver
+/// per (server_id, server_config_digest, secret_identity, transport,
+/// protocol_version). Cross-agent isolation is implicit: each agent gets
+/// its own resolver instance and therefore its own pool.
 pub struct McpResolver<R: SecretResolver + Send + Sync> {
+    agent_scope: Arc<str>,
     cache_root: PathBuf,
     servers: McpServersFile,
     secret_resolver: R,
-    connections: Mutex<HashMap<PoolKey, Arc<McpConnection>>>,
+    connections: DashMap<PoolKey, Arc<McpConnection>>,
 }
 
 impl<R: SecretResolver + Send + Sync> McpResolver<R> {
+    /// Construct a resolver scoped to the global runner identity. Use this
+    /// for stand-alone runners and tests where there is no per-agent
+    /// distinction.
     pub fn new(cache_root: PathBuf, servers: McpServersFile, secret_resolver: R) -> Self {
+        Self::for_agent("global", cache_root, servers, secret_resolver)
+    }
+
+    /// Construct a resolver bound to a specific agent scope. The scope name
+    /// becomes part of every pool key produced by this resolver.
+    pub fn for_agent(
+        agent_scope: impl Into<String>,
+        cache_root: PathBuf,
+        servers: McpServersFile,
+        secret_resolver: R,
+    ) -> Self {
         Self {
+            agent_scope: Arc::<str>::from(agent_scope.into()),
             cache_root,
             servers,
             secret_resolver,
-            connections: Mutex::new(HashMap::new()),
+            connections: DashMap::new(),
         }
     }
 
     /// Look up or initialise the connection for a given server id.
-    ///
-    /// `server_config_digest` is the digest cached at import time; the
-    /// resolver folds it into the pool key so a config rewrite at runtime
-    /// can never silently share a stale connection.
     fn connection_for(
         &self,
         server_id: &str,
@@ -98,25 +132,19 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
             )));
         }
 
-        let mut env = server_config.env.clone();
-        if let Ok(path) = std::env::var("PATH") {
-            env.entry("PATH".into()).or_insert(path);
-        }
-        // Resolved secrets — kept in sorted order so the identity hash is
-        // stable.
-        let mut resolved_secrets: BTreeMap<String, String> = BTreeMap::new();
-        for secret in &server_config.secrets {
-            let value = self.secret_resolver.resolve(&secret.name).ok_or_else(|| {
-                BamlRtError::InvalidArgument(format!(
-                    "MCP server `{server_id}` requires secret `{}`, but no value was resolved",
-                    secret.name
-                ))
-            })?;
-            resolved_secrets.insert(secret.name.clone(), value);
-        }
-        for (name, value) in &resolved_secrets {
-            env.insert(name.clone(), value.clone());
-        }
+        // Resolve every declared secret through the unified spec model. Fails
+        // closed before any transport is constructed.
+        let specs = server_config.secret_specs();
+        let resolved_map = resolve_secret_specs(&specs, |source| match source {
+            SecretSource::Env { name } => self.secret_resolver.resolve(name),
+        })
+        .map_err(|err| {
+            BamlRtError::InvalidArgument(format!(
+                "MCP server `{server_id}` secret resolution failed: {err}"
+            ))
+        })?;
+        let resolved_vec: Vec<ResolvedSecret> = resolved_map.values().cloned().collect();
+
         let startup_timeout_secs = server_config
             .sandbox
             .as_ref()
@@ -127,13 +155,47 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
             .as_ref()
             .and_then(|s| s.runtime_call_timeout_secs)
             .unwrap_or(DEFAULT_CALL_TIMEOUT_SECS);
-        let secret_identity_hash = hash_secret_identity(&resolved_secrets);
+
+        let (kind, transport, secret_identity_hash) = match &server_config.transport {
+            None => {
+                // Stdio path. Inject env-kind secrets into the child env.
+                let mut env = server_config.env.clone();
+                if let Ok(path) = std::env::var("PATH") {
+                    env.entry("PATH".into()).or_insert(path);
+                }
+                let mut env_values: BTreeMap<String, String> = BTreeMap::new();
+                for sec in &resolved_vec {
+                    if let SecretInjection::Env { name } = &sec.spec.inject {
+                        env.insert(name.clone(), sec.value.clone());
+                        env_values.insert(name.clone(), sec.value.clone());
+                    }
+                }
+                let secret_identity_hash = hash_secret_identity(&env_values);
+                (
+                    LaunchKind::Stdio(StdioLaunch {
+                        command: server_config.command.clone(),
+                        args: server_config.args.clone(),
+                        env,
+                    }),
+                    PoolTransport::Stdio,
+                    secret_identity_hash,
+                )
+            }
+            Some(McpServerTransportConfig::StreamableHttp(http_cfg)) => {
+                // HTTP path. Pool key uses the value-free identity hash so
+                // resolved secret material never leaks into the key.
+                let secret_identity_hash = compute_secret_identity_hash(&specs);
+                let http_launch = build_http_launch(http_cfg, resolved_vec.clone());
+                (
+                    LaunchKind::Http(http_launch),
+                    PoolTransport::StreamableHttp,
+                    secret_identity_hash,
+                )
+            }
+        };
 
         let launch = ServerLaunch {
             server_id: server_id.to_string(),
-            command: server_config.command.clone(),
-            args: server_config.args.clone(),
-            env,
             startup_timeout: Duration::from_secs(startup_timeout_secs),
             call_timeout: Duration::from_secs(call_timeout_secs),
             server_config_digest: server_config_digest.to_string(),
@@ -141,31 +203,19 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
             expected_identity_digest: expected_identity_digest.to_string(),
             expected_tools_digest: expected_tools_digest.to_string(),
             cache_root: self.cache_root.clone(),
+            kind,
         };
 
         let key = PoolKey {
+            agent_scope: self.agent_scope.clone(),
             server_id: server_id.to_string(),
             server_config_digest: server_config_digest.to_string(),
             secret_identity_hash,
+            transport,
+            protocol_version: protocol_version.to_string(),
         };
-        // Recover from a poisoned mutex rather than propagating panic: a
-        // single panic inside `or_insert_with` would otherwise turn every
-        // future MCP resolve into a panic for the lifetime of the process.
-        // The pool's invariant is "every entry is a live `Arc<McpConnection>`",
-        // which is preserved across poison because we only ever insert.
-        let mut guard = match self.connections.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                tracing::error!(
-                    target: "mcp.resolver",
-                    event = "mcp.pool_mutex_poisoned",
-                    mcp_server_id = %server_id,
-                    "MCP connection pool mutex was poisoned by a prior panic; recovering inner state",
-                );
-                poisoned.into_inner()
-            }
-        };
-        let conn = guard
+        let conn = self
+            .connections
             .entry(key)
             .or_insert_with(|| Arc::new(McpConnection::new(launch)))
             .clone();
@@ -213,13 +263,6 @@ impl<R: SecretResolver + Send + Sync> ExternalToolResolver for McpResolver<R> {
                 record.server_id, server.approval.state
             )));
         }
-        // Streamable HTTP transport is schema-only in PR2. Reject explicitly
-        // until wire-level runtime support lands in PR4.
-        if matches!(server.transport, McpTransportRef::StreamableHttp(_)) {
-            return Err(BamlRtError::InvalidArgument(format!(
-                "MCP tool {display} uses HTTP transport which is not enabled in this build"
-            )));
-        }
         let mcp_tool_name = record.tool.mcp_tool_name.clone();
         let metadata = project_record(&record)?;
         let Some(connection) = self.connection_for(
@@ -252,17 +295,26 @@ fn project_record(record: &ToolRecord) -> Result<ToolFunctionMetadata> {
     project_tool(&record.server_id, record.clone())
 }
 
-/// Hash the resolved secret identity (`{name: value}` pairs in sorted order).
-/// Used as part of the connection pool key so two agents with different
-/// secret values never share an MCP child process. The hash itself never
-/// leaks any secret content.
-///
-/// Each field is **length-prefixed** with its big-endian u64 byte length
-/// before its bytes. A naive NUL separator allows pool-key collisions when
-/// secret names or values contain `\0` — e.g. `(A, "B\0C=D")` and `(A=B,
-/// "C\0D")` would otherwise hash identically and route two tenants with
-/// different secrets to the same MCP child process, breaching the
-/// secret-isolation boundary.
+fn build_http_launch(
+    http: &StreamableHttpConfig,
+    resolved_secrets: Vec<ResolvedSecret>,
+) -> HttpLaunchConfig {
+    HttpLaunchConfig {
+        url: http.url.clone(),
+        static_headers: http.headers.clone(),
+        resolved_secrets,
+        network_policy: http.network_policy.clone(),
+        connect_timeout: Duration::from_millis(http.timeouts.connect_ms),
+        request_timeout: Duration::from_millis(http.timeouts.request_ms),
+        idle_stream_timeout: Duration::from_millis(http.timeouts.idle_stream_ms),
+        max_idle_per_host: http.pooling.max_idle_per_host,
+        max_concurrent_requests_per_pool_key: http.pooling.max_concurrent_requests_per_pool_key,
+    }
+}
+
+/// Hash the resolved stdio env-injected secrets so two tenants with different
+/// secret values never share a child process. Length-prefixed so embedded
+/// `\0` or `=` cannot collide tenants.
 fn hash_secret_identity(secrets: &BTreeMap<String, String>) -> String {
     if secrets.is_empty() {
         return "sha256:empty".to_string();
@@ -287,19 +339,17 @@ const MCP_SERVERS_CONFIG_DEFAULT: &str = ".agentium-os/mcp-servers.json";
 
 /// Build an `McpResolver` from a registry-derived snapshot cache and the
 /// operator's launch config (`mcp-servers.json`).
-///
-/// `cache_root` MUST point at the package's `<extract_dir>/mcp/` directory
-/// — there is no `$HOME` fallback. Snapshots come from the registry,
-/// projected into the package at build time, and the runner refuses to
-/// resolve MCP tools against any other source.
-///
-/// `mcp-servers.json` is located from (in order):
-///   1. `BAML_MCP_SERVERS_CONFIG` env var,
-///   2. `$HOME/.agentium-os/mcp-servers.json`.
-///
-/// Missing or unreadable config is a hard error: an agent whose package
-/// carries snapshots must always have a paired operator launch config.
 pub fn default_mcp_resolver<R: SecretResolver + Send + Sync>(
+    cache_root: &Path,
+    secret_resolver: R,
+) -> Result<McpResolver<R>> {
+    default_mcp_resolver_for_agent("global", cache_root, secret_resolver)
+}
+
+/// Same as [`default_mcp_resolver`] but bound to an explicit agent scope so
+/// pool keys carry the agent identity.
+pub fn default_mcp_resolver_for_agent<R: SecretResolver + Send + Sync>(
+    agent_scope: impl Into<String>,
     cache_root: &Path,
     secret_resolver: R,
 ) -> Result<McpResolver<R>> {
@@ -319,11 +369,56 @@ pub fn default_mcp_resolver<R: SecretResolver + Send + Sync>(
             message: format!("parsing {}", config_path.display()),
             source: Box::new(err),
         })?;
-    Ok(McpResolver::new(
+    Ok(McpResolver::for_agent(
+        agent_scope,
         cache_root.to_path_buf(),
         parsed,
         secret_resolver,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(agent: &str, server: &str, transport: PoolTransport, secret_hash: &str) -> PoolKey {
+        PoolKey {
+            agent_scope: Arc::<str>::from(agent),
+            server_id: server.into(),
+            server_config_digest: "sha256:cfg".into(),
+            secret_identity_hash: secret_hash.into(),
+            transport,
+            protocol_version: "2025-06-18".into(),
+        }
+    }
+
+    #[test]
+    fn pool_key_distinguishes_agents() {
+        let a = key("agent-a", "grafana", PoolTransport::Stdio, "h");
+        let b = key("agent-b", "grafana", PoolTransport::Stdio, "h");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn pool_key_distinguishes_transports() {
+        let a = key("agent-a", "grafana", PoolTransport::Stdio, "h");
+        let b = key("agent-a", "grafana", PoolTransport::StreamableHttp, "h");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn pool_key_distinguishes_secret_identity() {
+        let a = key("agent-a", "grafana", PoolTransport::Stdio, "h1");
+        let b = key("agent-a", "grafana", PoolTransport::Stdio, "h2");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn pool_key_same_inputs_match() {
+        let a = key("agent-a", "grafana", PoolTransport::Stdio, "h");
+        let b = key("agent-a", "grafana", PoolTransport::Stdio, "h");
+        assert_eq!(a, b);
+    }
 }
 
 fn resolve_servers_config_path() -> Result<PathBuf> {

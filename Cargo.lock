@@ -1890,9 +1890,14 @@ name = "baml-rt-mcp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum 0.8.8",
  "baml-rt-core",
  "baml-rt-tools",
+ "base64 0.22.1",
+ "dashmap 6.1.0",
+ "futures-util",
  "libc",
+ "reqwest 0.13.2",
  "rmcp",
  "serde",
  "serde_json",
@@ -10767,10 +10772,13 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures",
+ "http 1.4.0",
  "pin-project-lite",
  "process-wrap",
+ "reqwest 0.13.2",
  "serde",
  "serde_json",
+ "sse-stream",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -12275,6 +12283,19 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "sse-stream"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3962b63f038885f15bce2c6e02c0e7925c072f1ac86bb60fd44c5c6b762fb72"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "http-body 1.0.1",
+ "http-body-util",
+ "pin-project-lite",
 ]
 
 [[package]]

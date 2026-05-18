@@ -13,7 +13,6 @@ use baml_rt_mcp::{
 use baml_rt_tools::{
     ExternalToolResolver,
     mcp_cache::{read_server, read_snapshot, write_snapshot},
-    mcp_config::StreamableHttpConfig,
     mcp_schema_normalize::normalize,
     mcp_snapshot::{
         ApprovalRecord, Digest, MCP_SNAPSHOT_SCHEMA_VERSION, McpApprovalState, McpImportedTool,
@@ -483,36 +482,6 @@ async fn list_changed_is_spurious_for_opaque_fallback_schema() {
 
     let record = read_server(cache.path(), "grafana").expect("server record");
     assert_eq!(record.approval.state, McpApprovalState::Approved);
-}
-
-#[tokio::test]
-async fn http_transport_is_rejected_at_resolve() {
-    let cache = tempfile::tempdir().unwrap();
-    let mut snap = approved_snapshot(vec![approved_tool(
-        "search_dashboards",
-        json!({"type": "object"}),
-    )]);
-    snap.transport = McpTransportRef::StreamableHttp(StreamableHttpConfig {
-        url: "https://example.invalid/mcp".into(),
-        headers: vec![],
-        auth: None,
-        timeouts: Default::default(),
-        pooling: Default::default(),
-        network_policy: Default::default(),
-    });
-    write_snapshot(cache.path(), &snap).unwrap();
-    let fixture_path = cache.path().join("fixture.json");
-    write_fixture(&fixture_path, &sample_fixture());
-
-    let resolver = build_resolver(&fixture_path, cache.path());
-    let name = ToolName::parse("mcp/grafana/search_dashboards").unwrap();
-    match resolver.resolve(&name) {
-        Err(err) => assert!(
-            err.to_string().contains("HTTP transport"),
-            "unexpected error: {err}"
-        ),
-        Ok(_) => panic!("expected HTTP transport to be rejected"),
-    }
 }
 
 #[tokio::test]
