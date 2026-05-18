@@ -20,7 +20,7 @@ use baml_rt_core::{
 };
 use baml_rt_mcp::{
     composite::CompositeResolver, importer::SecretResolver as McpSecretResolver,
-    resolver::default_mcp_resolver,
+    resolver::default_mcp_resolver_for_agent,
 };
 use baml_rt_observability::spans;
 use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, index_tools};
@@ -224,7 +224,11 @@ impl AgentPackage {
         // tools then fails closed in `register_manifest_tools_with_fallback`.
         let package_mcp_root = self.extract_dir.join("mcp");
         let mcp_resolver = if package_mcp_root.exists() {
-            Some(default_mcp_resolver(
+            // Pool keys are scoped to the agent package name, so two agents
+            // backed by different packages never share an MCP connection
+            // entry even when they resolve the same `server_id`.
+            Some(default_mcp_resolver_for_agent(
+                self.manifest.name.clone(),
                 &package_mcp_root,
                 LlmSecretResolverToMcpAdapter::new(llm_secret_resolver),
             )?)

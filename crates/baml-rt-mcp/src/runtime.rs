@@ -18,7 +18,9 @@ use std::{
 
 use baml_rt_tools::{
     mcp_cache::mark_server_stale,
+    mcp_config::{HttpHeader as ConfigHttpHeader, HttpNetworkPolicyConfig},
     mcp_schema_normalize::digest_input_schema,
+    mcp_secrets::ResolvedSecret,
     mcp_snapshot::{compute_server_identity_digest, compute_tools_digest_from_entries},
 };
 use rmcp::{
@@ -39,7 +41,7 @@ use serde_json::{Value, to_value};
 use thiserror::Error;
 use tokio::{io::AsyncReadExt, sync::OnceCell};
 
-use crate::sandbox::SpawnSpec;
+use crate::http::transport::{HttpTransportBuildError, build_rmcp_http_transport};
 
 /// Maximum time we wait for `initialize + tools/list` during lazy connection
 /// startup. Caps a misbehaving server's hold on the calling task.
@@ -105,9 +107,6 @@ pub enum ConnectionError {
 #[derive(Debug, Clone)]
 pub struct ServerLaunch {
     pub server_id: String,
-    pub command: String,
-    pub args: Vec<String>,
-    pub env: BTreeMap<String, String>,
     pub startup_timeout: Duration,
     pub call_timeout: Duration,
     /// Snapshot of `server_config_digest` at registration time. Surfaces in
@@ -129,18 +128,44 @@ pub struct ServerLaunch {
     /// and the drift handler use it to flip the on-disk server record to `Stale`
     /// so the runner refuses to bind this server on next startup.
     pub cache_root: PathBuf,
+    /// Transport-specific launch parameters. Typestate: each variant carries
+    /// exactly the fields its transport needs, so a stdio launch can never
+    /// carry an HTTP URL and vice versa.
+    pub kind: LaunchKind,
 }
 
-impl ServerLaunch {
-    pub fn to_spawn_spec(&self) -> SpawnSpec {
-        SpawnSpec {
-            command: self.command.clone(),
-            args: self.args.clone(),
-            env: self.env.clone(),
-            timeout: self.startup_timeout,
-        }
-    }
+/// Per-transport launch data. Stdio carries the child-process command shape;
+/// HTTP carries the pre-resolved URL, header/secret material, and network
+/// policy.
+#[derive(Debug, Clone)]
+pub enum LaunchKind {
+    Stdio(StdioLaunch),
+    Http(HttpLaunchConfig),
 }
+
+#[derive(Debug, Clone)]
+pub struct StdioLaunch {
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+}
+
+/// Pre-resolved Streamable HTTP launch inputs. The resolver freezes the
+/// resolved secret set (and fails closed on missing values) before the
+/// runtime ever instantiates a transport.
+#[derive(Debug, Clone)]
+pub struct HttpLaunchConfig {
+    pub url: String,
+    pub static_headers: Vec<ConfigHttpHeader>,
+    pub resolved_secrets: Vec<ResolvedSecret>,
+    pub network_policy: HttpNetworkPolicyConfig,
+    pub connect_timeout: Duration,
+    pub request_timeout: Duration,
+    pub idle_stream_timeout: Duration,
+    pub max_idle_per_host: u64,
+    pub max_concurrent_requests_per_pool_key: u64,
+}
+
 
 /// Runtime client handler. Listens for `tools/list_changed` notifications
 /// and flips a shared `drifted` flag; hard-denies the small set of
@@ -368,21 +393,53 @@ impl McpConnection {
             cache_root: Arc::new(launch.cache_root.clone()),
         };
         let serve = async move {
-            let command = tokio::process::Command::new(&launch.command).configure(|cmd| {
-                cmd.args(&launch.args).env_clear().envs(&launch.env);
-            });
-            let (transport, stderr) = TokioChildProcess::builder(command)
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .map_err(|err| ConnectionError::Spawn {
-                    command: launch.command.clone(),
-                    source: err,
-                })?;
-            spawn_stderr_drain(launch.server_id.clone(), stderr);
-            let service = handler
-                .serve(transport)
-                .await
-                .map_err(|err| ConnectionError::InitializeFailed(err.to_string()))?;
+            let service = match &launch.kind {
+                LaunchKind::Stdio(stdio) => {
+                    let command =
+                        tokio::process::Command::new(&stdio.command).configure(|cmd| {
+                            cmd.args(&stdio.args).env_clear().envs(&stdio.env);
+                        });
+                    let (transport, stderr) = TokioChildProcess::builder(command)
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()
+                        .map_err(|err| ConnectionError::Spawn {
+                            command: stdio.command.clone(),
+                            source: err,
+                        })?;
+                    spawn_stderr_drain(launch.server_id.clone(), stderr);
+                    handler
+                        .serve(transport)
+                        .await
+                        .map_err(|err| ConnectionError::InitializeFailed(err.to_string()))?
+                }
+                LaunchKind::Http(http) => {
+                    let transport =
+                        build_rmcp_http_transport(&launch.server_id, http).map_err(|err| {
+                            match err {
+                                HttpTransportBuildError::Policy(p) => {
+                                    ConnectionError::Transport(p.to_string())
+                                }
+                                HttpTransportBuildError::Header(h) => {
+                                    ConnectionError::Transport(h.to_string())
+                                }
+                                HttpTransportBuildError::InvalidAuthHeader { name, reason } => {
+                                    ConnectionError::Transport(format!(
+                                        "invalid auth header `{name}`: {reason}"
+                                    ))
+                                }
+                                HttpTransportBuildError::Client(err) => {
+                                    ConnectionError::Transport(format!(
+                                        "reqwest client build failed: {err}"
+                                    ))
+                                }
+                            }
+                        })?;
+                    handler
+                        .serve(transport)
+                        .await
+                        .map_err(|err| ConnectionError::InitializeFailed(err.to_string()))?
+                }
+            };
             verify_server_identity(&service, &launch).await?;
             verify_startup_tools_digest(&service, &launch, &drifted).await?;
             Ok(service)

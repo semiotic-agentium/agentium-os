@@ -143,10 +143,13 @@ dotenvy = "0.15"
 proptest = "1"
 # Builder / tools
 inquire = "0.9"
-# MCP client SDK. PR 4 uses `transport-child-process` for stdio servers.
+# MCP client SDK. Stdio uses `transport-child-process`, Streamable HTTP uses
+# `transport-streamable-http-client-reqwest`.
 rmcp = { version = "1.7", default-features = false, features = [
   "client",
+  "reqwest",
   "transport-child-process",
+  "transport-streamable-http-client-reqwest",
 ] }
 # API
 utoipa = { version = "5", features = ["axum_extras"] }
