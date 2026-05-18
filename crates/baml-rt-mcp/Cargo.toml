@@ -37,6 +37,9 @@ path = "src/bin/fake_mcp_stdio.rs"
 
 [dev-dependencies]
 axum = { workspace = true }
+axum-server = { workspace = true }
+rcgen = { workspace = true }
+rustls = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "process", "net"] }
 serde_json = { workspace = true }
 futures-util = { workspace = true }

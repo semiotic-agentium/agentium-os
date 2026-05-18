@@ -164,6 +164,12 @@ pub struct HttpLaunchConfig {
     pub idle_stream_timeout: Duration,
     pub max_idle_per_host: u64,
     pub max_concurrent_requests_per_pool_key: u64,
+    /// Additional CA certificates (PEM-encoded) to trust beyond the system /
+    /// webpki defaults. Empty in normal operator config — the field exists so
+    /// deployments with private/internal CAs (and the in-process TLS test
+    /// harness) can extend the trust store without touching
+    /// `danger_accept_invalid_certs`, which remains hard-off.
+    pub extra_ca_certs_pem: Vec<Vec<u8>>,
 }
 
 /// Runtime client handler. Listens for `tools/list_changed` notifications
@@ -422,6 +428,11 @@ impl McpConnection {
                             HttpTransportBuildError::InvalidAuthHeader { name, reason } => {
                                 ConnectionError::Transport(format!(
                                     "invalid auth header `{name}`: {reason}"
+                                ))
+                            }
+                            HttpTransportBuildError::InvalidExtraCaCert { index, reason } => {
+                                ConnectionError::Transport(format!(
+                                    "invalid extra CA certificate (PEM #{index}): {reason}"
                                 ))
                             }
                             HttpTransportBuildError::Client(err) => ConnectionError::Transport(

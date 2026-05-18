@@ -300,6 +300,7 @@ fn build_http_launch(
         idle_stream_timeout: Duration::from_millis(http.timeouts.idle_stream_ms),
         max_idle_per_host: http.pooling.max_idle_per_host,
         max_concurrent_requests_per_pool_key: http.pooling.max_concurrent_requests_per_pool_key,
+        extra_ca_certs_pem: Vec::new(),
     }
 }
 
