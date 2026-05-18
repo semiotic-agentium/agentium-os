@@ -189,6 +189,9 @@ pub struct HttpLaunchConfig {
     pub network_policy: HttpNetworkPolicyConfig,
     pub connect_timeout: Duration,
     pub request_timeout: Duration,
+    /// HTTP connection-pool idle TTL wired to reqwest `pool_idle_timeout`.
+    /// Despite the operator-facing `idle_stream_ms` name, this is not an SSE
+    /// stream inactivity deadline.
     pub idle_stream_timeout: Duration,
     pub max_idle_per_host: u64,
     /// Additional CA certificates (PEM-encoded) to trust beyond the system /

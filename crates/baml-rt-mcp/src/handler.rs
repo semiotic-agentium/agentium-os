@@ -74,6 +74,10 @@ impl ToolHandler for McpToolHandler {
 enum SessionState {
     #[default]
     Idle,
+    /// `send` has reserved the session while the remote MCP call is in flight.
+    /// This prevents a concurrent/buggy caller from starting a second remote
+    /// call and causing duplicate side effects before either result is ready.
+    InFlight,
     /// `send` has produced a result that `read` is expected to consume.
     Ready(Value),
     Aborted,
@@ -92,7 +96,7 @@ struct McpToolSession {
 impl ToolSession for McpToolSession {
     async fn send(&mut self, input: Value) -> std::result::Result<(), ToolSessionError> {
         {
-            let state = self.state.lock().await;
+            let mut state = self.state.lock().await;
             match &*state {
                 SessionState::Aborted => {
                     return Err(ToolSessionError::Tool(ToolFailure::execution_failed(
@@ -104,15 +108,21 @@ impl ToolSession for McpToolSession {
                         "MCP session already closed",
                     )));
                 }
+                SessionState::InFlight => {
+                    return Err(ToolSessionError::Tool(ToolFailure::invalid_input(
+                        "MCP session already has a call in flight; wait for it before sending again",
+                    )));
+                }
                 SessionState::Ready(_) => {
                     return Err(ToolSessionError::Tool(ToolFailure::invalid_input(
                         "MCP session already has an unread result; call read before sending again",
                     )));
                 }
-                SessionState::Idle => {}
+                SessionState::Idle => {
+                    *state = SessionState::InFlight;
+                }
             }
-            // Hold the lock only while validating state, drop before awaiting MCP.
-            drop(state);
+            // Hold the lock only while reserving the session, drop before awaiting MCP.
         }
         let call_span = tracing::info_span!(
             "mcp.call_tool",
@@ -131,23 +141,34 @@ impl ToolSession for McpToolSession {
                     Some(self.cancel_slot.clone()),
                 )
                 .await
-                .map_err(connection_error_to_session)?
+        };
+        let result = match result {
+            Ok(result) => result,
+            Err(err) => {
+                let mut state = self.state.lock().await;
+                if matches!(*state, SessionState::InFlight) {
+                    *state = SessionState::Idle;
+                }
+                return Err(connection_error_to_session(err));
+            }
         };
         let envelope = result_to_envelope(result);
         let mut state = self.state.lock().await;
         match &*state {
-            SessionState::Aborted => Err(ToolSessionError::Tool(ToolFailure::execution_failed(
-                "MCP session already aborted",
-            ))),
-            SessionState::Closed => Err(ToolSessionError::Tool(ToolFailure::execution_failed(
-                "MCP session already closed",
-            ))),
-            SessionState::Ready(_) => Err(ToolSessionError::Tool(ToolFailure::invalid_input(
-                "MCP session already has an unread result; call read before sending again",
-            ))),
-            SessionState::Idle => {
+            SessionState::InFlight => {
                 *state = SessionState::Ready(envelope);
                 Ok(())
+            }
+            SessionState::Aborted => Err(ToolSessionError::Tool(ToolFailure::execution_failed(
+                "MCP session aborted after remote call completed; result discarded",
+            ))),
+            SessionState::Closed => Err(ToolSessionError::Tool(ToolFailure::execution_failed(
+                "MCP session closed after remote call completed; result discarded",
+            ))),
+            SessionState::Ready(_) | SessionState::Idle => {
+                Err(ToolSessionError::Tool(ToolFailure::execution_failed(
+                    "MCP session state changed unexpectedly after remote call completed; result discarded",
+                )))
             }
         }
     }
@@ -164,6 +185,12 @@ impl ToolSession for McpToolSession {
             SessionState::Closed => Err(ToolSessionError::Tool(ToolFailure::execution_failed(
                 "MCP session already closed",
             ))),
+            SessionState::InFlight => {
+                *state = SessionState::InFlight;
+                Err(ToolSessionError::Tool(ToolFailure::execution_failed(
+                    "MCP session has a call in flight; result is not ready to read",
+                )))
+            }
             SessionState::Idle => Err(ToolSessionError::Tool(ToolFailure::execution_failed(
                 "MCP session has no pending result to read",
             ))),
