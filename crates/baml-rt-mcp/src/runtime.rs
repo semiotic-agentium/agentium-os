@@ -58,9 +58,19 @@ use crate::http::transport::{HttpTransportBuildError, build_rmcp_http_transport}
 const STARTUP_TIMEOUT_DEFAULT: Duration = Duration::from_secs(30);
 /// Default per-call timeout used when the operator config does not specify one.
 const RUNTIME_CALL_TIMEOUT_DEFAULT: Duration = Duration::from_secs(120);
-// Best-effort bound for abort-time `notifications/cancelled`. Some rmcp
-// transports may serialize outbound sends behind an in-flight request, so this
-// timeout protects platform cancellation from waiting on server completion.
+// Best-effort bound for abort-time `notifications/cancelled`.
+//
+// Verified against rmcp 1.7.0: `StreamableHttpClientWorker::run` processes
+// outbound `Event::ClientMessage` items serially — it awaits
+// `client.post_message(...)` for the current event before reading the next.
+// A cancellation notification sent through the same `Peer` therefore queues
+// behind the in-flight `tools/call` POST and will not deliver until the
+// original request completes. This timeout protects platform cancellation
+// from waiting on server completion; on HTTP transports the wire
+// notification is best-effort and typically arrives only after the call
+// would have finished anyway. Other transports may deliver more promptly
+// depending on their writer model. Local termination of the call future is
+// unaffected and remains immediate via the `local_token` cancellation path.
 const ABORT_CANCEL_NOTIFY_TIMEOUT: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Error)]
@@ -481,10 +491,10 @@ impl McpConnection {
             )
             .await?;
         let local_token = CancellationToken::new();
+        let cancel_handle =
+            McpCancelHandle::new(handle.peer.clone(), handle.id.clone(), local_token.clone());
         if let Some(slot) = &cancel_slot {
-            let cancel_handle =
-                McpCancelHandle::new(handle.peer.clone(), handle.id.clone(), local_token.clone());
-            *slot.lock().await = Some(cancel_handle);
+            *slot.lock().await = Some(cancel_handle.clone());
         }
         let progress_token = handle.progress_token.clone();
         tracing::debug!(

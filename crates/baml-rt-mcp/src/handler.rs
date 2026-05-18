@@ -175,7 +175,6 @@ impl ToolSession for McpToolSession {
     async fn abort(&mut self, reason: Option<String>) -> std::result::Result<(), ToolSessionError> {
         let cancel_handle = self.cancel_slot.lock().await.take();
         if let Some(handle) = cancel_handle {
-            handle.cancel_local();
             let cancel_result = handle.cancel(reason).await;
             if let Err(err) = cancel_result {
                 tracing::warn!(
