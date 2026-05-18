@@ -5,7 +5,7 @@
 //! child per (server-id, server-config) regardless of how many tools point
 //! at it.
 
-use std::sync::Arc;
+use std::{error::Error as StdError, sync::Arc};
 
 use async_trait::async_trait;
 use baml_rt_core::{BamlRtError, ClassifiedToolError, Result, semantics::ErrorDisposition};
@@ -16,6 +16,7 @@ use baml_rt_tools::{
 use rmcp::{
     model::{CallToolResult, ErrorCode},
     service::ServiceError,
+    transport::streamable_http_client::StreamableHttpError,
 };
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -260,12 +261,7 @@ fn classify_service_error(top: &ConnectionError, err: &ServiceError) -> ToolSess
                 ToolSessionError::Tool(ToolFailure::execution_failed(top.to_string()))
             }
         }
-        ServiceError::TransportSend(_) => classified_transport(
-            "mcp_transport_send_failed",
-            ErrorDisposition::HostRetriable,
-            top.to_string(),
-            Some("MCP transport failed while sending request"),
-        ),
+        ServiceError::TransportSend(_) => classify_transport_send_error(top, err),
         ServiceError::TransportClosed => classified_transport(
             "mcp_transport_closed",
             ErrorDisposition::HostRetriable,
@@ -299,6 +295,120 @@ fn classify_service_error(top: &ConnectionError, err: &ServiceError) -> ToolSess
     }
 }
 
+fn classify_transport_send_error(top: &ConnectionError, err: &ServiceError) -> ToolSessionError {
+    match classify_streamable_http_error(err) {
+        Some(HttpTransportFailure::SessionExpired) => classified_transport(
+            "mcp_session_expired",
+            ErrorDisposition::InformAndContinue,
+            top.to_string(),
+            Some(
+                "MCP HTTP session expired; next resolve rebuilds connection, but this call is not replayed",
+            ),
+        ),
+        Some(HttpTransportFailure::AuthRequired) => classified_transport(
+            "mcp_auth_required",
+            ErrorDisposition::Fatal,
+            top.to_string(),
+            Some("MCP HTTP server requires authentication; check configured credentials"),
+        ),
+        Some(HttpTransportFailure::InsufficientScope) => classified_transport(
+            "mcp_insufficient_scope",
+            ErrorDisposition::Fatal,
+            top.to_string(),
+            Some("MCP HTTP credentials lack required scope; update secret or authorization policy"),
+        ),
+        Some(HttpTransportFailure::Timeout) => classified_transport(
+            "mcp_network_timeout",
+            ErrorDisposition::HostRetriable,
+            top.to_string(),
+            Some("MCP HTTP transport timed out"),
+        ),
+        Some(HttpTransportFailure::Connect) => classified_transport(
+            "mcp_network_connect_failed",
+            ErrorDisposition::HostRetriable,
+            top.to_string(),
+            Some("MCP HTTP transport could not connect to server"),
+        ),
+        Some(HttpTransportFailure::PolicyOrConfig) => classified_transport(
+            "mcp_transport_config_failed",
+            ErrorDisposition::Fatal,
+            top.to_string(),
+            Some("MCP HTTP transport configuration was rejected"),
+        ),
+        Some(HttpTransportFailure::Protocol) => classified_transport(
+            "mcp_protocol_error",
+            ErrorDisposition::Fatal,
+            top.to_string(),
+            Some("MCP HTTP server returned an invalid or unsupported protocol response"),
+        ),
+        Some(HttpTransportFailure::Network) | None => classified_transport(
+            "mcp_transport_send_failed",
+            ErrorDisposition::HostRetriable,
+            top.to_string(),
+            Some("MCP transport failed while sending request"),
+        ),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HttpTransportFailure {
+    SessionExpired,
+    AuthRequired,
+    InsufficientScope,
+    Timeout,
+    Connect,
+    PolicyOrConfig,
+    Protocol,
+    Network,
+}
+
+fn classify_streamable_http_error(err: &ServiceError) -> Option<HttpTransportFailure> {
+    let ServiceError::TransportSend(transport_err) = err else {
+        return None;
+    };
+
+    // rmcp preserves the concrete transport error only on request-path
+    // `ServiceError::TransportSend` failures (e.g. our `send_cancellable_request`
+    // tools/call path). Startup/initialize errors are currently stringified
+    // before they reach this mapper, so they cannot be classified here.
+    // Future transports may box different error types; non-matching downcasts
+    // intentionally fall back to the generic transport classification.
+    let mut source: Option<&(dyn StdError + 'static)> = Some(transport_err.error.as_ref());
+    while let Some(err) = source {
+        if let Some(http_err) = err.downcast_ref::<StreamableHttpError<reqwest::Error>>() {
+            return Some(classify_streamable_http_variant(http_err));
+        }
+        source = err.source();
+    }
+    None
+}
+
+fn classify_streamable_http_variant(
+    err: &StreamableHttpError<reqwest::Error>,
+) -> HttpTransportFailure {
+    match err {
+        StreamableHttpError::SessionExpired => HttpTransportFailure::SessionExpired,
+        StreamableHttpError::AuthRequired(_) => HttpTransportFailure::AuthRequired,
+        StreamableHttpError::InsufficientScope(_) => HttpTransportFailure::InsufficientScope,
+        StreamableHttpError::Client(err) if err.is_timeout() => HttpTransportFailure::Timeout,
+        StreamableHttpError::Client(err) if err.is_connect() => HttpTransportFailure::Connect,
+        StreamableHttpError::ReservedHeaderConflict(_) => HttpTransportFailure::PolicyOrConfig,
+        StreamableHttpError::UnexpectedServerResponse(_)
+        | StreamableHttpError::UnexpectedContentType(_)
+        | StreamableHttpError::ServerDoesNotSupportSse
+        | StreamableHttpError::ServerDoesNotSupportDeleteSession
+        | StreamableHttpError::Deserialize(_)
+        | StreamableHttpError::MissingSessionIdInResponse => HttpTransportFailure::Protocol,
+        StreamableHttpError::Sse(_)
+        | StreamableHttpError::Io(_)
+        | StreamableHttpError::Client(_)
+        | StreamableHttpError::UnexpectedEndOfStream
+        | StreamableHttpError::TokioJoinError(_)
+        | StreamableHttpError::TransportChannelClosed => HttpTransportFailure::Network,
+        _ => HttpTransportFailure::Network,
+    }
+}
+
 fn classified_transport(
     code: &'static str,
     disposition: ErrorDisposition,
@@ -316,40 +426,6 @@ fn classified_transport(
 
 /// Convert rmcp's `CallToolResult` into the platform's stable JSON envelope.
 /// The shape mirrors the `ContentEnvelope` output mode locked in PR 1.
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn classified(err: ToolSessionError) -> ClassifiedToolError {
-        match err {
-            ToolSessionError::Transport(BamlRtError::ToolClassified(classified)) => classified,
-            other => panic!("expected classified transport error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn session_expired_maps_to_typed_classification() {
-        let err = connection_error_to_session(ConnectionError::SessionExpired {
-            server_id: "remote".into(),
-        });
-        let classified = classified(err);
-        assert_eq!(classified.code, "mcp_session_expired");
-        assert_eq!(classified.disposition, ErrorDisposition::InformAndContinue);
-    }
-
-    #[test]
-    fn digest_mismatch_maps_to_contract_violation_not_invalid_argument() {
-        let err = connection_error_to_session(ConnectionError::ToolsDigestMismatch {
-            server_id: "remote".into(),
-            expected: "sha256:old".into(),
-            observed: "sha256:new".into(),
-        });
-        let classified = classified(err);
-        assert_eq!(classified.code, "mcp_contract_violation");
-        assert_eq!(classified.disposition, ErrorDisposition::Fatal);
-    }
-}
-
 fn result_to_envelope(result: CallToolResult) -> Value {
     let mut content = Vec::with_capacity(result.content.len());
     for block in &result.content {
@@ -370,4 +446,75 @@ fn result_to_envelope(result: CallToolResult) -> Value {
         "is_error": result.is_error.unwrap_or(false),
         "metadata": Value::Null,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::any::TypeId;
+
+    use rmcp::transport::{
+        DynamicTransportError,
+        streamable_http_client::{AuthRequiredError, InsufficientScopeError},
+    };
+
+    use super::*;
+
+    fn classified(err: ToolSessionError) -> ClassifiedToolError {
+        match err {
+            ToolSessionError::Transport(BamlRtError::ToolClassified(classified)) => classified,
+            other => panic!("expected classified transport error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_expired_maps_to_typed_classification() {
+        let err = connection_error_to_session(ConnectionError::SessionExpired {
+            server_id: "remote".into(),
+        });
+        let classified = classified(err);
+        assert_eq!(classified.code, "mcp_session_expired");
+        assert_eq!(classified.disposition, ErrorDisposition::InformAndContinue);
+    }
+
+    fn transport_send(http_err: StreamableHttpError<reqwest::Error>) -> ServiceError {
+        ServiceError::TransportSend(DynamicTransportError::from_parts(
+            "streamable_http",
+            TypeId::of::<()>(),
+            Box::new(http_err),
+        ))
+    }
+
+    #[test]
+    fn auth_required_transport_error_maps_to_permanent_auth_code() {
+        let top = ConnectionError::CallTool(ServiceError::TransportClosed);
+        let err = transport_send(StreamableHttpError::AuthRequired(AuthRequiredError::new(
+            "Bearer".into(),
+        )));
+        let classified = classified(classify_service_error(&top, &err));
+        assert_eq!(classified.code, "mcp_auth_required");
+        assert_eq!(classified.disposition, ErrorDisposition::Fatal);
+    }
+
+    #[test]
+    fn insufficient_scope_transport_error_maps_to_permanent_auth_code() {
+        let top = ConnectionError::CallTool(ServiceError::TransportClosed);
+        let err = transport_send(StreamableHttpError::InsufficientScope(
+            InsufficientScopeError::new("Bearer scope=admin".into(), Some("admin".into())),
+        ));
+        let classified = classified(classify_service_error(&top, &err));
+        assert_eq!(classified.code, "mcp_insufficient_scope");
+        assert_eq!(classified.disposition, ErrorDisposition::Fatal);
+    }
+
+    #[test]
+    fn digest_mismatch_maps_to_contract_violation_not_invalid_argument() {
+        let err = connection_error_to_session(ConnectionError::ToolsDigestMismatch {
+            server_id: "remote".into(),
+            expected: "sha256:old".into(),
+            observed: "sha256:new".into(),
+        });
+        let classified = classified(err);
+        assert_eq!(classified.code, "mcp_contract_violation");
+        assert_eq!(classified.disposition, ErrorDisposition::Fatal);
+    }
 }
