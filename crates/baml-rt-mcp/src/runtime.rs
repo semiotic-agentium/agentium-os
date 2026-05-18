@@ -228,13 +228,15 @@ impl ClientHandler for RuntimeClientHandler {
     ) -> impl Future<Output = ()> + MaybeSendFuture + '_ {
         let server_id = self.server_id.clone();
         async move {
+            let message_len = params.message.as_ref().map(String::len).unwrap_or(0);
             tracing::info!(
                 target: "mcp.progress",
                 mcp_server_id = %server_id,
                 mcp_progress_token = ?params.progress_token,
                 mcp_progress = params.progress,
                 mcp_progress_total = ?params.total,
-                mcp_progress_message = ?params.message,
+                mcp_progress_has_message = params.message.is_some(),
+                mcp_progress_message_len = message_len,
                 event = "mcp.progress",
                 "MCP server reported tool-call progress",
             );

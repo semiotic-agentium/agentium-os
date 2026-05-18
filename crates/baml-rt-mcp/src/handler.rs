@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{BamlRtError, ClassifiedToolError, Result, semantics::ErrorDisposition};
 use baml_rt_tools::{
     ToolFailure, ToolSession, ToolSessionError, ToolStep,
     tools::{ToolFunctionMetadata, ToolHandler, ToolSessionContext},
@@ -189,35 +189,57 @@ fn connection_error_to_session(err: ConnectionError) -> ToolSessionError {
             ToolSessionError::Transport(BamlRtError::InvalidArgument(err.to_string()))
         }
         ConnectionError::CallTool(ref service_err) => classify_service_error(&err, service_err),
-        ConnectionError::InitializeFailed(_) | ConnectionError::CallTimeout(_) => {
-            ToolSessionError::Tool(ToolFailure::execution_failed(err.to_string()))
-        }
-        ConnectionError::InitializeTimeout(_) => {
-            ToolSessionError::Tool(ToolFailure::execution_failed(err.to_string()))
-        }
+        ConnectionError::InitializeFailed(_) => classified_transport(
+            "mcp_initialize_failed",
+            ErrorDisposition::HostRetriable,
+            err.to_string(),
+            Some("MCP initialize failed before tool call; host may retry after transport recovery"),
+        ),
+        ConnectionError::InitializeTimeout(_) => classified_transport(
+            "mcp_initialize_timeout",
+            ErrorDisposition::HostRetriable,
+            err.to_string(),
+            Some("MCP initialize exceeded configured timeout"),
+        ),
+        ConnectionError::CallTimeout(_) => classified_transport(
+            "mcp_call_timeout",
+            ErrorDisposition::HostRetriable,
+            err.to_string(),
+            Some("MCP tools/call exceeded configured timeout and rmcp sent cancellation"),
+        ),
         ConnectionError::IdentityMismatch { .. }
         | ConnectionError::ToolsDigestMismatch { .. }
         | ConnectionError::StartupToolsListFailed { .. }
         | ConnectionError::MissingPeerInfo { .. }
-        | ConnectionError::IdentitySerializeFailed { .. } => {
-            // TODO V2-7: stale/contract-violation disposition.
-            // Fail-closed: the live server's advertised identity does not
-            // match the approved snapshot, was missing, or could not be
-            // serialized for the digest. Treat as transport failure so the
-            // runtime does not surface this to the LLM as a recoverable
-            // tool error.
-            ToolSessionError::Transport(BamlRtError::InvalidArgument(err.to_string()))
-        }
-        ConnectionError::Stale { .. } | ConnectionError::SessionExpired { .. } => {
-            // TODO V2-7: stale/contract-violation disposition.
-            // Fail-closed transport error: the tool registry is no longer
-            // trusted for this connection; surface to the runtime so the
-            // session is treated as an infra problem, not LLM-correctable.
-            ToolSessionError::Transport(BamlRtError::InvalidArgument(err.to_string()))
-        }
-        ConnectionError::Spawn { .. } | ConnectionError::Transport(_) => {
-            ToolSessionError::Transport(BamlRtError::InvalidArgument(err.to_string()))
-        }
+        | ConnectionError::IdentitySerializeFailed { .. }
+        | ConnectionError::Stale { .. } => classified_transport(
+            "mcp_contract_violation",
+            ErrorDisposition::Fatal,
+            err.to_string(),
+            Some(
+                "MCP approved snapshot no longer matches live server; operator must re-import and approve",
+            ),
+        ),
+        ConnectionError::SessionExpired { .. } => classified_transport(
+            "mcp_session_expired",
+            ErrorDisposition::InformAndContinue,
+            err.to_string(),
+            Some(
+                "MCP HTTP session expired; next resolve rebuilds connection, but this call is not replayed",
+            ),
+        ),
+        ConnectionError::Spawn { .. } => classified_transport(
+            "mcp_spawn_failed",
+            ErrorDisposition::HostRetriable,
+            err.to_string(),
+            Some("MCP stdio server failed to spawn"),
+        ),
+        ConnectionError::Transport(_) => classified_transport(
+            "mcp_transport_setup_failed",
+            ErrorDisposition::Fatal,
+            err.to_string(),
+            Some("MCP transport setup or policy validation failed"),
+        ),
     }
 }
 
@@ -238,13 +260,96 @@ fn classify_service_error(top: &ConnectionError, err: &ServiceError) -> ToolSess
                 ToolSessionError::Tool(ToolFailure::execution_failed(top.to_string()))
             }
         }
-        // Transport / cancellation / shutdown — treat as infra failure.
-        _ => ToolSessionError::Transport(BamlRtError::InvalidArgument(top.to_string())),
+        ServiceError::TransportSend(_) => classified_transport(
+            "mcp_transport_send_failed",
+            ErrorDisposition::HostRetriable,
+            top.to_string(),
+            Some("MCP transport failed while sending request"),
+        ),
+        ServiceError::TransportClosed => classified_transport(
+            "mcp_transport_closed",
+            ErrorDisposition::HostRetriable,
+            top.to_string(),
+            Some("MCP transport closed before response"),
+        ),
+        ServiceError::UnexpectedResponse => classified_transport(
+            "mcp_protocol_unexpected_response",
+            ErrorDisposition::Fatal,
+            top.to_string(),
+            Some("MCP server returned a response type that does not match tools/call"),
+        ),
+        ServiceError::Cancelled { .. } => classified_transport(
+            "mcp_call_cancelled",
+            ErrorDisposition::HostRetriable,
+            top.to_string(),
+            Some("MCP request was cancelled"),
+        ),
+        ServiceError::Timeout { .. } => classified_transport(
+            "mcp_call_timeout",
+            ErrorDisposition::HostRetriable,
+            top.to_string(),
+            Some("MCP request timed out"),
+        ),
+        _ => classified_transport(
+            "mcp_service_error",
+            ErrorDisposition::Fatal,
+            top.to_string(),
+            Some("MCP service returned an unclassified error"),
+        ),
     }
+}
+
+fn classified_transport(
+    code: &'static str,
+    disposition: ErrorDisposition,
+    message: String,
+    hint: Option<&'static str>,
+) -> ToolSessionError {
+    ToolSessionError::Transport(BamlRtError::ToolClassified(ClassifiedToolError {
+        code: code.to_string(),
+        disposition,
+        message,
+        hint: hint.map(str::to_string),
+        retry_after_ms: None,
+    }))
 }
 
 /// Convert rmcp's `CallToolResult` into the platform's stable JSON envelope.
 /// The shape mirrors the `ContentEnvelope` output mode locked in PR 1.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn classified(err: ToolSessionError) -> ClassifiedToolError {
+        match err {
+            ToolSessionError::Transport(BamlRtError::ToolClassified(classified)) => classified,
+            other => panic!("expected classified transport error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_expired_maps_to_typed_classification() {
+        let err = connection_error_to_session(ConnectionError::SessionExpired {
+            server_id: "remote".into(),
+        });
+        let classified = classified(err);
+        assert_eq!(classified.code, "mcp_session_expired");
+        assert_eq!(classified.disposition, ErrorDisposition::InformAndContinue);
+    }
+
+    #[test]
+    fn digest_mismatch_maps_to_contract_violation_not_invalid_argument() {
+        let err = connection_error_to_session(ConnectionError::ToolsDigestMismatch {
+            server_id: "remote".into(),
+            expected: "sha256:old".into(),
+            observed: "sha256:new".into(),
+        });
+        let classified = classified(err);
+        assert_eq!(classified.code, "mcp_contract_violation");
+        assert_eq!(classified.disposition, ErrorDisposition::Fatal);
+    }
+}
+
 fn result_to_envelope(result: CallToolResult) -> Value {
     let mut content = Vec::with_capacity(result.content.len());
     for block in &result.content {
