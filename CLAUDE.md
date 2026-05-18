@@ -35,6 +35,7 @@ cargo insta review
 # Binaries
 cargo run -p baml-rt-builder --bin baml-agent-builder   # lint, compile, package; `publish` → repository + deploy
 cargo run -p baml-agent-runner                           # HTTP A2A + embedded /repository; agents via publish + POST /deploy (options only, no positional tar paths)
+cargo run -p cargo-agent-platform                        # MCP server management, agent chat interface
 
 # Nextest (CI-style: one run, JUnit)
 cargo install cargo-nextest        # once
@@ -47,6 +48,10 @@ python3 scripts/concurrent_a2a_sse.py --package PACKAGE --concurrency N         
 # E2E testing
 just e2e-k8s                                   # full k3d cluster e2e harness
 just e2e-k8s-cgroup-throttle                  # adversarial cgroup-throttled deploy fixture
+
+# MCP demo (meteo weather server)
+scripts/meteo_mcp.sh runner                   # start runner with MCP registry
+scripts/meteo_mcp.sh chat                     # deploy and chat with meteo agent
 ```
 
 ### Secrets
@@ -91,13 +96,14 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 
 **Runtime**
 - **baml-rt-tools** — Tool trait, registry/executor, session FSM (`ToolSessionPlan` with Open/Send/Read/Finish/Abort ops)
+- **baml-rt-mcp** — MCP client and importer for the BAML runtime
 - **baml-rt-interceptor** — Interceptor trait + pipeline (pre/post execution hooks)
 - **baml-rt-observability** — OpenTelemetry tracing setup, spans, metrics; `init_tracing()` uses per-layer filters (`RUST_LOG_FMT`, `RUST_LOG_OTEL`); central `spans.rs` keeps A2A ingress at `info` and agent execution spans at `debug` (see `docs/otel-trace-instrumentation-guide.md`); exported OTLP metric names: `docs/metrics-inventory.md`; runner identity foundation for K8s pilot with service.instance.id and deployment.environment resource attributes; distributed tracing support for cross-pod A2A forwarding
 - **baml-rt-quickjs** — QuickJS runtime host: loads JS, bridges JS↔Rust, manages BAML runtime invocations, provenance error mapping
 - **baml-rt-a2a** — Agent-to-agent protocol: JSON-RPC types, SSE streaming transport, streaming task handling
 - **baml-rt-conversation** — Agent-visible conversation history projection and episode types; pure computation (no I/O); see `docs/agent-conversation-crate.md` and normative spec `docs/baml-rt-conversation-spec.md`
 - **baml-rt-provenance** — Provenance graph: event normalization, SurrealDB persistence, cluster-safe archive refs with activity-anchor idempotency, effect subscriber observability
-- **baml-rt-repository** — Agent package repository: content-addressable archive with lineage, versioning, and search
+- **baml-rt-repository** — Agent package repository: content-addressable archive with lineage, versioning, and search; MCP server registry and schema storage
 - **baml-rt-router** — Cluster routing, SSRF validation, token auth, cross-pod A2A forwarding with distributed trace propagation
 - **baml-rt-api** — HTTP API surface: agent discovery (GET /agents), A2A JSON-RPC forwarding, OpenAPI via utoipa, RFC 7807 errors, operator auth boundary, OpenTelemetry middleware for distributed tracing, conversation history endpoints, context metrics, runtime-progress-gated readiness probe, cluster-wide deployment fan-out (POST /cluster/deploy)
 
@@ -127,6 +133,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 - **baml-rt** — Facade crate re-exporting subcrates via feature flags (default: all enabled)
 - **baml-rt-builder** — Agent build pipeline: BAML type generation, tar.gz packaging. Binary: `baml-agent-builder`
 - **baml-agent-runner** — A2A host (stdio and/or HTTP); embedded agent repository and deploy-by-hash; deployment restore, conversation history/metrics. Binary: `baml-agent-runner`
+- **cargo-agent-platform** — MCP server management CLI and agent chat interface
 - **task-daemon** — Local polling daemon substrate for extracting actionable tasks from sources (Slack, etc.)
 
 **Test**
@@ -137,6 +144,18 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 **Conversational (A2A):** JS code → `QuickJSBridge` → checks `globalThis` for JS function → if missing, falls back to `BamlRuntimeManager` → runs interceptor pipeline → calls BAML runtime → LLM provider → tool session execution (host tools run in Rust, never JS) → interceptor post-hooks → result back to JS as resolved Promise.
 
 **Dispatch (event delivery):** `AgentDispatchRequest` → `POST /agents/{pkg}/{inst}/dispatch` → A2A transport → calls `onDispatch` on `globalThis` → agent returns `AgentDispatchAck`. No conversational context; used for host-to-agent event delivery from sources like task-daemon.
+
+### MCP Integration
+
+MCP (Model Context Protocol) servers provide external tools and resources to agents. The integration supports stdio transport for local MCP servers.
+
+**MCP Registry:** The repository stores MCP server schemas and tool definitions. Schemas are discovered via `cargo-agent-platform mcp enable` and stored in the registry for agent builds.
+
+**Agent Build Integration:** Agents can reference MCP tools in their BAML schemas. The builder fetches schemas from the registry (via `BAML_MCP_REGISTRY_URL`) and generates TypeScript types for MCP tools.
+
+**Runtime Execution:** MCP tools are executed through the standard tool session FSM. The runtime manages MCP server processes and handles stdio communication.
+
+**Configuration:** MCP servers are configured in `~/.agentium-os/mcp-servers.json` with command, args, and environment variables. The registry stores schema snapshots separately from runtime configuration.
 
 ### Host Tool Contract
 
@@ -276,4 +295,5 @@ The raw manifests under `deploy/k8s/` and the `deploy/demo/run-demo.sh` script a
 - **BAML runtime**: git dependency from `ryan-s-roberts/baml` (`canary` branch); `baml-runtime`, `baml-types`, `internal-baml-core`, `internal-llm-client`
 - **QuickJS**: `quickjs_runtime` crate for JS execution
 - **SurrealDB**: Embedded multi-model database for provenance graph persistence
+- **MCP SDK**: `rmcp` crate for Model Context Protocol client implementation with stdio transport
 - **TypeScript 6.x**: required on `PATH` (or via `npx`) for any code path that exercises the agent build pipeline — `cargo test` on builder fixtures, local `baml-agent-builder package`, and the runner image (Dockerfile installs `typescript@6` globally). The canonical `tsconfig.json` written by bootstrap pins `"ignoreDeprecations": "6.0"`, which TypeScript 5.x rejects. Install with `npm install -g typescript@6`.
