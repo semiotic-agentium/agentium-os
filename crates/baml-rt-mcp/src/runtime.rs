@@ -28,13 +28,14 @@ use rmcp::{
     ErrorData as McpError, ServiceExt,
     handler::client::ClientHandler,
     model::{
-        CallToolRequestParams, CallToolResult, CreateElicitationRequestParams,
-        CreateElicitationResult, CreateMessageRequestMethod, CreateMessageRequestParams,
-        CreateMessageResult, ErrorCode, ListRootsRequestMethod, ListRootsResult,
+        CallToolRequest, CallToolRequestParams, CallToolResult, ClientRequest,
+        CreateElicitationRequestParams, CreateElicitationResult, CreateMessageRequestMethod,
+        CreateMessageRequestParams, CreateMessageResult, ErrorCode, ListRootsRequestMethod,
+        ListRootsResult, ProgressNotificationParam, ServerResult,
     },
     service::{
-        MaybeSendFuture, NotificationContext, RequestContext, RoleClient, RunningService,
-        ServiceError,
+        MaybeSendFuture, NotificationContext, PeerRequestOptions, RequestContext, RoleClient,
+        RunningService, ServiceError,
     },
     transport::{
         ConfigureCommandExt, TokioChildProcess, streamable_http_client::StreamableHttpError,
@@ -220,6 +221,26 @@ impl ClientHandler for RuntimeClientHandler {
         )))
     }
 
+    fn on_progress(
+        &self,
+        params: ProgressNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) -> impl Future<Output = ()> + MaybeSendFuture + '_ {
+        let server_id = self.server_id.clone();
+        async move {
+            tracing::info!(
+                target: "mcp.progress",
+                mcp_server_id = %server_id,
+                mcp_progress_token = ?params.progress_token,
+                mcp_progress = params.progress,
+                mcp_progress_total = ?params.total,
+                mcp_progress_message = ?params.message,
+                event = "mcp.progress",
+                "MCP server reported tool-call progress",
+            );
+        }
+    }
+
     fn on_tool_list_changed(
         &self,
         context: NotificationContext<RoleClient>,
@@ -381,16 +402,32 @@ impl McpConnection {
         } else {
             self.launch.call_timeout
         };
-        match tokio::time::timeout(timeout, service.call_tool(params)).await {
-            Ok(Ok(result)) => Ok(result),
-            Ok(Err(err)) if service_error_is_session_expired(&err) => {
+        let handle = service
+            .send_cancellable_request(
+                ClientRequest::CallToolRequest(CallToolRequest::new(params)),
+                request_options_with_timeout(timeout),
+            )
+            .await?;
+        let progress_token = handle.progress_token.clone();
+        tracing::debug!(
+            target: "mcp.progress",
+            mcp_server_id = %self.launch.server_id,
+            mcp_tool_name,
+            mcp_progress_token = ?progress_token,
+            event = "mcp.progress_token_created",
+            "MCP call progress token created",
+        );
+        match handle.await_response().await {
+            Ok(ServerResult::CallToolResult(result)) => Ok(result),
+            Ok(_) => Err(ConnectionError::CallTool(ServiceError::UnexpectedResponse)),
+            Err(err) if service_error_is_session_expired(&err) => {
                 service.cancellation_token().cancel();
                 Err(ConnectionError::SessionExpired {
                     server_id: self.launch.server_id.clone(),
                 })
             }
-            Ok(Err(err)) => Err(err.into()),
-            Err(_) => Err(ConnectionError::CallTimeout(timeout)),
+            Err(ServiceError::Timeout { .. }) => Err(ConnectionError::CallTimeout(timeout)),
+            Err(err) => Err(err.into()),
         }
     }
 
@@ -673,6 +710,12 @@ fn spawn_stderr_drain(server_id: String, stderr: Option<tokio::process::ChildStd
 /// `PR_SET_PDEATHSIG=SIGKILL` from the sandbox layer as a safety net).
 async fn signal_cancel(service: &RunningService<RoleClient, RuntimeClientHandler>) {
     service.cancellation_token().cancel();
+}
+
+fn request_options_with_timeout(timeout: Duration) -> PeerRequestOptions {
+    let mut options = PeerRequestOptions::no_options();
+    options.timeout = Some(timeout);
+    options
 }
 
 fn service_error_is_session_expired(err: &ServiceError) -> bool {
