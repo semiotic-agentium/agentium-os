@@ -55,10 +55,19 @@ pub enum PoolTransport {
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct PoolKey {
     agent_scope: Arc<str>,
+    // Current endpoint scope. `server_config_digest` below carries the concrete
+    // endpoint identity: stdio command/args or normalized HTTP scheme/host/port/path.
     server_id: String,
+    // Approved launch/contract fingerprint. This intentionally covers fields
+    // the migration plan names separately: endpoint identity, protocol version,
+    // non-secret launch config, auth injection shape, network policy, and the
+    // approved tools digest. Keep this opaque digest until the registry exposes
+    // a first-class immutable approved_snapshot_id.
     server_config_digest: String,
     secret_fingerprint: SecretFingerprint,
     transport: PoolTransport,
+    // Kept explicit in the key even though it is also inside server_config_digest,
+    // so protocol changes are visible in tests/debug output and cannot reuse a pool.
     protocol_version: String,
 }
 
@@ -128,6 +137,16 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
             Some(&tools_digest),
         );
         if observed_config_digest.as_str() != server_config_digest {
+            tracing::error!(
+                target: "mcp.config",
+                mcp_server_id = %server_id,
+                agent_scope = %self.agent_scope,
+                expected = %server_config_digest,
+                observed = %observed_config_digest.as_str(),
+                protocol_version = %protocol_version,
+                event = "mcp.launch_config_digest_mismatch",
+                "MCP launch config digest does not match approved snapshot; refusing to bind. Run `agent-platform mcp enable <server>` to re-import and approve, then redeploy affected agents."
+            );
             return Err(BamlRtError::InvalidArgument(format!(
                 "MCP server `{server_id}` launch config digest mismatch (expected `{server_config_digest}`, observed `{observed_config_digest}`); operator must re-import and approve a new registry snapshot"
             )));

@@ -306,13 +306,14 @@ impl ClientHandler for RuntimeClientHandler {
             }
 
             record_mcp_digest_mismatch("tools_changed", transport);
-            tracing::warn!(
+            tracing::error!(
                 target: "mcp.drift",
                 mcp_server_id = %server_id,
                 expected = %expected.as_ref(),
                 observed = %observed_digest,
+                tool_count = observed.len(),
                 event = "mcp.tools_list_changed",
-                "MCP server tool set digest changed; marking snapshot stale, operator must re-import and approve a new registry snapshot",
+                "MCP server tool set drifted at runtime (tools/list_changed); snapshot marked stale, in-flight calls will fail. Re-import via `agent-platform mcp enable` and redeploy."
             );
             mark_drifted_and_persist(&server_id, &drifted, &cache_root);
         }
@@ -706,13 +707,13 @@ async fn verify_server_identity(
     let observed = compute_server_identity_digest(&capabilities, &server_info);
     if observed.as_str() != launch.expected_identity_digest {
         record_mcp_digest_mismatch("identity", transport_label(&launch.kind));
-        tracing::warn!(
+        tracing::error!(
             target: "mcp.identity",
             mcp_server_id = %launch.server_id,
             expected = %launch.expected_identity_digest,
             observed = %observed,
             event = "mcp.identity_mismatch",
-            "MCP server identity digest does not match approved snapshot; refusing to bind connection",
+            "MCP server identity digest does not match approved snapshot; refusing to bind. Re-import via `agent-platform mcp enable` and redeploy."
         );
         signal_cancel(service).await;
         return Err(ConnectionError::IdentityMismatch {
@@ -745,13 +746,14 @@ async fn verify_startup_tools_digest(
     let observed = digest_from_live_tools(&observed_tools);
     if observed.as_str() != launch.expected_tools_digest {
         record_mcp_digest_mismatch("tools_startup", transport_label(&launch.kind));
-        tracing::warn!(
+        tracing::error!(
             target: "mcp.drift",
             mcp_server_id = %launch.server_id,
             expected = %launch.expected_tools_digest,
             observed = %observed,
+            tool_count = observed_tools.len(),
             event = "mcp.startup_tools_digest_mismatch",
-            "MCP server tool surface digest does not match approved snapshot at startup; refusing to bind connection",
+            "MCP server tool surface drifted from approved snapshot at startup; refusing to bind. Re-import via `agent-platform mcp enable` to capture new tool schemas, then redeploy."
         );
         mark_drifted_and_persist(&launch.server_id, drifted, &launch.cache_root);
         signal_cancel(service).await;

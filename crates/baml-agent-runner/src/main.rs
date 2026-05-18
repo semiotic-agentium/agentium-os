@@ -437,10 +437,11 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
                         "Failed to persist restore failure state"
                     );
                 }
-                warn!(
+                error!(
                     error = %err,
                     content_hash = %deployment.content_hash.as_str(),
-                    "Failed to restore deployment; continuing startup"
+                    agent = %deployment.agent_name,
+                    "Failed to restore deployment; agent will be unavailable until operator redeploys (re-import MCP snapshot / refresh external_tools.lock / re-publish as needed)"
                 );
             }
         }
