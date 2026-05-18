@@ -21,7 +21,7 @@ use rmcp::{
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use crate::runtime::{ConnectionError, McpConnection};
+use crate::runtime::{ConnectionError, McpCancelSlot, McpConnection};
 
 pub struct McpToolHandler {
     metadata: ToolFunctionMetadata,
@@ -61,6 +61,7 @@ impl ToolHandler for McpToolHandler {
             connection: self.connection.clone(),
             mcp_tool_name: self.mcp_tool_name.clone(),
             schema_digest: self.schema_digest.clone(),
+            cancel_slot: Default::default(),
             state: Mutex::new(SessionState::Idle),
         }))
     }
@@ -80,6 +81,7 @@ struct McpToolSession {
     connection: Arc<McpConnection>,
     mcp_tool_name: String,
     schema_digest: String,
+    cancel_slot: McpCancelSlot,
     state: Mutex<SessionState>,
 }
 
@@ -120,7 +122,11 @@ impl ToolSession for McpToolSession {
         let result = {
             let _guard = call_span.enter();
             self.connection
-                .call_tool(&self.mcp_tool_name, input)
+                .call_tool_with_cancel_slot(
+                    &self.mcp_tool_name,
+                    input,
+                    Some(self.cancel_slot.clone()),
+                )
                 .await
                 .map_err(connection_error_to_session)?
         };
@@ -166,10 +172,21 @@ impl ToolSession for McpToolSession {
     /// MCP peer — the local session refuses further reads, but the server
     /// may still produce side effects from the request that was already
     /// dispatched.
-    async fn abort(
-        &mut self,
-        _reason: Option<String>,
-    ) -> std::result::Result<(), ToolSessionError> {
+    async fn abort(&mut self, reason: Option<String>) -> std::result::Result<(), ToolSessionError> {
+        let cancel_handle = self.cancel_slot.lock().await.take();
+        if let Some(handle) = cancel_handle {
+            handle.cancel_local();
+            let cancel_result = handle.cancel(reason).await;
+            if let Err(err) = cancel_result {
+                tracing::warn!(
+                    target: "mcp.runtime",
+                    mcp_server_id = %self.connection.server_id(),
+                    error = %err,
+                    event = "mcp.call_cancel_notify_failed",
+                    "failed to send MCP cancelled notification during abort",
+                );
+            }
+        }
         let mut state = self.state.lock().await;
         *state = SessionState::Aborted;
         Ok(())
@@ -201,6 +218,14 @@ fn connection_error_to_session(err: ConnectionError) -> ToolSessionError {
             ErrorDisposition::HostRetriable,
             err.to_string(),
             Some("MCP initialize exceeded configured timeout"),
+        ),
+        ConnectionError::CallCancelled { .. } => classified_transport(
+            "mcp_call_cancelled",
+            ErrorDisposition::InformAndContinue,
+            err.to_string(),
+            Some(
+                "MCP tools/call was cancelled locally and a best-effort cancellation notification was sent",
+            ),
         ),
         ConnectionError::CallTimeout(_) => classified_transport(
             "mcp_call_timeout",

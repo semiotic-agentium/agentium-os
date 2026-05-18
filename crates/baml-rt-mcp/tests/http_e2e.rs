@@ -27,7 +27,9 @@ use baml_rt_core::ids::{AgentId, ContextId, UuidId};
 use baml_rt_mcp::{
     importer::EnvSecretResolver,
     resolver::McpResolver,
-    runtime::{ConnectionError, HttpLaunchConfig, LaunchKind, McpConnection, ServerLaunch},
+    runtime::{
+        ConnectionError, HttpLaunchConfig, LaunchKind, McpCancelSlot, McpConnection, ServerLaunch,
+    },
 };
 use baml_rt_tools::{
     ExternalToolResolver,
@@ -62,6 +64,7 @@ struct ServerState {
     call_result: Value,
     observed: Vec<(String, String, String)>,
     expire_next_call: bool,
+    delay_next_call: bool,
     session_id: String,
 }
 
@@ -158,7 +161,13 @@ async fn post_mcp(
                 guard.expire_next_call = false;
                 return (StatusCode::NOT_FOUND, "session expired").into_response();
             }
+            let delay = guard.delay_next_call;
+            guard.delay_next_call = false;
             let result = guard.call_result.clone();
+            drop(guard);
+            if delay {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
             let body = json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -166,6 +175,7 @@ async fn post_mcp(
             });
             Json(body).into_response()
         }
+        "notifications/cancelled" => StatusCode::ACCEPTED.into_response(),
         other => {
             let body = json!({
                 "jsonrpc": "2.0",
@@ -191,6 +201,7 @@ fn make_state(call_result: Value, expire_next_call: bool) -> SharedState {
         call_result,
         observed: vec![],
         expire_next_call,
+        delay_next_call: false,
         session_id: String::new(),
     }))
 }
@@ -398,6 +409,38 @@ fn https_launch_direct(
             max_idle_per_host: 4,
             max_concurrent_requests_per_pool_key: 4,
             extra_ca_certs_pem: vec![cert_pem],
+        }),
+    }
+}
+
+fn http_launch_direct(url: &str) -> ServerLaunch {
+    let tools = vec![approved_tool(schema())];
+    let identity = fixture_identity_digest();
+    let tools_digest = compute_tools_digest(&tools);
+    ServerLaunch {
+        server_id: SERVER_ID.into(),
+        startup_timeout: Duration::from_secs(10),
+        call_timeout: Duration::from_secs(10),
+        server_config_digest: "sha256:direct-construction".into(),
+        protocol_version: PROTOCOL_VERSION.into(),
+        expected_identity_digest: identity.as_str().to_string(),
+        expected_tools_digest: tools_digest.as_str().to_string(),
+        cache_root: PathBuf::new(),
+        kind: LaunchKind::Http(HttpLaunchConfig {
+            url: url.into(),
+            static_headers: vec![],
+            resolved_secrets: vec![],
+            network_policy: HttpNetworkPolicyConfig {
+                allow_hosts: vec![],
+                allow_private_ips: true,
+                follow_redirects: false,
+            },
+            connect_timeout: Duration::from_secs(5),
+            request_timeout: Duration::from_secs(10),
+            idle_stream_timeout: Duration::from_secs(30),
+            max_idle_per_host: 4,
+            max_concurrent_requests_per_pool_key: 4,
+            extra_ca_certs_pem: vec![],
         }),
     }
 }
@@ -733,6 +776,49 @@ async fn http_session_expired_rebuild_fails_closed_on_tools_digest_mismatch() {
 
     let server = read_server(cache.path(), SERVER_ID).expect("server record after stale mark");
     assert_eq!(server.approval.state, McpApprovalState::Stale);
+}
+
+#[tokio::test]
+async fn http_cancel_handle_terminates_local_call_without_waiting_for_server() {
+    let state = make_state(call_result_ok(), false);
+    {
+        let mut guard = state.lock().await;
+        guard.delay_next_call = true;
+    }
+    let url = spawn_http(state.clone()).await;
+    let conn = Arc::new(McpConnection::new(http_launch_direct(&url)));
+    let cancel_slot: McpCancelSlot = Default::default();
+
+    let call = {
+        let conn = conn.clone();
+        let cancel_slot = cancel_slot.clone();
+        tokio::spawn(async move {
+            conn.call_tool_with_cancel_slot(TOOL_NAME, json!({ "q": "cpu" }), Some(cancel_slot))
+                .await
+        })
+    };
+
+    let cancel_handle = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(handle) = cancel_slot.lock().await.clone() {
+                return handle;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("cancel handle should be registered before response await");
+    cancel_handle.cancel_local();
+
+    match call.await.expect("call task joins") {
+        Err(ConnectionError::CallCancelled { server_id, .. }) => assert_eq!(server_id, SERVER_ID),
+        other => panic!("expected local call cancellation, got {other:?}"),
+    }
+
+    assert!(
+        cancel_slot.lock().await.is_none(),
+        "cancel slot should clear after local cancellation"
+    );
 }
 
 #[tokio::test]

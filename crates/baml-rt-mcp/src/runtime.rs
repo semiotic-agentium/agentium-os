@@ -29,13 +29,14 @@ use rmcp::{
     ErrorData as McpError, ServiceExt,
     handler::client::ClientHandler,
     model::{
-        CallToolRequest, CallToolRequestParams, CallToolResult, ClientRequest,
-        CreateElicitationRequestParams, CreateElicitationResult, CreateMessageRequestMethod,
-        CreateMessageRequestParams, CreateMessageResult, ErrorCode, ListRootsRequestMethod,
-        ListRootsResult, ProgressNotificationParam, ServerResult,
+        CallToolRequest, CallToolRequestParams, CallToolResult, CancelledNotification,
+        CancelledNotificationParam, ClientRequest, CreateElicitationRequestParams,
+        CreateElicitationResult, CreateMessageRequestMethod, CreateMessageRequestParams,
+        CreateMessageResult, ErrorCode, ListRootsRequestMethod, ListRootsResult,
+        ProgressNotificationParam, RequestId, ServerResult,
     },
     service::{
-        MaybeSendFuture, NotificationContext, PeerRequestOptions, RequestContext, RoleClient,
+        MaybeSendFuture, NotificationContext, Peer, PeerRequestOptions, RequestContext, RoleClient,
         RunningService, ServiceError,
     },
     transport::{
@@ -44,7 +45,11 @@ use rmcp::{
 };
 use serde_json::{Value, to_value};
 use thiserror::Error;
-use tokio::{io::AsyncReadExt, sync::OnceCell};
+use tokio::{
+    io::AsyncReadExt,
+    sync::{Mutex, OnceCell},
+};
+use tokio_util::sync::CancellationToken;
 
 use crate::http::transport::{HttpTransportBuildError, build_rmcp_http_transport};
 
@@ -53,6 +58,10 @@ use crate::http::transport::{HttpTransportBuildError, build_rmcp_http_transport}
 const STARTUP_TIMEOUT_DEFAULT: Duration = Duration::from_secs(30);
 /// Default per-call timeout used when the operator config does not specify one.
 const RUNTIME_CALL_TIMEOUT_DEFAULT: Duration = Duration::from_secs(120);
+// Best-effort bound for abort-time `notifications/cancelled`. Some rmcp
+// transports may serialize outbound sends behind an in-flight request, so this
+// timeout protects platform cancellation from waiting on server completion.
+const ABORT_CANCEL_NOTIFY_TIMEOUT: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Error)]
 pub enum ConnectionError {
@@ -74,6 +83,8 @@ pub enum ConnectionError {
     SessionExpired { server_id: String },
     #[error("MCP arguments must be a JSON object, got {0}")]
     InvalidArguments(String),
+    #[error("MCP call cancelled for server `{server_id}`: {reason}")]
+    CallCancelled { server_id: String, reason: String },
     #[error("MCP call timed out after {0:?}")]
     CallTimeout(Duration),
     #[error(
@@ -342,6 +353,50 @@ fn mark_drifted_and_persist(server_id: &str, drifted: &AtomicBool, cache_root: &
 
 /// Shared, lazily-initialized rmcp client. Cloning the connection (via `Arc`)
 /// keeps every handler against the same server bound to the same process.
+#[derive(Clone)]
+pub struct McpCancelHandle {
+    peer: Peer<RoleClient>,
+    request_id: RequestId,
+    local_token: CancellationToken,
+}
+
+impl McpCancelHandle {
+    fn new(peer: Peer<RoleClient>, request_id: RequestId, local_token: CancellationToken) -> Self {
+        Self {
+            peer,
+            request_id,
+            local_token,
+        }
+    }
+
+    pub fn cancel_local(&self) {
+        self.local_token.cancel();
+    }
+
+    pub async fn notify_cancelled(&self, reason: Option<String>) -> Result<(), ServiceError> {
+        let notification = CancelledNotification::new(CancelledNotificationParam {
+            request_id: self.request_id.clone(),
+            reason,
+        });
+        self.peer.send_notification(notification.into()).await
+    }
+
+    pub async fn cancel(&self, reason: Option<String>) -> Result<(), ServiceError> {
+        self.cancel_local();
+        match tokio::time::timeout(ABORT_CANCEL_NOTIFY_TIMEOUT, self.notify_cancelled(reason)).await
+        {
+            Ok(result) => result,
+            Err(_) => Err(ServiceError::Timeout {
+                timeout: ABORT_CANCEL_NOTIFY_TIMEOUT,
+            }),
+        }
+    }
+}
+
+pub type McpCancelSlot = Arc<Mutex<Option<McpCancelHandle>>>;
+
+/// Shared, lazily-initialized rmcp client. Cloning the connection (via `Arc`)
+/// keeps every handler against the same server bound to the same process.
 pub struct McpConnection {
     launch: ServerLaunch,
     drifted: Arc<AtomicBool>,
@@ -387,6 +442,16 @@ impl McpConnection {
         mcp_tool_name: &str,
         arguments: Value,
     ) -> Result<CallToolResult, ConnectionError> {
+        self.call_tool_with_cancel_slot(mcp_tool_name, arguments, None)
+            .await
+    }
+
+    pub async fn call_tool_with_cancel_slot(
+        &self,
+        mcp_tool_name: &str,
+        arguments: Value,
+        cancel_slot: Option<McpCancelSlot>,
+    ) -> Result<CallToolResult, ConnectionError> {
         if self.is_drifted() {
             return Err(ConnectionError::Stale {
                 server_id: self.launch.server_id.clone(),
@@ -415,6 +480,12 @@ impl McpConnection {
                 request_options_with_timeout(timeout),
             )
             .await?;
+        let local_token = CancellationToken::new();
+        if let Some(slot) = &cancel_slot {
+            let cancel_handle =
+                McpCancelHandle::new(handle.peer.clone(), handle.id.clone(), local_token.clone());
+            *slot.lock().await = Some(cancel_handle);
+        }
         let progress_token = handle.progress_token.clone();
         tracing::debug!(
             target: "mcp.progress",
@@ -424,7 +495,22 @@ impl McpConnection {
             event = "mcp.progress_token_created",
             "MCP call progress token created",
         );
-        match handle.await_response().await {
+        let response = tokio::select! {
+            response = handle.await_response() => response,
+            () = local_token.cancelled() => {
+                if let Some(slot) = &cancel_slot {
+                    let _ = slot.lock().await.take();
+                }
+                return Err(ConnectionError::CallCancelled {
+                    server_id: self.launch.server_id.clone(),
+                    reason: "local abort requested".to_string(),
+                });
+            }
+        };
+        if let Some(slot) = &cancel_slot {
+            let _ = slot.lock().await.take();
+        }
+        match response {
             Ok(ServerResult::CallToolResult(result)) => Ok(result),
             Ok(_) => Err(ConnectionError::CallTool(ServiceError::UnexpectedResponse)),
             Err(err) if service_error_is_session_expired(&err) => {
