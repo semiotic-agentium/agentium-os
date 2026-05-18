@@ -146,7 +146,7 @@ pub fn validate_http_target(
     // checked here — that's an egress-layer responsibility per the plan.
     // Loopback is gated by the same `allow_private_ips` flag as RFC1918; no
     // implicit exception, the operator opts in explicitly.
-    if let Ok(ip) = host.parse::<IpAddr>()
+    if let Some(ip) = url.host().and_then(url_host_ip)
         && is_private_or_loopback(&ip)
         && !policy.allow_private_ips
     {
@@ -169,13 +169,24 @@ fn host_matches(observed: &str, allowed: &str) -> bool {
     observed.eq_ignore_ascii_case(allowed)
 }
 
+fn url_host_ip(host: url::Host<&str>) -> Option<IpAddr> {
+    match host {
+        url::Host::Ipv4(ip) => Some(IpAddr::V4(ip)),
+        url::Host::Ipv6(ip) => Some(IpAddr::V6(ip)),
+        url::Host::Domain(_) => None,
+    }
+}
+
 fn is_private_or_loopback(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
             v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_multicast()
         }
         IpAddr::V6(v6) => {
-            v6.is_loopback()
+            v6.to_ipv4_mapped()
+                .as_ref()
+                .is_some_and(|v4| is_private_or_loopback(&IpAddr::V4(*v4)))
+                || v6.is_loopback()
                 || v6.is_multicast()
                 // RFC 4193 ULA fc00::/7
                 || (v6.segments()[0] & 0xfe00) == 0xfc00
@@ -251,6 +262,14 @@ mod tests {
             false,
         )
         .expect_err("reject");
+        assert!(matches!(err, PolicyError::PrivateIpRejected { .. }));
+    }
+
+    #[test]
+    fn rejects_ipv4_mapped_ipv6_private_without_allow_private_ips() {
+        let err =
+            validate_http_target("s", "http://[::ffff:10.0.0.1]/mcp", &cfg(&[], false), false)
+                .expect_err("reject");
         assert!(matches!(err, PolicyError::PrivateIpRejected { .. }));
     }
 

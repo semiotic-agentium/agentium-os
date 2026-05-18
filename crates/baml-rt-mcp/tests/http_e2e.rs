@@ -12,7 +12,7 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{Arc, Once},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -407,7 +407,6 @@ fn https_launch_direct(
             request_timeout: Duration::from_secs(10),
             idle_stream_timeout: Duration::from_secs(30),
             max_idle_per_host: 4,
-            max_concurrent_requests_per_pool_key: 4,
             extra_ca_certs_pem: vec![cert_pem],
         }),
     }
@@ -439,7 +438,6 @@ fn http_launch_direct(url: &str) -> ServerLaunch {
             request_timeout: Duration::from_secs(10),
             idle_stream_timeout: Duration::from_secs(30),
             max_idle_per_host: 4,
-            max_concurrent_requests_per_pool_key: 4,
             extra_ca_certs_pem: vec![],
         }),
     }
@@ -819,6 +817,50 @@ async fn http_cancel_handle_terminates_local_call_without_waiting_for_server() {
         cancel_slot.lock().await.is_none(),
         "cancel slot should clear after local cancellation"
     );
+}
+
+#[tokio::test]
+async fn http_cancel_notify_is_bounded_while_call_is_in_flight() {
+    let state = make_state(call_result_ok(), false);
+    {
+        let mut guard = state.lock().await;
+        guard.delay_next_call = true;
+    }
+    let url = spawn_http(state.clone()).await;
+    let conn = Arc::new(McpConnection::new(http_launch_direct(&url)));
+    let cancel_slot: McpCancelSlot = Default::default();
+
+    let call = {
+        let conn = conn.clone();
+        let cancel_slot = cancel_slot.clone();
+        tokio::spawn(async move {
+            conn.call_tool_with_cancel_slot(TOOL_NAME, json!({ "q": "cpu" }), Some(cancel_slot))
+                .await
+        })
+    };
+
+    let cancel_handle = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(handle) = cancel_slot.lock().await.clone() {
+                return handle;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("cancel handle should be registered before response await");
+
+    let started = Instant::now();
+    let _ = cancel_handle.cancel(Some("client cancel".into())).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "cancel notification should be bounded and not wait for delayed tools/call"
+    );
+
+    match call.await.expect("call task joins") {
+        Err(ConnectionError::CallCancelled { server_id, .. }) => assert_eq!(server_id, SERVER_ID),
+        other => panic!("expected local call cancellation, got {other:?}"),
+    }
 }
 
 #[tokio::test]

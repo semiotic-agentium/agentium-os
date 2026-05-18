@@ -187,10 +187,6 @@ pub struct HttpPoolingConfig {
     pub share_safe: bool,
     #[serde(default = "default_max_idle_per_host")]
     pub max_idle_per_host: u64,
-    #[serde(default = "default_max_concurrent_requests_per_pool_key")]
-    pub max_concurrent_requests_per_pool_key: u64,
-    #[serde(default = "default_max_concurrent_requests_per_agent")]
-    pub max_concurrent_requests_per_agent: u64,
     #[serde(default = "default_idle_ttl_ms")]
     pub idle_ttl_ms: u64,
 }
@@ -200,8 +196,6 @@ impl Default for HttpPoolingConfig {
         Self {
             share_safe: default_share_safe(),
             max_idle_per_host: default_max_idle_per_host(),
-            max_concurrent_requests_per_pool_key: default_max_concurrent_requests_per_pool_key(),
-            max_concurrent_requests_per_agent: default_max_concurrent_requests_per_agent(),
             idle_ttl_ms: default_idle_ttl_ms(),
         }
     }
@@ -258,14 +252,6 @@ const fn default_share_safe() -> bool {
 
 const fn default_max_idle_per_host() -> u64 {
     8
-}
-
-const fn default_max_concurrent_requests_per_pool_key() -> u64 {
-    16
-}
-
-const fn default_max_concurrent_requests_per_agent() -> u64 {
-    4
 }
 
 const fn default_idle_ttl_ms() -> u64 {
@@ -604,8 +590,6 @@ mod tests {
                 "pooling": {
                   "share_safe": true,
                   "max_idle_per_host": 8,
-                  "max_concurrent_requests_per_pool_key": 32,
-                  "max_concurrent_requests_per_agent": 8,
                   "idle_ttl_ms": 300000
                 },
                 "network_policy": {

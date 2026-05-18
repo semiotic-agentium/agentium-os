@@ -21,7 +21,10 @@ use rmcp::{
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use crate::runtime::{ConnectionError, McpCancelSlot, McpConnection};
+use crate::{
+    http::transport::HttpTransportBuildError,
+    runtime::{ConnectionError, McpCancelSlot, McpConnection},
+};
 
 pub struct McpToolHandler {
     metadata: ToolFunctionMetadata,
@@ -132,8 +135,21 @@ impl ToolSession for McpToolSession {
         };
         let envelope = result_to_envelope(result);
         let mut state = self.state.lock().await;
-        *state = SessionState::Ready(envelope);
-        Ok(())
+        match &*state {
+            SessionState::Aborted => Err(ToolSessionError::Tool(ToolFailure::execution_failed(
+                "MCP session already aborted",
+            ))),
+            SessionState::Closed => Err(ToolSessionError::Tool(ToolFailure::execution_failed(
+                "MCP session already closed",
+            ))),
+            SessionState::Ready(_) => Err(ToolSessionError::Tool(ToolFailure::invalid_input(
+                "MCP session already has an unread result; call read before sending again",
+            ))),
+            SessionState::Idle => {
+                *state = SessionState::Ready(envelope);
+                Ok(())
+            }
+        }
     }
 
     async fn read(&mut self, _input: Value) -> std::result::Result<ToolStep, ToolSessionError> {
@@ -256,11 +272,44 @@ fn connection_error_to_session(err: ConnectionError) -> ToolSessionError {
             err.to_string(),
             Some("MCP stdio server failed to spawn"),
         ),
-        ConnectionError::Transport(_) => classified_transport(
-            "mcp_transport_setup_failed",
+        ConnectionError::Transport(ref source) => classify_transport_build_error(&err, source),
+    }
+}
+
+fn classify_transport_build_error(
+    top: &ConnectionError,
+    err: &HttpTransportBuildError,
+) -> ToolSessionError {
+    match err {
+        HttpTransportBuildError::Policy(_) => classified_transport(
+            "mcp_transport_policy_rejected",
             ErrorDisposition::Fatal,
-            err.to_string(),
-            Some("MCP transport setup or policy validation failed"),
+            top.to_string(),
+            Some("MCP HTTP transport network policy rejected the configured target"),
+        ),
+        HttpTransportBuildError::Header(_) => classified_transport(
+            "mcp_transport_header_rejected",
+            ErrorDisposition::Fatal,
+            top.to_string(),
+            Some("MCP HTTP transport static header configuration was rejected"),
+        ),
+        HttpTransportBuildError::InvalidAuthHeader { .. } => classified_transport(
+            "mcp_transport_auth_header_invalid",
+            ErrorDisposition::Fatal,
+            top.to_string(),
+            Some("MCP HTTP transport auth secret produced an invalid header"),
+        ),
+        HttpTransportBuildError::InvalidExtraCaCert { .. } => classified_transport(
+            "mcp_transport_ca_cert_invalid",
+            ErrorDisposition::Fatal,
+            top.to_string(),
+            Some("MCP HTTP transport extra CA certificate was invalid"),
+        ),
+        HttpTransportBuildError::Client(_) => classified_transport(
+            "mcp_transport_client_build_failed",
+            ErrorDisposition::Fatal,
+            top.to_string(),
+            Some("MCP HTTP transport reqwest client build failed"),
         ),
     }
 }
@@ -449,22 +498,31 @@ fn classified_transport(
 /// The shape mirrors the `ContentEnvelope` output mode used by generated MCP tools.
 fn result_to_envelope(result: CallToolResult) -> Value {
     let mut content = Vec::with_capacity(result.content.len());
+    let mut serialization_failed = false;
     for block in &result.content {
         match serde_json::to_value(block.raw.clone()) {
             Ok(value) => content.push(value),
             Err(err) => {
+                serialization_failed = true;
                 tracing::warn!(error = %err, "failed to serialize MCP content block");
             }
         }
     }
-    let structured = result
-        .structured_content
-        .map(|sc| serde_json::to_value(sc).unwrap_or(Value::Null))
-        .unwrap_or(Value::Null);
+    let structured = match result.structured_content {
+        Some(sc) => match serde_json::to_value(sc) {
+            Ok(value) => value,
+            Err(err) => {
+                serialization_failed = true;
+                tracing::warn!(error = %err, "failed to serialize MCP structured content");
+                Value::Null
+            }
+        },
+        None => Value::Null,
+    };
     json!({
         "content": content,
         "structured": structured,
-        "is_error": result.is_error.unwrap_or(false),
+        "is_error": result.is_error.unwrap_or(false) || serialization_failed,
         "metadata": Value::Null,
     })
 }

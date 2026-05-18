@@ -82,7 +82,7 @@ pub enum ConnectionError {
         source: std::io::Error,
     },
     #[error("transport setup failed: {0}")]
-    Transport(String),
+    Transport(#[from] HttpTransportBuildError),
     #[error("initialize timed out after {0:?}")]
     InitializeTimeout(Duration),
     #[error("initialize failed: {0}")]
@@ -191,7 +191,6 @@ pub struct HttpLaunchConfig {
     pub request_timeout: Duration,
     pub idle_stream_timeout: Duration,
     pub max_idle_per_host: u64,
-    pub max_concurrent_requests_per_pool_key: u64,
     /// Additional CA certificates (PEM-encoded) to trust beyond the system /
     /// webpki defaults. Empty in normal operator config — the field exists so
     /// deployments with private/internal CAs (and the in-process TLS test
@@ -294,7 +293,20 @@ impl ClientHandler for RuntimeClientHandler {
                 }
             };
 
-            let observed_digest = digest_from_live_tools(&observed);
+            let observed_digest = match digest_from_live_tools(&observed) {
+                Ok(digest) => digest,
+                Err(err) => {
+                    tracing::warn!(
+                        target: "mcp.drift",
+                        mcp_server_id = %server_id,
+                        error = %err,
+                        event = "mcp.tools_list_serialize_failed",
+                        "failed to serialize live MCP tool schema after list_changed; marking connection stale",
+                    );
+                    mark_drifted_and_persist(&server_id, &drifted, &cache_root);
+                    return;
+                }
+            };
             if observed_digest.as_str() == expected.as_ref() {
                 tracing::debug!(
                     target: "mcp.drift",
@@ -324,20 +336,21 @@ impl ClientHandler for RuntimeClientHandler {
 /// importer wrote into the snapshot. Each schema is canonicalized through
 /// the shared normalizer so on-wire formatting differences (key order,
 /// whitespace) do not produce false drift signals.
-fn digest_from_live_tools(tools: &[rmcp::model::Tool]) -> baml_rt_tools::mcp_snapshot::Digest {
+fn digest_from_live_tools(
+    tools: &[rmcp::model::Tool],
+) -> Result<baml_rt_tools::mcp_snapshot::Digest, serde_json::Error> {
     let normalized: Vec<(String, baml_rt_tools::mcp_snapshot::Digest)> = tools
         .iter()
         .map(|tool| {
-            let schema =
-                serde_json::to_value(tool.input_schema.as_ref()).unwrap_or(serde_json::Value::Null);
-            (tool.name.to_string(), digest_input_schema(&schema))
+            let schema = serde_json::to_value(tool.input_schema.as_ref())?;
+            Ok((tool.name.to_string(), digest_input_schema(&schema)))
         })
-        .collect();
-    compute_tools_digest_from_entries(
+        .collect::<Result<_, serde_json::Error>>()?;
+    Ok(compute_tools_digest_from_entries(
         normalized
             .iter()
             .map(|(name, digest)| (name.as_str(), digest.as_str())),
-    )
+    ))
 }
 
 /// Flip the in-memory drift flag and best-effort persist `Stale` to disk so
@@ -412,6 +425,7 @@ pub struct McpConnection {
     launch: ServerLaunch,
     drifted: Arc<AtomicBool>,
     service: OnceCell<Arc<RunningService<RoleClient, RuntimeClientHandler>>>,
+    stderr_drain_token: CancellationToken,
 }
 
 impl McpConnection {
@@ -420,6 +434,7 @@ impl McpConnection {
             launch,
             drifted: Arc::new(AtomicBool::new(false)),
             service: OnceCell::new(),
+            stderr_drain_token: CancellationToken::new(),
         }
     }
 
@@ -559,6 +574,7 @@ impl McpConnection {
         } else {
             launch.startup_timeout
         };
+        let stderr_drain_token = self.stderr_drain_token.child_token();
         let handler = RuntimeClientHandler {
             server_id: Arc::<str>::from(launch.server_id.clone()),
             drifted: drifted.clone(),
@@ -579,36 +595,14 @@ impl McpConnection {
                             command: stdio.command.clone(),
                             source: err,
                         })?;
-                    spawn_stderr_drain(launch.server_id.clone(), stderr);
+                    spawn_stderr_drain(launch.server_id.clone(), stderr, stderr_drain_token);
                     handler
                         .serve(transport)
                         .await
                         .map_err(|err| ConnectionError::InitializeFailed(err.to_string()))?
                 }
                 LaunchKind::Http(http) => {
-                    let transport = build_rmcp_http_transport(&launch.server_id, http).map_err(
-                        |err| match err {
-                            HttpTransportBuildError::Policy(p) => {
-                                ConnectionError::Transport(p.to_string())
-                            }
-                            HttpTransportBuildError::Header(h) => {
-                                ConnectionError::Transport(h.to_string())
-                            }
-                            HttpTransportBuildError::InvalidAuthHeader { name, reason } => {
-                                ConnectionError::Transport(format!(
-                                    "invalid auth header `{name}`: {reason}"
-                                ))
-                            }
-                            HttpTransportBuildError::InvalidExtraCaCert { index, reason } => {
-                                ConnectionError::Transport(format!(
-                                    "invalid extra CA certificate (PEM #{index}): {reason}"
-                                ))
-                            }
-                            HttpTransportBuildError::Client(err) => ConnectionError::Transport(
-                                format!("reqwest client build failed: {err}"),
-                            ),
-                        },
-                    )?;
+                    let transport = build_rmcp_http_transport(&launch.server_id, http)?;
                     handler
                         .serve(transport)
                         .await
@@ -637,6 +631,7 @@ impl Drop for McpConnection {
         //   2. The `Arc<RunningService>` still has live clones (e.g. an
         //      in-flight call). `Arc::try_unwrap` then fails silently; log a
         //      warning so leaked children are at least observable.
+        self.stderr_drain_token.cancel();
         let Some(service_arc) = self.service.take() else {
             return;
         };
@@ -743,7 +738,16 @@ async fn verify_startup_tools_digest(
             });
         }
     };
-    let observed = digest_from_live_tools(&observed_tools);
+    let observed = match digest_from_live_tools(&observed_tools) {
+        Ok(digest) => digest,
+        Err(err) => {
+            signal_cancel(service).await;
+            return Err(ConnectionError::StartupToolsListFailed {
+                server_id: launch.server_id.clone(),
+                reason: format!("failed to serialize live tool schema: {err}"),
+            });
+        }
+    };
     if observed.as_str() != launch.expected_tools_digest {
         record_mcp_digest_mismatch("tools_startup", transport_label(&launch.kind));
         tracing::error!(
@@ -766,7 +770,11 @@ async fn verify_startup_tools_digest(
     Ok(())
 }
 
-fn spawn_stderr_drain(server_id: String, stderr: Option<tokio::process::ChildStderr>) {
+fn spawn_stderr_drain(
+    server_id: String,
+    stderr: Option<tokio::process::ChildStderr>,
+    cancellation_token: CancellationToken,
+) {
     const MAX_CAPTURED_STDERR: usize = 64 * 1024;
 
     let Some(mut stderr) = stderr else {
@@ -777,23 +785,29 @@ fn spawn_stderr_drain(server_id: String, stderr: Option<tokio::process::ChildStd
         let mut total = 0usize;
         let mut chunk = [0u8; 4096];
         loop {
-            match stderr.read(&mut chunk).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    total = total.saturating_add(n);
-                    let remaining = MAX_CAPTURED_STDERR.saturating_sub(captured.len());
-                    if remaining > 0 {
-                        captured.extend_from_slice(&chunk[..n.min(remaining)]);
+            tokio::select! {
+                biased;
+                () = cancellation_token.cancelled() => return,
+                result = stderr.read(&mut chunk) => {
+                    match result {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            total = total.saturating_add(n);
+                            let remaining = MAX_CAPTURED_STDERR.saturating_sub(captured.len());
+                            if remaining > 0 {
+                                captured.extend_from_slice(&chunk[..n.min(remaining)]);
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                target: "mcp.stdio",
+                                mcp_server_id = %server_id,
+                                error = %err,
+                                "failed to drain MCP stdio server stderr"
+                            );
+                            return;
+                        }
                     }
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        target: "mcp.stdio",
-                        mcp_server_id = %server_id,
-                        error = %err,
-                        "failed to drain MCP stdio server stderr"
-                    );
-                    return;
                 }
             }
         }

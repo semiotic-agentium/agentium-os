@@ -64,13 +64,22 @@ pub fn build_rmcp_http_transport(
         inject_secret_header(&mut headers, sec)?;
     }
 
-    let redirect_policy =
-        build_redirect_policy(policy.follow_redirects, policy.allow_hosts.clone());
+    let redirect_policy = build_redirect_policy(
+        server_id.to_string(),
+        policy.follow_redirects,
+        baml_rt_tools::mcp_config::HttpNetworkPolicyConfig {
+            allow_hosts: policy.allow_hosts.clone(),
+            allow_private_ips: policy.allow_private_ips,
+            follow_redirects: policy.follow_redirects,
+        },
+        has_auth,
+    );
 
     let mut client_builder = reqwest::Client::builder()
         .connect_timeout(config.connect_timeout)
         .timeout(config.request_timeout)
         .pool_max_idle_per_host(config.max_idle_per_host as usize)
+        .pool_idle_timeout(Some(config.idle_stream_timeout))
         .redirect(redirect_policy)
         .no_proxy()
         .min_tls_version(tls::Version::TLS_1_2)
@@ -101,7 +110,12 @@ pub fn build_rmcp_http_transport(
     Ok(StreamableHttpClientTransport::with_client(client, cfg))
 }
 
-fn build_redirect_policy(follow_redirects: bool, allow_hosts: Vec<String>) -> Policy {
+fn build_redirect_policy(
+    server_id: String,
+    follow_redirects: bool,
+    network_policy: baml_rt_tools::mcp_config::HttpNetworkPolicyConfig,
+    has_auth_secrets: bool,
+) -> Policy {
     if !follow_redirects {
         return Policy::none();
     }
@@ -109,15 +123,14 @@ fn build_redirect_policy(follow_redirects: bool, allow_hosts: Vec<String>) -> Po
         if attempt.previous().len() > 5 {
             return attempt.error("redirect chain too long");
         }
-        match attempt.url().host_str() {
-            Some(host)
-                if allow_hosts
-                    .iter()
-                    .any(|allowed| allowed.eq_ignore_ascii_case(host)) =>
-            {
-                attempt.follow()
-            }
-            _ => attempt.error("redirect target not on allowlist"),
+        match validate_http_target(
+            &server_id,
+            attempt.url().as_str(),
+            &network_policy,
+            has_auth_secrets,
+        ) {
+            Ok(_) => attempt.follow(),
+            Err(_) => attempt.error("redirect target violates network policy"),
         }
     })
 }
@@ -216,7 +229,6 @@ mod tests {
             request_timeout: Duration::from_secs(5),
             idle_stream_timeout: Duration::from_secs(30),
             max_idle_per_host: 4,
-            max_concurrent_requests_per_pool_key: 4,
             extra_ca_certs_pem: Vec::new(),
         }
     }
@@ -316,7 +328,16 @@ mod tests {
         });
 
         let client = reqwest::Client::builder()
-            .redirect(build_redirect_policy(true, vec!["127.0.0.1".to_string()]))
+            .redirect(build_redirect_policy(
+                "s".to_string(),
+                true,
+                HttpNetworkPolicyConfig {
+                    allow_hosts: vec!["127.0.0.1".to_string()],
+                    allow_private_ips: true,
+                    follow_redirects: true,
+                },
+                false,
+            ))
             .build()
             .unwrap();
         let err = client
@@ -324,6 +345,55 @@ mod tests {
             .send()
             .await
             .expect_err("redirect target must be rejected");
+        assert!(err.is_redirect(), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn redirect_to_private_ip_errors_when_private_ips_disallowed() {
+        let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = target.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = target.accept().await {
+                let mut buf = [0_u8; 512];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                    .await;
+            }
+        });
+
+        let redirect = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let redirect_addr = redirect.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = redirect.accept().await {
+                let mut buf = [0_u8; 512];
+                let _ = socket.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{}/target\r\nContent-Length: 0\r\n\r\n",
+                    target_addr.port()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let client = reqwest::Client::builder()
+            .redirect(build_redirect_policy(
+                "s".to_string(),
+                true,
+                HttpNetworkPolicyConfig {
+                    allow_hosts: vec!["127.0.0.1".to_string()],
+                    allow_private_ips: false,
+                    follow_redirects: true,
+                },
+                false,
+            ))
+            .build()
+            .unwrap();
+        let err = client
+            .get(format!("http://{redirect_addr}/start"))
+            .send()
+            .await
+            .expect_err("redirect target must be rejected by private-IP policy");
         assert!(err.is_redirect(), "unexpected error: {err}");
     }
 }
