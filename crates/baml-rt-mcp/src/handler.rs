@@ -200,6 +200,7 @@ fn connection_error_to_session(err: ConnectionError) -> ToolSessionError {
         | ConnectionError::StartupToolsListFailed { .. }
         | ConnectionError::MissingPeerInfo { .. }
         | ConnectionError::IdentitySerializeFailed { .. } => {
+            // TODO V2-7: stale/contract-violation disposition.
             // Fail-closed: the live server's advertised identity does not
             // match the approved snapshot, was missing, or could not be
             // serialized for the digest. Treat as transport failure so the
@@ -207,7 +208,8 @@ fn connection_error_to_session(err: ConnectionError) -> ToolSessionError {
             // tool error.
             ToolSessionError::Transport(BamlRtError::InvalidArgument(err.to_string()))
         }
-        ConnectionError::Stale { .. } => {
+        ConnectionError::Stale { .. } | ConnectionError::SessionExpired { .. } => {
+            // TODO V2-7: stale/contract-violation disposition.
             // Fail-closed transport error: the tool registry is no longer
             // trusted for this connection; surface to the runtime so the
             // session is treated as an infra problem, not LLM-correctable.

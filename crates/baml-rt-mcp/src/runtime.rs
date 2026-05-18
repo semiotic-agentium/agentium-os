@@ -8,6 +8,7 @@
 
 use std::{
     collections::BTreeMap,
+    error::Error as StdError,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -35,7 +36,9 @@ use rmcp::{
         MaybeSendFuture, NotificationContext, RequestContext, RoleClient, RunningService,
         ServiceError,
     },
-    transport::{ConfigureCommandExt, TokioChildProcess},
+    transport::{
+        ConfigureCommandExt, TokioChildProcess, streamable_http_client::StreamableHttpError,
+    },
 };
 use serde_json::{Value, to_value};
 use thiserror::Error;
@@ -65,6 +68,8 @@ pub enum ConnectionError {
     InitializeFailed(String),
     #[error("call_tool failed: {0}")]
     CallTool(#[from] ServiceError),
+    #[error("MCP server `{server_id}` HTTP session expired; registry will rebuild on next resolve")]
+    SessionExpired { server_id: String },
     #[error("MCP arguments must be a JSON object, got {0}")]
     InvalidArguments(String),
     #[error("MCP call timed out after {0:?}")]
@@ -344,6 +349,12 @@ impl McpConnection {
         self.drifted.load(Ordering::SeqCst)
     }
 
+    pub fn is_dead(&self) -> bool {
+        self.service
+            .get()
+            .is_some_and(|service| service.is_closed())
+    }
+
     pub async fn call_tool(
         &self,
         mcp_tool_name: &str,
@@ -351,6 +362,11 @@ impl McpConnection {
     ) -> Result<CallToolResult, ConnectionError> {
         if self.is_drifted() {
             return Err(ConnectionError::Stale {
+                server_id: self.launch.server_id.clone(),
+            });
+        }
+        if self.is_dead() {
+            return Err(ConnectionError::SessionExpired {
                 server_id: self.launch.server_id.clone(),
             });
         }
@@ -367,6 +383,12 @@ impl McpConnection {
         };
         match tokio::time::timeout(timeout, service.call_tool(params)).await {
             Ok(Ok(result)) => Ok(result),
+            Ok(Err(err)) if service_error_is_session_expired(&err) => {
+                service.cancellation_token().cancel();
+                Err(ConnectionError::SessionExpired {
+                    server_id: self.launch.server_id.clone(),
+                })
+            }
             Ok(Err(err)) => Err(err.into()),
             Err(_) => Err(ConnectionError::CallTimeout(timeout)),
         }
@@ -651,6 +673,25 @@ fn spawn_stderr_drain(server_id: String, stderr: Option<tokio::process::ChildStd
 /// `PR_SET_PDEATHSIG=SIGKILL` from the sandbox layer as a safety net).
 async fn signal_cancel(service: &RunningService<RoleClient, RuntimeClientHandler>) {
     service.cancellation_token().cancel();
+}
+
+fn service_error_is_session_expired(err: &ServiceError) -> bool {
+    let ServiceError::TransportSend(transport_err) = err else {
+        return false;
+    };
+
+    // Streamable HTTP session expiry is currently carried as
+    // `StreamableHttpError<reqwest::Error>` inside TransportSend. Future rmcp
+    // transports may box different error types; non-matching downcasts are not
+    // session expiry and must fall through to the existing CallTool mapping.
+    let mut source: Option<&(dyn StdError + 'static)> = Some(transport_err.error.as_ref());
+    while let Some(err) = source {
+        if let Some(http_err) = err.downcast_ref::<StreamableHttpError<reqwest::Error>>() {
+            return matches!(http_err, StreamableHttpError::SessionExpired);
+        }
+        source = err.source();
+    }
+    false
 }
 
 fn arguments_to_map(
