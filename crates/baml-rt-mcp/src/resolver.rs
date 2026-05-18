@@ -409,13 +409,31 @@ mod tests {
     }
 
     fn key(agent: &str, server: &str, transport: PoolTransport, secret_value: &str) -> PoolKey {
+        key_with(
+            agent,
+            server,
+            "sha256:cfg",
+            transport,
+            "2025-06-18",
+            secret_value,
+        )
+    }
+
+    fn key_with(
+        agent: &str,
+        server: &str,
+        server_config_digest: &str,
+        transport: PoolTransport,
+        protocol_version: &str,
+        secret_value: &str,
+    ) -> PoolKey {
         PoolKey {
             agent_scope: Arc::<str>::from(agent),
             server_id: server.into(),
-            server_config_digest: "sha256:cfg".into(),
+            server_config_digest: server_config_digest.into(),
             secret_fingerprint: fingerprint(secret_value),
             transport,
-            protocol_version: "2025-06-18".into(),
+            protocol_version: protocol_version.into(),
         }
     }
 
@@ -430,6 +448,55 @@ mod tests {
     fn pool_key_distinguishes_transports() {
         let a = key("agent-a", "grafana", PoolTransport::Stdio, "h");
         let b = key("agent-a", "grafana", PoolTransport::StreamableHttp, "h");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn pool_key_distinguishes_server_ids_as_endpoint_scope() {
+        let a = key("agent-a", "grafana", PoolTransport::Stdio, "h");
+        let b = key("agent-a", "github", PoolTransport::Stdio, "h");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn pool_key_distinguishes_protocol_versions() {
+        let a = key_with(
+            "agent-a",
+            "grafana",
+            "sha256:cfg",
+            PoolTransport::Stdio,
+            "2025-06-18",
+            "h",
+        );
+        let b = key_with(
+            "agent-a",
+            "grafana",
+            "sha256:cfg",
+            PoolTransport::Stdio,
+            "2099-01-01",
+            "h",
+        );
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn pool_key_distinguishes_server_config_digest_as_approved_contract() {
+        let a = key_with(
+            "agent-a",
+            "grafana",
+            "sha256:cfg-a",
+            PoolTransport::Stdio,
+            "2025-06-18",
+            "h",
+        );
+        let b = key_with(
+            "agent-a",
+            "grafana",
+            "sha256:cfg-b",
+            PoolTransport::Stdio,
+            "2025-06-18",
+            "h",
+        );
         assert_ne!(a, b);
     }
 
