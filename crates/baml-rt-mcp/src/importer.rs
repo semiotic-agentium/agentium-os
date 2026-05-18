@@ -306,7 +306,12 @@ mod tests {
     }
 
     #[test]
-    fn server_config_digest_is_stable_and_excludes_env_values() {
+    fn server_config_digest_tracks_non_secret_env_values() {
+        // Non-secret env values are routing/identity inputs (URL, region,
+        // model id) and must be governed: changing one forces re-import.
+        // Secret values never reach `config.env` — the schema layer rejects
+        // env keys that look like secrets, and resolved secrets are merged
+        // into the child process env at runtime, not at digest time.
         let mut config = McpServerConfig {
             transport: None,
             command: "uvx".into(),
@@ -323,18 +328,23 @@ mod tests {
         let tools = Digest::new("sha256:tools");
         let a =
             compute_server_config_digest("grafana", CLIENT_PROTOCOL_VERSION, &config, Some(&tools));
-        // Changing env value (not key) must not change digest.
+        // Same input → same digest.
+        let a2 =
+            compute_server_config_digest("grafana", CLIENT_PROTOCOL_VERSION, &config, Some(&tools));
+        assert_eq!(a, a2);
+        // Changing a non-secret env value MUST shift the digest so operator
+        // re-approval is required.
         config
             .env
             .insert("GRAFANA_URL".into(), "http://other".into());
         let b =
             compute_server_config_digest("grafana", CLIENT_PROTOCOL_VERSION, &config, Some(&tools));
-        assert_eq!(a, b);
-        // Adding a new key changes digest.
+        assert_ne!(a, b, "non-secret env value change must shift digest");
+        // Adding a new key also changes digest.
         config.env.insert("EXTRA".into(), "y".into());
         let c =
             compute_server_config_digest("grafana", CLIENT_PROTOCOL_VERSION, &config, Some(&tools));
-        assert_ne!(a, c);
+        assert_ne!(b, c);
     }
 
     #[test]
