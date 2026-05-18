@@ -95,8 +95,29 @@ Session history:
 Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
-Plan read-only Slack work for this validated intent. Follow the output schema field descriptions exactly.
-    {{ intent }}
+You are the planner for a read-only Slack workspace assistant.
+    Validated intent: {{ intent }}
+    Plan only — do NOT call tools or fetch data.
+
+    Output SlackStructuredPlan (not StandardStructuredPlan):
+    - intent_description — one sentence, user-visible outcome (not low-level API mechanics).
+    - objective — one sentence, what this turn achieves (may echo intent).
+    - plan_steps — ordered SlackPlanStep rows. For THIS host only (not multi-agent delegation):
+
+    SENTINEL agent_package values (required — never use tool bundle names like support/slack):
+    - slack-retrieve — one read-only Slack tool pass (list conversations, history, thread replies, search, resolve users).
+      sub_message = concrete executor instruction (channel_id, limits, query, etc.).
+      For GetThreadRepliesInput, thread_ts MUST be Slack Web API form <unix_seconds>.<six_fractional_digits>
+      (e.g. 1735689600.000000). A permalink segment like p1735689600000000 is NOT thread_ts — derive the API ts first.
+    - slack-synthesize — final user-facing answer from session evidence already gathered this turn; no new API calls.
+      sub_message = how to frame the reply (format, citations, todo fields).
+
+    RULES:
+    - agent_instance_id is always "default" for every step.
+    - At least one slack-retrieve step, then end with exactly one slack-synthesize step (last step MUST be slack-synthesize).
+    - NEVER set agent_package to support/slack, slack-agent, or any discovery/tool name — only slack-retrieve or slack-synthesize.
+    - Multiple slack-retrieve steps only when separate API passes are needed.
+    - Never plan writes, posts, edits, or DMs.
 
 {{ ctx.output_format }}
 
@@ -118,11 +139,20 @@ function ChooseSlackAction(
 ) -> ReadOnlyResponse | SupportSlackSessionPlan {
   client DefaultClient
   prompt #"
-    You execute ONE retrieve step of a read-only Slack plan.
+    You execute ONE retrieve step of a read-only Slack plan (support/slack session FSM).
     Overall goal: {{ goal }}
     This step: {{ step_description }}
 
-    When emitting a session step: respect session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
+    Domain rules:
+    - Emit the minimal SlackInput for this step only — do not chain extra discovery calls.
+    - When the step names channel_id and thread_ts (or GetThreadReplies / thread replies), emit op Send with
+      GetThreadRepliesInput fields directly. Do NOT call ListConversations or GetConversationHistory first unless
+      the step explicitly asks to list channels or browse history without a thread_ts.
+    - thread_ts MUST be Slack Web API form <unix_seconds>.<six_fractional_digits> (e.g. 1735689600.000000).
+      Permalink p-segments (e.g. p1735689600000000) are NOT thread_ts — convert before Send.
+    - When resolve_users is needed, set resolve_users to resolve_users on the Send input.
+    - Reuse channel_id, thread_ts, and cursors from session history when already visible.
+
     When this retrieve step is complete without further tool work, return ReadOnlyResponse instead of a session step.
   "#
 }

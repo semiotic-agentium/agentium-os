@@ -628,11 +628,20 @@ Tool and operation types:
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
-You execute ONE retrieve step of a read-only Slack plan.
+You execute ONE retrieve step of a read-only Slack plan (support/slack session FSM).
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
-When emitting a session step: respect session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
+Domain rules:
+- Emit the minimal SlackInput for this step only — do not chain extra discovery calls.
+- When the step names channel_id and thread_ts (or GetThreadReplies / thread replies), emit op Send with
+  GetThreadRepliesInput fields directly. Do NOT call ListConversations or GetConversationHistory first unless
+  the step explicitly asks to list channels or browse history without a thread_ts.
+- thread_ts MUST be Slack Web API form <unix_seconds>.<six_fractional_digits> (e.g. 1735689600.000000).
+  Permalink p-segments (e.g. p1735689600000000) are NOT thread_ts — convert before Send.
+- When resolve_users is needed, set resolve_users to resolve_users on the Send input.
+- Reuse channel_id, thread_ts, and cursors from session history when already visible.
+
 When this retrieve step is complete without further tool work, return ReadOnlyResponse instead of a session step.
 
 Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | ReadOnlyResponse | SupportSlackOpenStep`.
@@ -672,11 +681,20 @@ Tool and operation types:
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
-You execute ONE retrieve step of a read-only Slack plan.
+You execute ONE retrieve step of a read-only Slack plan (support/slack session FSM).
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
-When emitting a session step: respect session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
+Domain rules:
+- Emit the minimal SlackInput for this step only — do not chain extra discovery calls.
+- When the step names channel_id and thread_ts (or GetThreadReplies / thread replies), emit op Send with
+  GetThreadRepliesInput fields directly. Do NOT call ListConversations or GetConversationHistory first unless
+  the step explicitly asks to list channels or browse history without a thread_ts.
+- thread_ts MUST be Slack Web API form <unix_seconds>.<six_fractional_digits> (e.g. 1735689600.000000).
+  Permalink p-segments (e.g. p1735689600000000) are NOT thread_ts — convert before Send.
+- When resolve_users is needed, set resolve_users to resolve_users on the Send input.
+- Reuse channel_id, thread_ts, and cursors from session history when already visible.
+
 When this retrieve step is complete without further tool work, return ReadOnlyResponse instead of a session step.
 
 Return exactly one JSON object of type `SupportSlackAbortStep | SupportSlackFinishStep | SupportSlackPageReadStep | SupportSlackSearchReadStep | SupportSlackSendStep`.
