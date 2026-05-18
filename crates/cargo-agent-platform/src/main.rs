@@ -402,6 +402,12 @@ enum Commands {
         warn_missing_catalog: bool,
     },
 
+    /// Inspect and manage MCP registry entries
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommands,
+    },
+
     /// Interactive terminal chat with a deployed agent
     Chat {
         /// Agent package/name from discovery
@@ -419,6 +425,72 @@ enum Commands {
         /// Print debug diagnostics
         #[arg(long, short)]
         verbose: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpCommands {
+    /// List MCP servers in the repository registry.
+    List {
+        /// Repository base URL where repository routes are mounted.
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
+        repository_url: String,
+        /// Emit raw JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Discover, approve, and store an MCP server schema in the repository registry.
+    Enable {
+        /// Server id from mcp-servers.json.
+        server_id: String,
+        /// Path to mcp-servers.json.
+        #[arg(long)]
+        config: Option<String>,
+        /// Repository base URL where repository routes are mounted.
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
+        repository_url: String,
+        /// Skip interactive approval prompt.
+        #[arg(long)]
+        yes: bool,
+        /// Runner token for authenticated operator access (falls back to RUNNER_TOKEN env).
+        #[arg(long)]
+        runner_token: Option<String>,
+    },
+    /// Show latest or pinned MCP server snapshot summary.
+    Server {
+        /// Server id to inspect.
+        server_id: String,
+        /// Registry version to inspect. Defaults to latest.
+        #[arg(long)]
+        version: Option<u32>,
+        /// Repository base URL where repository routes are mounted.
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
+        repository_url: String,
+        /// Emit raw JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List registry versions for one MCP server.
+    Versions {
+        /// Server id to inspect.
+        server_id: String,
+        /// Repository base URL where repository routes are mounted.
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
+        repository_url: String,
+        /// Emit raw JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Lookup MCP registry entries by platform tool name.
+    Tool {
+        /// Platform tool name, e.g. mcp/meteo/get_meteo.
+        platform_tool_name: String,
+        /// Repository base URL where repository routes are mounted.
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
+        repository_url: String,
+        /// Emit raw JSON.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -803,6 +875,39 @@ fn main() -> anyhow::Result<()> {
             ci,
             warn_missing_catalog,
         } => commands::doctor::run(ci, warn_missing_catalog),
+
+        Commands::Mcp { command } => match command {
+            McpCommands::List {
+                repository_url,
+                json,
+            } => commands::mcp::list(&repository_url, json),
+            McpCommands::Enable {
+                server_id,
+                config,
+                repository_url,
+                yes,
+                runner_token,
+            } => {
+                let token = resolve_runner_token(runner_token.as_deref())?;
+                commands::mcp::enable(&server_id, config.as_deref(), &repository_url, yes, token)
+            }
+            McpCommands::Server {
+                server_id,
+                version,
+                repository_url,
+                json,
+            } => commands::mcp::server(&server_id, version, &repository_url, json),
+            McpCommands::Versions {
+                server_id,
+                repository_url,
+                json,
+            } => commands::mcp::versions(&server_id, &repository_url, json),
+            McpCommands::Tool {
+                platform_tool_name,
+                repository_url,
+                json,
+            } => commands::mcp::tool(&platform_tool_name, &repository_url, json),
+        },
 
         Commands::Chat {
             agent,

@@ -64,4 +64,4 @@ pub fn purge_managed_generated_baml_files(dir: &std::path::Path) -> std::io::Res
 pub use session_from_ir::{
     GeneratedSessionBaml, SessionPlanIrInspector, render_generated_session_baml_from_ir,
 };
-pub use tool_interfaces::render_baml_tool_interfaces;
+pub use tool_interfaces::{render_baml_tool_interfaces, render_baml_tool_interfaces_with_mcp_root};

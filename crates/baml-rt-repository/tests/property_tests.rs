@@ -195,7 +195,8 @@ async fn lineage_traversal_terminates_on_deep_chain() {
         store.clone() as Arc<dyn BlobStore>,
         store.clone() as Arc<dyn MetadataStore>,
         store.clone() as Arc<dyn LineageStore>,
-        store as Arc<dyn SearchStore>,
+        store.clone() as Arc<dyn SearchStore>,
+        store as Arc<dyn baml_rt_repository::McpRegistryStore>,
     );
 
     // Build a chain of 20 entries

@@ -24,11 +24,18 @@ pub async fn publish_with_build(
         .map_err(HttpApiProblem::from)?;
 
     let source_versioned = cmd.source.with_manifest_version(next_version);
-    let built = build_artifact(&source_versioned).await.map_err(|e| {
-        HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR)
-            .title("Artifact build failed")
-            .detail(e.to_string())
-    })?;
+    tracing::info!(
+        agent = %cmd.name,
+        repository_version = next_version,
+        "building repository artifact"
+    );
+    let built = build_artifact(&source_versioned, svc.clone())
+        .await
+        .map_err(|e| {
+            HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR)
+                .title("Artifact build failed")
+                .detail(e.to_string())
+        })?;
 
     let (_, extracted) = source_bundle_from_tar_gz(&built).map_err(|e| {
         HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR)
@@ -64,12 +71,27 @@ pub async fn publish_with_build(
     Ok(Json(result))
 }
 
-async fn build_artifact(source: &SourceBundle) -> anyhow::Result<Vec<u8>> {
+async fn build_artifact(
+    source: &SourceBundle,
+    svc: Arc<RepositoryService>,
+) -> anyhow::Result<Vec<u8>> {
     let workspace = unique_temp_dir("baml-repository-publish");
     fs::create_dir_all(&workspace)?;
 
     let result = async {
         materialize_source_bundle(source, &workspace)?;
+        let manifest_tools = source.manifest.tools();
+        let mcp_tools: Vec<&str> = manifest_tools
+            .iter()
+            .copied()
+            .filter(|tool| tool.starts_with("mcp/"))
+            .collect();
+        if !mcp_tools.is_empty() {
+            tracing::info!(
+                mcp_tools = ?mcp_tools,
+                "repository build will resolve MCP tools from registry"
+            );
+        }
 
         let agent_dir = AgentDir::new(workspace.clone())?;
         let build_dir = BuildDir::new()?;
@@ -78,7 +100,7 @@ async fn build_artifact(source: &SourceBundle) -> anyhow::Result<Vec<u8>> {
         let output = build_dir.join("package.tar.gz");
         let builder = BuilderService::new(
             TscCompiler::new(),
-            RuntimeTypeGenerator::new(),
+            RuntimeTypeGenerator::with_mcp_registry_service(svc),
             StdPackager::new(fs_impl),
         );
         builder

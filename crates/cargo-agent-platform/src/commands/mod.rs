@@ -10,6 +10,7 @@ pub mod list_agents;
 pub mod list_deployed_instances;
 pub mod list_event_sources;
 pub mod list_tools;
+pub mod mcp;
 pub mod new_agent;
 pub mod new_static_tool;
 pub mod new_tool;

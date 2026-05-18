@@ -608,8 +608,20 @@ pub struct ToolName {
 }
 
 impl ToolName {
+    /// MCP-imported tools use a three-part presentation form
+    /// `mcp/<server>/<tool>`. Internally we fold this into the standard
+    /// two-part shape with `bundle = mcp_<server>` and `local = <tool>` so
+    /// the rest of the registry, catalog, and codegen stack treats the
+    /// imported tool like any other host tool. `Display` reverses the fold
+    /// so manifest references and tracing output keep the readable form.
     pub fn parse(name: &str) -> Result<Self> {
         let parts: Vec<&str> = name.split('/').collect();
+        if parts.len() == 3 && parts[0] == "mcp" {
+            return Ok(Self {
+                bundle: BundleName::new(format!("mcp_{}", parts[1]))?,
+                local: LocalToolName::new(parts[2].to_string())?,
+            });
+        }
         if parts.len() != 2 {
             return Err(BamlRtError::InvalidArgument(format!(
                 "Tool name '{}' must be formatted as interface/tool",
@@ -653,7 +665,11 @@ impl ToolName {
 
 impl std::fmt::Display for ToolName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}", self.bundle, self.local)
+        if let Some(server) = self.bundle.as_str().strip_prefix("mcp_") {
+            write!(f, "mcp/{}/{}", server, self.local)
+        } else {
+            write!(f, "{}/{}", self.bundle, self.local)
+        }
     }
 }
 
@@ -920,7 +936,7 @@ pub struct ToolFunctionMetadata {
     pub config_bundle: Option<BundleName>,
     /// Origin of this tool (host vs guest)
     pub origin: ToolOrigin,
-    /// Execution backend (Static, External, or Wasm). Defaults to `Static`.
+    /// Execution backend (Static, External, MCP, Sandbox, or Wasm). Defaults to `Static`.
     pub backend: ToolBackend,
     /// Content-addressed digest for external tool artifact / package bytes.
     /// `None` for static tools and for external tools when verification is disabled.
@@ -1326,7 +1342,8 @@ pub enum ToolOrigin {
 /// Execution backend for a tool. Orthogonal to [`ToolOrigin`] (ownership).
 ///
 /// - `Static`: compiled into the runner at build time and linked via inventory.
-/// - `External`: resolved at deploy time and spawned as a subprocess per invocation.
+/// - `External`: resolved at deploy time from a local external-tool artifact/package.
+/// - `Mcp`: resolved from an approved MCP snapshot and invoked via MCP transport.
 /// - `Sandbox`: runs inside a microsandbox-backed microVM; dispatch lands in Workstream B.
 /// - `Wasm`: loaded per invocation into a Wasm sandbox (future).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1334,8 +1351,10 @@ pub enum ToolBackend {
     /// Compiled into the runner via inventory (current default).
     #[default]
     Static,
-    /// Runs as a standalone process speaking the tool protocol over stdio/UDS.
+    /// Runs as a standalone process speaking the platform external-tool protocol over stdio/UDS.
     External,
+    /// Runs through the Model Context Protocol using an approved snapshot/cache entry.
+    Mcp,
     /// Runs inside a microsandbox-backed microVM (Workstream B).
     Sandbox,
     /// Runs inside a Wasm sandbox (future).

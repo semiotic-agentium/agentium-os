@@ -236,6 +236,15 @@ fn repository_route_metric_label(matched: &MatchedPath) -> &'static str {
         "/search" => "repository_search",
         "/lineage/{hash}" => "repository_get_lineage",
         "/blobs/{hash}" => "repository_get_blob",
+        "/mcp/servers" => "repository_mcp_list_servers",
+        "/mcp/servers/{server_id}" => "repository_mcp_get_latest_snapshot",
+        "/mcp/servers/{server_id}/versions" => "repository_mcp_list_server_versions",
+        "/mcp/servers/{server_id}/versions/{version}" => "repository_mcp_get_snapshot",
+        "/mcp/servers/{server_id}/versions/{version}/mark-stale" => {
+            "repository_mcp_mark_version_stale"
+        }
+        "/mcp/tools" => "repository_mcp_find_tool",
+        "/mcp/snapshots/import" => "repository_mcp_import_snapshot",
         "/entries/{hash}/tags" => "repository_tags",
         "/publish" => "repository_publish",
         _ => "repository_unknown",
@@ -842,6 +851,91 @@ fn repository_openapi_fragment() -> serde_json::Value {
                         "400": { "description": "Invalid hash" },
                         "404": { "description": "Blob not found" }
                     }
+                }
+            },
+            "/repository/mcp/servers": {
+                "get": {
+                    "tags": ["repository"],
+                    "summary": "List MCP servers",
+                    "operationId": "repository_mcp_list_servers",
+                    "responses": { "200": { "description": "MCP server list" } }
+                }
+            },
+            "/repository/mcp/servers/{server_id}": {
+                "get": {
+                    "tags": ["repository"],
+                    "summary": "Get latest MCP server snapshot",
+                    "operationId": "repository_mcp_get_latest_snapshot",
+                    "parameters": [{ "name": "server_id", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "responses": {
+                        "200": { "description": "MCP server snapshot" },
+                        "404": { "description": "MCP server snapshot not found" }
+                    }
+                }
+            },
+            "/repository/mcp/servers/{server_id}/versions": {
+                "get": {
+                    "tags": ["repository"],
+                    "summary": "List MCP server snapshot versions",
+                    "operationId": "repository_mcp_list_server_versions",
+                    "parameters": [{ "name": "server_id", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "responses": { "200": { "description": "MCP server versions" } }
+                }
+            },
+            "/repository/mcp/servers/{server_id}/versions/{version}": {
+                "get": {
+                    "tags": ["repository"],
+                    "summary": "Get MCP server snapshot by version",
+                    "operationId": "repository_mcp_get_snapshot",
+                    "parameters": [
+                        { "name": "server_id", "in": "path", "required": true, "schema": { "type": "string" } },
+                        { "name": "version", "in": "path", "required": true, "schema": { "type": "integer", "format": "uint32" } }
+                    ],
+                    "responses": {
+                        "200": { "description": "MCP server snapshot" },
+                        "404": { "description": "MCP server snapshot not found" }
+                    }
+                }
+            },
+            "/repository/mcp/servers/{server_id}/versions/{version}/mark-stale": {
+                "post": {
+                    "tags": ["repository"],
+                    "summary": "Mark MCP server snapshot version stale (operator-authenticated)",
+                    "operationId": "repository_mcp_mark_version_stale",
+                    "parameters": [
+                        { "name": "server_id", "in": "path", "required": true, "schema": { "type": "string" } },
+                        { "name": "version", "in": "path", "required": true, "schema": { "type": "integer", "format": "uint32" } }
+                    ],
+                    "responses": {
+                        "200": { "description": "MCP server snapshot marked stale" },
+                        "401": { "description": "Missing or invalid runner token" }
+                    },
+                    "security": runner_token_security
+                }
+            },
+            "/repository/mcp/tools": {
+                "get": {
+                    "tags": ["repository"],
+                    "summary": "Find MCP tool versions by platform tool name",
+                    "operationId": "repository_mcp_find_tool",
+                    "parameters": [{ "name": "platform_tool_name", "in": "query", "required": true, "schema": { "type": "string" } }],
+                    "responses": {
+                        "200": { "description": "MCP tool versions" },
+                        "400": { "description": "Invalid query" }
+                    }
+                }
+            },
+            "/repository/mcp/snapshots/import": {
+                "post": {
+                    "tags": ["repository"],
+                    "summary": "Import MCP server snapshot (operator-authenticated)",
+                    "operationId": "repository_mcp_import_snapshot",
+                    "responses": {
+                        "200": { "description": "Imported MCP snapshot version" },
+                        "400": { "description": "Invalid snapshot" },
+                        "401": { "description": "Missing or invalid runner token" }
+                    },
+                    "security": runner_token_security
                 }
             },
             "/repository/publish": {

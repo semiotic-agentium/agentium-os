@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "name": "meteo-mcp-agent",
+  "entry_point": "src/index.ts",
+  "signature": "meteo-mcp-agent@1.0.0",
+  "tools": [
+    "mcp/meteo/get_meteo"
+  ],
+  "tags": [
+    "dev",
+    "meteo",
+    "mcp"
+  ],
+  "discovery": {
+    "description": "Agent that drives the meteo-mcp server (Open-Meteo over MCP stdio)"
+  }
+}

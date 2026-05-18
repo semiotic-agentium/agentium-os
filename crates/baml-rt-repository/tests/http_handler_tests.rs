@@ -656,3 +656,199 @@ async fn fork_missing_parent_returns_422() {
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+// -------------------------------------------------------------------------
+// MCP registry endpoints
+// -------------------------------------------------------------------------
+
+fn approved_mcp_record() -> baml_rt_tools::mcp_snapshot::ApprovalRecord {
+    baml_rt_tools::mcp_snapshot::ApprovalRecord {
+        state: baml_rt_tools::mcp_snapshot::McpApprovalState::Approved,
+        owner: Some("operator@example.com".into()),
+        reviewed_at: Some("epoch:1".into()),
+        expires_at: None,
+    }
+}
+
+fn mcp_snapshot() -> baml_rt_tools::mcp_snapshot::McpServerSnapshot {
+    use baml_rt_tools::{
+        mcp_snapshot::{
+            Digest, MCP_SNAPSHOT_SCHEMA_VERSION, McpImportedTool, McpOutputMode, McpServerSnapshot,
+            McpTransportRef, compute_tools_digest,
+        },
+        tools::ToolAccess,
+    };
+
+    let tools = vec![McpImportedTool {
+        platform_tool_name: "mcp/meteo/get_meteo".into(),
+        mcp_tool_name: "get_meteo".into(),
+        description: Some("Get weather".into()),
+        input_schema: serde_json::json!({ "type": "object" }),
+        input_schema_digest: Digest::new("sha256:input"),
+        output_mode: McpOutputMode::ContentEnvelope,
+        access_level: ToolAccess::Read,
+        approval: approved_mcp_record(),
+        opaque_fallback_reason: None,
+        annotations: serde_json::Value::Null,
+    }];
+
+    McpServerSnapshot {
+        schema_version: MCP_SNAPSHOT_SCHEMA_VERSION,
+        server_id: "meteo".into(),
+        transport: McpTransportRef::Stdio {
+            command_ref: "meteo-mcp".into(),
+            args: vec![],
+        },
+        protocol_version: "2025-06-18".into(),
+        server_info: None,
+        server_config_digest: Digest::new("sha256:server"),
+        server_identity_digest: Digest::new("sha256:identity"),
+        tools_digest: compute_tools_digest(&tools),
+        secret_refs: vec![],
+        approval: approved_mcp_record(),
+        sandbox_profile: Some("restricted".into()),
+        tools,
+    }
+}
+
+async fn import_mcp_snapshot(app: &axum::Router) -> serde_json::Value {
+    let body = baml_rt_repository::http::ImportMcpSnapshotRequest {
+        snapshot: mcp_snapshot(),
+    };
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/snapshots/import")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&body).unwrap()
+}
+
+#[tokio::test]
+async fn mcp_snapshot_import_and_read_routes_work() {
+    let app = setup_app().await;
+    let imported = import_mcp_snapshot(&app).await;
+    assert_eq!(imported["version"]["server_id"], "meteo");
+    assert_eq!(imported["version"]["version"], 1);
+
+    let servers = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/mcp/servers")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(servers.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(servers.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let servers: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(servers["servers"].as_array().unwrap().len(), 1);
+
+    let versions = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/mcp/servers/meteo/versions")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(versions.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(versions.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let versions: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(versions["versions"].as_array().unwrap().len(), 1);
+
+    let snapshot = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/mcp/servers/meteo/versions/1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(snapshot.status(), StatusCode::OK);
+
+    let latest = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/mcp/servers/meteo")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(latest.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn mcp_tool_lookup_and_mark_stale_routes_work() {
+    let app = setup_app().await;
+    import_mcp_snapshot(&app).await;
+
+    let lookup = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/mcp/tools?platform_tool_name=mcp%2Fmeteo%2Fget_meteo")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(lookup.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(lookup.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let lookup: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(lookup["total"], 1);
+    assert_eq!(lookup["tools"][0]["approval_state"], "approved");
+
+    let stale = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/servers/meteo/versions/1/mark-stale")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale.status(), StatusCode::OK);
+
+    let lookup = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/mcp/tools?platform_tool_name=mcp%2Fmeteo%2Fget_meteo")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(lookup.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let lookup: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(lookup["tools"][0]["approval_state"], "stale");
+}

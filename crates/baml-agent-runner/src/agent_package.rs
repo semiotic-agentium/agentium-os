@@ -18,6 +18,10 @@ use baml_rt_core::{
     context::{InvocationScope, generate_context_id},
     ids::AgentId,
 };
+use baml_rt_mcp::{
+    composite::CompositeResolver, importer::SecretResolver as McpSecretResolver,
+    resolver::default_mcp_resolver,
+};
 use baml_rt_observability::spans;
 use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, index_tools};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, SecretResolverToLlmAdapter};
@@ -33,6 +37,30 @@ use baml_rt_tools::{
     },
     register_manifest_tools_with_fallback,
 };
+
+/// Bridges the LLM-side `SecretResolver` (returns `SecretValue`) into the
+/// simple `String`-valued resolver the MCP importer/runtime expects.
+struct LlmSecretResolverToMcpAdapter {
+    inner: Arc<dyn baml_rt_llm_config::SecretResolver>,
+}
+
+impl LlmSecretResolverToMcpAdapter {
+    fn new(inner: Arc<dyn baml_rt_llm_config::SecretResolver>) -> Self {
+        Self { inner }
+    }
+}
+
+impl McpSecretResolver for LlmSecretResolverToMcpAdapter {
+    fn resolve(&self, name: &str) -> Option<String> {
+        // Try the secret as-is first, then fall back to process env so an
+        // operator with raw env vars sees them resolved without needing a
+        // fnox entry per MCP secret.
+        if let Some(value) = self.inner.resolve(name) {
+            return Some(value.into_string());
+        }
+        std::env::var(name).ok()
+    }
+}
 use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
 use baml_tools_system::SystemBundle;
 use serde_json::Value;
@@ -115,6 +143,7 @@ impl AgentPackage {
         claude_workspaces_base: Option<&std::path::Path>,
         external_tools_dirs: &[std::path::PathBuf],
         sandbox_bind_roots: &[std::path::PathBuf],
+        llm_secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver>,
     ) -> Result<ToolsRegistered> {
         let mut runtime_manager = loaded.runtime_manager;
         let manifest_tool_names = ManifestToolNames::parse(&self.manifest.tools)?;
@@ -184,11 +213,41 @@ impl AgentPackage {
         )
         .await?;
 
+        // PR5 wiring: chain the dev-mode external resolver with the MCP
+        // resolver via CompositeResolver so manifest entries like
+        // `mcp/grafana/search_dashboards` bind to live MCP child processes.
+        //
+        // Snapshots are sourced **only** from the package's `mcp/` directory,
+        // which is projected from the registry at build time. There is no
+        // `$HOME`-level snapshot fallback: a package without `mcp/` simply
+        // skips wiring the MCP resolver, and a manifest that lists `mcp/...`
+        // tools then fails closed in `register_manifest_tools_with_fallback`.
+        let package_mcp_root = self.extract_dir.join("mcp");
+        let mcp_resolver = if package_mcp_root.exists() {
+            Some(default_mcp_resolver(
+                &package_mcp_root,
+                LlmSecretResolverToMcpAdapter::new(llm_secret_resolver),
+            )?)
+        } else {
+            None
+        };
+        let mut composite = CompositeResolver::new();
+        if let Some(boxed) = external_resolver {
+            composite.push(boxed as Box<dyn ExternalToolResolver>);
+        }
+        if let Some(mcp) = mcp_resolver {
+            composite.push(Box::new(mcp) as Box<dyn ExternalToolResolver>);
+        }
+        let composite_ref: Option<&dyn ExternalToolResolver> = if composite.is_empty() {
+            None
+        } else {
+            Some(&composite)
+        };
         register_manifest_tools_with_fallback(
             runtime_manager.tool_registry().as_ref(),
             &manifest_tool_names,
             policy,
-            external_resolver.as_deref(),
+            composite_ref,
         )?;
         runtime_manager.rebuild_function_tool_manifest();
         runtime_manager
@@ -332,6 +391,7 @@ impl AgentPackage {
                     args.claude_workspaces_base,
                     args.external_tools_dirs,
                     args.sandbox_bind_roots,
+                    args.provenance_config.llm_secret_resolver(),
                 )
                 .await?;
             let built = self

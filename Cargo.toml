@@ -40,6 +40,7 @@ members = [
   "crates/tools/notion",
   "crates/tools/system",
   "crates/tools/memory",
+  "crates/baml-rt-mcp",
   "crates/baml-tool-derive",
 ]
 default-members = [
@@ -142,6 +143,11 @@ dotenvy = "0.15"
 proptest = "1"
 # Builder / tools
 inquire = "0.9"
+# MCP client SDK. PR 4 uses `transport-child-process` for stdio servers.
+rmcp = { version = "1.7", default-features = false, features = [
+  "client",
+  "transport-child-process",
+] }
 # API
 utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-axum = "0.2"

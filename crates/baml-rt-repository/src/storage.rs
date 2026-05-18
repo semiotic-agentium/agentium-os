@@ -12,12 +12,14 @@
 //! and future evolution.
 
 use async_trait::async_trait;
+use baml_rt_tools::mcp_snapshot::McpServerSnapshot;
 
 use crate::{
     entry::{NewEntry, RepositoryEntry, RepositoryEntryHeader, Tag},
     error::Result,
     ids::{AgentName, ContentHash, Version, VersionRef},
     lineage::{AncestryNode, LineageEdge, LineageSubgraph},
+    mcp::{McpRegistryServer, McpRegistryServerVersion, McpRegistryToolVersion},
     search::SearchQuery,
 };
 
@@ -151,4 +153,46 @@ pub trait SearchStore: Send + Sync {
     /// Execute a structured search query, returning matching entry headers
     /// ordered by relevance.
     async fn search(&self, query: &SearchQuery) -> Result<Vec<RepositoryEntryHeader>>;
+}
+
+// ---------------------------------------------------------------------------
+// McpRegistryStore — MCP server snapshot catalog
+// ---------------------------------------------------------------------------
+
+/// Stores immutable MCP server snapshot versions and their tool projections.
+#[async_trait]
+pub trait McpRegistryStore: Send + Sync {
+    /// List known MCP servers ordered by id.
+    async fn list_mcp_servers(&self) -> Result<Vec<McpRegistryServer>>;
+
+    /// Insert a full server snapshot as a new immutable version.
+    async fn put_mcp_snapshot(
+        &self,
+        snapshot: &McpServerSnapshot,
+    ) -> Result<McpRegistryServerVersion>;
+
+    /// Retrieve a full server snapshot by server id and registry version.
+    async fn get_mcp_snapshot(
+        &self,
+        server_id: &str,
+        version: u32,
+    ) -> Result<Option<McpServerSnapshot>>;
+
+    /// Retrieve the latest approved server snapshot for a server id.
+    ///
+    /// Stale/pending/rejected latest versions are not returned as approved
+    /// build inputs; callers should ask operators to refresh/reapprove.
+    async fn get_latest_mcp_snapshot(&self, server_id: &str) -> Result<Option<McpServerSnapshot>>;
+
+    /// List registry versions for one server id, newest first.
+    async fn list_mcp_server_versions(
+        &self,
+        server_id: &str,
+    ) -> Result<Vec<McpRegistryServerVersion>>;
+
+    /// Find all tool-version rows for a platform tool name.
+    async fn find_mcp_tool(&self, platform_tool_name: &str) -> Result<Vec<McpRegistryToolVersion>>;
+
+    /// Mark a server version stale.
+    async fn mark_mcp_version_stale(&self, server_id: &str, version: u32) -> Result<()>;
 }

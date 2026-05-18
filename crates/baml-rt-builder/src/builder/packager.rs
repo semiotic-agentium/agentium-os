@@ -111,6 +111,12 @@ impl<FS: FileSystem> Packager for StdPackager<FS> {
             tar.append(&header, content.as_bytes())?;
         }
 
+        // Add MCP registry snapshots resolved during build, if any.
+        let mcp_dir = build_dir.join("mcp");
+        if mcp_dir.exists() {
+            add_directory_to_tar(&mut tar, &mcp_dir, "mcp", &self.filesystem)?;
+        }
+
         // Add external_tools.lock.json (always written by type generation).
         let external_lockfile = build_dir.join(EXTERNAL_TOOLS_LOCKFILE_NAME);
         if external_lockfile.exists() {

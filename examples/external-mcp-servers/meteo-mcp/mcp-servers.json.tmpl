@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "meteo": {
+      "command": "python3",
+      "args": ["${ROOT_DIR}/examples/external-mcp-servers/meteo-mcp/main.py"],
+      "env": {},
+      "secrets": [],
+      "sandbox": {
+        "import_timeout_secs": 30,
+        "runtime_call_timeout_secs": 60
+      },
+      "description": "Open-Meteo weather forecasts via MCP stdio."
+    }
+  }
+}

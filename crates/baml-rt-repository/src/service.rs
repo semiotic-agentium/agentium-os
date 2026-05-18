@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use baml_rt_core::clock_events;
+use baml_rt_tools::mcp_snapshot::McpServerSnapshot;
 
 use crate::{
     commands::{ForkCommand, PublishCommand, PublishOrigin, PublishResult},
@@ -14,8 +15,9 @@ use crate::{
     error::{RepositoryError, Result},
     ids::{AgentName, ContentHash, Generation, LineageEdgeId, Version},
     lineage::{EdgeDescription, LineageEdge, LineageKind, LineageSubgraph, Parentage},
+    mcp::{McpRegistryServer, McpRegistryServerVersion, McpRegistryToolVersion},
     search::SearchQuery,
-    storage::{BlobStore, LineageStore, MetadataStore, SearchStore},
+    storage::{BlobStore, LineageStore, McpRegistryStore, MetadataStore, SearchStore},
 };
 
 /// The main repository service.
@@ -27,6 +29,7 @@ pub struct RepositoryService {
     metadata: Arc<dyn MetadataStore>,
     lineage: Arc<dyn LineageStore>,
     search: Arc<dyn SearchStore>,
+    mcp_registry: Arc<dyn McpRegistryStore>,
 }
 
 impl RepositoryService {
@@ -36,13 +39,65 @@ impl RepositoryService {
         metadata: Arc<dyn MetadataStore>,
         lineage: Arc<dyn LineageStore>,
         search: Arc<dyn SearchStore>,
+        mcp_registry: Arc<dyn McpRegistryStore>,
     ) -> Self {
         Self {
             blobs,
             metadata,
             lineage,
             search,
+            mcp_registry,
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // MCP registry
+    // -----------------------------------------------------------------------
+
+    pub async fn list_mcp_servers(&self) -> Result<Vec<McpRegistryServer>> {
+        self.mcp_registry.list_mcp_servers().await
+    }
+
+    pub async fn put_mcp_snapshot(
+        &self,
+        snapshot: &McpServerSnapshot,
+    ) -> Result<McpRegistryServerVersion> {
+        self.mcp_registry.put_mcp_snapshot(snapshot).await
+    }
+
+    pub async fn get_mcp_snapshot(
+        &self,
+        server_id: &str,
+        version: u32,
+    ) -> Result<Option<McpServerSnapshot>> {
+        self.mcp_registry.get_mcp_snapshot(server_id, version).await
+    }
+
+    pub async fn get_latest_mcp_snapshot(
+        &self,
+        server_id: &str,
+    ) -> Result<Option<McpServerSnapshot>> {
+        self.mcp_registry.get_latest_mcp_snapshot(server_id).await
+    }
+
+    pub async fn list_mcp_server_versions(
+        &self,
+        server_id: &str,
+    ) -> Result<Vec<McpRegistryServerVersion>> {
+        self.mcp_registry.list_mcp_server_versions(server_id).await
+    }
+
+    pub async fn find_mcp_tool(
+        &self,
+        platform_tool_name: &str,
+    ) -> Result<Vec<McpRegistryToolVersion>> {
+        self.mcp_registry.find_mcp_tool(platform_tool_name).await
+    }
+
+    pub async fn mark_mcp_version_stale(&self, server_id: &str, version: u32) -> Result<()> {
+        self.mcp_registry
+            .mark_mcp_version_stale(server_id, version)
+            .await
     }
 
     // -----------------------------------------------------------------------
