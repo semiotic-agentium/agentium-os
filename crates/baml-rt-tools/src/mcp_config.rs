@@ -786,9 +786,7 @@ mod tests {
                     auth: Some(HttpAuthConfig::Basic {
                         username: "grafana".into(),
                         password_ref: HttpSecretRef {
-                            source: SecretSource::Env {
-                                name: "PWD".into(),
-                            },
+                            source: SecretSource::Env { name: "PWD".into() },
                         },
                     }),
                     timeouts: Default::default(),

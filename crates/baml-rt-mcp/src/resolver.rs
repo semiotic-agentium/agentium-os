@@ -1,7 +1,6 @@
 //! `ExternalToolResolver` implementations for MCP-imported tools.
 
 use std::{
-    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -16,12 +15,13 @@ use baml_rt_tools::{
         McpServerTransportConfig, McpServersFile, SecretInjection, SecretSource,
         StreamableHttpConfig,
     },
-    mcp_secrets::{ResolvedSecret, compute_secret_identity_hash, resolve_secret_specs},
+    mcp_secrets::{
+        ResolvedSecret, SecretFingerprint, compute_secret_fingerprint, resolve_secret_specs,
+    },
     mcp_snapshot::{Digest as McpDigest, compute_server_config_digest},
     tools::{ToolFunctionMetadata, ToolHandler, ToolName},
 };
 use dashmap::DashMap;
-use sha2::{Digest as _, Sha256};
 
 use crate::{
     handler::McpToolHandler,
@@ -56,7 +56,7 @@ pub struct PoolKey {
     agent_scope: Arc<str>,
     server_id: String,
     server_config_digest: String,
-    secret_identity_hash: String,
+    secret_fingerprint: SecretFingerprint,
     transport: PoolTransport,
     protocol_version: String,
 }
@@ -66,7 +66,7 @@ pub struct PoolKey {
 /// operator-supplied `mcp-servers.json`.
 ///
 /// One resolver per agent scope. Connections are pooled inside the resolver
-/// per (server_id, server_config_digest, secret_identity, transport,
+/// per (server_id, server_config_digest, secret_fingerprint, transport,
 /// protocol_version). Cross-agent isolation is implicit: each agent gets
 /// its own resolver instance and therefore its own pool.
 pub struct McpResolver<R: SecretResolver + Send + Sync> {
@@ -156,21 +156,20 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
             .and_then(|s| s.runtime_call_timeout_secs)
             .unwrap_or(DEFAULT_CALL_TIMEOUT_SECS);
 
-        let (kind, transport, secret_identity_hash) = match &server_config.transport {
+        let secret_fingerprint = compute_secret_fingerprint(&resolved_vec);
+
+        let (kind, transport) = match &server_config.transport {
             None => {
                 // Stdio path. Inject env-kind secrets into the child env.
                 let mut env = server_config.env.clone();
                 if let Ok(path) = std::env::var("PATH") {
                     env.entry("PATH".into()).or_insert(path);
                 }
-                let mut env_values: BTreeMap<String, String> = BTreeMap::new();
                 for sec in &resolved_vec {
                     if let SecretInjection::Env { name } = &sec.spec.inject {
                         env.insert(name.clone(), sec.value.clone());
-                        env_values.insert(name.clone(), sec.value.clone());
                     }
                 }
-                let secret_identity_hash = hash_secret_identity(&env_values);
                 (
                     LaunchKind::Stdio(StdioLaunch {
                         command: server_config.command.clone(),
@@ -178,19 +177,11 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
                         env,
                     }),
                     PoolTransport::Stdio,
-                    secret_identity_hash,
                 )
             }
             Some(McpServerTransportConfig::StreamableHttp(http_cfg)) => {
-                // HTTP path. Pool key uses the value-free identity hash so
-                // resolved secret material never leaks into the key.
-                let secret_identity_hash = compute_secret_identity_hash(&specs);
                 let http_launch = build_http_launch(http_cfg, resolved_vec.clone());
-                (
-                    LaunchKind::Http(http_launch),
-                    PoolTransport::StreamableHttp,
-                    secret_identity_hash,
-                )
+                (LaunchKind::Http(http_launch), PoolTransport::StreamableHttp)
             }
         };
 
@@ -210,7 +201,7 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
             agent_scope: self.agent_scope.clone(),
             server_id: server_id.to_string(),
             server_config_digest: server_config_digest.to_string(),
-            secret_identity_hash,
+            secret_fingerprint,
             transport,
             protocol_version: protocol_version.to_string(),
         };
@@ -312,25 +303,6 @@ fn build_http_launch(
     }
 }
 
-/// Hash the resolved stdio env-injected secrets so two tenants with different
-/// secret values never share a child process. Length-prefixed so embedded
-/// `\0` or `=` cannot collide tenants.
-fn hash_secret_identity(secrets: &BTreeMap<String, String>) -> String {
-    if secrets.is_empty() {
-        return "sha256:empty".to_string();
-    }
-    let mut hasher = Sha256::new();
-    for (name, value) in secrets {
-        let name_bytes = name.as_bytes();
-        let value_bytes = value.as_bytes();
-        hasher.update((name_bytes.len() as u64).to_be_bytes());
-        hasher.update(name_bytes);
-        hasher.update((value_bytes.len() as u64).to_be_bytes());
-        hasher.update(value_bytes);
-    }
-    format!("sha256:{:x}", hasher.finalize())
-}
-
 /// Env-var override for the operator's `mcp-servers.json` path.
 pub const MCP_SERVERS_CONFIG_ENV: &str = "BAML_MCP_SERVERS_CONFIG";
 
@@ -377,16 +349,43 @@ pub fn default_mcp_resolver_for_agent<R: SecretResolver + Send + Sync>(
     ))
 }
 
+fn resolve_servers_config_path() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os(MCP_SERVERS_CONFIG_ENV)
+        && !path.is_empty()
+    {
+        return Ok(PathBuf::from(path));
+    }
+    let Some(home) = std::env::var_os("HOME") else {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "MCP servers config required but neither {MCP_SERVERS_CONFIG_ENV} \
+             nor HOME is set; cannot locate mcp-servers.json"
+        )));
+    };
+    Ok(PathBuf::from(home).join(MCP_SERVERS_CONFIG_DEFAULT))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn key(agent: &str, server: &str, transport: PoolTransport, secret_hash: &str) -> PoolKey {
+    fn fingerprint(value: &str) -> SecretFingerprint {
+        compute_secret_fingerprint(&[ResolvedSecret {
+            spec: baml_rt_tools::mcp_config::SecretSpec {
+                id: "secret".into(),
+                source: SecretSource::Env { name: "S".into() },
+                inject: SecretInjection::Env { name: "S".into() },
+                version: None,
+            },
+            value: value.into(),
+        }])
+    }
+
+    fn key(agent: &str, server: &str, transport: PoolTransport, secret_value: &str) -> PoolKey {
         PoolKey {
             agent_scope: Arc::<str>::from(agent),
             server_id: server.into(),
             server_config_digest: "sha256:cfg".into(),
-            secret_identity_hash: secret_hash.into(),
+            secret_fingerprint: fingerprint(secret_value),
             transport,
             protocol_version: "2025-06-18".into(),
         }
@@ -419,19 +418,15 @@ mod tests {
         let b = key("agent-a", "grafana", PoolTransport::Stdio, "h");
         assert_eq!(a, b);
     }
-}
 
-fn resolve_servers_config_path() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os(MCP_SERVERS_CONFIG_ENV)
-        && !path.is_empty()
-    {
-        return Ok(PathBuf::from(path));
+    #[test]
+    fn pool_key_debug_redacts_secret_fingerprint() {
+        let key = key("agent-a", "grafana", PoolTransport::Stdio, "supersecret");
+        let rendered = format!("{key:?}");
+        assert!(rendered.contains("SecretFingerprint(<redacted>)"));
+        assert!(
+            !rendered.contains("supersecret"),
+            "secret value leaked: {rendered}"
+        );
     }
-    let Some(home) = std::env::var_os("HOME") else {
-        return Err(BamlRtError::InvalidArgument(format!(
-            "MCP servers config required but neither {MCP_SERVERS_CONFIG_ENV} \
-             nor HOME is set; cannot locate mcp-servers.json"
-        )));
-    };
-    Ok(PathBuf::from(home).join(MCP_SERVERS_CONFIG_DEFAULT))
 }

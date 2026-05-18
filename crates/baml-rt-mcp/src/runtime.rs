@@ -166,7 +166,6 @@ pub struct HttpLaunchConfig {
     pub max_concurrent_requests_per_pool_key: u64,
 }
 
-
 /// Runtime client handler. Listens for `tools/list_changed` notifications
 /// and flips a shared `drifted` flag; hard-denies the small set of
 /// server→client capabilities we never want a tool to exercise.
@@ -395,10 +394,9 @@ impl McpConnection {
         let serve = async move {
             let service = match &launch.kind {
                 LaunchKind::Stdio(stdio) => {
-                    let command =
-                        tokio::process::Command::new(&stdio.command).configure(|cmd| {
-                            cmd.args(&stdio.args).env_clear().envs(&stdio.env);
-                        });
+                    let command = tokio::process::Command::new(&stdio.command).configure(|cmd| {
+                        cmd.args(&stdio.args).env_clear().envs(&stdio.env);
+                    });
                     let (transport, stderr) = TokioChildProcess::builder(command)
                         .stderr(std::process::Stdio::piped())
                         .spawn()
@@ -413,27 +411,24 @@ impl McpConnection {
                         .map_err(|err| ConnectionError::InitializeFailed(err.to_string()))?
                 }
                 LaunchKind::Http(http) => {
-                    let transport =
-                        build_rmcp_http_transport(&launch.server_id, http).map_err(|err| {
-                            match err {
-                                HttpTransportBuildError::Policy(p) => {
-                                    ConnectionError::Transport(p.to_string())
-                                }
-                                HttpTransportBuildError::Header(h) => {
-                                    ConnectionError::Transport(h.to_string())
-                                }
-                                HttpTransportBuildError::InvalidAuthHeader { name, reason } => {
-                                    ConnectionError::Transport(format!(
-                                        "invalid auth header `{name}`: {reason}"
-                                    ))
-                                }
-                                HttpTransportBuildError::Client(err) => {
-                                    ConnectionError::Transport(format!(
-                                        "reqwest client build failed: {err}"
-                                    ))
-                                }
+                    let transport = build_rmcp_http_transport(&launch.server_id, http).map_err(
+                        |err| match err {
+                            HttpTransportBuildError::Policy(p) => {
+                                ConnectionError::Transport(p.to_string())
                             }
-                        })?;
+                            HttpTransportBuildError::Header(h) => {
+                                ConnectionError::Transport(h.to_string())
+                            }
+                            HttpTransportBuildError::InvalidAuthHeader { name, reason } => {
+                                ConnectionError::Transport(format!(
+                                    "invalid auth header `{name}`: {reason}"
+                                ))
+                            }
+                            HttpTransportBuildError::Client(err) => ConnectionError::Transport(
+                                format!("reqwest client build failed: {err}"),
+                            ),
+                        },
+                    )?;
                     handler
                         .serve(transport)
                         .await

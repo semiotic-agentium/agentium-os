@@ -4,6 +4,7 @@
 //! guarding, secret injection, and reqwest client construction all happen
 //! together — fail-closed before the first TCP connection.
 
+use baml_rt_tools::{mcp_config::SecretInjection, mcp_secrets::ResolvedSecret};
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use reqwest::{
     Client,
@@ -12,21 +13,17 @@ use reqwest::{
     tls,
 };
 use rmcp::transport::{
-    StreamableHttpClientTransport,
-    streamable_http_client::StreamableHttpClientTransportConfig,
+    StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
 };
 use thiserror::Error;
 
-use baml_rt_tools::{
-    mcp_config::SecretInjection,
-    mcp_secrets::ResolvedSecret,
+use crate::{
+    http::{
+        headers::{HeaderError, build_validated_static_headers},
+        policy::{PolicyError, validate_http_target},
+    },
+    runtime::HttpLaunchConfig,
 };
-
-use crate::http::{
-    headers::{HeaderError, build_validated_static_headers},
-    policy::{PolicyError, validate_http_target},
-};
-use crate::runtime::HttpLaunchConfig;
 
 /// Reqwest type used by rmcp's `StreamableHttpClientTransport::with_client`.
 pub type RmcpHttpTransport = StreamableHttpClientTransport<reqwest::Client>;
@@ -65,20 +62,8 @@ pub fn build_rmcp_http_transport(
         inject_secret_header(&mut headers, sec)?;
     }
 
-    let redirect_policy = if policy.follow_redirects {
-        let allow = policy.allow_hosts.clone();
-        Policy::custom(move |attempt| {
-            if attempt.previous().len() > 5 {
-                return attempt.error("redirect chain too long");
-            }
-            match attempt.url().host_str() {
-                Some(h) if allow.iter().any(|a| a.eq_ignore_ascii_case(h)) => attempt.follow(),
-                _ => attempt.error("redirect target not on allowlist"),
-            }
-        })
-    } else {
-        Policy::none()
-    };
+    let redirect_policy =
+        build_redirect_policy(policy.follow_redirects, policy.allow_hosts.clone());
 
     let client: Client = reqwest::Client::builder()
         .connect_timeout(config.connect_timeout)
@@ -87,6 +72,7 @@ pub fn build_rmcp_http_transport(
         .redirect(redirect_policy)
         .no_proxy()
         .min_tls_version(tls::Version::TLS_1_2)
+        .danger_accept_invalid_certs(false)
         .https_only(matches!(url.scheme(), "https"))
         .user_agent(concat!("baml-rt-mcp/", env!("CARGO_PKG_VERSION")))
         .build()?;
@@ -104,6 +90,27 @@ pub fn build_rmcp_http_transport(
     Ok(StreamableHttpClientTransport::with_client(client, cfg))
 }
 
+fn build_redirect_policy(follow_redirects: bool, allow_hosts: Vec<String>) -> Policy {
+    if !follow_redirects {
+        return Policy::none();
+    }
+    Policy::custom(move |attempt| {
+        if attempt.previous().len() > 5 {
+            return attempt.error("redirect chain too long");
+        }
+        match attempt.url().host_str() {
+            Some(host)
+                if allow_hosts
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(host)) =>
+            {
+                attempt.follow()
+            }
+            _ => attempt.error("redirect target not on allowlist"),
+        }
+    })
+}
+
 fn inject_secret_header(
     headers: &mut HeaderMap,
     secret: &ResolvedSecret,
@@ -111,12 +118,13 @@ fn inject_secret_header(
     match &secret.spec.inject {
         SecretInjection::Env { .. } => Ok(()),
         SecretInjection::HttpAuthorizationBearer => {
-            let value = HeaderValue::try_from(format!("Bearer {}", secret.value)).map_err(
-                |err| HttpTransportBuildError::InvalidAuthHeader {
-                    name: "Authorization".into(),
-                    reason: err.to_string(),
-                },
-            )?;
+            let value =
+                HeaderValue::try_from(format!("Bearer {}", secret.value)).map_err(|err| {
+                    HttpTransportBuildError::InvalidAuthHeader {
+                        name: "Authorization".into(),
+                        reason: err.to_string(),
+                    }
+                })?;
             headers.insert(AUTHORIZATION, value);
             Ok(())
         }
@@ -155,8 +163,14 @@ mod tests {
     use std::time::Duration;
 
     use baml_rt_tools::{
-        mcp_config::{HttpHeader, HttpNetworkPolicyConfig, SecretInjection, SecretSource, SecretSpec},
+        mcp_config::{
+            HttpHeader, HttpNetworkPolicyConfig, SecretInjection, SecretSource, SecretSpec,
+        },
         mcp_secrets::ResolvedSecret,
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
     };
 
     use super::*;
@@ -173,7 +187,11 @@ mod tests {
         }
     }
 
-    fn launch(url: &str, secrets: Vec<ResolvedSecret>, headers: Vec<HttpHeader>) -> HttpLaunchConfig {
+    fn launch(
+        url: &str,
+        secrets: Vec<ResolvedSecret>,
+        headers: Vec<HttpHeader>,
+    ) -> HttpLaunchConfig {
         HttpLaunchConfig {
             url: url.into(),
             static_headers: headers,
@@ -214,7 +232,10 @@ mod tests {
             }],
         );
         assert_build_err(build_rmcp_http_transport("s", &cfg), |err| {
-            matches!(err, HttpTransportBuildError::Header(HeaderError::Reserved { .. }))
+            matches!(
+                err,
+                HttpTransportBuildError::Header(HeaderError::Reserved { .. })
+            )
         });
     }
 
@@ -229,7 +250,10 @@ mod tests {
             }],
         );
         assert_build_err(build_rmcp_http_transport("s", &cfg), |err| {
-            matches!(err, HttpTransportBuildError::Header(HeaderError::Reserved { .. }))
+            matches!(
+                err,
+                HttpTransportBuildError::Header(HeaderError::Reserved { .. })
+            )
         });
     }
 
@@ -249,5 +273,45 @@ mod tests {
         // `StreamableHttpClientTransport` does not implement `Debug`, so use
         // `is_ok()` rather than `expect`.
         assert!(build_rmcp_http_transport("s", &cfg).is_ok());
+    }
+
+    #[tokio::test]
+    async fn redirect_to_disallowed_host_errors() {
+        let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = target.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = target.accept().await {
+                let mut buf = [0_u8; 512];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                    .await;
+            }
+        });
+
+        let redirect = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let redirect_addr = redirect.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = redirect.accept().await {
+                let mut buf = [0_u8; 512];
+                let _ = socket.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://localhost:{}/target\r\nContent-Length: 0\r\n\r\n",
+                    target_addr.port()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+
+        let client = reqwest::Client::builder()
+            .redirect(build_redirect_policy(true, vec!["127.0.0.1".to_string()]))
+            .build()
+            .unwrap();
+        let err = client
+            .get(format!("http://{redirect_addr}/start"))
+            .send()
+            .await
+            .expect_err("redirect target must be rejected");
+        assert!(err.is_redirect(), "unexpected error: {err}");
     }
 }
