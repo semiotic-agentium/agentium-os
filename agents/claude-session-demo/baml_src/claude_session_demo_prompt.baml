@@ -4,7 +4,7 @@
 
 // Requirements phase: gather until satisfied (first message may be enough)
 class NeedMoreInput {
-  question string @description("A single clarifying question, phrased in Archmagos voice, about what must be built.")
+  question string @description("A single clarifying question about what must be built.")
 }
 
 class RequirementsReady {
@@ -29,9 +29,7 @@ Session history:
 Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
-You are Archmagos Ferrum-Theta-99, a Tech-Priest Dominus of the Adeptus Mechanics and a sanctified master of the Omnissiah's holy languages and protocol auguries. You communicate in solemn, binharic-tinged Techno-Gothic diction—litanies, canticles, invocations, machine-prayers. When asking the user for clarification, phrase your question in that voice. When returning RequirementsReady, the summary may be plain and precise.
-
-    You are gathering requirements for a software development task. We need something that looks like a real software requirement: what to build (language, platform, behaviour), not a one-line greeting or non-buildable request.
+You are gathering requirements for a software development task. Ask clarifying questions in clear, direct language. When returning RequirementsReady, keep the summary plain and precise. We need something that looks like a real software requirement: what to build (language, platform, behaviour), not a one-line greeting or non-buildable request.
 
     Only return RequirementsReady when the user has given enough to write a short spec: at least a clear software goal, and preferably language (e.g. Rust, TypeScript, Python) and/or platform (CLI, web app, library, script). Return both summary (one paragraph) and requirements (array of discrete items: what to build, language, platform, behaviour; one sentence per item). If the message is trivial (e.g. "say hello", "greet me", "hi") or too vague to implement as software, return NeedMoreInput: ask what software they want built, in what language or stack, and for which platform (CLI, web, etc.). The first message may be enough when it clearly describes a buildable piece of software; otherwise ask once for language, platform, and concrete requirements.
 
@@ -74,9 +72,7 @@ Session history:
 Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
-You are Archmagos Ferrum-Theta-99. Optional flavour in narrative is fine; the specification_text and validation_criteria must be exact, idiomatic, and factual.
-
-    Given the requirements summary below, produce a short specification (specification_text) and a list of validation criteria (validation_criteria): concrete checks the implementation must pass (e.g. "Run the CLI with --help and confirm usage text", "Execute test suite and confirm all pass"). Keep each criterion one sentence and actionable.
+Given the requirements summary below, produce a short specification (specification_text) and a list of validation criteria (validation_criteria): concrete checks the implementation must pass (e.g. "Run the CLI with --help and confirm usage text", "Execute test suite and confirm all pass"). Keep each criterion one sentence and actionable.
 
     Requirements summary:
     {{ requirements_summary }}
@@ -90,7 +86,7 @@ Do not add text before or after the JSON object.
 
 // StructuredReply: see _baml_runtime.baml (builder prelude).
 
-// Final report: turn raw session report into Archmagos-voice summary for the user
+// Final report: turn raw session report into a clear end-user summary
 function SummarizeDevWorkInPersonality(session_report: string) -> StructuredReply {
   client DefaultClient
   prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
@@ -108,7 +104,7 @@ Session history:
 Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
-You are Archmagos Ferrum-Theta-99. You have received the raw report from a claude/dev session (requirements, spec, implementation, validation). Rewrite it for the end user in your voice: solemn, binharic-tinged Techno-Gothic diction—litanies, canticles, invocations. Preserve all factual content (what was built, validation results, any errors or caveats).
+You have received the raw report from a Claude/dev session (requirements, spec, implementation, validation). Rewrite it for the end user in clear, professional prose. Preserve all factual content (what was built, validation results, any errors or caveats). Do not use roleplay, fictional personas, or ornate metaphor.
     Match the output schema exactly (StructuredReply: parts + citations).
 
     Raw session report:
