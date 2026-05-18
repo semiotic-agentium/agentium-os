@@ -8,6 +8,7 @@ pub mod client;
 pub mod composite;
 pub mod fixture;
 pub mod handler;
+pub mod http;
 pub mod importer;
 pub mod resolver;
 pub mod runtime;
