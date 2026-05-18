@@ -262,6 +262,14 @@ where
 /// values. For Streamable HTTP this covers transport kind, normalized URL,
 /// protocol version, static non-secret headers, auth injection shape + secret
 /// source identity, network policy, and approved tool scope digest.
+///
+/// **Stdio env policy:** non-secret `env` values (`GRAFANA_URL`,
+/// `OPENAI_BASE_URL`, region/model selectors, etc.) are routing/identity
+/// inputs and **are** folded into the digest — changing them must require
+/// re-import/re-approval. Secret values never reach this map: the schema
+/// layer (`McpServersFile::validate`) rejects env keys whose names look like
+/// secrets, and resolved secrets are merged into the child process env at
+/// runtime, not here.
 pub fn compute_server_config_digest(
     server_id: &str,
     protocol_version: &str,
@@ -288,7 +296,7 @@ pub fn compute_server_config_digest(
             "protocol_version": protocol_version,
             "command": config.command,
             "args": config.args,
-            "env_keys": config.env.keys().collect::<Vec<_>>(),
+            "env": &config.env,
             "secret_names": config.secrets.iter().map(|s| &s.name).collect::<Vec<_>>(),
             "sandbox": config.sandbox,
             "imported_tools_digest": tool_scope_digest,
@@ -678,6 +686,48 @@ mod tests {
             panic!("expected streamable_http");
         };
         f(http);
+    }
+
+    #[test]
+    fn stdio_digest_folds_in_non_secret_env_values() {
+        // Routing env values (URL, region, model id) are part of the
+        // governed identity. Changing one must force re-import.
+        let mut config = McpServerConfig {
+            transport: None,
+            command: "grafana-mcp".into(),
+            args: vec![],
+            env: std::collections::BTreeMap::from([
+                ("GRAFANA_URL".into(), "https://grafana.example/api".into()),
+            ]),
+            secrets: vec![],
+            sandbox: None,
+            description: None,
+        };
+        let tools = Digest::new("sha256:tools");
+        let base = compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools));
+
+        // Same input → same digest.
+        let same = compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools));
+        assert_eq!(base, same);
+
+        // Routing value changed → digest must change.
+        config.env.insert(
+            "GRAFANA_URL".into(),
+            "https://grafana.other/api".into(),
+        );
+        let changed_url =
+            compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools));
+        assert_ne!(base, changed_url, "non-secret env value must affect digest");
+
+        // New non-secret env key added → digest must change.
+        config.env.insert(
+            "GRAFANA_URL".into(),
+            "https://grafana.example/api".into(),
+        );
+        config.env.insert("GRAFANA_REGION".into(), "us-east-1".into());
+        let added_key =
+            compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools));
+        assert_ne!(base, added_key, "new non-secret env key must affect digest");
     }
 
     #[test]
