@@ -61,6 +61,9 @@ static EVENT_DISPATCH_OUTCOME_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 
 static TASK_DAEMON_RUN_ONCE_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 static TASK_DAEMON_RUN_ONCE_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static MCP_SESSION_EXPIRED_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static MCP_REGISTRY_ENTRY_RECREATED_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static MCP_DIGEST_MISMATCH_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 
 fn a2a_request_counter() -> &'static Counter<u64> {
     A2A_REQUEST_COUNTER.get_or_init(|| {
@@ -116,6 +119,56 @@ fn tool_invocation_histogram() -> &'static Histogram<f64> {
             .f64_histogram("baml_rt.tool.invocation_duration_ms")
             .init()
     })
+}
+
+fn mcp_session_expired_counter() -> &'static Counter<u64> {
+    MCP_SESSION_EXPIRED_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("mcp.session_expired_total")
+            .init()
+    })
+}
+
+fn mcp_registry_entry_recreated_counter() -> &'static Counter<u64> {
+    MCP_REGISTRY_ENTRY_RECREATED_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("mcp.registry.entry_recreated_total")
+            .init()
+    })
+}
+
+fn mcp_digest_mismatch_counter() -> &'static Counter<u64> {
+    MCP_DIGEST_MISMATCH_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("mcp.digest_mismatch_total")
+            .init()
+    })
+}
+
+pub fn mcp_transport_attributes(transport: &str) -> [KeyValue; 1] {
+    [KeyValue::new("transport", transport.to_string())]
+}
+
+pub fn mcp_digest_mismatch_attributes(kind: &str, transport: &str) -> [KeyValue; 2] {
+    [
+        KeyValue::new("kind", kind.to_string()),
+        KeyValue::new("transport", transport.to_string()),
+    ]
+}
+
+pub fn record_mcp_session_expired(transport: &str) {
+    let attrs = mcp_transport_attributes(transport);
+    mcp_session_expired_counter().add(1, &attrs);
+}
+
+pub fn record_mcp_registry_entry_recreated(transport: &str) {
+    let attrs = mcp_transport_attributes(transport);
+    mcp_registry_entry_recreated_counter().add(1, &attrs);
+}
+
+pub fn record_mcp_digest_mismatch(kind: &str, transport: &str) {
+    let attrs = mcp_digest_mismatch_attributes(kind, transport);
+    mcp_digest_mismatch_counter().add(1, &attrs);
 }
 
 /// Build the attribute set emitted by [`record_a2a_request`]. Extracted so tests can

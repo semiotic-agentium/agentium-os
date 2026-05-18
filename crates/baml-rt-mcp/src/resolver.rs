@@ -7,6 +7,7 @@ use std::{
 };
 
 use baml_rt_core::{BamlRtError, Result};
+use baml_rt_observability::record_mcp_registry_entry_recreated;
 use baml_rt_tools::{
     ExternalToolResolver,
     mcp_builder_catalog::project_tool,
@@ -216,6 +217,7 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
                 );
                 let conn = Arc::new(McpConnection::new(launch));
                 entry.insert(conn.clone());
+                record_mcp_registry_entry_recreated(pool_transport_label(transport));
                 tracing::warn!(
                     target: "mcp.registry",
                     mcp_server_id = %server_id,
@@ -302,6 +304,13 @@ impl<R: SecretResolver + Send + Sync> ExternalToolResolver for McpResolver<R> {
 
 fn project_record(record: &ToolRecord) -> Result<ToolFunctionMetadata> {
     project_tool(&record.server_id, record.clone())
+}
+
+fn pool_transport_label(transport: PoolTransport) -> &'static str {
+    match transport {
+        PoolTransport::Stdio => "stdio",
+        PoolTransport::StreamableHttp => "streamable_http",
+    }
 }
 
 fn build_http_launch(

@@ -8,6 +8,7 @@ description = "MCP client and importer for the BAML runtime"
 
 [dependencies]
 baml-rt-core = { path = "../baml-rt-core" }
+baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-tools = { path = "../baml-rt-tools" }
 async-trait = { workspace = true }
 serde = { workspace = true }
