@@ -4,17 +4,31 @@ use baml_rt_core::{
     ids::{AgentId, ContextId, ExternalId, IntentId, MessageId, PlanId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
-    A2aRelationType, DefaultProvNormalizer, LlmUsage, ProvEvent, ProvNormalizer, normalize_event,
+    A2aRelationType, DefaultProvNormalizer, LlmUsage, ProvEvent, ProvNormalizer,
+    metamodel::TaskStatusKind,
+    normalize_event,
     vocabulary::{a2a_roles, a2a_types, semantic_labels},
 };
 
 #[test]
 fn normalize_status_change_includes_derived_relation() {
-    let event = ProvEvent::task_status_changed(
+    let submitted = ProvEvent::task_status_changed_typed(
         ContextId::new(1, 1),
         TaskId::from_external(ExternalId::new("task-1")),
-        Some("TASK_STATE_PENDING".to_string()),
-        Some("TASK_STATE_WORKING".to_string()),
+        None,
+        None,
+        Some(TaskStatusKind::Submitted),
+    );
+    let submitted_anchor = match &submitted {
+        ProvEvent::Task(task) => task.id.clone(),
+        other => panic!("expected task-scoped event, got {other:?}"),
+    };
+    let event = ProvEvent::task_status_changed_typed(
+        ContextId::new(1, 1),
+        TaskId::from_external(ExternalId::new("task-1")),
+        Some(TaskStatusKind::Submitted),
+        Some(submitted_anchor),
+        Some(TaskStatusKind::Working),
     );
     let normalized = normalize_event(&event).expect("normalize event");
     assert_eq!(normalized.document.was_derived_from().count(), 1);

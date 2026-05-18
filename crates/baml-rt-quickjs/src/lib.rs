@@ -15,6 +15,7 @@ pub mod function_tool_manifest;
 pub mod js_event_loop_probe;
 pub mod js_value_converter;
 pub mod llm_client_registry;
+pub(crate) mod llm_json_salvage;
 pub mod llm_resolver_adapter;
 pub mod planning;
 pub(crate) mod provenance_errors;

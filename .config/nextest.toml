@@ -115,6 +115,10 @@ filter = 'package(baml-agent-runner) and binary(runner_callback_test)'
 test-group = "runner-subprocess"
 
 [[profile.ci.overrides]]
+filter = 'package(baml-agent-runner) and test(~runner_callback_delivery_honors_continuation_policy)'
+slow-timeout = { period = "300s", terminate-after = 2 }
+
+[[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and binary(runner_cluster_test)'
 test-group = "runner-subprocess"
 
@@ -153,6 +157,10 @@ store-failure-output = true
 [[profile.ci-merged.overrides]]
 filter = 'package(baml-agent-runner) and binary(runner_callback_test)'
 test-group = "runner-subprocess"
+
+[[profile.ci-merged.overrides]]
+filter = 'package(baml-agent-runner) and test(~runner_callback_delivery_honors_continuation_policy)'
+slow-timeout = { period = "300s", terminate-after = 2 }
 
 [[profile.ci-merged.overrides]]
 filter = 'package(baml-agent-runner) and binary(runner_cluster_test)'

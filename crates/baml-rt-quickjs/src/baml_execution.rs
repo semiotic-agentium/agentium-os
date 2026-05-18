@@ -14,6 +14,7 @@ use baml_rt_llm_config::LlmClientResolver;
 use baml_rt_tools::prompt_projection::format_conversation_history_transcript;
 use baml_runtime::{
     BamlRuntime, FunctionResultStream, RuntimeContextManager, client_registry::ClientRegistry,
+    internal::llm_client::LLMResponse,
 };
 use baml_types::{BamlMap, BamlValue};
 use serde_json::Value;
@@ -26,6 +27,7 @@ use crate::{
     baml_collector::{BamlLLMCollector, LLMCompletionHandle},
     baml_pre_execution::intercept_llm_call_pre_execution,
     llm_client_registry::{LlmSecretResolver, build_llm_client_registry},
+    llm_json_salvage::try_salvage_json_from_llm_content,
 };
 
 /// Logs a terminal BAML `call_function` failure at ERROR severity (single source for tests).
@@ -544,7 +546,27 @@ impl BamlExecutor {
                     return Ok((json_value, handle));
                 }
                 Err(e) => {
-                    last_parse_err = Some(anyhow::Error::msg(e.to_string()));
+                    let parse_msg = e.to_string();
+                    last_parse_err = Some(anyhow::Error::msg(parse_msg.clone()));
+                    if parse_msg.contains("MathOperation")
+                        && let LLMResponse::Success(response) = function_result.llm_response()
+                        && let Some(json_value) =
+                            try_salvage_json_from_llm_content(&response.content)
+                    {
+                        tracing::warn!(
+                            function = function_name,
+                            "Recovered session-plan JSON from LLM text after MathOperation parse failure"
+                        );
+                        let handle = collector.as_ref().map(|c| {
+                            BamlLLMCollector::completion_handle(
+                                c.clone(),
+                                start_time,
+                                scope.clone(),
+                                json_value.clone(),
+                            )
+                        });
+                        return Ok((json_value, handle));
+                    }
                     if attempt + 1 >= max_attempts {
                         if let Some(ref collector) = collector {
                             collector

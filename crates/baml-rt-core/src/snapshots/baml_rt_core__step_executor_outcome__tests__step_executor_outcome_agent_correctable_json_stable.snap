@@ -1,6 +1,6 @@
 ---
 source: crates/baml-rt-core/src/step_executor_outcome.rs
-expression: json
+expression: snapshot_json(&v)
 ---
 {
   "outcome": "agent_correctable",

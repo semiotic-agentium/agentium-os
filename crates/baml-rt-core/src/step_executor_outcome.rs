@@ -241,6 +241,28 @@ pub enum StepExecutorOutcome {
 mod tests {
     use super::*;
 
+    /// Deterministic key order for insta snapshots (serde field order varies by platform).
+    fn snapshot_json(v: &StepExecutorOutcome) -> serde_json::Value {
+        sort_json_keys(&serde_json::to_value(v).expect("serialize"))
+    }
+
+    fn sort_json_keys(value: &serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut sorted: Vec<(&String, serde_json::Value)> =
+                    map.iter().map(|(k, v)| (k, sort_json_keys(v))).collect();
+                sorted.sort_by_key(|(k, _)| *k);
+                let new_map: serde_json::Map<String, serde_json::Value> =
+                    sorted.into_iter().map(|(k, v)| (k.clone(), v)).collect();
+                serde_json::Value::Object(new_map)
+            }
+            serde_json::Value::Array(arr) => {
+                serde_json::Value::Array(arr.iter().map(sort_json_keys).collect())
+            }
+            other => other.clone(),
+        }
+    }
+
     #[test]
     fn step_executor_outcome_completed_json_stable() {
         let v = StepExecutorOutcome::Completed {
@@ -249,8 +271,7 @@ mod tests {
             session_context: serde_json::json!({"contract_version": "session_context_v2"}),
             selected_tool: Some("support/notion".to_string()),
         };
-        let json = serde_json::to_value(&v).expect("serialize");
-        insta::assert_json_snapshot!(json);
+        insta::assert_json_snapshot!(snapshot_json(&v));
     }
 
     #[test]
@@ -258,8 +279,7 @@ mod tests {
         let v = StepExecutorOutcome::AgentCorrectable {
             recovery: StepPlanRecovery::missing_archive_ref_page_read(),
         };
-        let json = serde_json::to_value(&v).expect("serialize");
-        insta::assert_json_snapshot!(json);
+        insta::assert_json_snapshot!(snapshot_json(&v));
     }
 
     #[test]
@@ -268,7 +288,6 @@ mod tests {
             message: "phase function missing".to_string(),
             code: Some("step_executor_fatal".to_string()),
         };
-        let json = serde_json::to_value(&v).expect("serialize");
-        insta::assert_json_snapshot!(json);
+        insta::assert_json_snapshot!(snapshot_json(&v));
     }
 }

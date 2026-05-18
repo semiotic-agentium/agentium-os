@@ -30,16 +30,19 @@
 
 use std::sync::Arc;
 
-use baml_rt_core::ids::{AgentId, ContextId, ExternalId, TaskId, UuidId};
+use baml_rt_core::ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, TaskId, UuidId};
 use baml_rt_provenance::{
     ProvEvent, ProvenanceWriter, SurrealStoreBuilder,
-    metamodel::{EdgeProjection, SemanticEdge},
+    metamodel::{EdgeProjection, SemanticEdge, TaskStatusKind},
 };
 use serde_json::Value;
 
-const SUBMITTED: &str = "STATE_SUBMITTED";
-const WORKING: &str = "STATE_WORKING";
-const COMPLETED: &str = "STATE_COMPLETED";
+fn event_anchor(event: &ProvEvent) -> ActivityAnchorId {
+    match event {
+        ProvEvent::Task(task) => task.id.clone(),
+        other => panic!("expected task-scoped event, got {other:?}"),
+    }
+}
 
 async fn select_edges_via_typed_projection(
     store: &baml_rt_provenance::SurrealProvenanceStore,
@@ -65,11 +68,8 @@ fn task_node_id(task_id: &TaskId) -> String {
     baml_rt_provenance::task_entity_id_string(task_id)
 }
 
-fn task_state_node_id(task_id: &TaskId, state: &str) -> String {
-    // Mirrors `id_semantics::task_state_entity_id_string`, which is not
-    // re-exported. Format documented at
-    // crates/baml-rt-provenance/src/id_semantics.rs::TaskStateEntityId.
-    format!("task_state:{}:{}", task_id.as_str(), state)
+fn task_state_node_id(task_id: &TaskId, anchor: &ActivityAnchorId) -> String {
+    format!("task_state:{}:{}", task_id.as_str(), anchor.as_str())
 }
 
 fn agent_runtime_instance_node_id(agent_id: &AgentId) -> String {
@@ -99,21 +99,44 @@ async fn was_last_transitioned_to_keeps_exactly_one_edge_after_multiple_transiti
         .expect("task_execution_started writes");
 
     // None -> SUBMITTED -> WORKING -> COMPLETED.
-    for (old, new) in [
-        (None, Some(SUBMITTED.to_string())),
-        (Some(SUBMITTED.to_string()), Some(WORKING.to_string())),
-        (Some(WORKING.to_string()), Some(COMPLETED.to_string())),
-    ] {
-        store
-            .add_event(ProvEvent::task_status_changed(
-                context_id.clone(),
-                task_id.clone(),
-                old,
-                new,
-            ))
-            .await
-            .expect("task_status_changed writes");
-    }
+    let submitted = ProvEvent::task_status_changed_typed(
+        context_id.clone(),
+        task_id.clone(),
+        None,
+        None,
+        Some(TaskStatusKind::Submitted),
+    );
+    let submitted_anchor = event_anchor(&submitted);
+    store
+        .add_event(submitted)
+        .await
+        .expect("task_status_changed writes");
+
+    let working = ProvEvent::task_status_changed_typed(
+        context_id.clone(),
+        task_id.clone(),
+        Some(TaskStatusKind::Submitted),
+        Some(submitted_anchor),
+        Some(TaskStatusKind::Working),
+    );
+    let working_anchor = event_anchor(&working);
+    store
+        .add_event(working)
+        .await
+        .expect("task_status_changed writes");
+
+    let completed = ProvEvent::task_status_changed_typed(
+        context_id.clone(),
+        task_id.clone(),
+        Some(TaskStatusKind::Working),
+        Some(working_anchor),
+        Some(TaskStatusKind::Completed),
+    );
+    let completed_anchor = event_anchor(&completed);
+    store
+        .add_event(completed)
+        .await
+        .expect("task_status_changed writes");
 
     let task_node = task_node_id(&task_id);
     let head_rows =
@@ -131,7 +154,7 @@ async fn was_last_transitioned_to_keeps_exactly_one_edge_after_multiple_transiti
         .expect("head-pointer row carries to_id");
     assert_eq!(
         to_id,
-        task_state_node_id(&task_id, COMPLETED),
+        task_state_node_id(&task_id, &completed_anchor),
         "WAS_LAST_TRANSITIONED_TO must point at the most recent TaskState"
     );
 

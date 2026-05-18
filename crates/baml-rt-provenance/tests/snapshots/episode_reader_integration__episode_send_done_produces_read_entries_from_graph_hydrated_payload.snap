@@ -13,10 +13,6 @@ expression: session_history
   },
   {
     "role": "system",
-    "content": " → working"
-  },
-  {
-    "role": "system",
     "content": " → TASK_STATE_SUBMITTED"
   },
   {
@@ -29,6 +25,6 @@ expression: session_history
   },
   {
     "role": "system",
-    "content": "working → completed"
+    "content": "TASK_STATE_WORKING → TASK_STATE_COMPLETED"
   }
 ]
