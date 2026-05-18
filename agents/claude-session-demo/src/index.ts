@@ -11,7 +11,7 @@ declare function ChooseClaudeDevAction(args: {
   user_approval_intent: string;
   session_context?: unknown;
 }): Promise<unknown>;
-declare function SummarizeDevWorkInPersonality(args: {
+declare function SummarizeDevWork(args: {
   session_report: string;
 }): Promise<StructuredReply>;
 
@@ -343,7 +343,7 @@ __chat_register({
             await executionExecutable.completeStep?.("step-development");
             await executionExecutable.finish();
           }
-          const summary = await SummarizeDevWorkInPersonality({
+          const summary = await SummarizeDevWork({
             session_report: result.message,
           });
           return { message: summary };

@@ -87,7 +87,7 @@ Do not add text before or after the JSON object.
 // StructuredReply: see _baml_runtime.baml (builder prelude).
 
 // Final report: turn raw session report into a clear end-user summary
-function SummarizeDevWorkInPersonality(session_report: string) -> StructuredReply {
+function SummarizeDevWork(session_report: string) -> StructuredReply {
   client DefaultClient
   prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.

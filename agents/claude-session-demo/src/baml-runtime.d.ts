@@ -95,7 +95,7 @@ declare function ProduceSpec(args: { requirements_summary: string } & { __baml_i
 
 declare function RequirementsPhase(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<NeedMoreInput | RequirementsReady>;
 
-declare function SummarizeDevWorkInPersonality(args: { session_report: string } & { __baml_invocation_token?: string }): Promise<StructuredReply>;
+declare function SummarizeDevWork(args: { session_report: string } & { __baml_invocation_token?: string }): Promise<StructuredReply>;
 
 }
 
