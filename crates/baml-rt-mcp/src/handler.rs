@@ -164,14 +164,11 @@ impl ToolSession for McpToolSession {
         Ok(())
     }
 
-    /// Marks the session as aborted **locally**. The in-flight `tools/call`
-    /// on the shared MCP connection keeps running until the server completes
-    /// or the per-call timeout fires; `notifications/cancelled` per-request
-    /// is not yet plumbed through rmcp's public `call_tool` surface.
-    /// Callers therefore should not assume cancellation propagates to the
-    /// MCP peer — the local session refuses further reads, but the server
-    /// may still produce side effects from the request that was already
-    /// dispatched.
+    /// Marks the session as aborted locally, cancels the local in-flight
+    /// wait, and sends a bounded best-effort `notifications/cancelled` to
+    /// the MCP peer. The peer may still complete work if its transport or
+    /// server implementation does not observe cancellation before side
+    /// effects occur.
     async fn abort(&mut self, reason: Option<String>) -> std::result::Result<(), ToolSessionError> {
         let cancel_handle = self.cancel_slot.lock().await.take();
         if let Some(handle) = cancel_handle {
@@ -449,7 +446,7 @@ fn classified_transport(
 }
 
 /// Convert rmcp's `CallToolResult` into the platform's stable JSON envelope.
-/// The shape mirrors the `ContentEnvelope` output mode locked in PR 1.
+/// The shape mirrors the `ContentEnvelope` output mode used by generated MCP tools.
 fn result_to_envelope(result: CallToolResult) -> Value {
     let mut content = Vec::with_capacity(result.content.len());
     for block in &result.content {

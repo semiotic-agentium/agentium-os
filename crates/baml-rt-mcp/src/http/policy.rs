@@ -1,11 +1,11 @@
 //! Network policy + URL guardrails for Streamable HTTP MCP transport.
 //!
 //! Validated **before** any TCP connection is opened. The transport refuses to
-//! `start()` unless this module returns `Ok`. Phase 2 does not implement a
-//! custom DNS resolver — DNS-rebinding / private-network defense is the
-//! egress layer's job (proxy / firewall / service mesh). This module only
-//! catches what the *app* layer can catch deterministically: scheme, URL
-//! shape, host allowlist, literal-IP rejection.
+//! `start()` unless this module returns `Ok`. This module does not implement
+//! a custom DNS resolver — DNS-rebinding / private-network defense is the
+//! egress layer's job (proxy / firewall / service mesh). It only catches what
+//! the *app* layer can catch deterministically: scheme, URL shape, host
+//! allowlist, literal-IP rejection.
 //!
 //! Plaintext policy is **intrinsic to operator config**, not an env flag:
 //! `http://` is rejected if and only if the resolved transport carries auth
@@ -164,8 +164,8 @@ const SECRET_QUERY_KEYS: &[&str] = &[
 ];
 
 fn host_matches(observed: &str, allowed: &str) -> bool {
-    // Case-insensitive exact match. Wildcards/CIDRs intentionally NOT
-    // supported in Phase 2 — operator must list literal hosts.
+    // Case-insensitive exact match. Wildcards/CIDRs are intentionally NOT
+    // supported — operator must list literal hosts.
     observed.eq_ignore_ascii_case(allowed)
 }
 

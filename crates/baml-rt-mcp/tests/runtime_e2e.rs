@@ -13,6 +13,7 @@ use baml_rt_mcp::{
 use baml_rt_tools::{
     ExternalToolResolver,
     mcp_cache::{read_server, read_snapshot, write_snapshot},
+    mcp_config::{McpConfigError, McpServersFile},
     mcp_schema_normalize::normalize,
     mcp_snapshot::{
         ApprovalRecord, Digest, MCP_SNAPSHOT_SCHEMA_VERSION, McpApprovalState, McpImportedTool,
@@ -146,6 +147,30 @@ fn session_context(name: &ToolName) -> ToolSessionContext {
         task_id: None,
         execution_classifier: None,
     }
+}
+
+#[test]
+fn stdio_config_rejects_empty_command_but_http_config_allows_it() {
+    let stdio_json = r#"{ "mcpServers": { "grafana": { "command": "" } } }"#;
+    let stdio_err = McpServersFile::parse(stdio_json).expect_err("stdio command is required");
+    assert!(matches!(stdio_err, McpConfigError::EmptyCommand { .. }));
+
+    let http_json = r#"
+    {
+      "mcpServers": {
+        "grafana": {
+          "transport": {
+            "kind": "streamable_http",
+            "url": "https://mcp.grafana.example.com/mcp"
+          }
+        }
+      }
+    }
+    "#;
+    let http = McpServersFile::parse(http_json).expect("http transport does not use command");
+    let server = http.servers.get("grafana").expect("server present");
+    assert!(server.command.is_empty());
+    assert!(server.transport.is_some());
 }
 
 fn sample_fixture() -> FakeMcpConfig {

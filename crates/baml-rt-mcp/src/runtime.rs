@@ -236,7 +236,7 @@ impl ClientHandler for RuntimeClientHandler {
         _context: RequestContext<RoleClient>,
     ) -> impl Future<Output = Result<CreateElicitationResult, McpError>> + MaybeSendFuture + '_
     {
-        // Hard-deny elicitation; PR4 default would silently decline.
+        // Hard-deny elicitation instead of silently declining.
         std::future::ready(Err(McpError::new(
             ErrorCode::METHOD_NOT_FOUND,
             "elicitation/create",

@@ -554,7 +554,7 @@ Rules:
 - server ids may contain ASCII letters, digits, `_`, and `-` only;
 - `env` must not contain likely secret values (`TOKEN`, `SECRET`, `PASSWORD`, etc.); use `secrets` declarations instead;
 - snapshots store secret references only, never raw secret values;
-- current production-ready runtime path is local stdio; Streamable HTTP remains a follow-up until HTTP security controls land.
+- local stdio remains the supported import path; runtime Streamable HTTP uses rmcp with platform URL, TLS, redirect, header, and secret-injection policy, but operator HTTP import/approval remains unsupported in this build.
 
 ### 11.2 Import and inspect MCP registry snapshots
 
@@ -654,7 +654,7 @@ Use the builder command directly for scripting or when bypassing the `cargo-agen
 - Runtime drift (`notifications/tools/list_changed`) marks snapshots stale; it does not mutate compiled BAML schemas in place.
 - Per-call provenance uses `tool_name=mcp/<server>/<tool>`, `backend=Mcp`, and the MCP schema digest.
 - Registry imports create immutable versions. Avoid building production artifacts from mutable `latest` unless the workflow explicitly allows it.
-- Remote Streamable HTTP MCP is not enabled for production runtime yet; keep using local stdio MCP until TLS, egress, redirect, auth, and consent controls are implemented.
+- Remote Streamable HTTP MCP uses rmcp plus platform TLS, egress, redirect, auth, and header controls at runtime. Keep production approval flows on local stdio until HTTP import/consent workflow is implemented.
 
 ---
 

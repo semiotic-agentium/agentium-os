@@ -144,10 +144,9 @@ impl<'a, R: SecretResolver + Sync> Importer<'a, R> {
             &initialize_result.server_info,
         );
         // Derive snapshot secret refs from the unified `SecretSpec` view so
-        // stdio and Streamable HTTP imports both record `source` + `inject`
-        // without each importer arm reimplementing the mapping. HTTP import
-        // is still rejected above, but this keeps the projection in one
-        // place ready for PR4.
+        // every transport records `source` + `inject` consistently. Streamable
+        // HTTP import is still rejected above, but this keeps the projection
+        // in one place for the runtime resolver.
         let secret_refs = config
             .secret_specs()
             .iter()
