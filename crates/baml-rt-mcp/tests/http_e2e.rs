@@ -27,11 +27,11 @@ use baml_rt_core::ids::{AgentId, ContextId, UuidId};
 use baml_rt_mcp::{
     importer::EnvSecretResolver,
     resolver::McpResolver,
-    runtime::{HttpLaunchConfig, LaunchKind, McpConnection, ServerLaunch},
+    runtime::{ConnectionError, HttpLaunchConfig, LaunchKind, McpConnection, ServerLaunch},
 };
 use baml_rt_tools::{
     ExternalToolResolver,
-    mcp_cache::write_snapshot,
+    mcp_cache::{read_server, write_snapshot},
     mcp_config::{
         HttpHeader, HttpNetworkPolicyConfig, HttpPoolingConfig, HttpTimeoutsConfig,
         McpServerConfig, McpServerTransportConfig, McpServersFile, SecretInjection, SecretSource,
@@ -76,6 +76,10 @@ fn fixture_identity_digest() -> Digest {
 
 fn schema() -> Value {
     json!({ "type": "object", "properties": { "q": { "type": "string" } } })
+}
+
+fn rotated_schema() -> Value {
+    json!({ "type": "object", "properties": { "q": { "type": "integer" } } })
 }
 
 fn call_result_ok() -> Value {
@@ -151,6 +155,7 @@ async fn post_mcp(
         }
         "tools/call" => {
             if guard.expire_next_call && session_attached {
+                guard.expire_next_call = false;
                 return (StatusCode::NOT_FOUND, "session expired").into_response();
             }
             let result = guard.call_result.clone();
@@ -577,6 +582,34 @@ async fn http_server_config_digest_mismatch_fails_at_resolve() {
 #[tokio::test]
 async fn http_session_expired_404_surfaces_error_without_hang() {
     let state = make_state(call_result_ok(), true);
+    let (url, cert_pem) = spawn_https(state.clone()).await;
+
+    let conn = McpConnection::new(https_launch_direct(&url, cert_pem, vec![], vec![]));
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(15),
+        conn.call_tool(TOOL_NAME, json!({ "q": "cpu" })),
+    )
+    .await
+    .expect("call_tool must not hang on session-expired 404");
+    match outcome.expect_err("404 after initialize must surface as error") {
+        ConnectionError::SessionExpired { server_id } => assert_eq!(server_id, SERVER_ID),
+        other => panic!("expected typed SessionExpired, got {other:?}"),
+    }
+
+    assert!(conn.is_dead(), "expired rmcp service should be marked dead");
+    match conn
+        .call_tool(TOOL_NAME, json!({ "q": "cpu" }))
+        .await
+        .expect_err("same connection must not silently recover")
+    {
+        ConnectionError::SessionExpired { server_id } => assert_eq!(server_id, SERVER_ID),
+        other => panic!("expected typed SessionExpired on reused connection, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn http_session_expired_rebuilds_lazily_on_next_resolve() {
+    let state = make_state(call_result_ok(), true);
     let url = spawn_http(state.clone()).await;
 
     let cache = tempfile::tempdir().expect("tempdir");
@@ -592,27 +625,115 @@ async fn http_session_expired_404_surfaces_error_without_hang() {
     let name = ToolName::parse(&format!("mcp/{SERVER_ID}/{TOOL_NAME}")).expect("tool name");
     let (_, handler) = resolver
         .resolve(&name)
-        .expect("resolve ok")
+        .expect("first resolve ok")
         .expect("tool resolves");
     let mut session = handler
         .open_session(session_context(&name), json!({}))
         .await
-        .expect("open session");
-
-    let outcome =
-        tokio::time::timeout(Duration::from_secs(15), session.send(json!({ "q": "cpu" })))
-            .await
-            .expect("send must not hang on session-expired 404");
-    let err = outcome.expect_err("404 after initialize must surface as error");
-    let display = format!("{err:?}");
+        .expect("open first session");
+    let err = session
+        .send(json!({ "q": "cpu" }))
+        .await
+        .expect_err("first call should expire session");
     assert!(
-        display.to_ascii_lowercase().contains("session")
-            || display.to_ascii_lowercase().contains("transport"),
-        "unexpected session-expired error: {display}"
+        format!("{err:?}")
+            .to_ascii_lowercase()
+            .contains("session expired"),
+        "expected session-expired transport error, got {err:?}"
+    );
+
+    let (_, handler) = resolver
+        .resolve(&name)
+        .expect("second resolve should recreate dead entry")
+        .expect("tool resolves after recreate");
+    let mut session = handler
+        .open_session(session_context(&name), json!({}))
+        .await
+        .expect("open second session");
+    session
+        .send(json!({ "q": "cpu" }))
+        .await
+        .expect("second call should use rebuilt connection");
+    let step = session
+        .read(json!({}))
+        .await
+        .expect("read rebuilt response");
+    match step {
+        ToolStep::Done {
+            output: Some(envelope),
+        } => assert_eq!(envelope["content"][0]["text"], "echoed: cpu"),
+        other => panic!("expected Done with envelope, got {other:?}"),
+    }
+
+    let guard = state.lock().await;
+    let initialize_count = guard
+        .observed
+        .iter()
+        .filter(|(method, _, _)| method == "initialize")
+        .count();
+    assert!(
+        initialize_count >= 2,
+        "lazy rebuild should initialize a fresh service; observed={:?}",
+        guard.observed
     );
 }
 
 // -- HTTPS tests through the rmcp transport (auth header observation) -----
+
+#[tokio::test]
+async fn http_session_expired_rebuild_fails_closed_on_tools_digest_mismatch() {
+    let state = make_state(call_result_ok(), true);
+    let url = spawn_http(state.clone()).await;
+
+    let cache = tempfile::tempdir().expect("tempdir");
+    let server_config = http_server_config(&url, vec![]);
+    write_http_snapshot(
+        cache.path(),
+        &server_config,
+        vec![approved_tool(schema())],
+        None,
+    );
+
+    let resolver = build_resolver(server_config, cache.path());
+    let name = ToolName::parse(&format!("mcp/{SERVER_ID}/{TOOL_NAME}")).expect("tool name");
+    let (_, handler) = resolver
+        .resolve(&name)
+        .expect("first resolve ok")
+        .expect("tool resolves");
+    let mut session = handler
+        .open_session(session_context(&name), json!({}))
+        .await
+        .expect("open first session");
+    session
+        .send(json!({ "q": "cpu" }))
+        .await
+        .expect_err("first call should expire session");
+
+    {
+        let mut guard = state.lock().await;
+        guard.tool_schema = rotated_schema();
+    }
+
+    let (_, handler) = resolver
+        .resolve(&name)
+        .expect("second resolve should recreate dead entry")
+        .expect("tool resolves after recreate");
+    let mut session = handler
+        .open_session(session_context(&name), json!({}))
+        .await
+        .expect("open second session");
+    let err = session
+        .send(json!({ "q": "cpu" }))
+        .await
+        .expect_err("startup digest mismatch should fail closed");
+    assert!(
+        format!("{err:?}").contains("tool surface digest mismatch"),
+        "expected tools digest mismatch, got {err:?}"
+    );
+
+    let server = read_server(cache.path(), SERVER_ID).expect("server record after stale mark");
+    assert_eq!(server.approval.state, McpApprovalState::Stale);
+}
 
 #[tokio::test]
 async fn https_bearer_authorization_reaches_server() {

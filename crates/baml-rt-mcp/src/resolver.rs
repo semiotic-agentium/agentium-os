@@ -21,7 +21,7 @@ use baml_rt_tools::{
     mcp_snapshot::{Digest as McpDigest, compute_server_config_digest},
     tools::{ToolFunctionMetadata, ToolHandler, ToolName},
 };
-use dashmap::DashMap;
+use dashmap::{DashMap, mapref::entry::Entry};
 
 use crate::{
     handler::McpToolHandler,
@@ -205,11 +205,29 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
             transport,
             protocol_version: protocol_version.to_string(),
         };
-        let conn = self
-            .connections
-            .entry(key)
-            .or_insert_with(|| Arc::new(McpConnection::new(launch)))
-            .clone();
+        let conn = match self.connections.entry(key) {
+            Entry::Occupied(mut entry) if entry.get().is_dead() => {
+                tracing::warn!(
+                    target: "mcp.registry",
+                    mcp_server_id = %server_id,
+                    agent_scope = %self.agent_scope,
+                    event = "mcp.session_expired",
+                    "MCP connection service is cancelled; evicting registry entry",
+                );
+                let conn = Arc::new(McpConnection::new(launch));
+                entry.insert(conn.clone());
+                tracing::warn!(
+                    target: "mcp.registry",
+                    mcp_server_id = %server_id,
+                    agent_scope = %self.agent_scope,
+                    event = "mcp.registry.entry_recreated",
+                    "MCP registry entry recreated after session expiry",
+                );
+                conn
+            }
+            Entry::Occupied(entry) => entry.get().clone(),
+            Entry::Vacant(entry) => entry.insert(Arc::new(McpConnection::new(launch))).clone(),
+        };
         Ok(Some(conn))
     }
 }
