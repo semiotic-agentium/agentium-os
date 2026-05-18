@@ -19,6 +19,9 @@ Core runtime: A2A, tools (via QuickJS), LLM, QuickJS bridge, live stream, ONNX, 
 | `baml_rt.a2a.stream.chunk_count` | Histogram | Distribution of chunk counts per stream completion (`method`). |
 | `baml_rt.tool.invocation_total` | Counter | **Canonical** host tool completion by `tool`, `result` (QuickJS bridge). |
 | `baml_rt.tool.invocation_duration_ms` | Histogram | Wall time for that invocation path. |
+| `mcp.session_expired_total` | Counter | MCP HTTP session expiry observed by runtime. Labels: `transport`. |
+| `mcp.registry.entry_recreated_total` | Counter | Lazy registry replacement of dead MCP connection. Labels: `transport`. |
+| `mcp.digest_mismatch_total` | Counter | Approved MCP snapshot mismatch. Labels: `kind` (`identity`, `tools_startup`, `tools_changed`), `transport`. |
 | `baml_rt.a2a.worker.handle_total` | Counter | QuickJS worker-thread handle completions by `result`. |
 | `baml_rt.a2a.worker.handle_duration_ms` | Histogram | Time to complete worker handle. |
 | `baml_rt.a2a.task_store.operation_total` | Counter | Surreal task subgraph store ops by `operation`, `result`. |

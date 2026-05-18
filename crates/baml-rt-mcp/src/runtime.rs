@@ -17,6 +17,7 @@ use std::{
     time::Duration,
 };
 
+use baml_rt_observability::{record_mcp_digest_mismatch, record_mcp_session_expired};
 use baml_rt_tools::{
     mcp_cache::mark_server_stale,
     mcp_config::{HttpHeader as ConfigHttpHeader, HttpNetworkPolicyConfig},
@@ -187,6 +188,7 @@ struct RuntimeClientHandler {
     drifted: Arc<AtomicBool>,
     expected_tools_digest: Arc<str>,
     cache_root: Arc<PathBuf>,
+    transport: &'static str,
 }
 
 impl ClientHandler for RuntimeClientHandler {
@@ -251,6 +253,7 @@ impl ClientHandler for RuntimeClientHandler {
         let drifted = self.drifted.clone();
         let expected = self.expected_tools_digest.clone();
         let cache_root = self.cache_root.clone();
+        let transport = self.transport;
         async move {
             // Out-of-band tools/list using the peer attached to this
             // notification. Failure here is itself a fail-closed signal:
@@ -281,6 +284,7 @@ impl ClientHandler for RuntimeClientHandler {
                 return;
             }
 
+            record_mcp_digest_mismatch("tools_changed", transport);
             tracing::warn!(
                 target: "mcp.drift",
                 mcp_server_id = %server_id,
@@ -389,6 +393,7 @@ impl McpConnection {
             });
         }
         if self.is_dead() {
+            record_mcp_session_expired(self.transport_label());
             return Err(ConnectionError::SessionExpired {
                 server_id: self.launch.server_id.clone(),
             });
@@ -424,6 +429,7 @@ impl McpConnection {
             Ok(_) => Err(ConnectionError::CallTool(ServiceError::UnexpectedResponse)),
             Err(err) if service_error_is_session_expired(&err) => {
                 service.cancellation_token().cancel();
+                record_mcp_session_expired(self.transport_label());
                 Err(ConnectionError::SessionExpired {
                     server_id: self.launch.server_id.clone(),
                 })
@@ -431,6 +437,10 @@ impl McpConnection {
             Err(ServiceError::Timeout { .. }) => Err(ConnectionError::CallTimeout(timeout)),
             Err(err) => Err(err.into()),
         }
+    }
+
+    pub fn transport_label(&self) -> &'static str {
+        transport_label(&self.launch.kind)
     }
 
     async fn service(
@@ -457,6 +467,7 @@ impl McpConnection {
             drifted: drifted.clone(),
             expected_tools_digest: Arc::<str>::from(launch.expected_tools_digest.clone()),
             cache_root: Arc::new(launch.cache_root.clone()),
+            transport: transport_label(&launch.kind),
         };
         let serve = async move {
             let service = match &launch.kind {
@@ -598,6 +609,7 @@ async fn verify_server_identity(
     };
     let observed = compute_server_identity_digest(&capabilities, &server_info);
     if observed.as_str() != launch.expected_identity_digest {
+        record_mcp_digest_mismatch("identity", transport_label(&launch.kind));
         tracing::warn!(
             target: "mcp.identity",
             mcp_server_id = %launch.server_id,
@@ -636,6 +648,7 @@ async fn verify_startup_tools_digest(
     };
     let observed = digest_from_live_tools(&observed_tools);
     if observed.as_str() != launch.expected_tools_digest {
+        record_mcp_digest_mismatch("tools_startup", transport_label(&launch.kind));
         tracing::warn!(
             target: "mcp.drift",
             mcp_server_id = %launch.server_id,
@@ -712,6 +725,13 @@ fn spawn_stderr_drain(server_id: String, stderr: Option<tokio::process::ChildStd
 /// `PR_SET_PDEATHSIG=SIGKILL` from the sandbox layer as a safety net).
 async fn signal_cancel(service: &RunningService<RoleClient, RuntimeClientHandler>) {
     service.cancellation_token().cancel();
+}
+
+fn transport_label(kind: &LaunchKind) -> &'static str {
+    match kind {
+        LaunchKind::Stdio(_) => "stdio",
+        LaunchKind::Http(_) => "streamable_http",
+    }
 }
 
 fn request_options_with_timeout(timeout: Duration) -> PeerRequestOptions {

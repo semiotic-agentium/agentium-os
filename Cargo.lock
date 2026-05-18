@@ -1916,6 +1916,7 @@ dependencies = [
  "axum 0.8.8",
  "axum-server",
  "baml-rt-core",
+ "baml-rt-observability",
  "baml-rt-tools",
  "base64 0.22.1",
  "dashmap 6.1.0",
