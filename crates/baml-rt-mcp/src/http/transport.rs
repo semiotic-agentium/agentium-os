@@ -7,7 +7,7 @@
 use baml_rt_tools::{mcp_config::SecretInjection, mcp_secrets::ResolvedSecret};
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use reqwest::{
-    Client,
+    Certificate, Client,
     header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue},
     redirect::Policy,
     tls,
@@ -36,6 +36,8 @@ pub enum HttpTransportBuildError {
     Header(#[from] HeaderError),
     #[error("invalid auth header `{name}`: {reason}")]
     InvalidAuthHeader { name: String, reason: String },
+    #[error("invalid extra CA certificate (PEM #{index}): {reason}")]
+    InvalidExtraCaCert { index: usize, reason: String },
     #[error("reqwest client build failed: {0}")]
     Client(#[from] reqwest::Error),
 }
@@ -65,7 +67,7 @@ pub fn build_rmcp_http_transport(
     let redirect_policy =
         build_redirect_policy(policy.follow_redirects, policy.allow_hosts.clone());
 
-    let client: Client = reqwest::Client::builder()
+    let mut client_builder = reqwest::Client::builder()
         .connect_timeout(config.connect_timeout)
         .timeout(config.request_timeout)
         .pool_max_idle_per_host(config.max_idle_per_host as usize)
@@ -74,8 +76,17 @@ pub fn build_rmcp_http_transport(
         .min_tls_version(tls::Version::TLS_1_2)
         .danger_accept_invalid_certs(false)
         .https_only(matches!(url.scheme(), "https"))
-        .user_agent(concat!("baml-rt-mcp/", env!("CARGO_PKG_VERSION")))
-        .build()?;
+        .user_agent(concat!("baml-rt-mcp/", env!("CARGO_PKG_VERSION")));
+    for (index, pem) in config.extra_ca_certs_pem.iter().enumerate() {
+        let cert = Certificate::from_pem(pem).map_err(|err| {
+            HttpTransportBuildError::InvalidExtraCaCert {
+                index,
+                reason: err.to_string(),
+            }
+        })?;
+        client_builder = client_builder.add_root_certificate(cert);
+    }
+    let client: Client = client_builder.build()?;
 
     // rmcp expects `HashMap<HeaderName, HeaderValue>` for `custom_headers`.
     let custom_headers: std::collections::HashMap<HeaderName, HeaderValue> = headers
@@ -206,6 +217,7 @@ mod tests {
             idle_stream_timeout: Duration::from_secs(30),
             max_idle_per_host: 4,
             max_concurrent_requests_per_pool_key: 4,
+            extra_ca_certs_pem: Vec::new(),
         }
     }
 

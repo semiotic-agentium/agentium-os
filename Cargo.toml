@@ -139,6 +139,9 @@ tokio-test = "0.4"
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing-test = "0.2"
 tempfile = "3"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 dotenvy = "0.15"
 proptest = "1"
 # Builder / tools
