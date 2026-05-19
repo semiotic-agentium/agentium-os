@@ -253,7 +253,7 @@ function shortToolName(tool: string): string {
           Active Agents
         </div>
         <div class="stat-card-value">{{ agentCount }}</div>
-        <div class="stat-card-sub">{{ agentCount }} discovered via API</div>
+        <div class="stat-card-sub">{{ agentCount === 1 ? "1 agent deployed" : `${agentCount} agents deployed` }}</div>
       </div>
 
       <!-- Last Sync -->
@@ -272,7 +272,7 @@ function shortToolName(tool: string): string {
             <circle cx="12" cy="12" r="10" />
             <polyline points="12 6 12 12 16 14" />
           </svg>
-          Last Sync
+          Last update
         </div>
         <div class="stat-card-value stat-card-value--sm">{{ lastSyncTimestamp ? new Date(lastSyncTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—' }}</div>
         <div class="stat-card-sub">{{ lastSyncAgo }}</div>
@@ -293,13 +293,13 @@ function shortToolName(tool: string): string {
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
             <polyline points="14 2 14 8 20 8" />
           </svg>
-          Prompt JSON (current)
+          Context size
         </div>
         <div v-if="sessionPromptBytesCurrent != null" class="stat-card-value stat-card-value--sm">
           {{ formatKb(sessionPromptBytesCurrent) }}
         </div>
         <div v-else class="stat-card-value" style="color: var(--text-muted)">&mdash;</div>
-        <div class="stat-card-sub">Latest LLM call prompt JSON (UTF-8)</div>
+        <div class="stat-card-sub">Size of the prompt sent on the last call</div>
       </div>
 
       <!-- Token Usage -->
@@ -346,16 +346,16 @@ function shortToolName(tool: string): string {
           >
             <path d="M20 6L9 17l-5-5" />
           </svg>
-          Provenance Success
+          Success rate
         </div>
         <div v-if="provenanceSuccessRate !== null" class="stat-card-value success-value">
           {{ provenanceSuccessRate }}%
         </div>
         <div v-else class="stat-card-value" style="color: var(--text-muted)">&mdash;</div>
         <div v-if="provenanceSummary" class="stat-card-sub">
-          {{ provenanceSummary.count }} ops · {{ provenanceSummary.failedCount }} failed
+          {{ provenanceSummary.count }} operations · {{ provenanceSummary.failedCount }} failed
         </div>
-        <div v-else class="stat-card-sub">No provenance data</div>
+        <div v-else class="stat-card-sub">No data yet</div>
       </div>
 
       <!-- Configuration -->
@@ -500,7 +500,7 @@ function shortToolName(tool: string): string {
           <!-- Metrics section (when data available) -->
           <template v-if="contextMetrics">
             <div>
-              <div class="stat-card-label" style="margin-bottom: 6px">Token Usage Per Turn</div>
+              <div class="stat-card-label" style="margin-bottom: 6px">Tokens per turn</div>
               <div class="sparkline-current">
                 <span class="sparkline-value">{{
                   formatTokenCount(contextMetrics.session.tokens_total.total)
@@ -538,13 +538,13 @@ function shortToolName(tool: string): string {
             <!-- Stats grid -->
             <div class="sparkline-status-grid">
               <div class="sparkline-status-item">
-                <span class="sparkline-status-key">LLM Calls</span>
+                <span class="sparkline-status-key">Model calls</span>
                 <span class="sparkline-status-val">{{
                   contextMetrics.session.llm_calls_total
                 }}</span>
               </div>
               <div class="sparkline-status-item">
-                <span class="sparkline-status-key">Avg Latency</span>
+                <span class="sparkline-status-key">Avg response</span>
                 <span class="sparkline-status-val">{{ avgLatencyMs ?? "—" }} ms</span>
               </div>
               <div class="sparkline-status-item">
@@ -552,21 +552,15 @@ function shortToolName(tool: string): string {
                 <span class="sparkline-status-val">{{ contextMetrics.session.turns_total }}</span>
               </div>
               <div class="sparkline-status-item">
-                <span class="sparkline-status-key">Tokens In</span>
+                <span class="sparkline-status-key">Tokens in</span>
                 <span class="sparkline-status-val">{{
                   formatTokenCount(contextMetrics.session.tokens_total.in)
                 }}</span>
               </div>
               <div class="sparkline-status-item">
-                <span class="sparkline-status-key">Prompt JSON</span>
+                <span class="sparkline-status-key">Context size</span>
                 <span class="sparkline-status-val">{{
                   sessionPromptBytesCurrent != null ? formatKb(sessionPromptBytesCurrent) : "—"
-                }}</span>
-              </div>
-              <div class="sparkline-status-item">
-                <span class="sparkline-status-key">Prov Duration</span>
-                <span class="sparkline-status-val">{{
-                  provenanceSummary ? formatDuration(provenanceSummary.durationMsTotal) : "—"
                 }}</span>
               </div>
             </div>
@@ -575,7 +569,7 @@ function shortToolName(tool: string): string {
               v-if="provenanceSummary && provenanceSummary.hotspotGroups.length > 0"
               class="dashboard-hotspots"
             >
-              <div class="stat-card-label">Top Hotspots</div>
+              <div class="stat-card-label">Slowest calls</div>
               <ul>
                 <li
                   v-for="group in provenanceSummary.hotspotGroups.slice(0, 3)"

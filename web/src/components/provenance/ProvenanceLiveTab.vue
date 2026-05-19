@@ -252,9 +252,9 @@ function applyLiveHotspotDrilldown(item: LiveHotspotItem) {
   <div
     v-if="promptOpsForDisplay.length > 0"
     class="prompt-ops-telemetry"
-    aria-label="Serialized prompt JSON size per LLM call"
+    aria-label="Prompt size per model call"
   >
-    <span class="prompt-ops-label">Prompt JSON</span>
+    <span class="prompt-ops-label">Context size</span>
     <span
       v-for="op in promptOpsForDisplay"
       :key="op.activityAnchor"

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch } from "vue";
 import type {
+  AgentDiscoveryEntry,
   ChatMessage,
   HistoryHydrateState,
   WorkflowProgressState,
@@ -8,23 +9,33 @@ import type {
 import MessageBubble from "./MessageBubble.vue";
 import WorkflowProgress from "./WorkflowProgress.vue";
 
-const props = defineProps<{
-  messages: ChatMessage[];
-  isLoading: boolean;
-  disabled: boolean;
-  /** Stream suspended: agent is waiting for user reply (TASK_STATE_INPUT_REQUIRED) */
-  awaitingInput?: boolean;
-  /** Optional prompt from agent (e.g. awaitInput(prompt)); show as hint/placeholder */
-  inputRequiredPrompt?: string;
-  /** Workflow progress state from coordinator SSE messages */
-  workflowProgress?: WorkflowProgressState;
-  /** Conversation-history GET / SSE restore (Primary empty states). */
-  historyHydrateState?: HistoryHydrateState;
-  /** Selected provenance context id (toolbar), for empty-state copy. */
-  selectedContextId?: string | null;
-}>();
+const props = withDefaults(
+  defineProps<{
+    messages: ChatMessage[];
+    isLoading: boolean;
+    disabled: boolean;
+    /** Stream suspended: agent is waiting for user reply (TASK_STATE_INPUT_REQUIRED) */
+    awaitingInput?: boolean;
+    /** Optional prompt from agent (e.g. awaitInput(prompt)); show as hint/placeholder */
+    inputRequiredPrompt?: string;
+    /** Workflow progress state from coordinator SSE messages */
+    workflowProgress?: WorkflowProgressState;
+    /** Conversation-history GET / SSE restore (Primary empty states). */
+    historyHydrateState?: HistoryHydrateState;
+    /** Selected provenance context id (toolbar), for empty-state copy. */
+    selectedContextId?: string | null;
+    /** Available agents — used to render an empty-state picker when none is selected. */
+    agents?: AgentDiscoveryEntry[];
+  }>(),
+  { agents: () => [] },
+);
 
-const emit = defineEmits<{ send: [text: string]; cancel: [] }>();
+const emit = defineEmits<{
+  send: [text: string];
+  cancel: [];
+  "select-agent": [agent: AgentDiscoveryEntry];
+  "open-settings": [];
+}>();
 
 const input = ref("");
 const messagesContainer = ref<HTMLElement>();
@@ -85,12 +96,12 @@ const emptyStateSubtitle = computed(() => {
     return "Check the runner /contexts API or try refreshing the context list.";
   }
   if (h === "skipped") {
-    return "Provenance snapshot was deferred so streamed content is not overwritten. Send a message or wait for sync.";
+    return "Pick up where you left off, or send a new message.";
   }
   if (h === "ready" && (props.selectedContextId ?? "").length > 0) {
-    return "This context is selected; the transcript is empty. Say something to begin.";
+    return "Say something to begin.";
   }
-  return "Choose a context above or send a message. Observe (right) shows traces and metrics for the active session.";
+  return "Send a message to begin.";
 });
 
 function handleKeydown(e: KeyboardEvent) {
@@ -152,7 +163,43 @@ watch(
       aria-live="polite"
       @scroll="onMessagesScroll"
     >
-      <div v-if="messages.length === 0" class="empty-state">
+      <!-- Agent picker: shown when no agent is selected and transcript is empty -->
+      <div
+        v-if="messages.length === 0 && disabled && agents.length > 0"
+        class="empty-state empty-state--picker"
+      >
+        <span class="empty-state-text">Pick an agent to start</span>
+        <div class="agent-picker-grid">
+          <button
+            v-for="agent in agents"
+            :key="agent.agent_package + '/' + agent.agent_instance_id"
+            type="button"
+            class="agent-picker-card"
+            @click="emit('select-agent', agent)"
+          >
+            <span class="agent-picker-card__name">{{ agent.name }}</span>
+            <span
+              v-if="agent.agent_card.description"
+              class="agent-picker-card__desc"
+            >{{ agent.agent_card.description }}</span>
+          </button>
+        </div>
+      </div>
+      <!-- No agents deployed at all -->
+      <div
+        v-else-if="messages.length === 0 && disabled && agents.length === 0"
+        class="empty-state"
+      >
+        <span class="empty-state-text">No agents deployed yet</span>
+        <span class="empty-state-subtitle">
+          Deploy one to start chatting.
+        </span>
+        <button type="button" class="empty-state-action" @click="emit('open-settings')">
+          Open Settings → Deployments
+        </button>
+      </div>
+      <!-- Default empty state: agent selected but no messages, or loading/error states -->
+      <div v-else-if="messages.length === 0" class="empty-state">
         <!-- Chat icon -->
         <svg
           class="empty-state-icon"

@@ -2205,6 +2205,79 @@ body {
   padding: 0 16px;
 }
 
+.empty-state--picker {
+  gap: 18px;
+}
+
+.empty-state--picker .empty-state-text {
+  font-size: 15px;
+}
+
+.empty-state-action {
+  margin-top: 4px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.empty-state-action:hover {
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+  background: var(--primary-subtle);
+}
+
+.agent-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  width: 100%;
+  max-width: 720px;
+  padding: 0 16px;
+}
+
+.agent-picker-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+}
+
+.agent-picker-card:hover {
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
+  background: var(--primary-subtle);
+  transform: translateY(-1px);
+}
+
+.agent-picker-card__name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.agent-picker-card__desc {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* ── Message bubbles ── */
 
 .message-row {
@@ -2728,76 +2801,28 @@ body {
   transition: background-color 0.25s ease;
 }
 
-/* Session console: ties Primary (transcript) ↔ Observe (traces) for one agent/context */
-.chat-session-zones {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 6px 20px;
-  flex-shrink: 0;
-  font-size: 11px;
-  line-height: 1.35;
-  color: var(--text-secondary);
-  background: var(--bg-subtle);
-  border-bottom: 1px solid var(--border);
-}
-
-.chat-session-zones .zone-pair {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-.chat-session-zones .zone-pair--end {
-  justify-content: flex-end;
-}
-
-.chat-session-zones .zone-chip {
-  flex-shrink: 0;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-weight: 700;
-  font-size: 10px;
-  padding: 2px 7px;
-  border-radius: 4px;
+.traces-toggle {
+  margin-left: auto;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.4;
   border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-subtle);
   color: var(--text-secondary);
-  background: var(--surface);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
-.chat-session-zones .zone-chip--primary {
-  border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+.traces-toggle:hover {
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--text-muted) 50%, var(--border));
+}
+
+.traces-toggle--on {
   color: var(--primary);
   background: var(--primary-subtle);
-}
-
-.chat-session-zones .zone-chip--observe {
-  border-color: color-mix(in srgb, var(--text-muted) 40%, var(--border));
-}
-
-.chat-session-zones .session-meta {
-  flex: 1;
-  min-width: 0;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.chat-session-zones .session-meta code {
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 10px;
-  color: var(--text-muted);
-}
-
-.chat-session-zones .zone-hint {
-  font-size: 10px;
-  color: var(--text-muted);
-  white-space: nowrap;
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
 }
 
 /* Prompt JSON telemetry (Observe / Live tab), not transcript chrome */
