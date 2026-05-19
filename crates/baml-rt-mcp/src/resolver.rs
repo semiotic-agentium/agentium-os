@@ -438,11 +438,18 @@ mod tests {
         }])
     }
 
+    const DIGEST_CFG: &str =
+        "sha256:0000000000000000000000000000000000000000000000000000000000000001";
+    const DIGEST_CFG_A: &str =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const DIGEST_CFG_B: &str =
+        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
     fn key(agent: &str, server: &str, transport: PoolTransport, secret_value: &str) -> PoolKey {
         key_with(
             agent,
             server,
-            "sha256:cfg",
+            DIGEST_CFG,
             transport,
             "2025-06-18",
             secret_value,
@@ -493,7 +500,7 @@ mod tests {
         let a = key_with(
             "agent-a",
             "grafana",
-            "sha256:cfg",
+            DIGEST_CFG,
             PoolTransport::Stdio,
             "2025-06-18",
             "h",
@@ -501,7 +508,7 @@ mod tests {
         let b = key_with(
             "agent-a",
             "grafana",
-            "sha256:cfg",
+            DIGEST_CFG,
             PoolTransport::Stdio,
             "2099-01-01",
             "h",
@@ -514,7 +521,7 @@ mod tests {
         let a = key_with(
             "agent-a",
             "grafana",
-            "sha256:cfg-a",
+            DIGEST_CFG_A,
             PoolTransport::Stdio,
             "2025-06-18",
             "h",
@@ -522,7 +529,7 @@ mod tests {
         let b = key_with(
             "agent-a",
             "grafana",
-            "sha256:cfg-b",
+            DIGEST_CFG_B,
             PoolTransport::Stdio,
             "2025-06-18",
             "h",

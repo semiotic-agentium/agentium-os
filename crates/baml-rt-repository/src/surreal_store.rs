@@ -1544,7 +1544,7 @@ mod tests {
     async fn mcp_snapshot_versions_round_trip() {
         let store = SurrealStore::open_in_memory().await.unwrap();
         let first =
-            snapshot("sha256:11111111111111111111111111111111111111111111111111111111111111111");
+            snapshot("sha256:1111111111111111111111111111111111111111111111111111111111111111");
         let inserted = store.put_mcp_snapshot(&first).await.unwrap();
         assert_eq!(inserted.server_id, "meteo");
         assert_eq!(inserted.version, 1);
@@ -1559,7 +1559,7 @@ mod tests {
         assert_eq!(latest, first);
 
         let second =
-            snapshot("sha256:11111111111111111111111111111111111111111111111111111111111111112");
+            snapshot("sha256:1111111111111111111111111111111111111111111111111111111111111112");
         let inserted_second = store.put_mcp_snapshot(&second).await.unwrap();
         assert_eq!(inserted_second.version, 2);
         let versions = store.list_mcp_server_versions("meteo").await.unwrap();
@@ -1580,7 +1580,7 @@ mod tests {
         let store = SurrealStore::open_in_memory().await.unwrap();
         store
             .put_mcp_snapshot(&snapshot(
-                "sha256:11111111111111111111111111111111111111111111111111111111111111111",
+                "sha256:1111111111111111111111111111111111111111111111111111111111111111",
             ))
             .await
             .unwrap();
