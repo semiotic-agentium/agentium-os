@@ -19,6 +19,7 @@ use std::{collections::BTreeMap, fmt, sync::OnceLock};
 
 use blake3::Hasher;
 use thiserror::Error;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::mcp_config::{SecretSource, SecretSpec};
 
@@ -33,14 +34,49 @@ pub enum SecretResolutionError {
     Missing { id: String, source_identity: String },
 }
 
-/// Resolved secret value paired with the spec it satisfied. The value is
-/// `String` rather than a `SecretString` newtype because the existing
-/// stdio child-process env path is already a `BTreeMap<String, String>`;
-/// callers should keep the lifetime short and avoid logging.
+/// Secret material resolved for MCP transport injection.
+///
+/// Formatting is always redacted. Contents are zeroized on drop via
+/// `ZeroizeOnDrop`; callers must still avoid cloning or logging borrowed
+/// plaintext.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
+pub struct McpSecretValue(String);
+
+impl McpSecretValue {
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for McpSecretValue {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for McpSecretValue {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl fmt::Debug for McpSecretValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("McpSecretValue(<redacted>)")
+    }
+}
+
+impl PartialEq<&str> for McpSecretValue {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+/// Resolved secret value paired with the spec it satisfied.
 #[derive(Debug, Clone)]
 pub struct ResolvedSecret {
     pub spec: SecretSpec,
-    pub value: String,
+    pub value: McpSecretValue,
 }
 
 /// Value-derived pool-key component for resolved MCP secrets.
@@ -93,7 +129,7 @@ where
             spec.id.clone(),
             ResolvedSecret {
                 spec: spec.clone(),
-                value,
+                value: value.into(),
             },
         );
     }
@@ -124,7 +160,7 @@ pub fn compute_secret_fingerprint(secrets: &[ResolvedSecret]) -> SecretFingerpri
         let (kind, param) = injection_fingerprint_parts(&secret.spec.inject);
         write_len_prefixed(&mut hasher, kind.as_bytes());
         write_len_prefixed(&mut hasher, param.as_bytes());
-        write_len_prefixed(&mut hasher, secret.value.as_bytes());
+        write_len_prefixed(&mut hasher, secret.value.expose_secret().as_bytes());
     }
     SecretFingerprint(*hasher.finalize().as_bytes())
 }

@@ -22,7 +22,7 @@ use baml_rt_tools::{
     mcp_cache::mark_server_stale,
     mcp_config::{HttpHeader as ConfigHttpHeader, HttpNetworkPolicyConfig},
     mcp_schema_normalize::digest_input_schema,
-    mcp_secrets::ResolvedSecret,
+    mcp_secrets::{McpSecretValue, ResolvedSecret},
     mcp_snapshot::{compute_server_identity_digest, compute_tools_digest_from_entries},
 };
 use rmcp::{
@@ -171,11 +171,58 @@ pub enum LaunchKind {
     Http(HttpLaunchConfig),
 }
 
+impl LaunchKind {
+    fn transport_kind(&self) -> TransportKind {
+        match self {
+            LaunchKind::Stdio(_) => TransportKind::Stdio,
+            LaunchKind::Http(_) => TransportKind::Http,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransportKind {
+    Stdio,
+    Http,
+}
+
+impl TransportKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TransportKind::Stdio => "stdio",
+            TransportKind::Http => "streamable_http",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StdioLaunch {
     pub command: String,
     pub args: Vec<String>,
-    pub env: BTreeMap<String, String>,
+    pub env: BTreeMap<String, EnvValue>,
+}
+
+#[derive(Debug, Clone)]
+pub enum EnvValue {
+    Plain(Arc<str>),
+    Secret(McpSecretValue),
+}
+
+impl EnvValue {
+    pub fn plain(value: impl Into<Arc<str>>) -> Self {
+        Self::Plain(value.into())
+    }
+
+    pub fn secret(value: McpSecretValue) -> Self {
+        Self::Secret(value)
+    }
+
+    fn expose_for_child(&self) -> &str {
+        match self {
+            EnvValue::Plain(value) => value.as_ref(),
+            EnvValue::Secret(value) => value.expose_secret(),
+        }
+    }
 }
 
 /// Pre-resolved Streamable HTTP launch inputs. The resolver freezes the
@@ -211,7 +258,7 @@ struct RuntimeClientHandler {
     drifted: Arc<AtomicBool>,
     expected_tools_digest: Arc<str>,
     cache_root: Arc<PathBuf>,
-    transport: &'static str,
+    transport: TransportKind,
 }
 
 impl ClientHandler for RuntimeClientHandler {
@@ -320,7 +367,7 @@ impl ClientHandler for RuntimeClientHandler {
                 return;
             }
 
-            record_mcp_digest_mismatch("tools_changed", transport);
+            record_mcp_digest_mismatch("tools_changed", transport.as_str());
             tracing::error!(
                 target: "mcp.drift",
                 mcp_server_id = %server_id,
@@ -555,7 +602,7 @@ impl McpConnection {
     }
 
     pub fn transport_label(&self) -> &'static str {
-        transport_label(&self.launch.kind)
+        self.launch.kind.transport_kind().as_str()
     }
 
     async fn service(
@@ -583,13 +630,16 @@ impl McpConnection {
             drifted: drifted.clone(),
             expected_tools_digest: Arc::<str>::from(launch.expected_tools_digest.clone()),
             cache_root: Arc::new(launch.cache_root.clone()),
-            transport: transport_label(&launch.kind),
+            transport: launch.kind.transport_kind(),
         };
         let serve = async move {
             let service = match &launch.kind {
                 LaunchKind::Stdio(stdio) => {
                     let command = tokio::process::Command::new(&stdio.command).configure(|cmd| {
-                        cmd.args(&stdio.args).env_clear().envs(&stdio.env);
+                        cmd.args(&stdio.args).env_clear();
+                        for (name, value) in &stdio.env {
+                            cmd.env(name, value.expose_for_child());
+                        }
                     });
                     let (transport, stderr) = TokioChildProcess::builder(command)
                         .stderr(std::process::Stdio::piped())
@@ -704,7 +754,7 @@ async fn verify_server_identity(
     };
     let observed = compute_server_identity_digest(&capabilities, &server_info);
     if observed.as_str() != launch.expected_identity_digest {
-        record_mcp_digest_mismatch("identity", transport_label(&launch.kind));
+        record_mcp_digest_mismatch("identity", launch.kind.transport_kind().as_str());
         tracing::error!(
             target: "mcp.identity",
             mcp_server_id = %launch.server_id,
@@ -752,7 +802,7 @@ async fn verify_startup_tools_digest(
         }
     };
     if observed.as_str() != launch.expected_tools_digest {
-        record_mcp_digest_mismatch("tools_startup", transport_label(&launch.kind));
+        record_mcp_digest_mismatch("tools_startup", launch.kind.transport_kind().as_str());
         tracing::error!(
             target: "mcp.drift",
             mcp_server_id = %launch.server_id,
@@ -840,13 +890,6 @@ fn spawn_stderr_drain(
 /// `PR_SET_PDEATHSIG=SIGKILL` from the sandbox layer as a safety net).
 async fn signal_cancel(service: &RunningService<RoleClient, RuntimeClientHandler>) {
     service.cancellation_token().cancel();
-}
-
-fn transport_label(kind: &LaunchKind) -> &'static str {
-    match kind {
-        LaunchKind::Stdio(_) => "stdio",
-        LaunchKind::Http(_) => "streamable_http",
-    }
 }
 
 fn request_options_with_timeout(timeout: Duration) -> PeerRequestOptions {

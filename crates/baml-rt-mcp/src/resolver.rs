@@ -1,6 +1,7 @@
 //! `ExternalToolResolver` implementations for MCP-imported tools.
 
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -27,7 +28,7 @@ use dashmap::{DashMap, mapref::entry::Entry};
 use crate::{
     handler::McpToolHandler,
     importer::SecretResolver,
-    runtime::{HttpLaunchConfig, LaunchKind, McpConnection, ServerLaunch, StdioLaunch},
+    runtime::{EnvValue, HttpLaunchConfig, LaunchKind, McpConnection, ServerLaunch, StdioLaunch},
 };
 
 /// Default per-server startup deadline when not specified in `mcp-servers.json`.
@@ -181,13 +182,18 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
         let (kind, transport) = match &server_config.transport {
             None => {
                 // Stdio path. Inject env-kind secrets into the child env.
-                let mut env = server_config.env.clone();
+                let mut env: BTreeMap<String, EnvValue> = server_config
+                    .env
+                    .iter()
+                    .map(|(name, value)| (name.clone(), EnvValue::plain(value.clone())))
+                    .collect();
                 if let Ok(path) = std::env::var("PATH") {
-                    env.entry("PATH".into()).or_insert(path);
+                    env.entry("PATH".into())
+                        .or_insert_with(|| EnvValue::plain(path));
                 }
                 for sec in &resolved_vec {
                     if let SecretInjection::Env { name } = &sec.spec.inject {
-                        env.insert(name.clone(), sec.value.clone());
+                        env.insert(name.clone(), EnvValue::secret(sec.value.clone()));
                     }
                 }
                 (

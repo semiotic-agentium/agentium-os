@@ -142,13 +142,11 @@ fn inject_secret_header(
     match &secret.spec.inject {
         SecretInjection::Env { .. } => Ok(()),
         SecretInjection::HttpAuthorizationBearer => {
-            let value =
-                HeaderValue::try_from(format!("Bearer {}", secret.value)).map_err(|err| {
-                    HttpTransportBuildError::InvalidAuthHeader {
-                        name: "Authorization".into(),
-                        reason: err.to_string(),
-                    }
-                })?;
+            let value = HeaderValue::try_from(format!("Bearer {}", secret.value.expose_secret()))
+                .map_err(|err| HttpTransportBuildError::InvalidAuthHeader {
+                name: "Authorization".into(),
+                reason: err.to_string(),
+            })?;
             headers.insert(AUTHORIZATION, value);
             Ok(())
         }
@@ -159,7 +157,7 @@ fn inject_secret_header(
                     reason: err.to_string(),
                 }
             })?;
-            let value = HeaderValue::try_from(secret.value.as_str()).map_err(|err| {
+            let value = HeaderValue::try_from(secret.value.expose_secret()).map_err(|err| {
                 HttpTransportBuildError::InvalidAuthHeader {
                     name: name.clone(),
                     reason: err.to_string(),
@@ -169,7 +167,7 @@ fn inject_secret_header(
             Ok(())
         }
         SecretInjection::HttpBasicPassword { username } => {
-            let encoded = B64.encode(format!("{username}:{}", secret.value));
+            let encoded = B64.encode(format!("{username}:{}", secret.value.expose_secret()));
             let value = HeaderValue::try_from(format!("Basic {encoded}")).map_err(|err| {
                 HttpTransportBuildError::InvalidAuthHeader {
                     name: "Authorization".into(),
