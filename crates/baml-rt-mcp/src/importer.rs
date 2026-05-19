@@ -324,7 +324,8 @@ mod tests {
             sandbox: Some(SandboxConfig::default()),
             description: None,
         };
-        let tools = Digest::new("sha256:tools");
+        let tools =
+            Digest::new("sha256:4444444444444444444444444444444444444444444444444444444444444444");
         let a =
             compute_server_config_digest("grafana", CLIENT_PROTOCOL_VERSION, &config, Some(&tools));
         // Same input → same digest.

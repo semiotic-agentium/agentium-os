@@ -64,7 +64,7 @@ pub struct PoolKey {
     // non-secret launch config, auth injection shape, network policy, and the
     // approved tools digest. Keep this opaque digest until the registry exposes
     // a first-class immutable approved_snapshot_id.
-    server_config_digest: String,
+    server_config_digest: McpDigest,
     secret_fingerprint: SecretFingerprint,
     transport: PoolTransport,
     // Kept explicit in the key even though it is also inside server_config_digest,
@@ -117,10 +117,10 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
     fn connection_for(
         &self,
         server_id: &str,
-        server_config_digest: &str,
+        server_config_digest: McpDigest,
         protocol_version: &str,
-        expected_identity_digest: &str,
-        expected_tools_digest: &str,
+        expected_identity_digest: McpDigest,
+        expected_tools_digest: McpDigest,
     ) -> Result<Option<Arc<McpConnection>>> {
         let Some(server_config) = self.servers.servers.get(server_id) else {
             return Ok(None);
@@ -130,20 +130,20 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
         // sealed at approval time: protocol version + the approved tool-set
         // digest. Any drift in command/args/env-keys/auth shape/policy here
         // means the running config no longer matches what was approved.
-        let tools_digest = McpDigest::new(expected_tools_digest.to_string());
+        let tools_digest = expected_tools_digest;
         let observed_config_digest = compute_server_config_digest(
             server_id,
             protocol_version,
             server_config,
             Some(&tools_digest),
         );
-        if observed_config_digest.as_str() != server_config_digest {
+        if observed_config_digest != server_config_digest {
             tracing::error!(
                 target: "mcp.config",
                 mcp_server_id = %server_id,
                 agent_scope = %self.agent_scope,
                 expected = %server_config_digest,
-                observed = %observed_config_digest.as_str(),
+                observed = %observed_config_digest,
                 protocol_version = %protocol_version,
                 event = "mcp.launch_config_digest_mismatch",
                 "MCP launch config digest does not match approved snapshot; refusing to bind. Run `agent-platform mcp enable <server>` to re-import and approve, then redeploy affected agents."
@@ -215,10 +215,10 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
             server_id: server_id.to_string(),
             startup_timeout: Duration::from_secs(startup_timeout_secs),
             call_timeout: Duration::from_secs(call_timeout_secs),
-            server_config_digest: server_config_digest.to_string(),
+            server_config_digest,
             protocol_version: protocol_version.to_string(),
-            expected_identity_digest: expected_identity_digest.to_string(),
-            expected_tools_digest: expected_tools_digest.to_string(),
+            expected_identity_digest,
+            expected_tools_digest,
             cache_root: self.cache_root.clone(),
             kind,
         };
@@ -226,7 +226,7 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
         let key = PoolKey {
             agent_scope: self.agent_scope.clone(),
             server_id: server_id.to_string(),
-            server_config_digest: server_config_digest.to_string(),
+            server_config_digest,
             secret_fingerprint,
             transport,
             protocol_version: protocol_version.to_string(),
@@ -303,10 +303,10 @@ impl<R: SecretResolver + Send + Sync> ExternalToolResolver for McpResolver<R> {
         let metadata = project_record(&record)?;
         let Some(connection) = self.connection_for(
             &record.server_id,
-            server.server_config_digest.as_str(),
+            server.server_config_digest,
             &server.protocol_version,
-            server.server_identity_digest.as_str(),
-            server.tools_digest.as_str(),
+            server.server_identity_digest,
+            server.tools_digest,
         )?
         else {
             return Err(BamlRtError::InvalidArgument(format!(
@@ -454,7 +454,7 @@ mod tests {
         PoolKey {
             agent_scope: Arc::<str>::from(agent),
             server_id: server.into(),
-            server_config_digest: server_config_digest.into(),
+            server_config_digest: McpDigest::new(server_config_digest),
             secret_fingerprint: fingerprint(secret_value),
             transport,
             protocol_version: protocol_version.into(),

@@ -23,7 +23,7 @@ use baml_rt_tools::{
     mcp_config::{HttpHeader as ConfigHttpHeader, HttpNetworkPolicyConfig},
     mcp_schema_normalize::digest_input_schema,
     mcp_secrets::{McpSecretValue, ResolvedSecret},
-    mcp_snapshot::{compute_server_identity_digest, compute_tools_digest_from_entries},
+    mcp_snapshot::{Digest, compute_server_identity_digest, compute_tools_digest_from_entries},
 };
 use rmcp::{
     ErrorData as McpError, ServiceExt,
@@ -106,16 +106,16 @@ pub enum ConnectionError {
     )]
     IdentityMismatch {
         server_id: String,
-        expected: String,
-        observed: String,
+        expected: Digest,
+        observed: Digest,
     },
     #[error(
         "MCP server `{server_id}` tool surface digest mismatch (expected `{expected}`, observed `{observed}`); operator must re-import and approve a new registry snapshot"
     )]
     ToolsDigestMismatch {
         server_id: String,
-        expected: String,
-        observed: String,
+        expected: Digest,
+        observed: Digest,
     },
     #[error("MCP server `{server_id}` startup tools/list failed: {reason}")]
     StartupToolsListFailed { server_id: String, reason: String },
@@ -139,19 +139,19 @@ pub struct ServerLaunch {
     pub call_timeout: Duration,
     /// Snapshot of `server_config_digest` at registration time. Surfaces in
     /// telemetry; also part of the pool isolation key.
-    pub server_config_digest: String,
+    pub server_config_digest: Digest,
     /// Snapshot's MCP protocol version. Surfaces in telemetry only.
     pub protocol_version: String,
     /// Identity digest recorded at import time, derived from server-advertised
     /// `capabilities` + `serverInfo.name`. The runtime recomputes the same
     /// digest from the live `initialize` response and refuses to bind a
     /// connection on mismatch.
-    pub expected_identity_digest: String,
+    pub expected_identity_digest: Digest,
     /// Server-wide tool-set digest recorded at import time. Startup verifies
     /// it with a live `tools/list` before accepting the connection; the drift
     /// handler recomputes it again on `notifications/tools/list_changed`.
     /// Any mismatch marks the snapshot stale and fails closed.
-    pub expected_tools_digest: String,
+    pub expected_tools_digest: Digest,
     /// Cache root the resolver loaded this snapshot from. Startup verification
     /// and the drift handler use it to flip the on-disk server record to `Stale`
     /// so the runner refuses to bind this server on next startup.
@@ -256,7 +256,7 @@ pub struct HttpLaunchConfig {
 struct RuntimeClientHandler {
     server_id: Arc<str>,
     drifted: Arc<AtomicBool>,
-    expected_tools_digest: Arc<str>,
+    expected_tools_digest: Digest,
     cache_root: Arc<PathBuf>,
     transport: TransportKind,
 }
@@ -321,7 +321,7 @@ impl ClientHandler for RuntimeClientHandler {
     ) -> impl Future<Output = ()> + MaybeSendFuture + '_ {
         let server_id = self.server_id.clone();
         let drifted = self.drifted.clone();
-        let expected = self.expected_tools_digest.clone();
+        let expected = self.expected_tools_digest;
         let cache_root = self.cache_root.clone();
         let transport = self.transport;
         async move {
@@ -357,7 +357,7 @@ impl ClientHandler for RuntimeClientHandler {
                     return;
                 }
             };
-            if observed_digest.as_str() == expected.as_ref() {
+            if observed_digest == expected {
                 tracing::debug!(
                     target: "mcp.drift",
                     mcp_server_id = %server_id,
@@ -371,7 +371,7 @@ impl ClientHandler for RuntimeClientHandler {
             tracing::error!(
                 target: "mcp.drift",
                 mcp_server_id = %server_id,
-                expected = %expected.as_ref(),
+                expected = %expected,
                 observed = %observed_digest,
                 tool_count = observed.len(),
                 event = "mcp.tools_list_changed",
@@ -399,7 +399,7 @@ fn digest_from_live_tools(
     Ok(compute_tools_digest_from_entries(
         normalized
             .iter()
-            .map(|(name, digest)| (name.as_str(), digest.as_str())),
+            .map(|(name, digest)| (name.as_str(), digest)),
     ))
 }
 
@@ -496,8 +496,8 @@ impl McpConnection {
         &self.launch.protocol_version
     }
 
-    pub fn server_config_digest(&self) -> &str {
-        &self.launch.server_config_digest
+    pub fn server_config_digest(&self) -> Digest {
+        self.launch.server_config_digest
     }
 
     /// Returns true once startup verification or `notifications/tools/list_changed`
@@ -628,7 +628,7 @@ impl McpConnection {
         let handler = RuntimeClientHandler {
             server_id: Arc::<str>::from(launch.server_id.clone()),
             drifted: drifted.clone(),
-            expected_tools_digest: Arc::<str>::from(launch.expected_tools_digest.clone()),
+            expected_tools_digest: launch.expected_tools_digest,
             cache_root: Arc::new(launch.cache_root.clone()),
             transport: launch.kind.transport_kind(),
         };
@@ -753,7 +753,7 @@ async fn verify_server_identity(
         }
     };
     let observed = compute_server_identity_digest(&capabilities, &server_info);
-    if observed.as_str() != launch.expected_identity_digest {
+    if observed != launch.expected_identity_digest {
         record_mcp_digest_mismatch("identity", launch.kind.transport_kind().as_str());
         tracing::error!(
             target: "mcp.identity",
@@ -766,8 +766,8 @@ async fn verify_server_identity(
         signal_cancel(service).await;
         return Err(ConnectionError::IdentityMismatch {
             server_id: launch.server_id.clone(),
-            expected: launch.expected_identity_digest.clone(),
-            observed: observed.as_str().to_string(),
+            expected: launch.expected_identity_digest,
+            observed,
         });
     }
     Ok(())
@@ -801,7 +801,7 @@ async fn verify_startup_tools_digest(
             });
         }
     };
-    if observed.as_str() != launch.expected_tools_digest {
+    if observed != launch.expected_tools_digest {
         record_mcp_digest_mismatch("tools_startup", launch.kind.transport_kind().as_str());
         tracing::error!(
             target: "mcp.drift",
@@ -816,8 +816,8 @@ async fn verify_startup_tools_digest(
         signal_cancel(service).await;
         return Err(ConnectionError::ToolsDigestMismatch {
             server_id: launch.server_id.clone(),
-            expected: launch.expected_tools_digest.clone(),
-            observed: observed.as_str().to_string(),
+            expected: launch.expected_tools_digest,
+            observed,
         });
     }
     Ok(())

@@ -3,6 +3,8 @@
 //! These types are shared by the builder, runner, and runtime so they can
 //! read snapshots without depending on any MCP protocol/transport crate.
 
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -169,26 +171,106 @@ impl SecretRef {
     }
 }
 
-/// Newtype wrapper around a digest string. Format is implementation-defined
-/// but conventionally `sha256:<hex>`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(transparent)]
-pub struct Digest(String);
+/// Validated SHA-256 digest rendered on the wire as `sha256:<64 lowercase hex>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Digest([u8; 32]);
 
 impl Digest {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+    pub fn new(value: impl AsRef<str>) -> Self {
+        value
+            .as_ref()
+            .parse()
+            .expect("invalid sha256 digest string")
     }
 
-    pub fn as_str(&self) -> &str {
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+
+    pub fn to_prefixed_hex(self) -> String {
+        format!("sha256:{}", hex_lower(&self.0))
     }
 }
 
 impl std::fmt::Display for Digest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        f.write_str("sha256:")?;
+        for byte in self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
     }
+}
+
+impl FromStr for Digest {
+    type Err = DigestParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let hex = value
+            .strip_prefix("sha256:")
+            .ok_or(DigestParseError::MissingPrefix)?;
+        if hex.len() != 64 {
+            return Err(DigestParseError::InvalidLength { len: hex.len() });
+        }
+        let mut bytes = [0_u8; 32];
+        for (idx, chunk) in hex.as_bytes().chunks_exact(2).enumerate() {
+            let hi = decode_hex_nibble(chunk[0]).ok_or(DigestParseError::InvalidHex)?;
+            let lo = decode_hex_nibble(chunk[1]).ok_or(DigestParseError::InvalidHex)?;
+            bytes[idx] = (hi << 4) | lo;
+        }
+        Ok(Self(bytes))
+    }
+}
+
+impl Serialize for Digest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_prefixed_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for Digest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum DigestParseError {
+    #[error("digest must start with `sha256:`")]
+    MissingPrefix,
+    #[error("sha256 digest must contain 64 hex chars, got {len}")]
+    InvalidLength { len: usize },
+    #[error("sha256 digest contains non-hex characters")]
+    InvalidHex,
+}
+
+fn decode_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn hex_lower(bytes: &[u8; 32]) -> String {
+    let mut out = String::with_capacity(64);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut out, "{byte:02x}").expect("write to string");
+    }
+    out
 }
 
 /// Hashes a value with JCS-canonicalised serde JSON then SHA-256, returning
@@ -199,7 +281,7 @@ pub fn canonical_digest<T: Serialize + ?Sized>(value: &T) -> Digest {
     let bytes = serde_jcs::to_vec(value).unwrap_or_else(|_| b"null".to_vec());
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
-    Digest::new(format!("sha256:{:x}", hasher.finalize()))
+    Digest::from_bytes(hasher.finalize().into())
 }
 
 /// Computes the server identity digest from the MCP `initialize` response.
@@ -234,12 +316,11 @@ pub fn compute_server_identity_digest(capabilities: &Value, server_info: &Value)
 /// with the same `McpImportedTool` projection so digests are comparable across
 /// code paths.
 pub fn compute_tools_digest(tools: &[McpImportedTool]) -> Digest {
-    compute_tools_digest_from_entries(tools.iter().map(|tool| {
-        (
-            tool.mcp_tool_name.as_str(),
-            tool.input_schema_digest.as_str(),
-        )
-    }))
+    compute_tools_digest_from_entries(
+        tools
+            .iter()
+            .map(|tool| (tool.mcp_tool_name.as_str(), &tool.input_schema_digest)),
+    )
 }
 
 /// Lower-level variant of [`compute_tools_digest`] for callers (e.g. the
@@ -247,9 +328,9 @@ pub fn compute_tools_digest(tools: &[McpImportedTool]) -> Digest {
 /// without a full `McpImportedTool` projection.
 pub fn compute_tools_digest_from_entries<'a, I>(entries: I) -> Digest
 where
-    I: IntoIterator<Item = (&'a str, &'a str)>,
+    I: IntoIterator<Item = (&'a str, &'a Digest)>,
 {
-    let mut pairs: Vec<(&str, &str)> = entries.into_iter().collect();
+    let mut pairs: Vec<(&str, &Digest)> = entries.into_iter().collect();
     pairs.sort_by(|a, b| a.0.cmp(b.0));
     let canonical: Vec<Value> = pairs
         .into_iter()
@@ -276,7 +357,7 @@ pub fn compute_server_config_digest(
     config: &McpServerConfig,
     imported_tools_digest: Option<&Digest>,
 ) -> Digest {
-    let tool_scope_digest = imported_tools_digest.map(Digest::as_str);
+    let tool_scope_digest = imported_tools_digest;
     let canonical = match &config.transport {
         Some(McpServerTransportConfig::StreamableHttp(http)) => json!({
             "server_id": server_id,
@@ -397,7 +478,9 @@ mod tests {
             mcp_tool_name: name.to_string(),
             description: Some(format!("{name} description")),
             input_schema: json!({ "type": "object", "properties": {} }),
-            input_schema_digest: Digest::new("sha256:input"),
+            input_schema_digest: Digest::new(
+                "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            ),
             output_mode: McpOutputMode::ContentEnvelope,
             access_level: ToolAccess::Read,
             approval: ApprovalRecord {
@@ -421,9 +504,15 @@ mod tests {
             },
             protocol_version: "2025-06-18".into(),
             server_info: Some(json!({ "name": "fake", "version": "0.1.0" })),
-            server_config_digest: Digest::new("sha256:server-config"),
-            server_identity_digest: Digest::new("sha256:server-identity"),
-            tools_digest: Digest::new("sha256:tools"),
+            server_config_digest: Digest::new(
+                "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+            ),
+            server_identity_digest: Digest::new(
+                "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+            ),
+            tools_digest: Digest::new(
+                "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+            ),
             secret_refs: vec![SecretRef::stdio_env("fake/api_token")],
             approval: ApprovalRecord {
                 state,
@@ -525,7 +614,9 @@ mod tests {
         let opaque = McpOutputMode::OpaqueJson;
         let schema = McpOutputMode::JsonSchema {
             schema: json!({ "type": "object" }),
-            digest: Digest::new("sha256:out"),
+            digest: Digest::new(
+                "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+            ),
         };
         for mode in [envelope, opaque, schema] {
             let json = serde_json::to_string(&mode).expect("serialize");
@@ -621,7 +712,8 @@ mod tests {
             sandbox: None,
             description: None,
         };
-        let tools_a = Digest::new("sha256:tools-a");
+        let tools_a =
+            Digest::new("sha256:8888888888888888888888888888888888888888888888888888888888888888");
         let a = compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools_a));
         let b = compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools_a));
         assert_eq!(a, b, "raw secret values are not an input, only refs are");
@@ -657,7 +749,8 @@ mod tests {
                 },
             });
         });
-        let tools_b = Digest::new("sha256:tools-b");
+        let tools_b =
+            Digest::new("sha256:9999999999999999999999999999999999999999999999999999999999999999");
         let changed_tools =
             compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools_b));
         assert_ne!(a, changed_tools);
@@ -704,7 +797,8 @@ mod tests {
             sandbox: None,
             description: None,
         };
-        let tools = Digest::new("sha256:tools");
+        let tools =
+            Digest::new("sha256:4444444444444444444444444444444444444444444444444444444444444444");
         let base = compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools));
 
         // Same input → same digest.
@@ -733,9 +827,14 @@ mod tests {
 
     #[test]
     fn digest_stable_for_same_input() {
-        let a = Digest::new("sha256:abc");
-        let b = Digest::new("sha256:abc");
+        let a =
+            Digest::new("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let b =
+            Digest::new("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         assert_eq!(a, b);
-        assert_eq!(a.as_str(), "sha256:abc");
+        assert_eq!(
+            a.to_string(),
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
     }
 }

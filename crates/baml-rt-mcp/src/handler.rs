@@ -616,8 +616,12 @@ mod tests {
     fn digest_mismatch_maps_to_contract_violation_not_invalid_argument() {
         let err = connection_error_to_session(ConnectionError::ToolsDigestMismatch {
             server_id: "remote".into(),
-            expected: "sha256:old".into(),
-            observed: "sha256:new".into(),
+            expected: baml_rt_tools::mcp_snapshot::Digest::new(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+            observed: baml_rt_tools::mcp_snapshot::Digest::new(
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
         });
         let classified = classified(err);
         assert_eq!(classified.code, "mcp_contract_violation");

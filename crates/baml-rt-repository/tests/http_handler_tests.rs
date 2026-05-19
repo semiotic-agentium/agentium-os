@@ -684,7 +684,9 @@ fn mcp_snapshot() -> baml_rt_tools::mcp_snapshot::McpServerSnapshot {
         mcp_tool_name: "get_meteo".into(),
         description: Some("Get weather".into()),
         input_schema: serde_json::json!({ "type": "object" }),
-        input_schema_digest: Digest::new("sha256:input"),
+        input_schema_digest: Digest::new(
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        ),
         output_mode: McpOutputMode::ContentEnvelope,
         access_level: ToolAccess::Read,
         approval: approved_mcp_record(),
@@ -701,8 +703,12 @@ fn mcp_snapshot() -> baml_rt_tools::mcp_snapshot::McpServerSnapshot {
         },
         protocol_version: "2025-06-18".into(),
         server_info: None,
-        server_config_digest: Digest::new("sha256:server"),
-        server_identity_digest: Digest::new("sha256:identity"),
+        server_config_digest: Digest::new(
+            "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        ),
+        server_identity_digest: Digest::new(
+            "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        ),
         tools_digest: compute_tools_digest(&tools),
         secret_refs: vec![],
         approval: approved_mcp_record(),

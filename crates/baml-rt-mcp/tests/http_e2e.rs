@@ -389,10 +389,12 @@ fn https_launch_direct(
         server_id: SERVER_ID.into(),
         startup_timeout: Duration::from_secs(10),
         call_timeout: Duration::from_secs(10),
-        server_config_digest: "sha256:direct-construction".into(),
+        server_config_digest: Digest::new(
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        ),
         protocol_version: PROTOCOL_VERSION.into(),
-        expected_identity_digest: identity.as_str().to_string(),
-        expected_tools_digest: tools_digest.as_str().to_string(),
+        expected_identity_digest: identity,
+        expected_tools_digest: tools_digest,
         cache_root: PathBuf::new(),
         kind: LaunchKind::Http(HttpLaunchConfig {
             url: url.into(),
@@ -420,10 +422,12 @@ fn http_launch_direct(url: &str) -> ServerLaunch {
         server_id: SERVER_ID.into(),
         startup_timeout: Duration::from_secs(10),
         call_timeout: Duration::from_secs(10),
-        server_config_digest: "sha256:direct-construction".into(),
+        server_config_digest: Digest::new(
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        ),
         protocol_version: PROTOCOL_VERSION.into(),
-        expected_identity_digest: identity.as_str().to_string(),
-        expected_tools_digest: tools_digest.as_str().to_string(),
+        expected_identity_digest: identity,
+        expected_tools_digest: tools_digest,
         cache_root: PathBuf::new(),
         kind: LaunchKind::Http(HttpLaunchConfig {
             url: url.into(),
@@ -598,7 +602,9 @@ async fn http_server_config_digest_mismatch_fails_at_resolve() {
         cache.path(),
         &server_config,
         vec![approved_tool(schema())],
-        Some(Digest::new("sha256:not-the-real-digest")),
+        Some(Digest::new(
+            "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        )),
     );
 
     let resolver = build_resolver(server_config, cache.path());

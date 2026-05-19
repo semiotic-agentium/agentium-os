@@ -71,7 +71,9 @@ fn approved_snapshot(tools: Vec<McpImportedTool>) -> McpServerSnapshot {
         },
         protocol_version: "2025-06-18".into(),
         server_info: None,
-        server_config_digest: Digest::new("sha256:server"),
+        server_config_digest: Digest::new(
+            "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        ),
         server_identity_digest: fixture_identity_digest(),
         tools_digest: compute_tools_digest(&tools),
         secret_refs: vec![SecretRef::stdio_env("GRAFANA_TOKEN")],
@@ -588,7 +590,8 @@ async fn identity_mismatch_fails_closed_on_first_send() {
         "search_dashboards",
         json!({"type": "object"}),
     )]);
-    snap.server_identity_digest = Digest::new("sha256:not-the-server-we-approved");
+    snap.server_identity_digest =
+        Digest::new("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     write_snapshot(cache.path(), &snap).unwrap();
     let fixture_path = cache.path().join("fixture.json");
     write_fixture(&fixture_path, &sample_fixture());

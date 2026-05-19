@@ -1111,7 +1111,7 @@ impl McpRegistryStore for SurrealStore {
             .query(format!(
                 "UPSERT {TBL_MCP_SNAPSHOT_BLOBS} SET snapshot_digest = $snapshot_digest, snapshot_json = $snapshot_json WHERE snapshot_digest = $snapshot_digest"
             ))
-            .bind(("snapshot_digest", snapshot_digest.as_str().to_string()))
+            .bind(("snapshot_digest", snapshot_digest.to_string()))
             .bind(("snapshot_json", snapshot_json.clone()))
             .await
             .map_err(map_surreal_write)?;
@@ -1153,16 +1153,16 @@ impl McpRegistryStore for SurrealStore {
             ))
             .bind(("server_id", server_id.clone()))
             .bind(("version", next_version as i64))
-            .bind(("snapshot_digest", snapshot_digest.as_str().to_string()))
+            .bind(("snapshot_digest", snapshot_digest.to_string()))
             .bind((
                 "server_config_digest",
-                snapshot.server_config_digest.as_str().to_string(),
+                snapshot.server_config_digest.to_string(),
             ))
             .bind((
                 "server_identity_digest",
-                snapshot.server_identity_digest.as_str().to_string(),
+                snapshot.server_identity_digest.to_string(),
             ))
-            .bind(("tools_digest", snapshot.tools_digest.as_str().to_string()))
+            .bind(("tools_digest", snapshot.tools_digest.to_string()))
             .bind(("protocol_version", snapshot.protocol_version.clone()))
             .bind(("transport_json", transport_json_string))
             .bind(("secret_refs_json", secret_refs_json_string))
@@ -1202,10 +1202,7 @@ impl McpRegistryStore for SurrealStore {
                 .bind(("server_version", next_version as i64))
                 .bind(("platform_tool_name", tool.platform_tool_name.clone()))
                 .bind(("mcp_tool_name", tool.mcp_tool_name.clone()))
-                .bind((
-                    "input_schema_digest",
-                    tool.input_schema_digest.as_str().to_string(),
-                ))
+                .bind(("input_schema_digest", tool.input_schema_digest.to_string()))
                 .bind((
                     "output_mode_json",
                     encode_json(&output_mode_json, "output_mode_json")?,
@@ -1526,8 +1523,12 @@ mod tests {
             },
             protocol_version: "2025-06-18".into(),
             server_info: Some(json!({ "name": "meteo" })),
-            server_config_digest: Digest::new("sha256:server"),
-            server_identity_digest: Digest::new("sha256:identity"),
+            server_config_digest: Digest::new(
+                "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            ),
+            server_identity_digest: Digest::new(
+                "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            ),
             tools_digest: compute_tools_digest(&tools),
             secret_refs: vec![SecretRef {
                 version: Some("1".into()),
@@ -1542,7 +1543,8 @@ mod tests {
     #[tokio::test]
     async fn mcp_snapshot_versions_round_trip() {
         let store = SurrealStore::open_in_memory().await.unwrap();
-        let first = snapshot("sha256:input1");
+        let first =
+            snapshot("sha256:11111111111111111111111111111111111111111111111111111111111111111");
         let inserted = store.put_mcp_snapshot(&first).await.unwrap();
         assert_eq!(inserted.server_id, "meteo");
         assert_eq!(inserted.version, 1);
@@ -1556,7 +1558,8 @@ mod tests {
             .unwrap();
         assert_eq!(latest, first);
 
-        let second = snapshot("sha256:input2");
+        let second =
+            snapshot("sha256:11111111111111111111111111111111111111111111111111111111111111112");
         let inserted_second = store.put_mcp_snapshot(&second).await.unwrap();
         assert_eq!(inserted_second.version, 2);
         let versions = store.list_mcp_server_versions("meteo").await.unwrap();
@@ -1576,7 +1579,9 @@ mod tests {
     async fn mcp_tool_lookup_and_stale_transition() {
         let store = SurrealStore::open_in_memory().await.unwrap();
         store
-            .put_mcp_snapshot(&snapshot("sha256:input1"))
+            .put_mcp_snapshot(&snapshot(
+                "sha256:11111111111111111111111111111111111111111111111111111111111111111",
+            ))
             .await
             .unwrap();
 
