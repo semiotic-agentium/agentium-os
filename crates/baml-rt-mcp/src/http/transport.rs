@@ -77,7 +77,6 @@ pub struct HttpTransportBuilder {
 }
 
 impl HttpTransportBuilder {
-    #[must_use]
     pub fn new(server_id: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
             server_id: server_id.into(),
@@ -93,7 +92,6 @@ impl HttpTransportBuilder {
         }
     }
 
-    #[must_use]
     pub fn from_launch(server_id: &str, config: &HttpLaunchConfig) -> Self {
         Self::new(server_id, config.url.clone())
             .with_headers(config.static_headers.clone())
@@ -108,25 +106,21 @@ impl HttpTransportBuilder {
             .with_extra_ca_certs(config.extra_ca_certs_pem.clone())
     }
 
-    #[must_use]
     pub fn with_headers(mut self, headers: Vec<HttpHeader>) -> Self {
         self.static_headers = headers;
         self
     }
 
-    #[must_use]
     pub fn with_secrets(mut self, secrets: Vec<ResolvedSecret>) -> Self {
         self.resolved_secrets = secrets;
         self
     }
 
-    #[must_use]
     pub fn with_policy(mut self, policy: HttpNetworkPolicyConfig) -> Self {
         self.network_policy = policy;
         self
     }
 
-    #[must_use]
     pub fn with_timeouts(
         mut self,
         connect_timeout: Duration,
@@ -139,19 +133,16 @@ impl HttpTransportBuilder {
         self
     }
 
-    #[must_use]
     pub fn with_pooling(mut self, max_idle_per_host: u64) -> Self {
         self.max_idle_per_host = max_idle_per_host;
         self
     }
 
-    #[must_use]
     pub fn with_extra_ca(mut self, pem: Vec<u8>) -> Self {
         self.extra_ca_certs_pem.push(pem);
         self
     }
 
-    #[must_use]
     pub fn with_extra_ca_certs(mut self, pems: Vec<Vec<u8>>) -> Self {
         self.extra_ca_certs_pem = pems;
         self

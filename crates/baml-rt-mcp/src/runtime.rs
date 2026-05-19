@@ -937,9 +937,7 @@ fn spawn_stderr_drain(
 ) -> Option<JoinHandle<()>> {
     const MAX_CAPTURED_STDERR: usize = 64 * 1024;
 
-    let Some(mut stderr) = stderr else {
-        return None;
-    };
+    let mut stderr = stderr?;
     Some(tokio::spawn(async move {
         let mut captured = Vec::new();
         let mut total = 0usize;
