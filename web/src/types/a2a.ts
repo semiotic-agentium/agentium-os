@@ -1,3 +1,11 @@
+/** Event subscription declared in an agent's manifest discovery section. */
+export interface AgentEventSubscription {
+  schema_versions: string[];
+  source_kinds: string[];
+  source_keys: string[];
+  source_key_prefixes: string[];
+}
+
 /** Agent card nested in discovery response */
 export interface AgentCardInfo {
   name: string;
@@ -8,6 +16,8 @@ export interface AgentCardInfo {
   baml_functions?: string[];
   description?: string | null;
   capabilities: string[];
+  tags?: string[];
+  subscriptions?: AgentEventSubscription[];
 }
 
 /** Agent discovery entry from GET /agents */

@@ -5,6 +5,7 @@ import ChatTabs from "./components/ChatTabs.vue";
 import ChatWindow from "./components/ChatWindow.vue";
 import ConversationHistorySelector from "./components/ConversationHistorySelector.vue";
 import Dashboard from "./components/Dashboard.vue";
+import EventConsole from "./components/EventConsole.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import ErrorBoundary from "./components/ErrorBoundary.vue";
 import Navbar from "./components/Navbar.vue";
@@ -119,6 +120,23 @@ function selectConversationHistory(option: { contextId: string; taskId?: string 
 
 const { confirm } = useConfirm();
 
+async function openContextFromEventConsole(payload: {
+  contextId: string;
+  agent: AgentDiscoveryEntry;
+}): Promise<void> {
+  if (activeClient.value) {
+    if (
+      activeClient.value.selectedAgent.value?.agent_package !== payload.agent.agent_package ||
+      activeClient.value.selectedAgent.value?.agent_instance_id !==
+        payload.agent.agent_instance_id
+    ) {
+      activeClient.value.selectAgent(payload.agent);
+    }
+    await activeClient.value.loadConversationHistoryContext(payload.contextId);
+  }
+  view.value = "chat";
+}
+
 async function handleSelectAgent(agent: AgentDiscoveryEntry): Promise<void> {
   if (messages.value.length > 0 && agent.agent_package !== selectedAgent.value?.agent_package) {
     const ok = await confirm(
@@ -133,7 +151,7 @@ const { theme, toggle: toggleTheme } = useTheme();
 const { createQuery } = useProvenanceOps();
 
 // Active view — chat is the landing page; dashboard is a debug/metrics surface
-const view = ref<"dashboard" | "chat" | "settings">("chat");
+const view = ref<"dashboard" | "chat" | "events" | "settings">("chat");
 
 // Traces pane: hidden by default; persisted so power users keep it open across reloads
 const TRACES_STORAGE_KEY = "agentium:showTraces";
@@ -149,7 +167,7 @@ function toggleTraces() {
 const isApplyingRouteState = ref(false);
 let lastRouteKey = "";
 
-type ViewName = "dashboard" | "chat" | "settings";
+type ViewName = "dashboard" | "chat" | "events" | "settings";
 type UiRouteState = {
   view: ViewName;
   agentPackage: string | null;
@@ -158,7 +176,7 @@ type UiRouteState = {
 };
 
 function parseView(raw: string | null): ViewName {
-  if (raw === "chat" || raw === "settings" || raw === "dashboard") return raw;
+  if (raw === "chat" || raw === "settings" || raw === "dashboard" || raw === "events") return raw;
   return "chat";
 }
 
@@ -458,6 +476,10 @@ watch(
           />
         </div>
       </div>
+      </ErrorBoundary>
+
+      <ErrorBoundary v-else-if="view === 'events'">
+        <EventConsole :agents="agents" @open-context="openContextFromEventConsole" />
       </ErrorBoundary>
 
       <ErrorBoundary v-else-if="view === 'settings'">

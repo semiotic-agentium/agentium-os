@@ -43,9 +43,10 @@ import type {
   LlmPromptOperation,
 } from "../types/a2a";
 
-let counter = 0;
+import { mintTemporalId } from "../utils/temporalId";
+
 function nextId(prefix: string): string {
-  return `${prefix}-${Date.now()}-${++counter}`;
+  return mintTemporalId(prefix);
 }
 
 function sortLlmPromptOperations(a: LlmPromptOperation, b: LlmPromptOperation): number {
