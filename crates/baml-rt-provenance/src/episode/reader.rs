@@ -27,7 +27,6 @@ use baml_rt_tools::{
     prompt_projection::episode_session_history_projection_options,
     tools::ToolRegistry,
 };
-use futures_util::future::try_join_all;
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
@@ -38,7 +37,7 @@ use super::{
     from_graph::episode_metadata_from_task_graph,
 };
 use crate::{
-    citation_queries::query_plan_citations,
+    citation_queries::query_plan_citations_for_plans,
     error::{ProvenanceError, Result},
     graph_export::export_graph_for_task,
     store::{ProvenancePlanningQuery, ProvenanceQueryApi},
@@ -177,7 +176,7 @@ impl EpisodeReader {
             },
             self.store.get_task_agent_id(task_id),
             self.store
-                .query_conversation_context(context_id, None, Some(task_id)),
+                .query_conversation_context(context_id, None, Some(task_id), None),
             self.store.query_intent_history(task_id, None),
             self.store.query_plan_history(task_id, None),
             async {
@@ -255,20 +254,15 @@ impl EpisodeReader {
             })
             .collect();
 
-        // Fetch plan citations for all plans concurrently (one query per plan).
-        let citation_futures: Vec<_> = plans_db
-            .iter()
-            .map(|p| {
-                let store = Arc::clone(&self.store);
-                let tid_owned = tid.to_string();
-                let plan_id = p.plan_id.clone();
-                async move { query_plan_citations(&store, &tid_owned, &plan_id).await }
-            })
-            .collect();
-        let all_plan_citations = try_join_all(citation_futures).await?;
+        let plan_ids: Vec<String> = plans_db.iter().map(|p| p.plan_id.clone()).collect();
+        let citations_by_plan = query_plan_citations_for_plans(&self.store, tid, &plan_ids).await?;
 
         let mut plans: Vec<PlanRevision> = Vec::new();
-        for (p, all_cites) in plans_db.iter().zip(all_plan_citations) {
+        for p in &plans_db {
+            let all_cites = citations_by_plan
+                .get(&p.plan_id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
             let mut by_step: HashMap<String, Vec<String>> = HashMap::new();
             for e in all_cites {
                 let key = e

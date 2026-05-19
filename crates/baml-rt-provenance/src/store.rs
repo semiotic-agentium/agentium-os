@@ -196,6 +196,7 @@ pub trait ProvenanceQueryApi: Send + Sync {
         context_id: &ContextId,
         limit: Option<usize>,
         task_id: Option<&TaskId>,
+        agent_package: Option<&str>,
     ) -> Result<Vec<ProvenanceConversationContextItem>>;
 
     /// Incremental conversation rows strictly after `after_event_order` in ascending order.
@@ -207,9 +208,10 @@ pub trait ProvenanceQueryApi: Send + Sync {
         after_event_order: u64,
         limit: Option<usize>,
         task_id: Option<&TaskId>,
+        agent_package: Option<&str>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
         let rows = self
-            .query_conversation_context(context_id, None, task_id)
+            .query_conversation_context(context_id, None, task_id, agent_package)
             .await?;
         let mut filtered = rows
             .into_iter()

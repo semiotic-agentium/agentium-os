@@ -132,7 +132,12 @@ impl baml_rt_api::ConversationHistoryService for ConversationHistoryServiceImpl 
     > {
         let rows = self
             .store
-            .query_conversation_context(&request.context_id, None, request.task_id.as_ref())
+            .query_conversation_context(
+                &request.context_id,
+                None,
+                request.task_id.as_ref(),
+                request.agent_package.as_deref(),
+            )
             .await
             .map_err(|e| baml_rt_api::ConversationHistoryError::Other(Box::new(e)))?;
 
@@ -171,6 +176,7 @@ impl baml_rt_api::ConversationHistoryService for ConversationHistoryServiceImpl 
                 request.after_event_order,
                 Some(request.limit),
                 request.task_id.as_ref(),
+                request.agent_package.as_deref(),
             )
             .await
             .map_err(|e| baml_rt_api::ConversationHistoryError::Other(Box::new(e)))?;

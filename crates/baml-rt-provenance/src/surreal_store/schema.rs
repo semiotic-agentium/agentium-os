@@ -27,6 +27,12 @@ pub(super) async fn init_schema(db: &Surreal<Any>) -> Result<()> {
         format!("DEFINE INDEX IF NOT EXISTS idx_node_label ON {TBL_NODE} FIELDS label"),
         // Activity anchor index (used by payload joins)
         format!("DEFINE INDEX IF NOT EXISTS idx_node_activity_anchor ON {TBL_NODE} FIELDS props.a2a_activity_anchor"),
+        // Paginated metamodel reads: label filter + chronological sort keys.
+        format!("DEFINE INDEX IF NOT EXISTS idx_node_label_event_order ON {TBL_NODE} FIELDS label, props.a2a_event_order"),
+        format!("DEFINE INDEX IF NOT EXISTS idx_node_label_prov_time ON {TBL_NODE} FIELDS label, props.prov_time"),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_node_label_activity_anchor ON {TBL_NODE} FIELDS label, props.a2a_activity_anchor"
+        ),
         // Edge table: composite + selective compound indexes (avoid redundant single-column idx).
         format!("REMOVE INDEX IF EXISTS idx_edge_from ON {TBL_EDGE}"),
         format!("REMOVE INDEX IF EXISTS idx_edge_to ON {TBL_EDGE}"),
@@ -35,6 +41,12 @@ pub(super) async fn init_schema(db: &Surreal<Any>) -> Result<()> {
         format!("DEFINE INDEX IF NOT EXISTS idx_edge_to_rel ON {TBL_EDGE} FIELDS to_id, rel_type"),
         format!("DEFINE INDEX IF NOT EXISTS idx_edge_to_rel_from_label ON {TBL_EDGE} FIELDS to_id, rel_type, from_label"),
         format!("DEFINE INDEX IF NOT EXISTS idx_edge_from_label_rel ON {TBL_EDGE} FIELDS from_label, rel_type"),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_edge_from_rel_to_label ON {TBL_EDGE} FIELDS from_id, rel_type, to_label"
+        ),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_edge_rel_from_to_label ON {TBL_EDGE} FIELDS rel_type, from_label, to_label"
+        ),
         // Head-pointer edges (`WAS_LAST_TRANSITIONED_TO`,
         // `WAS_LAST_EXECUTED_BY`) carry a cardinality-one invariant per
         // `(rel_type, from_id)`: a Task has exactly one current TaskState

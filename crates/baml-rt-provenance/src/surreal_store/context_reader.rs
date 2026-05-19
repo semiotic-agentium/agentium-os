@@ -135,7 +135,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
         context_id: &ContextId,
         limit: Option<usize>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.conversation_context_filtered(context_id, limit, None, None, false)
+        self.conversation_context_filtered(context_id, limit, None, None, None, false)
             .await
     }
 
@@ -145,7 +145,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
         limit: Option<usize>,
         task_id: Option<&TaskId>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.conversation_context_filtered(context_id, limit, task_id, None, false)
+        self.conversation_context_filtered(context_id, limit, task_id, None, None, false)
             .await
     }
 }
@@ -167,6 +167,7 @@ impl SurrealProvenanceStore {
         context_id: &ContextId,
         limit: Option<usize>,
         task_id: Option<&TaskId>,
+        agent_package: Option<&str>,
         after_event_order: Option<u64>,
         forward_limit: bool,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
@@ -203,6 +204,10 @@ impl SurrealProvenanceStore {
             None => "",
         };
 
+        let agent_filter_sql = agent_package
+            .map(crate::metamodel::query::conversation_node_matches_agent_package_sql)
+            .unwrap_or_default();
+
         // Single SCOPED_TO edge traversal: fetch all Message, ToolCall, SessionStep
         // nodes scoped to this context in one query.
         let main_query = format!(
@@ -215,11 +220,15 @@ impl SurrealProvenanceStore {
              AND (label != 'ToolCall' OR props.a2a_activity_outcome IN ['Success', 'Failed']) \
              {after_filter_sql} \
              {task_filter_sql} \
+             {agent_filter_sql} \
              ORDER BY event_order ASC, node_id ASC"
         );
 
         let mut q = self.db.query(&main_query);
         q = q.bind(("ctx_node_id", ctx_node_id.clone()));
+        if let Some(pkg) = agent_package {
+            q = q.bind(("agent_pkg", pkg.to_string()));
+        }
         if let Some(tid) = task_id {
             q = q.bind(("task_entity_id", task_entity_id_string_raw(tid.as_str())));
             q = q.bind((
@@ -279,10 +288,13 @@ impl SurrealProvenanceStore {
                 "SELECT {PAYLOAD_ROW_SELECT} FROM {TBL_PAYLOAD} WHERE payload_id IN [{in_list}]"
             );
             let prows: Vec<Value> = self.query_sql_rows(&pq).await?;
+            let decoded: Vec<PayloadRecord> = prows
+                .into_iter()
+                .map(decode_payload_row)
+                .collect::<Result<Vec<_>>>()?;
+            let hydrated = self.hydrate_payload_records(decoded).await?;
             let mut map = HashMap::new();
-            for v in prows {
-                let rec = decode_payload_row(v)?;
-                let rec = self.hydrate_payload_record(rec).await?;
+            for rec in hydrated {
                 map.insert(rec.payload_id.clone(), rec);
             }
             map
@@ -801,8 +813,9 @@ impl ProvenanceQueryApi for SurrealProvenanceStore {
         context_id: &ContextId,
         limit: Option<usize>,
         task_id: Option<&TaskId>,
+        agent_package: Option<&str>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.conversation_context_filtered(context_id, limit, task_id, None, false)
+        self.conversation_context_filtered(context_id, limit, task_id, agent_package, None, false)
             .await
     }
 
@@ -812,11 +825,13 @@ impl ProvenanceQueryApi for SurrealProvenanceStore {
         after_event_order: u64,
         limit: Option<usize>,
         task_id: Option<&TaskId>,
+        agent_package: Option<&str>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
         self.conversation_context_filtered(
             context_id,
             limit,
             task_id,
+            agent_package,
             Some(after_event_order),
             true,
         )

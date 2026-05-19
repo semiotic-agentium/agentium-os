@@ -4,7 +4,7 @@
 
 //! Payload rows, archive refs, extraction from [`crate::events::ProvEvent`], and payload queries.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use baml_rt_conversation::view::{
     ConversationItemContent, ProvenanceConversationContextItem, SessionStepOp,
@@ -271,20 +271,34 @@ pub(super) fn decode_payload_row(v: Value) -> Result<PayloadRecord> {
 }
 
 impl SurrealProvenanceStore {
-    async fn read_payload_blob_body(&self, content_hash: &str) -> Result<Option<String>> {
-        let query = format!("SELECT body FROM {TBL_PAYLOAD_BLOB} WHERE content_hash = $h LIMIT 1");
-        let response = self
-            .db
-            .query(&query)
-            .bind(("h", content_hash.to_string()))
-            .await
-            .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
-        Ok(rows.into_iter().next().and_then(|row| {
-            row.get("body")
-                .and_then(Value::as_str)
-                .map(std::string::ToString::to_string)
-        }))
+    /// Batch-fetch blob bodies for offload-backed payload rows (one round trip).
+    async fn read_payload_blob_bodies(
+        &self,
+        content_hashes: &[String],
+    ) -> Result<HashMap<String, String>> {
+        if content_hashes.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let in_list = content_hashes
+            .iter()
+            .map(|h| format!("'{h}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let query = format!(
+            "SELECT content_hash, body FROM {TBL_PAYLOAD_BLOB} WHERE content_hash IN [{in_list}]"
+        );
+        let rows: Vec<Value> = self.query_sql_rows(&query).await?;
+        let mut out = HashMap::with_capacity(rows.len());
+        for row in rows {
+            let Some(hash) = row.get("content_hash").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(body) = row.get("body").and_then(Value::as_str) else {
+                continue;
+            };
+            out.insert(hash.to_string(), body.to_string());
+        }
+        Ok(out)
     }
 
     pub(crate) async fn hydrate_payload_record(
@@ -294,11 +308,51 @@ impl SurrealProvenanceStore {
         if let Some(ref h) = p.content_hash
             && !h.is_empty()
             && p.payload_json.is_empty()
-            && let Some(body) = self.read_payload_blob_body(h).await?
         {
-            p.payload_json = body;
+            let bodies = self
+                .read_payload_blob_bodies(std::slice::from_ref(h))
+                .await?;
+            if let Some(body) = bodies.get(h) {
+                p.payload_json = body.clone();
+            }
         }
         Ok(p)
+    }
+
+    pub(crate) async fn hydrate_payload_records(
+        &self,
+        records: Vec<PayloadRecord>,
+    ) -> Result<Vec<PayloadRecord>> {
+        if records.is_empty() {
+            return Ok(records);
+        }
+        let hashes: Vec<String> = records
+            .iter()
+            .filter_map(|p| {
+                if p.content_hash.as_ref().is_some_and(|h| !h.is_empty())
+                    && p.payload_json.is_empty()
+                {
+                    p.content_hash.clone()
+                } else {
+                    None
+                }
+            })
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        let bodies = self.read_payload_blob_bodies(&hashes).await?;
+        Ok(records
+            .into_iter()
+            .map(|mut p| {
+                if let Some(ref h) = p.content_hash
+                    && p.payload_json.is_empty()
+                    && let Some(body) = bodies.get(h)
+                {
+                    p.payload_json = body.clone();
+                }
+                p
+            })
+            .collect())
     }
 
     /// Fill [`SessionStepContent::send_done_replay_payload`] using deterministic payload_id
@@ -338,10 +392,13 @@ impl SurrealProvenanceStore {
             "SELECT {PAYLOAD_ROW_SELECT} FROM {TBL_PAYLOAD} WHERE payload_id IN [{in_list}]"
         );
         let payload_rows: Vec<Value> = self.query_sql_rows(&query).await?;
+        let decoded: Vec<PayloadRecord> = payload_rows
+            .into_iter()
+            .map(decode_payload_row)
+            .collect::<Result<Vec<_>>>()?;
+        let hydrated = self.hydrate_payload_records(decoded).await?;
         let mut payload_map: HashMap<String, PayloadRecord> = HashMap::new();
-        for v in payload_rows {
-            let rec = decode_payload_row(v)?;
-            let rec = self.hydrate_payload_record(rec).await?;
+        for rec in hydrated {
             payload_map.insert(rec.payload_id.clone(), rec);
         }
 
@@ -404,12 +461,11 @@ impl SurrealProvenanceStore {
             .await
             .map_err(map_surreal_error)?;
         let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
-        let mut out = Vec::new();
-        for v in rows {
-            let rec = decode_payload_row(v)?;
-            out.push(self.hydrate_payload_record(rec).await?);
-        }
-        Ok(out)
+        let decoded: Vec<PayloadRecord> = rows
+            .into_iter()
+            .map(decode_payload_row)
+            .collect::<Result<Vec<_>>>()?;
+        self.hydrate_payload_records(decoded).await
     }
 
     /// Payload text search via SurrealDB BM25 full-text index.

@@ -12,7 +12,7 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{
     AgentType, ProvEvent, ProvenanceArchivePayload, ProvenanceError, ProvenanceOpsQuery,
-    ProvenanceWriter, SurrealStoreBuilder,
+    ProvenanceQueryApi, ProvenanceWriter, SurrealStoreBuilder,
 };
 use serde_json::{Value, json};
 
@@ -292,5 +292,71 @@ async fn corrupt_payload_row_errors_on_resolve() {
     assert!(
         matches!(err, ProvenanceError::CorruptPayloadRow { .. }),
         "expected CorruptPayloadRow, got {err:?}"
+    );
+}
+
+/// Blob offload rows hydrate via a single `content_hash IN (...)` fetch per batch.
+#[tokio::test]
+async fn batch_hydrates_multiple_blob_payloads_in_one_fetch() {
+    let store = isolated_store().await;
+    let context_id = ContextId::new(55, 55);
+    let task_id = TaskId::from_external(ExternalId::new("task-batch-hydrate"));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000088").unwrap());
+    let message_id = MessageId::from_external(ExternalId::new("msg-batch-hydrate"));
+
+    seed_through_tool_started(
+        store.as_ref(),
+        &context_id,
+        &task_id,
+        &agent_id,
+        &message_id,
+    )
+    .await;
+
+    let huge = "x".repeat(20 * 1024);
+    for phase in ["started", "complete"] {
+        let event = if phase == "started" {
+            ProvEvent::tool_call_started_task(
+                context_id.clone(),
+                task_id.clone(),
+                "echo".to_string(),
+                None,
+                json!({}),
+                json!({
+                    "agent_id": agent_id.as_str(),
+                    "message_id": message_id.as_str(),
+                    "phase": phase,
+                }),
+                None,
+            )
+        } else {
+            ProvEvent::tool_call_completed_task(
+                context_id.clone(),
+                task_id.clone(),
+                "echo".to_string(),
+                None,
+                json!({}),
+                json!({
+                    "agent_id": agent_id.as_str(),
+                    "message_id": message_id.as_str(),
+                    "phase": phase,
+                    "result": json!({ "blob": huge }),
+                }),
+                2,
+                Outcome::Success,
+                None,
+            )
+        };
+        store.add_event(event).await.expect("tool event");
+    }
+
+    let convo = store
+        .query_conversation_context(&context_id, None, Some(&task_id), None)
+        .await
+        .expect("conversation context");
+    assert!(
+        !convo.is_empty(),
+        "expected hydrated conversation rows after blob batch fetch"
     );
 }

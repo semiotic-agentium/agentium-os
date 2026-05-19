@@ -21,6 +21,24 @@ use crate::{
 
 pub type MetricsRow = HashMap<String, Value>;
 
+async fn fetch_nodes_by_ids(
+    store: &SurrealProvenanceStore,
+    node_ids: &[String],
+    build_query: impl FnOnce(String) -> String,
+) -> Result<Vec<Value>> {
+    if node_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let in_list = node_ids
+        .iter()
+        .map(|id| format!("'{id}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let query = build_query(in_list);
+    let response = store.db().query(&query).await.map_err(map_surreal_error)?;
+    check_and_take_zero(response, map_surreal_error)
+}
+
 pub async fn session_totals_by_context(
     store: &SurrealProvenanceStore,
     context_id: &str,
@@ -97,20 +115,13 @@ pub async fn turn_totals_by_context(
         return Ok(Vec::new());
     }
 
-    let mut msg_rows: Vec<Value> = Vec::new();
-    for nid in &msg_ids {
-        let response = store
-            .db()
-            .query(format!(
-                "SELECT node_id, props.a2a_message_id AS message_id OMIT id \
-                 FROM {TBL_NODE} WHERE node_id = $nid LIMIT 1"
-            ))
-            .bind(("nid", nid.clone()))
-            .await
-            .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
-        msg_rows.extend(rows);
-    }
+    let msg_rows: Vec<Value> = fetch_nodes_by_ids(store, &msg_ids, |nid| {
+        format!(
+            "SELECT node_id, props.a2a_message_id AS message_id OMIT id \
+             FROM {TBL_NODE} WHERE node_id IN [{nid}]"
+        )
+    })
+    .await?;
     let msg_map: HashMap<String, String> = msg_rows
         .iter()
         .filter_map(|r| {
@@ -120,20 +131,10 @@ pub async fn turn_totals_by_context(
         })
         .collect();
 
-    let mut llm_rows: Vec<Value> = Vec::new();
-    for nid in &llm_ids {
-        let response = store
-            .db()
-            .query(format!(
-                "SELECT node_id, props OMIT id FROM {TBL_NODE} \
-                 WHERE node_id = $nid LIMIT 1"
-            ))
-            .bind(("nid", nid.clone()))
-            .await
-            .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
-        llm_rows.extend(rows);
-    }
+    let llm_rows: Vec<Value> = fetch_nodes_by_ids(store, &llm_ids, |nid| {
+        format!("SELECT node_id, props OMIT id FROM {TBL_NODE} WHERE node_id IN [{nid}]")
+    })
+    .await?;
     let llm_map: HashMap<String, Value> = llm_rows
         .iter()
         .filter_map(|r| {

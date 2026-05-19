@@ -26,13 +26,12 @@ use std::{
 };
 
 use baml_rt_observability::record_provenance_read;
-use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::Instrument;
 
 use crate::{
-    error::{ProvenanceError, Result},
+    error::Result,
     graph_export::activity_outcome::NodeActivityOutcome,
     graph_model::GraphNodeLabel,
     id_semantics::context_entity_id_string,
@@ -186,31 +185,19 @@ impl GraphExporter {
             .filter(|id| !scoped_ids.contains(id))
             .collect();
 
-        let mut extra_node_rows: Vec<Value> = Vec::new();
-        if !extra_ids.is_empty() {
-            // Fetch extra target nodes concurrently (small set — typically just AgentRuntimeInstance).
-            let fetch_results = join_all(extra_ids.iter().map(|extra_id| {
-                let store = Arc::clone(&self.store);
-                let nid = extra_id.clone();
-                async move {
-                    let response = store
-                        .db()
-                        .query(
-                            "SELECT node_id, label, props OMIT id FROM prov_node \
-                             WHERE node_id = $nid LIMIT 1",
-                        )
-                        .bind(("nid", nid))
-                        .await
-                        .map_err(map_surreal_error)?;
-                    let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
-                    Ok::<Vec<Value>, ProvenanceError>(rows)
-                }
-            }))
-            .await;
-            for result in fetch_results {
-                extra_node_rows.extend(result?);
-            }
-        }
+        let extra_node_rows: Vec<Value> = if extra_ids.is_empty() {
+            Vec::new()
+        } else {
+            let in_list = extra_ids
+                .iter()
+                .map(|id| format!("'{id}'"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let query = format!(
+                "SELECT node_id, label, props OMIT id FROM prov_node WHERE node_id IN [{in_list}]"
+            );
+            self.store.query_sql_rows(&query).await?
+        };
 
         let query_ms = t0.elapsed().as_millis();
         tracing::debug!(context_id = %context_id, query_ms, "export_context_core: DONE surreal, START parse");

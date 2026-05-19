@@ -368,6 +368,17 @@ impl<'a> AgentTarget<'a> {
 /// Two-hop OR pattern: Message ↔ MessageProcessing ↔ AgentRuntimeInstance.
 /// Returns a `(received OR emitted)` predicate that matches messages
 /// processed by the agent target.
+/// Conversation-context export filter: keep only Message / ToolCall / SessionStep rows
+/// owned by agents bootstrapped from the archive package bound as `$agent_pkg`.
+pub(crate) fn conversation_node_matches_agent_package_sql(pkg_bind: &str) -> String {
+    let subq = agent_instances_in_package_subquery(pkg_bind);
+    let msg = message_to_agent_traversal(AgentTarget::Subquery(&subq));
+    let call = call_activity_to_agent_traversal(AgentTarget::Subquery(&subq));
+    format!(
+        "AND ((label = 'Message' AND {msg}) OR (label IN ('ToolCall', 'SessionStep') AND {call}))"
+    )
+}
+
 fn message_to_agent_traversal(target: AgentTarget<'_>) -> String {
     let received = SemanticEdge::WasReceivedBy.as_rel_str();
     let emitted = SemanticEdge::WasEmittedBy.as_rel_str();
