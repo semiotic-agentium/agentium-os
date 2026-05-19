@@ -760,22 +760,14 @@ async fn verify_server_identity(
         }
     };
     let observed = compute_server_identity_digest(&capabilities, &server_info);
-    if observed != launch.expected_identity_digest {
-        record_mcp_digest_mismatch("identity", launch.kind.transport_kind().as_str());
-        tracing::error!(
-            target: "mcp.identity",
-            mcp_server_id = %launch.server_id,
-            expected = %launch.expected_identity_digest,
-            observed = %observed,
-            event = "mcp.identity_mismatch",
-            "MCP server identity digest does not match approved snapshot; refusing to bind. Re-import via `agent-platform mcp enable` and redeploy."
-        );
+    if let Err(err) = validate_digest::<IdentityDigest>(
+        launch,
+        launch.expected_identity_digest,
+        observed,
+        DigestMismatchContext::default(),
+    ) {
         signal_cancel(service).await;
-        return Err(ConnectionError::IdentityMismatch {
-            server_id: launch.server_id.clone(),
-            expected: launch.expected_identity_digest,
-            observed,
-        });
+        return Err(err);
     }
     Ok(())
 }
@@ -808,26 +800,116 @@ async fn verify_startup_tools_digest(
             });
         }
     };
-    if observed != launch.expected_tools_digest {
-        record_mcp_digest_mismatch("tools_startup", launch.kind.transport_kind().as_str());
+    if let Err(err) = validate_digest::<StartupToolsDigest>(
+        launch,
+        launch.expected_tools_digest,
+        observed,
+        DigestMismatchContext {
+            tool_count: Some(observed_tools.len()),
+        },
+    ) {
+        mark_drifted_and_persist(&launch.server_id, drifted, &launch.cache_root);
+        signal_cancel(service).await;
+        return Err(err);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DigestMismatchContext {
+    tool_count: Option<usize>,
+}
+
+trait DigestLabel {
+    const METRIC_REASON: &'static str;
+
+    fn log_mismatch(
+        launch: &ServerLaunch,
+        expected: Digest,
+        observed: Digest,
+        context: DigestMismatchContext,
+    );
+
+    fn mismatch_error(server_id: String, expected: Digest, observed: Digest) -> ConnectionError;
+}
+
+struct IdentityDigest;
+
+impl DigestLabel for IdentityDigest {
+    const METRIC_REASON: &'static str = "identity";
+
+    fn log_mismatch(
+        launch: &ServerLaunch,
+        expected: Digest,
+        observed: Digest,
+        _context: DigestMismatchContext,
+    ) {
+        tracing::error!(
+            target: "mcp.identity",
+            mcp_server_id = %launch.server_id,
+            expected = %expected,
+            observed = %observed,
+            event = "mcp.identity_mismatch",
+            "MCP server identity digest does not match approved snapshot; refusing to bind. Re-import via `agent-platform mcp enable` and redeploy."
+        );
+    }
+
+    fn mismatch_error(server_id: String, expected: Digest, observed: Digest) -> ConnectionError {
+        ConnectionError::IdentityMismatch {
+            server_id,
+            expected,
+            observed,
+        }
+    }
+}
+
+struct StartupToolsDigest;
+
+impl DigestLabel for StartupToolsDigest {
+    const METRIC_REASON: &'static str = "tools_startup";
+
+    fn log_mismatch(
+        launch: &ServerLaunch,
+        expected: Digest,
+        observed: Digest,
+        context: DigestMismatchContext,
+    ) {
         tracing::error!(
             target: "mcp.drift",
             mcp_server_id = %launch.server_id,
-            expected = %launch.expected_tools_digest,
+            expected = %expected,
             observed = %observed,
-            tool_count = observed_tools.len(),
+            tool_count = context.tool_count,
             event = "mcp.startup_tools_digest_mismatch",
             "MCP server tool surface drifted from approved snapshot at startup; refusing to bind. Re-import via `agent-platform mcp enable` to capture new tool schemas, then redeploy."
         );
-        mark_drifted_and_persist(&launch.server_id, drifted, &launch.cache_root);
-        signal_cancel(service).await;
-        return Err(ConnectionError::ToolsDigestMismatch {
-            server_id: launch.server_id.clone(),
-            expected: launch.expected_tools_digest,
-            observed,
-        });
     }
-    Ok(())
+
+    fn mismatch_error(server_id: String, expected: Digest, observed: Digest) -> ConnectionError {
+        ConnectionError::ToolsDigestMismatch {
+            server_id,
+            expected,
+            observed,
+        }
+    }
+}
+
+fn validate_digest<L: DigestLabel>(
+    launch: &ServerLaunch,
+    expected: Digest,
+    observed: Digest,
+    context: DigestMismatchContext,
+) -> Result<(), ConnectionError> {
+    if observed == expected {
+        return Ok(());
+    }
+    record_mcp_digest_mismatch(L::METRIC_REASON, launch.kind.transport_kind().as_str());
+    L::log_mismatch(launch, expected, observed, context);
+    Err(L::mismatch_error(
+        launch.server_id.clone(),
+        expected,
+        observed,
+    ))
 }
 
 fn spawn_stderr_drain(
