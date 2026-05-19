@@ -394,7 +394,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "CleeseSendToChapman" | "CleeseSendToChapman__act__system_internal_a2a" | "CleeseSendToChapman__continue__system_internal_a2a" | "CleeseSendToChapman__select";
+export type StepExecutorFunctionName = "CleeseSendToChapman" | "CleeseSendToChapman__active__system_internal_a2a" | "CleeseSendToChapman__entry";
 
 export interface SessionContext {
     contract_version: "session_context_v2";
@@ -431,23 +431,35 @@ export interface StepExecutorRunOptions {
     max_steps?: number;
 }
 
+export type ErrorDisposition =
+    | "host_retriable"
+    | "llm_correctable"
+    | "inform_and_continue"
+    | "fatal";
+
+export interface StepPlanRecovery {
+    code: string;
+    disposition: ErrorDisposition;
+    mistake: string;
+    invariant: string;
+    fix_steps?: string[];
+}
+
+export type StepExecutorRunEnvelope<R = unknown> = { outcome: "completed", last: R, steps: R[], session_context: SessionContext, selected_tool: string | null } | { outcome: "agent_correctable", recovery: StepPlanRecovery } | { outcome: "fatal", message: string, code?: string | null };
+
 /**
- * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
- * User-facing replies are synthesized once at session completion (and recorded there).
+ * Result of runGeneratedStepExecutor: discriminated envelope (`outcome`).
+ * On `completed`, fields match the former flat telemetry shape.
+ * `agent_correctable` carries structured recovery — not a thrown JS error.
+ * User-facing replies are still SessionResult.message from the chat handler.
  */
 
-export interface StepExecutorRunResult<R = unknown> {
-    last: R;
-    steps: R[];
-    session_context: SessionContext;
-    selected_tool: string | null;
-}
+export type StepExecutorRunResult<R = unknown> = StepExecutorRunEnvelope<R>;
 
 export interface StepExecutorFunctionMap {
   CleeseSendToChapman: { args: Parameters<typeof CleeseSendToChapman>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof CleeseSendToChapman>>; };
-  CleeseSendToChapman__act__system_internal_a2a: { args: Parameters<typeof CleeseSendToChapman__act__system_internal_a2a>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof CleeseSendToChapman__act__system_internal_a2a>>; };
-  CleeseSendToChapman__continue__system_internal_a2a: { args: Parameters<typeof CleeseSendToChapman__continue__system_internal_a2a>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof CleeseSendToChapman__continue__system_internal_a2a>>; };
-  CleeseSendToChapman__select: { args: Parameters<typeof CleeseSendToChapman__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof CleeseSendToChapman__select>>; };
+  CleeseSendToChapman__active__system_internal_a2a: { args: Parameters<typeof CleeseSendToChapman__active__system_internal_a2a>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof CleeseSendToChapman__active__system_internal_a2a>>; };
+  CleeseSendToChapman__entry: { args: Parameters<typeof CleeseSendToChapman__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof CleeseSendToChapman__entry>>; };
 }
 
 declare global {
@@ -455,5 +467,5 @@ declare global {
     stepExecutor: F,
     args: Omit<StepExecutorFunctionMap[F]["args"], keyof StepExecutorStateInput>,
     options?: StepExecutorRunOptions
-  ): Promise<StepExecutorRunResult<StepExecutorFunctionMap[F]["result"]>>;
+  ): Promise<StepExecutorRunEnvelope<StepExecutorFunctionMap[F]["result"]>>;
 }

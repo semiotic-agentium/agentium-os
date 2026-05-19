@@ -87,6 +87,34 @@ function displayTextBlockContent(raw: string | undefined): string {
   return stripLegacyStructuredPlaceholderLines(raw ?? "");
 }
 
+/** True when the agent bubble has visible text, tool activity, or structured data. */
+function agentHasRenderableBody(message: ChatMessage): boolean {
+  if ((message.text ?? "").trim().length > 0) return true;
+  const blocks = message.contentBlocks;
+  if (!blocks?.length) return false;
+  return blocks.some((b) => {
+    if (b.type === "text") return (b.text ?? "").trim().length > 0;
+    if (b.type === "tool") {
+      return (
+        (b.events?.length ?? 0) > 0 ||
+        b.completion != null ||
+        b.status === "running" ||
+        b.status === "streaming"
+      );
+    }
+    if (b.type === "data") return true;
+    return false;
+  });
+}
+
+const showStreamWorkingHint = computed(
+  () =>
+    props.message.role === "agent" &&
+    props.message.isStreaming === true &&
+    !props.message.awaitingInput &&
+    !agentHasRenderableBody(props.message),
+);
+
 const isRelayUser = computed(
   () => props.message.role === "user" && props.message.speakerKind === "relay",
 );
@@ -279,6 +307,14 @@ const isRelayUser = computed(
         </div>
       </div>
 
+      <p
+        v-if="showStreamWorkingHint"
+        class="stream-working-hint"
+        role="status"
+        aria-live="polite"
+      >
+        Waiting for assistant output…
+      </p>
       <TaskTimeline
         v-if="message.stateTransitions?.length"
         :transitions="message.stateTransitions"
@@ -316,6 +352,13 @@ const isRelayUser = computed(
   border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.stream-working-hint {
+  margin: 0.35rem 0 0.25rem;
+  font-size: 0.85rem;
+  opacity: 0.72;
+  font-style: italic;
 }
 
 .citation-chip-row {

@@ -90,6 +90,13 @@ define_prov_id_type!(
     ProvConstantActivitySemantics
 );
 
+#[cfg(test)]
+impl ProvActivityId {
+    pub fn test_only(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+}
+
 define_prov_id_type!(
     /// Provenance agent identifier.
     ProvAgentId,

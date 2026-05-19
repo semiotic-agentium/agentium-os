@@ -6,71 +6,139 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface ActionableGoal { goal: string;
-owner: string | null;
-due_date: string | null;
+export interface ArchivePageReadInput { archive_ref: string;
+offset: number | null;
+limit: number | null;
  }
 
-export interface AgentCandidate { agent_package: string;
+export interface ArchiveSearchReadInput { archive_ref: string;
+grep: string;
+offset: number | null;
+limit: number | null;
+ }
+
+export interface ConversationPart { text: string | null;
+raw: string | null;
+url: string | null;
+filename: string | null;
+media_type: string | null;
+ }
+
+export interface CoordinatorMetaOnly { kind: "meta";
+reason: string;
+ }
+
+export interface CoordinatorNeedTaskClarification { kind: "clarify";
+question: string;
+ }
+
+export interface CoordinatorReadyIntent { kind: "ready";
+inferred_intent: string;
+ }
+
+export interface DiscoverAgentsOpenInput { reason: string | null;
+ }
+
+export interface DiscoverAgentsSendInput { query: string | null;
+required_capabilities: string[] | null;
+required_schema_versions: string[] | null;
+required_source_kinds: string[] | null;
+limit: number | null;
+offset: number | null;
+ }
+
+export interface InternalA2aOpenInput { target: InternalA2aTarget;
+ }
+
+export interface InternalA2aSendInput { parts: ConversationPart[];
+ }
+
+export interface InternalA2aTarget { agent_package: string;
 agent_instance_id: string;
-name: string;
-description: string | null;
-capabilities: string[];
-tools: string[];
  }
 
-export interface CoordinatorAnswer { answer: string;
-actionable_goals: ActionableGoal[];
-sources: string[];
-confidence: number;
-gaps: string[];
-clarification_question: string | null;
- }
-
-export interface ForeachTemplate { id_prefix: string;
-target: WorkflowTarget;
-prompt_template: string;
-max_items: number | null;
- }
-
-export type NodeKind = "CallAgent" | "Foreach" | "Synthesize" | "Clarify" | "DirectAnswer";
-
-export interface NormalizedIterableOutput { items_json: string;
-confidence: number;
-notes: string[];
- }
-
-export interface WorkflowNode { id: string;
-kind: NodeKind;
-depends_on: string[];
-target: WorkflowTarget | null;
-prompt_template: string | null;
-foreach_from: string | null;
-foreach_template: ForeachTemplate | null;
-synthesis_template: string | null;
-rationale: string | null;
- }
-
-export interface WorkflowPlan { goal: string;
-nodes: WorkflowNode[];
-final_node_id: string | null;
- }
-
-export interface WorkflowTarget { agent_package: string;
+export interface StandardAgentPlanStep { agent_package: string;
 agent_instance_id: string;
+sub_message: string;
+ }
+
+export interface StandardStructuredPlan { intent_description: string;
+objective: string;
+plan_steps: StandardAgentPlanStep[];
+citations: string[] | null;
+ }
+
+export interface SystemDiscoverAgentsAbortStep { op: "Abort";
+ }
+
+export interface SystemDiscoverAgentsFinishStep { op: "Finish";
+ }
+
+export interface SystemDiscoverAgentsOpenStep { op: "Open";
+tool_name: "system/discover_agents";
+initial_input: DiscoverAgentsOpenInput | null;
+ }
+
+export interface SystemDiscoverAgentsPageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
+ }
+
+export interface SystemDiscoverAgentsSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
+ }
+
+export interface SystemDiscoverAgentsSendStep { op: "Send";
+input: DiscoverAgentsSendInput;
+citations: string[];
+ }
+
+export interface SystemDiscoverAgentsSessionPlan { step: SystemDiscoverAgentsOpenStep | SystemDiscoverAgentsSendStep | SystemDiscoverAgentsSearchReadStep | SystemDiscoverAgentsPageReadStep | SystemDiscoverAgentsFinishStep | SystemDiscoverAgentsAbortStep;
+citations: string[];
+ }
+
+export interface SystemInternalA2aAbortStep { op: "Abort";
+ }
+
+export interface SystemInternalA2aFinishStep { op: "Finish";
+ }
+
+export interface SystemInternalA2aOpenStep { op: "Open";
+tool_name: "system/internal_a2a";
+initial_input: InternalA2aOpenInput;
+ }
+
+export interface SystemInternalA2aPageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
+ }
+
+export interface SystemInternalA2aSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
+ }
+
+export interface SystemInternalA2aSendStep { op: "Send";
+input: InternalA2aSendInput;
+citations: string[];
+ }
+
+export interface SystemInternalA2aSessionPlan { step: SystemInternalA2aOpenStep | SystemInternalA2aSendStep | SystemInternalA2aSearchReadStep | SystemInternalA2aPageReadStep | SystemInternalA2aFinishStep | SystemInternalA2aAbortStep;
+citations: string[];
  }
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
 
 declare global {
 
-declare function NormalizeIterableOutput(args: { user_message: string; producer_output_text: string | null; producer_output_data_json: string | null; consumer_action_hint: string | null; required_item_fields: string[]; max_items: number | null } & { __baml_invocation_token?: string }): Promise<NormalizedIterableOutput>;
+declare function ClassifyCoordinatorTurn(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<CoordinatorReadyIntent | CoordinatorNeedTaskClarification | CoordinatorMetaOnly>;
 
-declare function PlanCoordinatorWorkflow(args: { user_message: string; available_agents: AgentCandidate[]; conversation_context: string | null } & { __baml_invocation_token?: string }): Promise<WorkflowPlan>;
+declare function CoordinatorSynthesizeReply(args: { user_message: string; plan_objective: string } & { __baml_invocation_token?: string }): Promise<StructuredReply>;
 
-declare function PlanCoordinatorWorkflowBestEffort(args: { user_message: string; available_agents: AgentCandidate[]; conversation_context: string | null } & { __baml_invocation_token?: string }): Promise<WorkflowPlan>;
+declare function DecideDelegationAction(args: { goal: string; agent_package: string; agent_instance_id: string } & { __baml_invocation_token?: string }): Promise<SystemInternalA2aSessionPlan | string | null>;
 
-declare function SynthesizeCoordinatorResponse(args: { user_message: string; delegated_transcript: string; conversation_context: string | null } & { __baml_invocation_token?: string }): Promise<CoordinatorAnswer>;
+declare function FormatCapabilities(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<StructuredReply>;
+
+declare function GetDiscoverAgentsPlan(args: { inferred_intent: string } & { __baml_invocation_token?: string }): Promise<SystemDiscoverAgentsSessionPlan>;
+
+declare function MakeStructuredPlan(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<StandardStructuredPlan>;
 
 }
 
@@ -392,4 +460,85 @@ export interface ToolFailure {
     kind: ToolFailureKind;
     message: string;
     retryable: boolean;
+}
+
+/** Generated Step Executor bindings (function -> typed step-executor args/result). */
+
+export type StepExecutorFunctionName = "DecideDelegationAction" | "DecideDelegationAction__active__system_internal_a2a" | "DecideDelegationAction__entry" | "GetDiscoverAgentsPlan" | "GetDiscoverAgentsPlan__active__system_discover_agents" | "GetDiscoverAgentsPlan__entry";
+
+export interface SessionContext {
+    contract_version: "session_context_v2";
+    session_open: boolean;
+    status: "awaiting_open" | "just_opened" | "done";
+    last_step_op?: "open" | "send" | "read" | "finish" | "abort";
+    last_step_status?: "open" | "done" | "finished" | "aborted";
+    last_archive_ref?: string;
+    last_output_header?: string;
+    last_completion?: string;
+}
+
+/** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */
+
+export type HistoryContextSessionOp = "SearchRead" | "PageRead";
+
+export type HistoryContextStatus = "done" | "streaming" | "suspended" | "error";
+
+export interface HistoryContext {
+    hop: number;
+    op: HistoryContextSessionOp;
+    status: HistoryContextStatus;
+    truncated: boolean;
+    cursor: string | null;
+    payload: Record<string, unknown> | null;
+}
+
+export interface StepExecutorStateInput {
+    session_context?: SessionContext | null;
+    history_context?: HistoryContext | null;
+}
+
+export interface StepExecutorRunOptions {
+    max_steps?: number;
+}
+
+export type ErrorDisposition =
+    | "host_retriable"
+    | "llm_correctable"
+    | "inform_and_continue"
+    | "fatal";
+
+export interface StepPlanRecovery {
+    code: string;
+    disposition: ErrorDisposition;
+    mistake: string;
+    invariant: string;
+    fix_steps?: string[];
+}
+
+export type StepExecutorRunEnvelope<R = unknown> = { outcome: "completed", last: R, steps: R[], session_context: SessionContext, selected_tool: string | null } | { outcome: "agent_correctable", recovery: StepPlanRecovery } | { outcome: "fatal", message: string, code?: string | null };
+
+/**
+ * Result of runGeneratedStepExecutor: discriminated envelope (`outcome`).
+ * On `completed`, fields match the former flat telemetry shape.
+ * `agent_correctable` carries structured recovery — not a thrown JS error.
+ * User-facing replies are still SessionResult.message from the chat handler.
+ */
+
+export type StepExecutorRunResult<R = unknown> = StepExecutorRunEnvelope<R>;
+
+export interface StepExecutorFunctionMap {
+  DecideDelegationAction: { args: Parameters<typeof DecideDelegationAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof DecideDelegationAction>>; };
+  DecideDelegationAction__active__system_internal_a2a: { args: Parameters<typeof DecideDelegationAction__active__system_internal_a2a>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof DecideDelegationAction__active__system_internal_a2a>>; };
+  DecideDelegationAction__entry: { args: Parameters<typeof DecideDelegationAction__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof DecideDelegationAction__entry>>; };
+  GetDiscoverAgentsPlan: { args: Parameters<typeof GetDiscoverAgentsPlan>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan>>; };
+  GetDiscoverAgentsPlan__active__system_discover_agents: { args: Parameters<typeof GetDiscoverAgentsPlan__active__system_discover_agents>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__active__system_discover_agents>>; };
+  GetDiscoverAgentsPlan__entry: { args: Parameters<typeof GetDiscoverAgentsPlan__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__entry>>; };
+}
+
+declare global {
+  function runGeneratedStepExecutor<F extends StepExecutorFunctionName>(
+    stepExecutor: F,
+    args: Omit<StepExecutorFunctionMap[F]["args"], keyof StepExecutorStateInput>,
+    options?: StepExecutorRunOptions
+  ): Promise<StepExecutorRunEnvelope<StepExecutorFunctionMap[F]["result"]>>;
 }

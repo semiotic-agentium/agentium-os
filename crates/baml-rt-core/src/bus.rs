@@ -48,6 +48,15 @@ fn receiver_stream<T: Send + 'static>(rx: Receiver<T>) -> BusStream<T> {
     })
 }
 
+/// Create a bounded channel-backed [`BusStream`].
+///
+/// This is the blessed adapter for code that must bridge an async producer task into the
+/// canonical `BusStream<T>` shape without buffering the full result in memory first.
+pub fn bus_stream_channel<T: Send + 'static>(capacity: usize) -> (Sender<T>, BusStream<T>) {
+    let (tx, rx) = async_channel::bounded(capacity.max(1));
+    (tx, receiver_stream(rx))
+}
+
 /// What kind of effect is being executed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EffectKind {

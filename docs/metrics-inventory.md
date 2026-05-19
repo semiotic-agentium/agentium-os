@@ -21,8 +21,8 @@ Core runtime: A2A, tools (via QuickJS), LLM, QuickJS bridge, live stream, ONNX, 
 | `baml_rt.tool.invocation_duration_ms` | Histogram | Wall time for that invocation path. |
 | `baml_rt.a2a.worker.handle_total` | Counter | QuickJS worker-thread handle completions by `result`. |
 | `baml_rt.a2a.worker.handle_duration_ms` | Histogram | Time to complete worker handle. |
-| `baml_rt.a2a.task_store.operation_total` | Counter | Surreal task subgraph store ops by `operation`, `result`. |
-| `baml_rt.a2a.task_store.operation_duration_ms` | Histogram | Latency of those operations. |
+| `baml_rt.a2a.task_store.operation_total` | Counter | Graph-native task surface ops by `operation`, `result`. The previous Surreal `a2a_task` / `a2a_message` / `a2a_update` mirror tables were excised; metrics now report graph-only reads (`TaskGraphReader::list`, `record_status_update`, `record_artifact_update`) plus broadcaster wires. |
+| `baml_rt.a2a.task_store.operation_duration_ms` | Histogram | Latency of those operations (graph traversal + provenance write + broadcaster fan-out). |
 | `baml_rt.a2a.event_poll.cycle_total` | Counter | One increment per [`EventDispatcher::poll_and_deliver`](../crates/baml-rt-a2a/src/event_dispatcher.rs) sweep (all producers). |
 | `baml_rt.a2a.event_poll.cycle_duration_ms` | Histogram | Wall time for that full sweep. |
 | `baml_rt.a2a.event_poll.producer_outcome_total` | Counter | Per-producer poll by bounded `producer_key` and `outcome` (`empty`, `poll_error`, `validation_error`, `delivery_error`, `partial_rejection`, `success`). |

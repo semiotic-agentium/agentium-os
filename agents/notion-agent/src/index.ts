@@ -230,10 +230,21 @@ async function runNotionPlan(
         await executable.startStep?.(toolStep.id);
       }
 
-      await runGeneratedStepExecutor("ChooseNotionAction", {
-        goal,
-        step_description: toolStep.description,
-      }, { max_steps: MAX_REACT_STEPS });
+      const notionRun = await runGeneratedStepExecutor(
+        "ChooseNotionAction",
+        {
+          goal,
+          step_description: toolStep.description,
+        },
+        { max_steps: MAX_REACT_STEPS },
+      );
+      if (notionRun.outcome !== "completed") {
+        throw new Error(
+          notionRun.outcome === "fatal"
+            ? notionRun.message
+            : `[${notionRun.recovery.code}] ${notionRun.recovery.mistake}`,
+        );
+      }
 
       if (executable) {
         await executable.completeStep?.(toolStep.id);

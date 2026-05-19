@@ -21,19 +21,12 @@ use crate::{
     payload_storage,
     store::{ActivityRef, PayloadRef, ProvenanceArchivePayload},
     surreal_tables::{
-        FTS_PAYLOAD_ACTIVITY_WHERE, PAYLOAD_ROW_SELECT, TBL_NODE, TBL_PAYLOAD, TBL_PAYLOAD_BLOB,
+        FTS_PAYLOAD_ACTIVITY_WHERE, PAYLOAD_ROW_SELECT, TBL_PAYLOAD, TBL_PAYLOAD_BLOB,
     },
 };
 
 pub(super) fn payload_id_for(anchor: &str, payload_kind: &str) -> String {
     payload_row_id(anchor, payload_kind)
-}
-
-/// Deterministic payload ID from activity anchor + kind. Same format as `payload_id_for`.
-/// Reserved for external callers that need to compute a payload_id without access to `payload_id_for`.
-#[allow(dead_code)]
-pub(crate) fn deterministic_payload_id(activity_anchor: &str, kind: &str) -> String {
-    payload_id_for(activity_anchor, kind)
 }
 
 pub(super) fn archive_ref_for_payload(payload_id: &str) -> String {
@@ -304,49 +297,6 @@ impl SurrealProvenanceStore {
         Ok(p)
     }
 
-    // -----------------------------------------------------------------------
-    // Node queries
-    // -----------------------------------------------------------------------
-
-    /// Query nodes by label with optional property filter.
-    /// Reserved for parity tests and Phase 2 query surfaces.
-    #[allow(dead_code)]
-    async fn query_nodes_by_label(
-        &self,
-        label: &str,
-        filters: &[(&str, &str)],
-    ) -> Result<Vec<Value>> {
-        let mut where_clauses = vec!["label = $label".to_string()];
-        for (i, (key, _)) in filters.iter().enumerate() {
-            let safe_key = key.replace(':', "_");
-            where_clauses.push(format!("props.{safe_key} = $filter_{i}"));
-        }
-        let where_clause = where_clauses.join(" AND ");
-        let query = format!("SELECT * OMIT id FROM {TBL_NODE} WHERE {where_clause}");
-        let mut q = self.db.query(&query).bind(("label", label.to_string()));
-        for (i, (_, value)) in filters.iter().enumerate() {
-            q = q.bind((format!("filter_{i}"), value.to_string()));
-        }
-        let response = q.await.map_err(map_surreal_error)?;
-        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
-        Ok(rows)
-    }
-
-    /// Get a single node by its node_id.
-    /// Reserved for ad-hoc node lookups in future query surfaces (e.g. ops dashboard).
-    #[allow(dead_code)]
-    async fn get_node(&self, node_id: &str) -> Result<Option<Value>> {
-        let query = format!("SELECT * OMIT id FROM {TBL_NODE} WHERE node_id = $node_id LIMIT 1");
-        let response = self
-            .db
-            .query(&query)
-            .bind(("node_id", node_id.to_string()))
-            .await
-            .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
-        Ok(rows.into_iter().next())
-    }
-
     /// Fill [`SessionStepContent::send_done_replay_payload`] using deterministic payload_id
     /// computation from the `informed_by_tool_activity_anchor` property already on
     /// the SessionStep node (written by the normalizer).
@@ -434,44 +384,6 @@ impl SurrealProvenanceStore {
         };
         let rec = decode_payload_row(v)?;
         Ok(Some(self.hydrate_payload_record(rec).await?))
-    }
-
-    /// Fetch a payload by its deterministic `payload_id` using the UNIQUE index directly.
-    /// Reserved for external callers needing point-lookup by payload_id.
-    #[allow(dead_code)]
-    pub(crate) async fn read_payload_by_id_direct(
-        &self,
-        payload_id: &str,
-    ) -> Result<Option<PayloadRecord>> {
-        let query = format!(
-            "SELECT {PAYLOAD_ROW_SELECT} FROM {TBL_PAYLOAD} WHERE payload_id = $payload_id LIMIT 1"
-        );
-        let response = self
-            .db
-            .query(&query)
-            .bind(("payload_id", payload_id.to_string()))
-            .await
-            .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
-        match rows.into_iter().next() {
-            Some(row) => {
-                let rec = decode_payload_row(row)?;
-                Ok(Some(self.hydrate_payload_record(rec).await?))
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// Reserved for single-payload lookup by activity anchor + kind; batch callers
-    /// should compute deterministic payload_ids and query in bulk instead.
-    #[allow(dead_code)]
-    async fn read_payload_by_activity_anchor_kind(
-        &self,
-        activity_anchor: &str,
-        payload_kind: &str,
-    ) -> Result<Option<PayloadRecord>> {
-        let pid = payload_id_for(activity_anchor, payload_kind);
-        self.read_payload_by_id(&pid).await
     }
 
     pub(crate) async fn read_payloads_by_activity(

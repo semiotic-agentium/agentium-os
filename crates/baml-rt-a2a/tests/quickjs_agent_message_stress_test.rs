@@ -17,7 +17,7 @@
 
 use std::time::{Duration, Instant};
 
-use baml_rt_core::{A2aRequestHandler, A2aWireRequest, collect_a2a_stream};
+use baml_rt_core::{A2aRequestHandler, A2aWireRequest, collect_a2a_stream_one_shot};
 use futures_util::future::join_all;
 use test_support::common::{
     build_minimal_a2a_agent_with_stream_idle_secs, chunks_from_responses, send_stream_request,
@@ -81,7 +81,7 @@ async fn stress_quickjs_concurrent_agent_messages() {
                     .handle_a2a_stream(A2aWireRequest::from(request))
                     .await
                     .unwrap_or_else(|e| panic!("handle_a2a_stream idx={idx}: {e}"));
-                let collected = timeout(collect_timeout, collect_a2a_stream(stream))
+                let collected = timeout(collect_timeout, collect_a2a_stream_one_shot(stream))
                     .await
                     .unwrap_or_else(|_| {
                         panic!(

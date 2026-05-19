@@ -8,6 +8,6 @@ expression: "serde_json::to_value(&cmd).unwrap()"
   "step_id": "step-test-1",
   "citations": [
     "#1",
-    "@4:2"
+    "@4:L2"
   ]
 }

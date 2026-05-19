@@ -10,7 +10,7 @@ The app has three top-level views, selectable from the navbar.
 
 ### Dashboard
 
-Landing view (`Dashboard.vue` + `InterpretationPanel.vue`). Shows discovered agents, planning state for the current context, and rolled-up provenance metrics: LLM and tool call counts, failures, total duration, token usage, and hotspot groups by agent / model / tool. Renders an inline mermaid trace when one is available.
+Landing view (`Dashboard.vue` + `dashboard/*` sections). Narrative layout: **Runtime now** (multi-tab lanes, optional planning chip, compact provenance health), **Attention needed** (ranked issues with drill-through to `ProvenancePane` tabs), **Causal story** (focused-lane transcript tail, session metrics, hotspots, trace preview), and **System surface** (runner reachability, agent inventory, configuration entry).
 
 ### Chat
 

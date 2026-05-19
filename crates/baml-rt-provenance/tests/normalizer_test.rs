@@ -4,17 +4,31 @@ use baml_rt_core::{
     ids::{AgentId, ContextId, ExternalId, IntentId, MessageId, PlanId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
-    A2aRelationType, DefaultProvNormalizer, LlmUsage, ProvEvent, ProvNormalizer, normalize_event,
+    A2aRelationType, DefaultProvNormalizer, LlmUsage, ProvEvent, ProvNormalizer,
+    metamodel::TaskStatusKind,
+    normalize_event,
     vocabulary::{a2a_roles, a2a_types, semantic_labels},
 };
 
 #[test]
 fn normalize_status_change_includes_derived_relation() {
-    let event = ProvEvent::task_status_changed(
+    let submitted = ProvEvent::task_status_changed_typed(
         ContextId::new(1, 1),
         TaskId::from_external(ExternalId::new("task-1")),
-        Some("TASK_STATE_PENDING".to_string()),
-        Some("TASK_STATE_WORKING".to_string()),
+        None,
+        None,
+        Some(TaskStatusKind::Submitted),
+    );
+    let submitted_anchor = match &submitted {
+        ProvEvent::Task(task) => task.id.clone(),
+        other => panic!("expected task-scoped event, got {other:?}"),
+    };
+    let event = ProvEvent::task_status_changed_typed(
+        ContextId::new(1, 1),
+        TaskId::from_external(ExternalId::new("task-1")),
+        Some(TaskStatusKind::Submitted),
+        Some(submitted_anchor),
+        Some(TaskStatusKind::Working),
     );
     let normalized = normalize_event(&event).expect("normalize event");
     assert_eq!(normalized.document.was_derived_from().count(), 1);
@@ -385,7 +399,7 @@ fn normalize_llm_call_rejects_unknown_provider_type() {
         "unknown".to_string(),
         "RequirementsPhase".to_string(),
         serde_json::json!({
-            "model": "x-ai/grok-4.1-fast",
+            "model": "x-ai/grok-4.3",
             "messages": [{"role": "user", "content": "hi"}]
         }),
         serde_json::json!({
@@ -419,7 +433,7 @@ fn normalize_llm_call_backfills_model_from_prompt() {
         "unknown".to_string(),
         "RequirementsPhase".to_string(),
         serde_json::json!({
-            "model": "x-ai/grok-4.1-fast",
+            "model": "x-ai/grok-4.3",
             "messages": [{"role": "user", "content": "hi"}]
         }),
         serde_json::json!({
@@ -457,7 +471,7 @@ fn normalize_llm_call_backfills_model_from_prompt() {
         .unwrap_or_default();
 
     assert_eq!(client, "openrouter");
-    assert_eq!(model, "x-ai/grok-4.1-fast");
+    assert_eq!(model, "x-ai/grok-4.3");
 }
 
 #[test]

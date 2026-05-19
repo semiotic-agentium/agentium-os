@@ -17,7 +17,7 @@ use crate::{
     a2a_types::{
         A2aMessageId, GetTaskRequest, JSONRPCError, JSONRPCErrorResponse, JSONRPCId,
         JSONRPCRequest, JSONRPCSuccessResponse, ListTasksRequest, Message, ROLE_AGENT,
-        SendMessageRequest, SubscribeToTaskRequest, Task,
+        SendMessageRequest, StreamResponse, SubscribeToTaskRequest, Task,
     },
     wire::{A2aWireMethod, A2aWireRequest},
 };
@@ -180,7 +180,7 @@ impl A2aRequest {
 }
 
 /// Receiver for incremental stream chunks: (normalized_chunk, index, completion).
-pub type StreamReceiver = mpsc::Receiver<(Value, usize, Option<StreamCompletion>)>;
+pub type StreamReceiver = mpsc::Receiver<(StreamResponse, usize, Option<StreamCompletion>)>;
 
 /// Handle for a stream outcome: receiver for chunks and optional resume sender for true resume
 /// (live sessions that suspend on InputRequired). When present, transport sends the next turn
@@ -359,10 +359,7 @@ pub struct JsChunkNormalizer {
 impl JsChunkNormalizer {
     pub fn new(scope: &InvocationScope) -> Self {
         let task_id = scope.task_id_opt().cloned().unwrap_or_else(|| {
-            TaskId::from_external(ExternalId::new(format!(
-                "js-task-{uuid}",
-                uuid = Uuid::new_v4()
-            )))
+            TaskId::for_js_runtime(baml_rt_core::ids::UuidId::new(Uuid::new_v4()))
         });
         Self {
             context_id: scope.context_id().clone(),
@@ -648,7 +645,7 @@ mod tests {
         let stream = agent
             .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(request))
             .await?;
-        let chunks = baml_rt_core::collect_a2a_stream(stream).await;
+        let chunks = baml_rt_core::collect_a2a_stream_one_shot(stream).await;
         Ok(chunks
             .into_iter()
             .map(baml_rt_core::A2aStreamChunk::into_inner)

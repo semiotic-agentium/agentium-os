@@ -1,131 +1,319 @@
-//! Phase executor prompt algebra: stable-prefix concatenation, strip/re-append `output_format`,
-//! phase cue, and narrowed-union footer. The parent module holds IR walking and polymorphic class
-//! emission.
+//! Generated phase executor (`__entry` / `__active__*`, plus unified-primary roots) prompt
+//! assembly. Delegates the canonical-order knowledge to
+//! [`crate::builder::baml_gen::PromptCompositor`] — this module only owns:
+//!
+//! - The IR-template stripper alias to [`AuthorBodySanitizer::for_phase_ir`].
+//! - The `client … prompt #""#` BAML wrapper that frames the composed prompt body.
+//! - The compact, state-indexed phase-policy strings rendered after the post-history contract.
 
-use baml_rt_tools::SESSION_STEP_STABLE_PREFIX_BAML;
+use internal_baml_core::ir::ir_hasher::IRSignature;
 
-/// Which FSM hop this executor represents — select, first post-open act, or continue.
+use crate::builder::{
+    baml_gen::{
+        AuthorBodySanitizer, PromptCompositor, ToolSessionPhaseSpec, UnifiedPrimaryPhaseSpec,
+    },
+    selection_hint::{
+        render_step_executor_selection_hint_for_named_union,
+        render_type_reference_contract_for_named_union,
+    },
+};
+
+/// Which FSM hop this executor represents — entry, active session, or unified structured hop.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum PhaseHop<'a> {
-    Select,
-    Act { tool_display_name: &'a str },
-    Continue { tool_display_name: &'a str },
+pub(crate) enum PhaseHop {
+    Entry,
+    Active,
 }
 
-/// Remove lines that are only `{{ ctx.output_format }}` (optional whitespace / CRLF).
-pub(crate) fn strip_standalone_output_format_directives(template: &str) -> String {
-    template
-        .lines()
-        .filter(|line| !is_standalone_output_format_line(line.trim()))
-        .collect::<Vec<_>>()
-        .join("\n")
+/// Test-only alias to [`AuthorBodySanitizer::for_phase_ir`] preserved so the existing fixture
+/// tests (and historical doc cross-references) keep their wording. Production code calls
+/// [`AuthorBodySanitizer::for_phase_ir`] directly.
+#[cfg(test)]
+fn strip_phase_executor_ir_template(template: &str) -> String {
+    AuthorBodySanitizer::for_phase_ir(template)
 }
 
-fn is_standalone_output_format_line(trimmed: &str) -> bool {
-    let s = trimmed.trim_end_matches('\r').trim();
-    s == "{{ ctx.output_format }}" || s == "{{ctx.output_format}}"
-}
+/// Appended after the post-history output contract on unified-primary generated functions.
+///
+/// No ASCII double quotes inside: concatenated into BAML `prompt #""#` literals.
+const PHASE_STEP_EXECUTOR_SUFFIX_UNIFIED_PRIMARY: &str = r#"
 
-pub(crate) fn phase_cue_line(phase: PhaseHop<'_>) -> String {
-    match phase {
-        PhaseHop::Select => {
-            "Phase: SELECT — read a visible archive (@N) or Open a tool session; legal ops only as in the narrowed union below.\n\n"
-                .to_string()
-        }
-        PhaseHop::Act { tool_display_name: t } => {
-            format!(
-                "Phase: ACT — first post-Open hop for {t}: SearchRead, PageRead, or Send; legal ops only as below.\n\n"
-            )
-        }
-        PhaseHop::Continue { tool_display_name: t } => {
-            format!(
-                "Phase: CONTINUE — for {t}: SearchRead, PageRead, re-Send, or Finish; legal ops only as below.\n\n"
-            )
-        }
-    }
-}
+Phase policy:
+- Derived state rule: tool-session ops are illegal unless they appear in the schema above.
+"#;
 
-pub(crate) fn append_phase_footer(body: &mut String, legal_type_names: &[String]) {
-    body.push_str("\n---\n");
-    body.push_str("Narrowed return union for this hop only:\n");
-    for name in legal_type_names {
-        body.push_str("- ");
-        body.push_str(name);
-        body.push('\n');
-    }
-}
-
-pub(crate) fn compose_phase_prompt_core(
-    prompt_template: &str,
-    phase: PhaseHop<'_>,
-    legal_type_names: &[String],
-) -> String {
-    let stripped = strip_standalone_output_format_directives(prompt_template);
-    let mut out = phase_cue_line(phase);
-    let trimmed_stripped = stripped.trim();
-    if !trimmed_stripped.is_empty() {
-        out.push_str(trimmed_stripped);
-        if !trimmed_stripped.ends_with('\n') {
-            out.push('\n');
-        }
-    }
-    append_phase_footer(&mut out, legal_type_names);
-    out.push_str("\n{{ ctx.output_format }}\n");
-    out
-}
-
-/// `client` + `prompt #""#` for a step executor. Uses concatenation so IR text is not passed
-/// through `format!` — the stable-prefix Jinja, composed prompt core, and closing `"` must not use
-/// `format!` on IR/template fragments.
-pub(crate) fn phase_executor_prompt_body(
-    client_name: &str,
-    prompt_template: &str,
-    phase: PhaseHop<'_>,
-    legal_type_names: &[String],
-) -> String {
-    let core = compose_phase_prompt_core(prompt_template, phase, legal_type_names);
-    let mut s = String::new();
-    s.push_str(&format!("\n  client {client_name}\n  prompt #\""));
-    s.push_str(SESSION_STEP_STABLE_PREFIX_BAML);
-    s.push_str(&core);
+/// Wrap IR/template fragments in `client … prompt #""#` without applying `format!` to `prompt_inner`.
+fn wrap_client_baml_prompt_body(client_name: &str, prompt_inner: &str) -> String {
+    let mut s = String::with_capacity(prompt_inner.len() + client_name.len() + 24);
+    s.push_str("\n  client ");
+    s.push_str(client_name);
+    s.push_str("\n  prompt #\"");
+    s.push_str(prompt_inner);
     s.push_str("\"#\n");
     s
 }
 
+/// Typed inputs for one emitted tool-session phase executor (`__entry` / `__active__*`).
+pub(crate) struct ToolSessionPhasePromptSpec<'a> {
+    /// Compiled IR used to derive a centralized selection hint from `legal_type_names`.
+    pub ir_signature: &'a IRSignature,
+    /// Variant names admissible for this hop. Must match the generated function return union.
+    pub legal_type_names: &'a [String],
+    /// Compact state-indexed phase policy appended after the schema binding.
+    pub phase_policy: &'static str,
+}
+
+impl ToolSessionPhasePromptSpec<'_> {
+    /// Render the full BAML `client … prompt #"..."#` block via [`PromptCompositor::tool_session_phase`].
+    pub(crate) fn emit_baml_prompt_body(self, client_name: &str, prompt_template: &str) -> String {
+        let stripped = AuthorBodySanitizer::for_phase_ir(prompt_template);
+        let output_contract = render_type_reference_contract_for_named_union(self.legal_type_names);
+        let selection_hint = render_step_executor_selection_hint_for_named_union(
+            self.legal_type_names,
+            self.ir_signature,
+        );
+        let inner = PromptCompositor::tool_session_phase(ToolSessionPhaseSpec {
+            stripped_ir_body: &stripped,
+            output_contract: &output_contract,
+            selection_hint: &selection_hint,
+            phase_policy: self.phase_policy,
+        });
+        wrap_client_baml_prompt_body(client_name, &inner)
+    }
+}
+
+/// Test-only convenience that mirrors what `ToolSessionPhasePromptSpec::emit_baml_prompt_body`
+/// would produce with no constraint suffix — used by the existing fixture tests in this file.
+#[cfg(test)]
+fn phase_executor_prompt_body(
+    client_name: &str,
+    prompt_template: &str,
+    phase: PhaseHop,
+    legal_type_names: &[String],
+    _supplement_after_cue: Option<&str>,
+    ir_signature: &IRSignature,
+) -> String {
+    let stripped = AuthorBodySanitizer::for_phase_ir(prompt_template);
+    let output_contract = render_type_reference_contract_for_named_union(legal_type_names);
+    let selection_hint =
+        render_step_executor_selection_hint_for_named_union(legal_type_names, ir_signature);
+    let phase_policy = match phase {
+        PhaseHop::Entry => {
+            crate::builder::baml_gen::session_from_ir::entry_phase_executor_suffix(legal_type_names)
+        }
+        PhaseHop::Active => {
+            "\nPhase policy:\n- Derived state rule: this active return union has no `Open` variant.\n"
+        }
+    };
+    let inner = PromptCompositor::tool_session_phase(ToolSessionPhaseSpec {
+        stripped_ir_body: &stripped,
+        output_contract: &output_contract,
+        selection_hint: &selection_hint,
+        phase_policy,
+    });
+    wrap_client_baml_prompt_body(client_name, &inner)
+}
+
+/// Unified planner/synthesis step executor: stable prefix + STRUCTURED cue + footer + constraint suffix.
+pub(crate) fn phase_executor_prompt_body_unified_primary(
+    client_name: &str,
+    prompt_template: &str,
+    legal_type_names: &[String],
+    ir_signature: &IRSignature,
+) -> String {
+    let stripped = AuthorBodySanitizer::for_phase_ir(prompt_template);
+    let output_contract = render_type_reference_contract_for_named_union(legal_type_names);
+    let selection_hint =
+        render_step_executor_selection_hint_for_named_union(legal_type_names, ir_signature);
+    let inner = PromptCompositor::unified_primary_phase(UnifiedPrimaryPhaseSpec {
+        stripped_ir_body: &stripped,
+        output_contract: &output_contract,
+        selection_hint: &selection_hint,
+        phase_policy: PHASE_STEP_EXECUTOR_SUFFIX_UNIFIED_PRIMARY,
+    });
+    wrap_client_baml_prompt_body(client_name, &inner)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use baml_runtime::BamlRuntime;
+    use tempfile::TempDir;
+
     use super::*;
+
+    fn test_ir_signature() -> IRSignature {
+        let dir = TempDir::new().expect("tempdir");
+        let baml_src = dir.path().join("baml_src");
+        fs::create_dir_all(&baml_src).expect("mkdir baml_src");
+        let source = r##"
+class ArchiveSearchReadStep {
+  op "SearchRead"
+  input string
+}
+
+class ArchivePageReadStep {
+  op "PageRead"
+  input string
+}
+
+class XOpenStep {
+  op "Open"
+  tool_name string
+}
+
+class FooSendStep {
+  op "Send"
+  input string
+}
+
+class FooSearchReadStep {
+  op "SearchRead"
+  input string
+}
+
+class FooPageReadStep {
+  op "PageRead"
+  input string
+}
+
+class FooFinishStep {
+  op "Finish"
+}
+
+class FooAbortStep {
+  op "Abort"
+}
+
+class WorkflowPlan {
+  steps string[]
+}
+
+class CoordinatorStructuredAskUser {
+  action "AskUser"
+  question string
+}
+
+function TestShape() -> WorkflowPlan {
+  client DefaultClient
+  prompt #"test"#
+}
+
+client DefaultClient {
+  provider openai
+  options {
+    model "gpt-4o-mini"
+    api_key env.OPENAI_API_KEY
+  }
+}
+"##;
+        let path = baml_src.join("shape_test.baml");
+        fs::write(&path, source).expect("write baml");
+        let runtime = BamlRuntime::from_directory(
+            &baml_src,
+            std::collections::HashMap::<String, String>::new(),
+            internal_baml_core::feature_flags::FeatureFlags::default(),
+        )
+        .expect("runtime");
+        IRSignature::new_from_ir(runtime.ir.as_ref()).expect("signature")
+    }
+
+    #[test]
+    fn wrap_client_baml_prompt_body_frames_prompt_literal() {
+        let out = wrap_client_baml_prompt_body("MyClient", "line1\nline2");
+        assert!(out.starts_with("\n  client MyClient\n  prompt #\""));
+        assert!(out.ends_with("\"#\n"));
+        assert!(out.contains("line1\nline2"));
+    }
+
+    #[test]
+    fn wrap_client_baml_prompt_body_empty_inner() {
+        let out = wrap_client_baml_prompt_body("C", "");
+        assert!(out.contains("prompt #\"\""));
+    }
+
+    #[test]
+    fn wrap_client_baml_prompt_body_preserves_double_quotes_in_inner() {
+        let inner = r#"say "hi""#;
+        let out = wrap_client_baml_prompt_body("C", inner);
+        assert!(out.contains(inner));
+    }
+
+    #[test]
+    fn phase_executor_prompt_body_active_hop_includes_no_open_phase_policy() {
+        let legal = vec![
+            "FooSendStep".to_string(),
+            "FooSearchReadStep".to_string(),
+            "FooFinishStep".to_string(),
+        ];
+        let ir = test_ir_signature();
+        let out = phase_executor_prompt_body(
+            "TestClient",
+            "Body.\n{{ ctx.output_format }}",
+            PhaseHop::Active,
+            &legal,
+            None,
+            &ir,
+        );
+        assert!(
+            out.contains("no `Open` variant"),
+            "expected active-hop phase policy: {out}"
+        );
+    }
 
     #[test]
     fn phase_executor_prompt_body_includes_archive_preamble_before_template() {
         let legal = vec!["ArchiveSearchReadStep".to_string(), "XOpenStep".to_string()];
+        let ir = test_ir_signature();
         let out = phase_executor_prompt_body(
             "TestClient",
             "Only the IR template.\n{{ ctx.output_format }}",
-            PhaseHop::Select,
+            PhaseHop::Entry,
             &legal,
+            None,
+            &ir,
         );
         assert!(
             out.contains("Only the IR template."),
-            "expected IR body after phase cue: {out}"
+            "expected IR body in prompt: {out}"
         );
         assert!(
-            out.matches("{{ ctx.output_format }}").count() == 1,
-            "expected exactly one output_format line: {out}"
-        );
-        assert!(out.contains("Phase: SELECT"), "expected phase cue: {out}");
-        assert!(
-            out.contains("Narrowed return union for this hop only:"),
-            "expected footer: {out}"
+            out.matches("{{ ctx.output_format }}").count() == 0,
+            "tool-session phases must not render the expanded per-hop schema after history: {out}"
         );
         assert!(
-            out.contains("- ArchiveSearchReadStep"),
-            "expected footer bullet: {out}"
+            out.contains("tool_schema_prelude"),
+            "expected catalog Jinja tag block: {out}"
+        );
+        assert_eq!(
+            out.matches("Session history:").count(),
+            1,
+            "single canonical session history injection: {out}"
+        );
+        let ir_pos = out
+            .find("Only the IR template.")
+            .expect("IR template fragment");
+        let hist_pos = out.find("Session history:").expect("session history");
+        let contract_pos = out
+            .find("Return exactly one JSON object of type `ArchiveSearchReadStep | XOpenStep`.")
+            .expect("contract binding");
+        assert!(
+            hist_pos < ir_pos,
+            "session history must precede IR task body: {out}"
         );
         assert!(
-            out.contains(baml_rt_tools::SESSION_STEP_STABLE_PREFIX_BAML.trim())
-                || out.contains("session_step_stable_prefix"),
-            "expected session_step_stable_prefix jinja: {out}"
+            ir_pos < contract_pos,
+            "IR task body must precede the per-hop contract: {out}"
+        );
+        assert!(
+            out.contains("Use `op` as the discriminator: \"Open\" | \"SearchRead\"."),
+            "expected compact op-selection hint after contract binding: {out}"
+        );
+        assert!(
+            out.contains("Archive refs: `@N`"),
+            "expected embedded archive policy prefix in phase prompt: {out}"
         );
         assert!(
             !out.contains("[OPEN]") && !out.contains("[ACT]") && !out.contains("[CONTINUE]"),
@@ -134,13 +322,161 @@ mod tests {
     }
 
     #[test]
-    fn strip_standalone_output_format_removes_only_standalone_lines() {
-        let t = "Hello\n{{ ctx.output_format }}\nWorld\n";
-        assert_eq!(strip_standalone_output_format_directives(t), "Hello\nWorld");
-        let embedded = "Say {{ ctx.output_format }} here\n";
+    fn strip_phase_executor_ir_removes_bracket_transcript_block() {
+        let t = r#"Task line.
+
+{% if ctx.tags['conversation_transcript'] %}
+Prior:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+
+More."#;
+        let s = strip_phase_executor_ir_template(t);
+        assert!(!s.contains("{% if ctx.tags['conversation_transcript'] %}"));
+        assert!(s.contains("Task line."));
+        assert!(s.contains("More."));
+    }
+
+    #[test]
+    fn strip_phase_executor_ir_removes_legacy_bracket_lines_and_legacy_phase_cues() {
+        let t = r#"[OPEN] Open a session with: foo/tool.
+
+Task body line.
+
+Phase: SELECT — duplicate cue from old docs.
+
+  phase: act — lower spacing variant
+
+Phase: CONTINUE trailing
+
+Keep this."#;
+        let s = strip_phase_executor_ir_template(t);
+        assert!(!s.contains("[OPEN]"));
+        assert!(!s.contains("Phase: SELECT"));
+        assert!(!s.contains("phase: act"));
+        assert!(!s.contains("Phase: CONTINUE"));
+        assert!(s.contains("Task body line."));
+        assert!(s.contains("Keep this."));
+    }
+
+    #[test]
+    fn strip_phase_executor_ir_preserves_line_that_only_mentions_bracket_tag_mid_sentence() {
+        let t = "Say [OPEN] is not a preamble when not at line start.\nNext.";
+        let s = strip_phase_executor_ir_template(t);
+        assert!(s.contains("[OPEN]"));
+    }
+
+    #[test]
+    fn strip_phase_executor_ir_removes_dot_transcript_block() {
+        let t = r#"Body
+{% if ctx.tags.conversation_transcript %}
+{{ ctx.tags.conversation_transcript }}
+{% endif %}
+Tail"#;
+        let s = strip_phase_executor_ir_template(t);
+        assert!(!s.contains("ctx.tags.conversation_transcript"));
+        assert!(s.contains("Body"));
+        assert!(s.contains("Tail"));
+    }
+
+    #[test]
+    fn phase_executor_injects_session_history_once_even_if_author_had_block() {
+        let legal = vec!["XOpenStep".to_string()];
+        let ir = test_ir_signature();
+        let template = r#"Do work.
+{% if ctx.tags['conversation_transcript'] %}
+Old label:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+{{ ctx.output_format }}"#;
+        let out =
+            phase_executor_prompt_body("TestClient", template, PhaseHop::Entry, &legal, None, &ir);
         assert_eq!(
-            strip_standalone_output_format_directives(embedded),
-            embedded.trim_end()
+            out.matches("Session history:").count(),
+            1,
+            "expected single generated history label: {out}"
+        );
+        assert!(
+            !out.contains("Old label:"),
+            "author transcript block must be stripped: {out}"
+        );
+        assert_eq!(
+            out.matches("{% if ctx.tags['conversation_transcript'] %}")
+                .count(),
+            1,
+            "exactly one generated transcript if-block: {out}"
+        );
+    }
+
+    #[test]
+    fn tool_session_active_emit_includes_phase_policy_and_schema() {
+        let legal = vec![
+            "FooSendStep".to_string(),
+            "FooSearchReadStep".to_string(),
+            "FooPageReadStep".to_string(),
+            "FooFinishStep".to_string(),
+            "FooAbortStep".to_string(),
+        ];
+        let ir = test_ir_signature();
+        const ACTIVE_POLICY: &str = "\nPhase policy:\n- Derived state rule: this active return union has no `Open` variant.\n";
+        let spec = ToolSessionPhasePromptSpec {
+            legal_type_names: &legal,
+            ir_signature: &ir,
+            phase_policy: ACTIVE_POLICY,
+        };
+        let out = spec.emit_baml_prompt_body("TestClient", "Body.\n{{ ctx.output_format }}");
+        assert!(out.contains("Body."), "template: {out}");
+        assert!(out.contains("Phase policy:"), "phase policy: {out}");
+        assert!(!out.contains("[ACT]") && !out.contains("[CONTINUE]"));
+        assert!(
+            out.matches("{{ ctx.output_format }}").count() == 0,
+            "tool-session active must not render the expanded per-hop output_format: {out}"
+        );
+        assert!(
+            out.contains("Return exactly one JSON object of type `FooAbortStep | FooFinishStep | FooPageReadStep | FooSearchReadStep | FooSendStep`."),
+            "expected compact type-reference contract: {out}"
+        );
+        assert!(
+            out.contains("Use `op` as the discriminator: \"Abort\" | \"Finish\" | \"PageRead\" | \"SearchRead\" | \"Send\"."),
+            "expected compact op-selection hint: {out}"
+        );
+    }
+
+    #[test]
+    fn unified_primary_prompt_includes_schema_and_phase_policy() {
+        let legal = vec![
+            "ArchiveSearchReadStep".to_string(),
+            "ArchivePageReadStep".to_string(),
+            "WorkflowPlan".to_string(),
+            "CoordinatorStructuredAskUser".to_string(),
+        ];
+        let ir = test_ir_signature();
+        let out = phase_executor_prompt_body_unified_primary(
+            "TestClient",
+            "Planner body.\n{{ ctx.output_format }}",
+            &legal,
+            &ir,
+        );
+        assert!(out.contains("Planner body."), "template: {out}");
+        assert!(out.contains("Phase policy:"), "{out}");
+        assert!(
+            out.matches("{{ ctx.output_format }}").count() == 0,
+            "expected compact contract instead of output_format: {out}"
+        );
+        let hist_pos = out.find("Session history:").expect("session history");
+        let task_pos = out.find("Planner body.").expect("task body");
+        let contract_pos = out
+            .find(
+                "Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | CoordinatorStructuredAskUser | WorkflowPlan`.",
+            )
+            .expect("contract");
+        assert!(
+            hist_pos < task_pos,
+            "session history must precede the task body on unified-primary hops: {out}"
+        );
+        assert!(
+            task_pos < contract_pos,
+            "task body must precede the output contract on unified-primary hops: {out}"
         );
     }
 }

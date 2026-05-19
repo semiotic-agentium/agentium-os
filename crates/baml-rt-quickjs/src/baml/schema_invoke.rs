@@ -40,6 +40,24 @@ impl BamlRuntimeManager {
         let env_vars = self.resolve_secrets_as_env_vars();
         let mut executor = BamlExecutor::load_il(&baml_src_dir, env_vars)?;
 
+        // Load the rendered agent-wide tool schema catalog produced by the builder. This is
+        // the JSON-shape catalog text emitted via BAML's `{{ ctx.output_format }}` renderer
+        // over the synthetic `__AgentToolSchemaCatalog__` function — never the raw
+        // `_baml_runtime.baml` source. Old packages without the sidecar simply load no
+        // prelude (graceful degradation; no source dump fallback).
+        let catalog_path = baml_src_dir.join(baml_rt_tools::TOOL_SCHEMA_CATALOG_SIDECAR_FILE);
+        self.state.tool_schema_prelude = match std::fs::read_to_string(&catalog_path) {
+            Ok(s) => Some(std::sync::Arc::<str>::from(s)),
+            Err(e) => {
+                tracing::debug!(
+                    path = %catalog_path.display(),
+                    error = %e,
+                    "tool_schema_prelude: rendered catalog sidecar not present — step prompts will omit the prelude block"
+                );
+                None
+            }
+        };
+
         // Set effect emitter if available
         if let Some(ref emitter) = self.state.effect_emitter {
             executor.set_effect_emitter(emitter.clone());
@@ -79,12 +97,23 @@ impl BamlRuntimeManager {
         self.state.tool_step_executors = runtime_io::load_build_manifest::<
             std::collections::HashMap<String, String>,
         >(project_root, "tool_step_executors.json");
+        self.state.unified_step_executor_functions =
+            runtime_io::load_build_manifest::<baml_rt_tools::UnifiedStepExecutorFunctionsMap>(
+                project_root,
+                "unified_step_executor_functions.json",
+            );
 
         tracing::debug!(
             function_count = self.state.function_registry.len(),
             session_plan_manifest = self
                 .state
                 .session_plan_functions
+                .as_ref()
+                .map(|m| m.len())
+                .unwrap_or(0),
+            unified_step_executor_roots = self
+                .state
+                .unified_step_executor_functions
                 .as_ref()
                 .map(|m| m.len())
                 .unwrap_or(0),
@@ -176,7 +205,7 @@ impl BamlRuntimeManager {
             .as_ref()
             .ok_or_else(|| BamlRtError::BamlRuntime("BAML runtime not loaded".to_string()))?;
 
-        // `conversation_history` in [`BamlRuntimeManager::build_conversation_context_tags`]
+        // `conversation_transcript` via [`BamlRuntimeManager::build_conversation_context_tags`]
         // (graph) or with supplement via [`Self::invoke_function_with_intra`].
         let interceptor_registry = Some(self.state.interceptor_registry.clone());
         let planning_step = resolve_planning_step(&self.state.execution_sessions, scope);

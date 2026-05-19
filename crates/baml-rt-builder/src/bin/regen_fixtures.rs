@@ -7,7 +7,9 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use baml_rt_builder::builder::{
     AgentDir, BuildDir, RuntimeTypeGenerator, TypeGenerator,
-    baml_gen::{GENERATED_BAML_PRELUDE_FILE, is_managed_generated_baml_filename},
+    baml_gen::{
+        CATALOG_SIDECAR_FILE, GENERATED_BAML_PRELUDE_FILE, is_managed_generated_baml_filename,
+    },
     compiler::write_canonical_tsconfig,
 };
 use baml_rt_tools_claude as _; // Force link so claude tool metadata is in inventory
@@ -70,6 +72,22 @@ fn normalize_unix_text_eof(mut bytes: Vec<u8>) -> Vec<u8> {
     bytes
 }
 
+/// Sync builder output back into the agent's source `baml_src/`.
+///
+/// Three categories are handled in one pass so the on-disk source tree always matches what
+/// the runtime loads at package-time:
+///
+/// 1. **Generated managed files** (`_baml_runtime.baml`, `_baml_tool_schema_catalog.txt`) —
+///    overwritten unconditionally and tracked so any stale managed names left over from prior
+///    builds are removed.
+/// 2. **Rewritten authored `.baml` prompts** — the prompt-compositor pipeline mutates author
+///    prompt bodies in `build_dir/baml_src/` to inject the canonical structured prefix
+///    (`tool_schema_prelude` if-block, transcript if-block, narrowed `ctx.output_format`).
+///    Syncing those back keeps source-of-truth in lockstep with what the runtime sees so
+///    `setup_baml_runtime_from_fixture` callers exercise the canonical prompts. The compositor
+///    is **idempotent**, so re-running regen on already-rewritten files preserves author edits
+///    inside the task body without duplicating the canonical scaffolding.
+/// 3. **Stale managed names** (e.g. legacy `generated_*.baml`) — removed if no longer emitted.
 fn sync_generated_baml_files(build_dir: &BuildDir, dest_baml_src: &Path) -> Result<()> {
     let generated_src_dir = build_dir.join("baml_src");
     if !generated_src_dir.is_dir() {
@@ -81,7 +99,7 @@ fn sync_generated_baml_files(build_dir: &BuildDir, dest_baml_src: &Path) -> Resu
 
     std::fs::create_dir_all(dest_baml_src)?;
 
-    let mut generated_names: HashSet<String> = HashSet::new();
+    let mut managed_names: HashSet<String> = HashSet::new();
     for entry in std::fs::read_dir(&generated_src_dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -91,18 +109,23 @@ fn sync_generated_baml_files(build_dir: &BuildDir, dest_baml_src: &Path) -> Resu
         let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if file_name != GENERATED_BAML_PRELUDE_FILE {
+
+        let is_managed_generated =
+            file_name == GENERATED_BAML_PRELUDE_FILE || file_name == CATALOG_SIDECAR_FILE;
+        let is_authored_baml = !is_managed_generated && file_name.ends_with(".baml");
+        if !is_managed_generated && !is_authored_baml {
             continue;
         }
 
-        generated_names.insert(file_name.to_string());
+        if is_managed_generated {
+            managed_names.insert(file_name.to_string());
+        }
         let data = normalize_unix_text_eof(std::fs::read(&path)?);
         let mut tmp = tempfile::NamedTempFile::new_in(dest_baml_src)?;
         tmp.write_all(&data)?;
         let dest_path = dest_baml_src.join(file_name);
         tmp.persist(&dest_path).map_err(|e| e.error)?;
     }
-    // Remove stale generated_*.baml files that are no longer emitted by the builder.
     for entry in std::fs::read_dir(dest_baml_src)? {
         let entry = entry?;
         let path = entry.path();
@@ -112,7 +135,7 @@ fn sync_generated_baml_files(build_dir: &BuildDir, dest_baml_src: &Path) -> Resu
         let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if is_managed_generated_baml_filename(file_name) && !generated_names.contains(file_name) {
+        if is_managed_generated_baml_filename(file_name) && !managed_names.contains(file_name) {
             std::fs::remove_file(path)?;
         }
     }

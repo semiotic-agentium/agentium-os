@@ -44,7 +44,7 @@
 //!
 //! ## Granularity matters
 //!
-//! Line-scoped citations (`@N:1-3`) produce measurably higher `cite_mean` than
+//! Line-scoped citations (`@N:L1-L3`) produce measurably higher `cite_mean` than
 //! full-blob citations (`@N`) for the same narrow claim. Calibrated gap from
 //! `tests/fixtures/drift/12_synthesis_citations.toml`:
 //! - line-scoped: cite_mean = 0.78
@@ -316,7 +316,7 @@ mod tests {
     #[test]
     fn parse_archive_ref_single_line() {
         assert_eq!(
-            ParsedCitation::parse("@4:2").unwrap(),
+            ParsedCitation::parse("@4:L2").unwrap(),
             ParsedCitation::Archive {
                 n: 4,
                 lines: Some(2..=2),
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn parse_negated_archive_ref_line_range() {
         assert_eq!(
-            ParsedCitation::parse("!@4:2-5").unwrap(),
+            ParsedCitation::parse("!@4:L2-L5").unwrap(),
             ParsedCitation::Archive {
                 n: 4,
                 lines: Some(2..=5),
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn parse_archive_ref_line_range() {
         assert_eq!(
-            ParsedCitation::parse("@4:2-5").unwrap(),
+            ParsedCitation::parse("@4:L2-L5").unwrap(),
             ParsedCitation::Archive {
                 n: 4,
                 lines: Some(2..=5),
@@ -361,12 +361,12 @@ mod tests {
 
     #[test]
     fn parse_rejects_zero_line() {
-        assert!(ParsedCitation::parse("@1:0").is_err());
+        assert!(ParsedCitation::parse("@1:L0").is_err());
     }
 
     #[test]
     fn parse_rejects_inverted_range() {
-        assert!(ParsedCitation::parse("@1:5-2").is_err());
+        assert!(ParsedCitation::parse("@1:L5-L2").is_err());
     }
 
     #[test]
@@ -377,14 +377,14 @@ mod tests {
     #[test]
     fn n_accessor() {
         assert_eq!(ParsedCitation::parse("#7").unwrap().n(), 7);
-        assert_eq!(ParsedCitation::parse("@12:3-6").unwrap().n(), 12);
+        assert_eq!(ParsedCitation::parse("@12:L3-L6").unwrap().n(), 12);
     }
 
     #[test]
     fn parse_citations_batch() {
         let raw = vec![
             "#1".to_string(),
-            "@4:2".to_string(),
+            "@4:L2".to_string(),
             "bad".to_string(),
             "@7".to_string(),
         ];
@@ -430,7 +430,7 @@ mod tests {
             mode: CitationMode::Enforce,
             require_at_least_one: true,
         };
-        let raw = vec!["#1".to_string(), "@4:2-5".to_string()];
+        let raw = vec!["#1".to_string(), "@4:L2-L5".to_string()];
         let v = validate_citations(&raw, &cfg).expect("valid citations should pass");
         assert!(v.is_ok());
         assert_eq!(v.parsed.len(), 2);
@@ -476,7 +476,7 @@ mod tests {
         let r = table.insert(entry);
         assert_eq!(r.as_u32(), 1);
 
-        let citation = ParsedCitation::parse("@1:1-2").unwrap();
+        let citation = ParsedCitation::parse("@1:L1-L2").unwrap();
         let resolved = ResolvedCitation::resolve(&citation, &table).expect("must resolve");
         assert_eq!(resolved.n, 1);
         assert_eq!(resolved.kind, CitationKind::Archive);

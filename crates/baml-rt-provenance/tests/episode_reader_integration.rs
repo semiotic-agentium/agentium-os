@@ -17,7 +17,7 @@ use baml_rt_provenance::{
     SurrealStoreBuilder, episode::EpisodeReader,
 };
 
-/// `ToolRead` rows with rendered archive/grep bodies (SendDone inline read + explicit Read), in timeline order.
+/// `ToolRead` rows with rendered archive/grep bodies (explicit Read only; `SendDone` stays off transcript), in timeline order.
 fn transcript_tool_read_bodies(ep: &Episode) -> Vec<String> {
     ep.prior_context
         .iter()
@@ -164,7 +164,7 @@ async fn episode_aggregates_llm_tokens_and_wall_clock() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: SendDone is summary-only; explicit PageRead has archive body (transcript ∥ session_history)
+// Test 2: SendDone omitted from transcript/session_history; explicit PageRead has archive body
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -277,26 +277,20 @@ async fn episode_send_done_produces_read_entries_from_graph_hydrated_payload() {
         .chain(ep.transcript.iter())
         .collect();
 
-    // SendDone → ToolResult (summary line only), not ToolRead. Archive text only on explicit read.
-    let send_done_entry = all_entries
-        .iter()
-        .find(|e| {
+    assert!(
+        !all_entries.iter().any(|e| {
             e.step_type == StepType::ToolResult
-                && matches!(&e.content, EpisodeContent::ToolOutput { lines, .. } if {
-                    let t = lines.join("\n");
-                    t.contains("4894@1") && !t.contains("PageRead for")
-                })
-        })
-        .expect("SendDone transcript row with compact header only");
-    if let EpisodeContent::ToolOutput { lines, .. } = &send_done_entry.content {
-        let t = lines.join("\n");
-        assert!(
-            !t.contains("agent-alpha"),
-            "SendDone must not inline tool/archive payload: {t}"
-        );
-    } else {
-        panic!("expected ToolOutput for SendDone");
-    }
+                && matches!(
+                    &e.content,
+                    EpisodeContent::ToolOutput { lines, .. }
+                        if lines.len() == 1
+                            && lines[0].contains('@')
+                            && lines[0].contains('·')
+                            && !lines[0].contains("cat -n")
+                )
+        }),
+        "SendDone compact header rows must not appear in episode transcript"
+    );
 
     let tool_read_entries: Vec<_> = all_entries
         .iter()

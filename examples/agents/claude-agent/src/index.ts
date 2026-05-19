@@ -55,13 +55,25 @@ function collectAssistantText(node: unknown, out: string[]): void {
 }
 
 function extractClaudeReply(run: unknown): StructuredReply {
+  if (isObject(run) && (run as { outcome?: string }).outcome === "agent_correctable") {
+    const r = (run as { recovery: { code: string; mistake: string } }).recovery;
+    return {
+      parts: [{ type: "text", text: `[${r.code}] ${r.mistake}` }],
+      citations: [],
+    };
+  }
+  if (isObject(run) && (run as { outcome?: string }).outcome === "fatal") {
+    const m = (run as { message: string }).message;
+    return { parts: [{ type: "text", text: m }], citations: [] };
+  }
+  const telemetry = isObject(run) && (run as { outcome?: string }).outcome === "completed" ? run : { last: run, steps: undefined };
   const candidates: unknown[] = [];
-  if (isObject(run)) {
-    candidates.push((run as { last?: unknown }).last);
-    const steps = (run as { steps?: unknown[] }).steps;
+  if (isObject(telemetry)) {
+    candidates.push((telemetry as { last?: unknown }).last);
+    const steps = (telemetry as { steps?: unknown[] }).steps;
     if (Array.isArray(steps)) candidates.push(...steps.slice().reverse());
   } else {
-    candidates.push(run);
+    candidates.push(telemetry);
   }
   for (const c of candidates) {
     const text = extractTerminalText(c);

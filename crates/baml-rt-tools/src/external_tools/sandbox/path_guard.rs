@@ -23,7 +23,12 @@ pub fn canonicalize_bind_path(raw: &Path, roots: &[PathBuf]) -> Result<PathBuf> 
         ));
     }
 
-    if !roots.iter().any(|r| canonical.starts_with(r)) {
+    let allowed = roots.iter().any(|r| {
+        std::fs::canonicalize(r)
+            .ok()
+            .is_some_and(|root_canon| canonical.starts_with(root_canon))
+    });
+    if !allowed {
         return Err(BamlRtError::InvalidArgument(format!(
             "bind path escapes allowlist: {}",
             canonical.display()

@@ -117,6 +117,19 @@ impl<FS: FileSystem> Packager for StdPackager<FS> {
             add_directory_to_tar(&mut tar, &mcp_dir, "mcp", &self.filesystem)?;
         }
 
+        let unified_manifest = build_dir.join("unified_step_executor_functions.json");
+        if unified_manifest.exists() {
+            let content = fs::read_to_string(&unified_manifest)?;
+            let mut header = Header::new_gnu();
+            header
+                .set_path("unified_step_executor_functions.json")
+                .map_err(BamlBuilderError::TarHeaderPath)?;
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append(&header, content.as_bytes())?;
+        }
+
         // Add external_tools.lock.json (always written by type generation).
         let external_lockfile = build_dir.join(EXTERNAL_TOOLS_LOCKFILE_NAME);
         if external_lockfile.exists() {

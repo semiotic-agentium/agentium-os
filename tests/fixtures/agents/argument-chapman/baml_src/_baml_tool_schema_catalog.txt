@@ -1,0 +1,111 @@
+Generated from compiled BAML IR.
+Tool metadata selects availability only; field shapes and nested types come from IR.
+
+Available tool types for this agent:
+
+tool system/internal_a2a
+  purpose: Opens a conversational session to another agent. Send a message (text or parts), Read the response, then Send follow-ups or Finish. Multiple Send/Read rounds are allowed within one session — use this for multi-turn conversations with the delegated agent.
+  open: InternalA2aOpenInput
+  send: InternalA2aSendInput
+  operations: SystemInternalA2aOpenStep | SystemInternalA2aSendStep | SystemInternalA2aSearchReadStep | SystemInternalA2aPageReadStep | SystemInternalA2aFinishStep | SystemInternalA2aAbortStep
+
+Type definitions:
+
+type ArchivePageReadInput = {
+  archive_ref: string @description("archive_ref names a Send output archive: set it to the exact @N shown on that Send line in the transcript (e.g. @1, @2). Do not use #N or any # prefix — # is for session history lines only and is invalid in this field. Do not invent @N. PageRead/SearchRead materialize line bodies from that handle; allowed with a real visible @N without Open or an active session.")
+  offset?: int @description("0-based offset over full rendered archive lines (no grep). First window: offset=0; next: previous next_offset while lines remain.")
+  limit?: int @description("Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).")
+}
+
+type ArchivePageReadStep = {
+  op: "PageRead"
+  input: ArchivePageReadInput @description("PageRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a contiguous window: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+}
+
+type ArchiveSearchReadInput = {
+  archive_ref: string @description("archive_ref names a Send output archive: set it to the exact @N shown on that Send line in the transcript (e.g. @1, @2). Do not use #N or any # prefix — # is for session history lines only and is invalid in this field. Do not invent @N. PageRead/SearchRead materialize line bodies from that handle; allowed with a real visible @N without Open or an active session.")
+  grep: string @description("Non-empty filter over rendered archive lines. SearchRead is for locating lines that match; use when you have a concrete term. Shape: substring or regex per host (e.g. name, -i error). For full contiguous slices without filtering, use PageRead.")
+  offset?: int @description("0-based offset over grep matches (after the filter). First window: offset=0; next: previous next_offset while matches remain.")
+  limit?: int @description("Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).")
+}
+
+type ArchiveSearchReadStep = {
+  op: "SearchRead"
+  input: ArchiveSearchReadInput @description("SearchRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a filtered window: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+}
+
+type ConversationPart = {
+  text?: string @description("Plain text content for this conversation part.")
+  raw?: string @description("Raw provider-native content when plain text would be lossy or unavailable.")
+  url?: string @description("Remote URL for this part when the content points to a web or attachment resource.")
+  filename?: string @description("Attachment filename when this part refers to a file.")
+  media_type?: string @description("MIME type for this part, for example text/plain or image/png.")
+}
+
+type DataPart = {
+  type: "data"
+  data: string @description("Serialised content (e.g. JSON string, CSV string).")
+  media_type: ReplyMediaType @description("MIME type of the data field.")
+}
+
+type InternalA2aOpenInput = {
+  target: InternalA2aTarget
+}
+
+type InternalA2aSendInput = {
+  parts: ConversationPart[]
+}
+
+type InternalA2aTarget = {
+  agent_package: string
+  agent_instance_id: string
+}
+
+type ReadOnlyFinishStep = {
+  op: "ReadOnlyFinish"
+  reply: StructuredReply @description("User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.")
+}
+
+type ReplyMediaType = "TextPlain" | "TextMarkdown" | "ApplicationJson" | "TextCsv"
+
+type ReplyPart = (TextPart | DataPart)
+
+type StructuredReply = {
+  parts: (TextPart | DataPart)[] @description("Ordered parts: start with TextPart (type \"text\") — set media_type TextMarkdown for rich answers (see TextPart); optionally append DataPart (type \"data\", media_type ApplicationJson) with a JSON string for machine-readable UI payloads.")
+  citations: string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
+}
+
+type SystemInternalA2aAbortStep = {
+  op: "Abort"
+}
+
+type SystemInternalA2aFinishStep = {
+  op: "Finish"
+}
+
+type SystemInternalA2aOpenStep = {
+  op: "Open"
+  tool_name: "system/internal_a2a" @description("Tool to open")
+  initial_input: InternalA2aOpenInput @description("Required open payload.")
+}
+
+type SystemInternalA2aPageReadStep = {
+  op: "PageRead"
+  input: ArchivePageReadInput @description("PageRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a contiguous window: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+}
+
+type SystemInternalA2aSearchReadStep = {
+  op: "SearchRead"
+  input: ArchiveSearchReadInput @description("SearchRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a filtered window: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+}
+
+type SystemInternalA2aSendStep = {
+  op: "Send"
+  input: InternalA2aSendInput @description("Conversational message payload. Set text to a non-empty string. Never null, never omit text.")
+  citations: string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
+}
+
+type TextPart = {
+  type: "text"
+  text: string
+}

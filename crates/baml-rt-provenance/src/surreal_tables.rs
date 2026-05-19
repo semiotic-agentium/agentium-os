@@ -6,9 +6,6 @@ pub(crate) const TBL_PAYLOAD: &str = "provenance_payload";
 pub(crate) const TBL_PAYLOAD_BLOB: &str = "provenance_payload_blob";
 /// Alias for SQL fragments that historically used `TBL_BLOB`.
 pub(crate) const TBL_BLOB: &str = TBL_PAYLOAD_BLOB;
-pub(crate) const TBL_A2A_TASK: &str = "a2a_task";
-pub(crate) const TBL_A2A_MESSAGE: &str = "a2a_message";
-pub(crate) const TBL_A2A_UPDATE: &str = "a2a_update";
 pub(crate) const TBL_ARCHIVE_PREFIX_REGISTRY: &str = "archive_prefix_registry";
 pub(crate) const TBL_ARCHIVE_LOCAL_COUNTER: &str = "archive_local_counter";
 pub(crate) const TBL_ARCHIVE_BODY: &str = "archive_body";

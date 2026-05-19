@@ -30,6 +30,21 @@ fn simple_struct_schema() {
     assert!(req.iter().any(|v| v == "count"));
 }
 
+#[derive(BamlType)]
+struct SchFieldDescription {
+    #[baml(description = "User-visible plain text content.")]
+    pub text: Option<String>,
+}
+
+#[test]
+fn field_description_is_emitted_in_json_schema() {
+    let schema = SchFieldDescription::json_schema_inline();
+    assert_eq!(
+        schema["properties"]["text"]["description"],
+        "User-visible plain text content."
+    );
+}
+
 // ─── Struct with Option<T> — optional fields not in required ─────
 
 #[derive(BamlType)]

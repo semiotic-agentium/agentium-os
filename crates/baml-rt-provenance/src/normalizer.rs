@@ -17,13 +17,12 @@ use crate::{
     document::ProvDocument,
     error::{ProvenanceError, Result},
     events::{CallScope, ProvEvent, ProvEventData, ToolSessionStepOpKind},
+    graph_model::GraphNodeLabel,
     id_semantics::{
         AgentBootActivityId, AgentBootActivityInput, AgentRuntimeInstanceId,
         AgentRuntimeInstanceInput, AgentStopActivityId, AgentStopActivityInput, ArchiveEntityId,
         ArchiveEntityInput, ArtifactByActivityAnchorEntityId, ArtifactByActivityAnchorEntityInput,
-        ArtifactByIdEntityId, ArtifactByIdEntityInput, ArtifactByTypeEntityId,
-        ArtifactByTypeEntityInput, ArtifactIdentity, DelegationTargetEntityId,
-        DelegationTargetEntityInput, FailureClassificationActivityId,
+        DelegationTargetEntityId, DelegationTargetEntityInput, FailureClassificationActivityId,
         FailureClassificationActivityInput, FailureClassificationEntityId,
         FailureClassificationEntityInput, IntentEntityId, IntentEntityInput, LlmCallActivityId,
         LlmCallActivityInput, LlmPromptEntityId, LlmPromptEntityInput, MessageEntityId,
@@ -35,21 +34,71 @@ use crate::{
         TaskStateEntityInput, ToolArgsEntityId, ToolArgsEntityInput, ToolCallActivityId,
         ToolCallActivityInput,
     },
+    metamodel::TaskStatusKind,
     types::{
         Activity, Agent, Entity, ProvActivityId, ProvAgentId, ProvEntityId, ProvNodeRef,
         QualifiedGeneration, Used, WasAssociatedWith, WasDerivedFrom, WasGeneratedBy,
     },
     vocabulary::{
         a2a, a2a_relation_types, a2a_relations, a2a_roles, agent_types, message_directions, prov,
-        prov_roles,
+        prov_roles, semantic_labels,
     },
 };
+
+/// Head-pointer relation tag: identifies which `WAS_LAST_*` edge a
+/// `HeadPointerRepoint` is re-pointing.
+///
+/// The two head-pointer edges are not normal upserts — they have a
+/// **cardinality-one** invariant per `(rel_type, from_id)`: a Task has
+/// exactly one current `TaskState` and exactly one current
+/// `AgentRuntimeInstance`. The writer enforces this by emitting
+/// `DELETE prov_edge WHERE from_id = $task AND rel_type = $rel` followed
+/// by an `UPSERT` for the new head, both inside the same `BEGIN..COMMIT`
+/// transaction as the rest of the event's graph writes. Concurrent writers
+/// for the same Task are serialised by SurrealDB transaction semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadPointerRel {
+    /// `Task → TaskState` head-pointer, re-pointed on every
+    /// `TaskStatusChanged` event.
+    WasLastTransitionedTo,
+    /// `Task → AgentRuntimeInstance` head-pointer, re-pointed on every
+    /// `TaskExecutionStarted` event. Collapses agent-identity lookup from
+    /// a `Task → TaskExecution → AgentRuntimeInstance` two-hop traversal
+    /// to a single indexed edge hop.
+    WasLastExecutedBy,
+}
+
+impl HeadPointerRel {
+    /// On-disk `prov_edge.rel_type` literal for this head-pointer.
+    pub const fn as_rel_str(self) -> &'static str {
+        match self {
+            Self::WasLastTransitionedTo => semantic_labels::WAS_LAST_TRANSITIONED_TO,
+            Self::WasLastExecutedBy => semantic_labels::WAS_LAST_EXECUTED_BY,
+        }
+    }
+}
+
+/// One head-pointer re-point: clear all existing `(from_id, rel_type)`
+/// edges and insert a single `(from_id, rel_type, to_id)` edge in the
+/// same transaction.
+#[derive(Debug, Clone)]
+pub struct HeadPointerRepoint {
+    pub from_id: String,
+    pub from_label: String,
+    pub rel: HeadPointerRel,
+    pub to_id: String,
+    pub to_label: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct NormalizedProv {
     pub document: ProvDocument,
     pub derived_relations: Vec<A2aDerivedRelation>,
     pub agent_labels: HashMap<String, String>,
+    /// Head-pointer edges to re-point atomically as part of this event's
+    /// graph write batch. See [`HeadPointerRel`] for the cardinality
+    /// invariant the writer enforces.
+    pub head_pointer_repoints: Vec<HeadPointerRepoint>,
 }
 
 fn parse_agent_id(event: &ProvEvent, raw: &str) -> Result<AgentId> {
@@ -548,6 +597,7 @@ fn normalize_event_with_registry(
     let mut doc = ProvDocument::new();
     let mut derived_relations = Vec::new();
     let mut agent_labels = HashMap::new();
+    let mut head_pointer_repoints: Vec<HeadPointerRepoint> = Vec::new();
 
     match event.data() {
         ProvEventData::LlmCallStarted {
@@ -659,6 +709,7 @@ fn normalize_event_with_registry(
             citations,
             resolved_citations,
             prompt_serialized_utf8_bytes,
+            prompt_message_chars,
         } => {
             let scope_key = build_call_scope_key(event, scope, metadata)?;
             let ordinal =
@@ -712,6 +763,10 @@ fn normalize_event_with_registry(
             attrs.insert(
                 a2a::PROMPT_SERIALIZED_UTF8_BYTES.to_string(),
                 Value::Number((*prompt_serialized_utf8_bytes).into()),
+            );
+            attrs.insert(
+                a2a::PROMPT_MESSAGE_CHARS.to_string(),
+                Value::Number((*prompt_message_chars).into()),
             );
             if let Some(result) = metadata_json_field(metadata, "result") {
                 attrs.insert(a2a::RESULT.to_string(), result);
@@ -1503,9 +1558,17 @@ fn normalize_event_with_registry(
             insert_was_associated_with(
                 &mut doc,
                 task_execution.clone(),
-                agent_instance_id,
+                agent_instance_id.clone(),
                 Some(prov_roles::EXECUTING_AGENT.to_string()),
             );
+
+            head_pointer_repoints.push(HeadPointerRepoint {
+                from_id: task_entity.as_str().to_string(),
+                from_label: GraphNodeLabel::Task.as_str().to_string(),
+                rel: HeadPointerRel::WasLastExecutedBy,
+                to_id: agent_instance_id.as_str().to_string(),
+                to_label: GraphNodeLabel::AgentRuntimeInstance.as_str().to_string(),
+            });
 
             let invoking_agent_id = runner_runtime_instance_id();
             ensure_runner_runtime_instance(&mut doc);
@@ -1536,16 +1599,28 @@ fn normalize_event_with_registry(
             task_id,
             old_status,
             new_status,
+            old_status_kind,
+            new_status_kind,
+            old_status_anchor,
         } => {
-            let Some(new_status) = new_status.as_deref() else {
-                return Ok(NormalizedProv {
-                    document: doc,
-                    derived_relations,
-                    agent_labels,
-                });
-            };
-            let _task_entity = ensure_task_entity(&mut doc, task_id);
-            let is_terminal = is_terminal_status(new_status);
+            let new_status_kind = resolve_event_status_kind(
+                event,
+                new_status.as_deref(),
+                new_status_kind.clone(),
+                "new_status",
+            )?
+            .ok_or_else(|| ProvenanceError::InvalidEvent {
+                activity_anchor: event.id().as_str().to_string(),
+                reason: "task status transition is missing new_status".to_string(),
+            })?;
+            let old_status_kind = resolve_event_status_kind(
+                event,
+                old_status.as_deref(),
+                old_status_kind.clone(),
+                "old_status",
+            )?;
+            let task_entity = ensure_task_entity(&mut doc, task_id);
+            let is_terminal = new_status_kind.is_terminal();
             let task_execution = ensure_task_execution_activity(
                 &mut doc,
                 task_id,
@@ -1556,7 +1631,7 @@ fn normalize_event_with_registry(
                 None,
                 context,
             )?;
-            let status_id = task_state_entity_id(task_id, new_status);
+            let status_id = task_state_entity_id(task_id, event.id());
             let mut status_attrs = base_attrs(event);
             status_attrs.insert(
                 a2a::TASK_STATE_TIME.to_string(),
@@ -1564,14 +1639,26 @@ fn normalize_event_with_registry(
             );
             status_attrs.insert(
                 a2a::TASK_STATE.to_string(),
-                Value::String(new_status.to_string()),
+                Value::String(new_status_kind.as_wire_str().to_string()),
             );
-            if let Some(old_status) = old_status.as_deref() {
+            if let Some(old_status_kind) = old_status_kind.as_ref() {
                 status_attrs.insert(
                     a2a::OLD_STATUS.to_string(),
-                    Value::String(old_status.to_string()),
+                    Value::String(old_status_kind.as_wire_str().to_string()),
+                );
+                insert_task_status_payload_attrs(
+                    &mut status_attrs,
+                    old_status_kind,
+                    a2a::OLD_INPUT_REQUIRED_PROMPT,
+                    a2a::OLD_REASON,
                 );
             }
+            insert_task_status_payload_attrs(
+                &mut status_attrs,
+                &new_status_kind,
+                a2a::INPUT_REQUIRED_PROMPT,
+                a2a::REASON,
+            );
             doc.insert_entity(
                 status_id.clone(),
                 Entity {
@@ -1586,42 +1673,25 @@ fn normalize_event_with_registry(
                 Some(a2a_roles::TASK_STATE.to_string()),
             );
 
+            head_pointer_repoints.push(HeadPointerRepoint {
+                from_id: task_entity.as_str().to_string(),
+                from_label: GraphNodeLabel::Task.as_str().to_string(),
+                rel: HeadPointerRel::WasLastTransitionedTo,
+                to_id: status_id.as_str().to_string(),
+                to_label: GraphNodeLabel::TaskState.as_str().to_string(),
+            });
+
             if is_terminal {
-                let task_entity = task_entity_id(task_id);
                 insert_was_generated_by(
                     &mut doc,
-                    ProvNodeRef::Entity(task_entity),
+                    ProvNodeRef::Entity(task_entity.clone()),
                     task_execution.clone(),
                     Some(event.timestamp_ms()),
                 );
             }
 
-            if let Some(old_status) = old_status.as_deref() {
-                let old_id = task_state_entity_id(task_id, old_status);
-                let mut old_attrs = HashMap::new();
-                old_attrs.insert(
-                    a2a::CONTEXT_ID.to_string(),
-                    Value::String(event.context_id().as_str().to_string()),
-                );
-                old_attrs.insert(
-                    a2a::TASK_ID.to_string(),
-                    Value::String(task_id.as_str().to_string()),
-                );
-                old_attrs.insert(
-                    a2a::TASK_STATE_TIME.to_string(),
-                    Value::Number(event.timestamp_ms().saturating_sub(1).into()),
-                );
-                old_attrs.insert(
-                    a2a::TASK_STATE.to_string(),
-                    Value::String(old_status.to_string()),
-                );
-                doc.insert_entity(
-                    old_id.clone(),
-                    Entity {
-                        prov_type: Some(prov_type::<TaskStateEntityId>()),
-                        attributes: old_attrs,
-                    },
-                );
+            if let Some(old_anchor) = old_status_anchor {
+                let old_id = task_state_entity_id(task_id, old_anchor);
                 insert_was_derived_from(
                     &mut doc,
                     status_id.clone(),
@@ -1671,13 +1741,7 @@ fn normalize_event_with_registry(
             doc.insert_entity(
                 artifact_id_str.clone(),
                 Entity {
-                    prov_type: Some(if artifact_id.is_some() {
-                        prov_type::<ArtifactByIdEntityId>()
-                    } else if artifact_type.is_some() {
-                        prov_type::<ArtifactByTypeEntityId>()
-                    } else {
-                        prov_type::<ArtifactByActivityAnchorEntityId>()
-                    }),
+                    prov_type: Some(prov_type::<ArtifactByActivityAnchorEntityId>()),
                     attributes: artifact_attrs,
                 },
             );
@@ -1720,7 +1784,8 @@ fn normalize_event_with_registry(
                     serde_json::json!(drift_score),
                 );
             }
-            // Store raw citation strings on the entity for downstream resolution (Phase 2).
+            // Store raw citation strings on the entity; downstream
+            // resolution to `WAS_DERIVED_FROM` edges happens later.
             if !citations.is_empty() {
                 intent_attrs.insert(
                     "citations".to_string(),
@@ -1899,7 +1964,8 @@ fn normalize_event_with_registry(
             step_attrs.insert(a2a::PLAN_ID.to_string(), Value::String(plan_id.to_string()));
             step_attrs.insert(a2a::STEP_ID.to_string(), Value::String(step_id.to_string()));
             step_attrs.insert(a2a::STATUS.to_string(), Value::String(new_status.clone()));
-            // Store raw citation strings on the step entity for downstream resolution (Phase 2).
+            // Store raw citation strings on the step entity; downstream
+            // resolution to `WAS_DERIVED_FROM` edges happens later.
             if !citations.is_empty() {
                 step_attrs.insert(
                     "citations".to_string(),
@@ -1970,6 +2036,20 @@ fn normalize_event_with_registry(
                 a2a::DIRECTION.to_string(),
                 Value::String(direction.to_string()),
             );
+
+            // Agent ownership of a Message is modelled as an EDGE
+            // traversal, not as a denormalised property on the Message
+            // row. The owning agent is reachable in two hops via the
+            // `A2AMessageProcessing` activity emitted just below:
+            //
+            //   (m:Message) <-[:WAS_RECEIVED_BY|:WAS_EMITTED_BY]-
+            //   (p:A2AMessageProcessing) -[:WAS_EXECUTED_BY]->
+            //   (a:AgentRuntimeInstance)
+            //
+            // Read paths must traverse this chain (see
+            // `crate::ConversationGraphTraversal::MESSAGE_TO_AGENT` and
+            // `crate::metamodel::query::GraphQuery::for_agent` /
+            // `for_agent_package`), not filter on `props.a2a_agent_id`.
 
             doc.insert_entity(
                 message_id.clone(),
@@ -2261,6 +2341,7 @@ fn normalize_event_with_registry(
         document: doc,
         derived_relations,
         agent_labels,
+        head_pointer_repoints,
     })
 }
 
@@ -2313,6 +2394,13 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
         }
         ProvEventData::MessageReceived { role, content, .. }
         | ProvEventData::MessageSent { role, content, .. } => {
+            if event.context_id_opt().is_none() {
+                return Err(ProvenanceError::InvalidEvent {
+                    activity_anchor: event.id().as_str().to_string(),
+                    reason: "message events must carry context_id (conversation transcript requires SCOPED_TO)"
+                        .to_string(),
+                });
+            }
             canonical_message_role(event, role)?;
             if content.iter().all(|line| line.trim().is_empty()) {
                 return Err(ProvenanceError::InvalidEvent {
@@ -2321,6 +2409,9 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
                         .to_string(),
                 });
             }
+        }
+        ProvEventData::ToolSessionStep { scope, .. } => {
+            validate_call_scope(event, scope, "tool session step")?;
         }
         ProvEventData::CallbackDispatchContextsLinked {
             dispatch_context_id,
@@ -2999,6 +3090,27 @@ fn scoped_message_id(scope: &CallScope, metadata: &Value) -> Option<MessageId> {
     }
 }
 
+/// Task id for `TASK_CALL` edges: envelope task scope, else effect metadata `task_id` (same key
+/// QuickJS stamps via [`stamp_tool_effect_metadata_scope`]) so `ProvEvent::Global` calls still
+/// link to `TaskExecution` when metadata carries the authoritative task.
+fn task_id_for_task_call_graph(event: &ProvEvent) -> Option<TaskId> {
+    if let Some(t) = event.task_id() {
+        return Some(t.clone());
+    }
+    let md = match event.data() {
+        ProvEventData::ToolCallStarted { metadata, .. }
+        | ProvEventData::ToolCallCompleted { metadata, .. }
+        | ProvEventData::LlmCallStarted { metadata, .. }
+        | ProvEventData::LlmCallCompleted { metadata, .. } => metadata,
+        _ => return None,
+    };
+    md.get("task_id")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| TaskId::from_external(ExternalId::new(value.to_string())))
+}
+
 fn attach_task_call_context(
     doc: &mut ProvDocument,
     event: &ProvEvent,
@@ -3007,7 +3119,7 @@ fn attach_task_call_context(
     agent_labels: &mut HashMap<String, String>,
     context: Option<&NormalizeContext>,
 ) -> Result<()> {
-    let Some(task_id) = event.task_id() else {
+    let Some(task_id) = task_id_for_task_call_graph(event) else {
         return Ok(());
     };
     let Some(ctx) = event.context_id_opt() else {
@@ -3027,10 +3139,18 @@ fn attach_task_call_context(
         _ => None,
     };
 
-    let _task_entity = ensure_task_entity(doc, task_id);
+    let _task_entity = ensure_task_entity(doc, &task_id);
 
-    let task_execution =
-        ensure_task_execution_activity(doc, task_id, ctx, None, None, agent_labels, None, context)?;
+    let task_execution = ensure_task_execution_activity(
+        doc,
+        &task_id,
+        ctx,
+        None,
+        None,
+        agent_labels,
+        None,
+        context,
+    )?;
     associate_call_with_agent(
         doc,
         activity_id,
@@ -3097,8 +3217,11 @@ fn associate_call_with_agent(
     Ok(())
 }
 
-fn task_state_entity_id(task_id: &TaskId, status: &str) -> ProvEntityId {
-    ProvEntityId::derived::<TaskStateEntityId>(TaskStateEntityInput { task_id, status })
+fn task_state_entity_id(task_id: &TaskId, activity_anchor: &ActivityAnchorId) -> ProvEntityId {
+    ProvEntityId::derived::<TaskStateEntityId>(TaskStateEntityInput {
+        task_id,
+        activity_anchor,
+    })
 }
 
 fn intent_entity_id(task_id: &TaskId, intent_id: &IntentId) -> ProvEntityId {
@@ -3134,46 +3257,64 @@ fn artifact_entity_id(
     artifact_type: &Option<String>,
     activity_anchor: &ActivityAnchorId,
 ) -> ProvEntityId {
-    let identity = if let Some(artifact_id) = artifact_id {
-        ArtifactIdentity::ById(artifact_id)
-    } else if let Some(artifact_type) = artifact_type {
-        ArtifactIdentity::ByType {
-            task_id,
-            artifact_type,
+    let _ = artifact_id;
+    let _ = artifact_type;
+    ProvEntityId::derived::<ArtifactByActivityAnchorEntityId>(ArtifactByActivityAnchorEntityInput {
+        task_id,
+        activity_anchor,
+    })
+}
+
+fn parse_status_kind_from_tag_only(raw: &str) -> Option<TaskStatusKind> {
+    match raw {
+        "TASK_STATE_SUBMITTED" | "submitted" => Some(TaskStatusKind::Submitted),
+        "TASK_STATE_WORKING" | "working" => Some(TaskStatusKind::Working),
+        "TASK_STATE_AUTH_REQUIRED" | "auth-required" | "auth_required" => {
+            Some(TaskStatusKind::AuthRequired)
         }
-    } else {
-        ArtifactIdentity::ByActivityAnchor {
-            task_id,
-            activity_anchor,
-        }
-    };
-    match identity {
-        ArtifactIdentity::ById(artifact_id) => {
-            ProvEntityId::derived::<ArtifactByIdEntityId>(ArtifactByIdEntityInput { artifact_id })
-        }
-        ArtifactIdentity::ByType {
-            task_id,
-            artifact_type,
-        } => ProvEntityId::derived::<ArtifactByTypeEntityId>(ArtifactByTypeEntityInput {
-            task_id,
-            artifact_type,
-        }),
-        ArtifactIdentity::ByActivityAnchor {
-            task_id,
-            activity_anchor,
-        } => ProvEntityId::derived::<ArtifactByActivityAnchorEntityId>(
-            ArtifactByActivityAnchorEntityInput {
-                task_id,
-                activity_anchor,
-            },
-        ),
+        "TASK_STATE_COMPLETED" | "completed" => Some(TaskStatusKind::Completed),
+        "TASK_STATE_CANCELED" | "canceled" | "cancelled" => Some(TaskStatusKind::Canceled),
+        "TASK_STATE_REJECTED" | "rejected" => Some(TaskStatusKind::Rejected),
+        _ => None,
     }
 }
 
-fn is_terminal_status(status: &str) -> bool {
-    let normalized = status.to_ascii_lowercase();
-    matches!(
-        normalized.as_str(),
-        "completed" | "failed" | "cancelled" | "canceled"
-    )
+fn resolve_event_status_kind(
+    event: &ProvEvent,
+    raw: Option<&str>,
+    typed: Option<TaskStatusKind>,
+    field: &str,
+) -> Result<Option<TaskStatusKind>> {
+    match (typed, raw) {
+        (Some(kind), _) => Ok(Some(kind)),
+        (None, None) => Ok(None),
+        (None, Some(raw)) => parse_status_kind_from_tag_only(raw).map(Some).ok_or_else(|| {
+            ProvenanceError::InvalidEvent {
+                activity_anchor: event.id().as_str().to_string(),
+                reason: format!(
+                    "{field} '{raw}' is not self-describing; payload-bearing task statuses must be emitted through the typed constructor"
+                ),
+            }
+        }),
+    }
+}
+
+fn insert_task_status_payload_attrs(
+    attrs: &mut HashMap<String, Value>,
+    status: &TaskStatusKind,
+    prompt_key: &str,
+    reason_key: &str,
+) {
+    match status {
+        TaskStatusKind::InputRequired { prompt } => {
+            attrs.insert(prompt_key.to_string(), Value::String(prompt.clone()));
+        }
+        TaskStatusKind::Failed { reason } => {
+            attrs.insert(
+                reason_key.to_string(),
+                Value::String(reason.as_str().to_string()),
+            );
+        }
+        _ => {}
+    }
 }

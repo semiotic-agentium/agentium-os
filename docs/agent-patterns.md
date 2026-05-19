@@ -13,9 +13,7 @@ This separation keeps the runtime/tool layer stable while allowing the agent
 layer to own UX. It avoids stringly‑typed contracts and makes tests reliable.
 
 **Step executor vs chat reply (provenance)**
-`runGeneratedStepExecutor(...)` returns **FSM execution telemetry** (`last`, `steps`,
-`session_context`, …): tool choice, per‑hop envelopes, and structured tool output.
-It is **not** the canonical operator‑visible reply for provenance or UX.
+`runGeneratedStepExecutor(...)` resolves with a **discriminated envelope** (`outcome`). On `completed`, fields include `last`, `steps`, and `session_context` (FSM telemetry: tool choice, per-hop envelopes, structured tool output). On `agent_correctable`, use `recovery.code` / `recovery.mistake` — the promise still fulfilled. This payload is **not** the canonical operator-visible reply for provenance or UX.
 
 The **single** user‑facing artifact the platform surfaces and records is the agent
 chat handler’s return value: `SessionResult.message` (typically `StructuredReply`

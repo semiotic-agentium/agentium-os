@@ -5,12 +5,10 @@
 //! frames off stdout. Each test wraps the whole interaction in a
 //! timeout so a regression can't hang CI.
 //!
-//! Binary discovery uses `assert_cmd::cargo::cargo_bin` — the canonical
-//! cross-package pattern per spec §18 X4.2, since `CARGO_BIN_EXE_…` is
-//! only set for binaries inside the same package as the test. The echo
-//! binary must be compiled before tests run; CI handles this with a
-//! preceding `cargo build -p sandbox-echo-adapter`, and local dev can
-//! run `cargo test -p baml-sandbox-adapter -p sandbox-echo-adapter`.
+//! Binary discovery: prefer `CARGO_BIN_EXE_sandbox_echo_adapter` when Cargo sets it, else the
+//! workspace `target/<profile>/sandbox-echo-adapter` next to this crate's workspace root (matches
+//! full-workspace `cargo nextest`). Build the echo crate first if you run only
+//! `-p baml-sandbox-adapter` tests in isolation.
 //!
 //! All tests take the same shape: build an input byte stream, hand it
 //! to `run_echo`, then `wait_with_output` collects the child's stdout,
@@ -18,7 +16,12 @@
 //! response stream and panics if it finds trailing unframed bytes —
 //! that panic is the stdout-purity oracle used by the pollution test.
 
-use std::{path::PathBuf, process::Stdio, time::Duration};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 
 use baml_sandbox_protocol::{ERR_INTERNAL, JsonRpcRequest, METHOD_DESCRIBE, METHOD_INVOKE};
 use serde_json::{Value, json};
@@ -26,16 +29,40 @@ use tokio::{io::AsyncWriteExt, process::Command, time::timeout};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn echo_binary() -> PathBuf {
-    let path = assert_cmd::cargo::cargo_bin("sandbox-echo-adapter");
-    if !path.exists() {
-        panic!(
-            "sandbox-echo-adapter binary missing at {}. \
-             Build it first: `cargo build -p sandbox-echo-adapter`",
-            path.display()
-        );
+fn workspace_target_profile_dir() -> PathBuf {
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    if let Ok(dir) = env::var("CARGO_TARGET_DIR") {
+        return PathBuf::from(dir).join(profile);
     }
-    path
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("workspace root (…/crates/baml-sandbox-adapter → repo)")
+        .join("target")
+        .join(profile)
+}
+
+fn echo_binary() -> PathBuf {
+    if let Ok(from_env) = env::var("CARGO_BIN_EXE_sandbox_echo_adapter") {
+        let p = PathBuf::from(from_env);
+        if p.exists() {
+            return p;
+        }
+    }
+    let path = workspace_target_profile_dir()
+        .join(format!("sandbox-echo-adapter{}", env::consts::EXE_SUFFIX));
+    if path.exists() {
+        return path;
+    }
+    panic!(
+        "sandbox-echo-adapter binary missing at {}. Build the workspace tests graph first \
+         (`cargo build -p sandbox-echo-adapter` or full `just test`).",
+        path.display()
+    );
 }
 
 fn request_envelope(method: &str, id: u64, params: Value) -> Value {

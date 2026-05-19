@@ -4,7 +4,8 @@
 // Host tools use a session FSM. Which ops are valid on a given model hop is defined only by the
 // narrowed BAML return type for that function, not by duplicated prose. Step classes (Open/Send/…)
 // and `*SendInput` / `*OpenInput` give field names and @description; see the shared prelude
-// and each session-plan `prompt` order: stable types, task, transcript, then ctx.output_format last.
+// and each session-plan parent `prompt`: task + domain lines only; generated per-phase executors
+// add archive prefix, optional tool_schema_prelude, narrowed union, transcript, and output binding.
 
 // Shared standard planning types
 class StandardAgentPlanStep {
@@ -80,7 +81,7 @@ class StructuredReply {
 
 /// Line-filtered archive read (emit op SearchRead).
 class ArchiveSearchReadInput {
-  archive_ref string @description("Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.")
+  archive_ref string @description("archive_ref names a Send output archive: set it to the exact @N shown on that Send line in the transcript (e.g. @1, @2). Do not use #N or any # prefix — # is for session history lines only and is invalid in this field. Do not invent @N. PageRead/SearchRead materialize line bodies from that handle; allowed with a real visible @N without Open or an active session.")
   grep string @description("Non-empty filter over rendered archive lines. SearchRead is for locating lines that match; use when you have a concrete term. Shape: substring or regex per host (e.g. name, -i error). For full contiguous slices without filtering, use PageRead.")
   offset int? @description("0-based offset over grep matches (after the filter). First window: offset=0; next: previous next_offset while matches remain.")
   limit int? @description("Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).")
@@ -88,7 +89,7 @@ class ArchiveSearchReadInput {
 
 /// Contiguous archive paging without a line filter (emit op PageRead).
 class ArchivePageReadInput {
-  archive_ref string @description("Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.")
+  archive_ref string @description("archive_ref names a Send output archive: set it to the exact @N shown on that Send line in the transcript (e.g. @1, @2). Do not use #N or any # prefix — # is for session history lines only and is invalid in this field. Do not invent @N. PageRead/SearchRead materialize line bodies from that handle; allowed with a real visible @N without Open or an active session.")
   offset int? @description("0-based offset over full rendered archive lines (no grep). First window: offset=0; next: previous next_offset while lines remain.")
   limit int? @description("Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).")
 }
@@ -96,13 +97,20 @@ class ArchivePageReadInput {
 /// Global line-filtered archive read step. Legal before Open, during a session, or after a Send.
 class ArchiveSearchReadStep {
   op "SearchRead"
-  input ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+  input ArchiveSearchReadInput @description("SearchRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a filtered window: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
 }
 
 /// Global contiguous archive paging step. Legal before Open, during a session, or after a Send.
 class ArchivePageReadStep {
   op "PageRead"
-  input ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+  input ArchivePageReadInput @description("PageRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a contiguous window: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+}
+
+/// Terminal hop without a host tool session: answer from visible conversation archives only.
+/// Do not emit when you need a fresh Open/Send — use ENTRY Open or ACTIVE Send instead.
+class ReadOnlyFinishStep {
+  op "ReadOnlyFinish"
+  reply StructuredReply @description("User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.")
 }
 // Domain types generated from #[derive(BamlType)]
 /// Which Slack API token to use.
@@ -365,11 +373,11 @@ class DiscoverToolsSendInput {
 }
 
 class ConversationPart {
-  text string | null?
-  raw string | null?
-  url string | null?
-  filename string | null?
-  media_type string | null?
+  text string | null? @description("Plain text content for this conversation part.")
+  raw string | null? @description("Raw provider-native content when plain text would be lossy or unavailable.")
+  url string | null? @description("Remote URL for this part when the content points to a web or attachment resource.")
+  filename string | null? @description("Attachment filename when this part refers to a file.")
+  media_type string | null? @description("MIME type for this part, for example text/plain or image/png.")
 }
 
 class ConversationMessage {
@@ -427,17 +435,17 @@ class SupportSlackOpenStep {
 class SupportSlackSendStep {
   op "Send"
   input SlackInput @description("Payload for this step.")
-  citations string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
+  citations string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }
 
 class SupportSlackSearchReadStep {
   op "SearchRead"
-  input ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+  input ArchiveSearchReadInput @description("SearchRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a filtered window: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
 }
 
 class SupportSlackPageReadStep {
   op "PageRead"
-  input ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+  input ArchivePageReadInput @description("PageRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a contiguous window: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
 }
 
 class SupportSlackFinishStep {
@@ -451,7 +459,7 @@ class SupportSlackAbortStep {
 type SupportSlackSessionStep = SupportSlackOpenStep | SupportSlackSendStep | SupportSlackSearchReadStep | SupportSlackPageReadStep | SupportSlackFinishStep | SupportSlackAbortStep
 
 class SupportSlackSessionPlan {
-  step SupportSlackSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes in this file — do not paraphrase JSON field lists in the prompt. A @N in history is a handle until you read it. Access: read.")
+  step SupportSlackSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes in this file — do not paraphrase JSON field lists in the prompt. @N beside a prior Send is an archive handle for PageRead/SearchRead (archive_ref is @ only). Do not use #N as an archive handle — #N indexes transcript lines only. Access: read.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
@@ -473,17 +481,17 @@ class SystemDiscoverAgentsOpenStep {
 class SystemDiscoverAgentsSendStep {
   op "Send"
   input DiscoverAgentsSendInput @description("Payload for this step.")
-  citations string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
+  citations string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }
 
 class SystemDiscoverAgentsSearchReadStep {
   op "SearchRead"
-  input ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+  input ArchiveSearchReadInput @description("SearchRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a filtered window: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
 }
 
 class SystemDiscoverAgentsPageReadStep {
   op "PageRead"
-  input ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+  input ArchivePageReadInput @description("PageRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a contiguous window: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
 }
 
 class SystemDiscoverAgentsFinishStep {
@@ -497,7 +505,7 @@ class SystemDiscoverAgentsAbortStep {
 type SystemDiscoverAgentsSessionStep = SystemDiscoverAgentsOpenStep | SystemDiscoverAgentsSendStep | SystemDiscoverAgentsSearchReadStep | SystemDiscoverAgentsPageReadStep | SystemDiscoverAgentsFinishStep | SystemDiscoverAgentsAbortStep
 
 class SystemDiscoverAgentsSessionPlan {
-  step SystemDiscoverAgentsSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes in this file — do not paraphrase JSON field lists in the prompt. A @N in history is a handle until you read it. Access: read.")
+  step SystemDiscoverAgentsSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes in this file — do not paraphrase JSON field lists in the prompt. @N beside a prior Send is an archive handle for PageRead/SearchRead (archive_ref is @ only). Do not use #N as an archive handle — #N indexes transcript lines only. Access: read.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
@@ -519,17 +527,17 @@ class SystemDiscoverToolsOpenStep {
 class SystemDiscoverToolsSendStep {
   op "Send"
   input DiscoverToolsSendInput @description("Payload for this step.")
-  citations string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
+  citations string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }
 
 class SystemDiscoverToolsSearchReadStep {
   op "SearchRead"
-  input ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+  input ArchiveSearchReadInput @description("SearchRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a filtered window: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
 }
 
 class SystemDiscoverToolsPageReadStep {
   op "PageRead"
-  input ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+  input ArchivePageReadInput @description("PageRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a contiguous window: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
 }
 
 class SystemDiscoverToolsFinishStep {
@@ -543,7 +551,7 @@ class SystemDiscoverToolsAbortStep {
 type SystemDiscoverToolsSessionStep = SystemDiscoverToolsOpenStep | SystemDiscoverToolsSendStep | SystemDiscoverToolsSearchReadStep | SystemDiscoverToolsPageReadStep | SystemDiscoverToolsFinishStep | SystemDiscoverToolsAbortStep
 
 class SystemDiscoverToolsSessionPlan {
-  step SystemDiscoverToolsSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes in this file — do not paraphrase JSON field lists in the prompt. A @N in history is a handle until you read it. Access: read.")
+  step SystemDiscoverToolsSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes in this file — do not paraphrase JSON field lists in the prompt. @N beside a prior Send is an archive handle for PageRead/SearchRead (archive_ref is @ only). Do not use #N as an archive handle — #N indexes transcript lines only. Access: read.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
@@ -565,17 +573,17 @@ class SystemInternalA2aOpenStep {
 class SystemInternalA2aSendStep {
   op "Send"
   input InternalA2aSendInput @description("Conversational message payload. Set text to a non-empty string. Never null, never omit text.")
-  citations string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
+  citations string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }
 
 class SystemInternalA2aSearchReadStep {
   op "SearchRead"
-  input ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+  input ArchiveSearchReadInput @description("SearchRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a filtered window: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
 }
 
 class SystemInternalA2aPageReadStep {
   op "PageRead"
-  input ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+  input ArchivePageReadInput @description("PageRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a contiguous window: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
 }
 
 class SystemInternalA2aFinishStep {
@@ -589,7 +597,7 @@ class SystemInternalA2aAbortStep {
 type SystemInternalA2aSessionStep = SystemInternalA2aOpenStep | SystemInternalA2aSendStep | SystemInternalA2aSearchReadStep | SystemInternalA2aPageReadStep | SystemInternalA2aFinishStep | SystemInternalA2aAbortStep
 
 class SystemInternalA2aSessionPlan {
-  step SystemInternalA2aSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes above — do not paraphrase them in prose. A @N in history is a handle until you read it. For A2A Send, `input.text` is required when sending. Access: write.")
+  step SystemInternalA2aSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes above — do not paraphrase them in prose. @N beside a prior Send is an archive handle for PageRead/SearchRead (archive_ref is @ only). Do not use #N as an archive handle — #N indexes transcript lines only. For A2A Send, `input.text` is required when sending. Access: write.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
@@ -600,86 +608,104 @@ class SystemInternalA2aSessionPlan {
 // Auto-generated per-phase step executor functions.
 // Each phase narrows the return type to only the legal FSM ops.
 
-/// Phase: select — open a tool session.
-function ChooseSlackAction__select(
+/// Entry step executor: stable prefix, transcript, task body, compact contract, and phase policy.
+function ChooseSlackAction__entry(
   goal: string,
   step_description: string,
   session_context: SessionContext
-) -> ReadOnlyResponse | SupportSlackOpenStep {
+) -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | ReadOnlyResponse | SupportSlackOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: support/slack.\n\nYou execute ONE retrieve step of a read-only Slack plan.
-Overall goal: {{ goal }}
-This step: {{ step_description }}
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
-Looping policy: each reply is EITHER one `SupportSlackSessionPlan` step (narrowed by `ctx.output_format`) or `ReadOnlyResponse` when this step is done. Open/Send payloads use the generated `*OpenInput` and `*SendInput` / union members in the merged runtime — do not restate their JSON in prose. Enum keys: prefer snake_case; match the schema in `ctx.output_format`.
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and operation types:
+{{ ctx.tags['tool_schema_prelude'] }}
 
-Use session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
-
-{% if ctx.tags['conversation_history'] %}
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+You execute ONE retrieve step of a read-only Slack plan (support/slack session FSM).
+Overall goal: {{ goal }}
+This step: {{ step_description }}
 
-{{ ctx.output_format }}
+Domain rules:
+- Emit the minimal SlackInput for this step only — do not chain extra discovery calls.
+- When the step names channel_id and thread_ts (or GetThreadReplies / thread replies), emit op Send with
+  GetThreadRepliesInput fields directly. Do NOT call ListConversations or GetConversationHistory first unless
+  the step explicitly asks to list channels or browse history without a thread_ts.
+- thread_ts MUST be Slack Web API form <unix_seconds>.<six_fractional_digits> (e.g. 1735689600.000000).
+  Permalink p-segments (e.g. p1735689600000000) are NOT thread_ts — convert before Send.
+- When resolve_users is needed, set resolve_users to resolve_users on the Send input.
+- Reuse channel_id, thread_ts, and cursors from session history when already visible.
 
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+When this retrieve step is complete without further tool work, return ReadOnlyResponse instead of a session step.
+
+Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | ReadOnlyResponse | SupportSlackOpenStep`.
+
+Choose the matching object type.
+- `ArchivePageReadStep` uses fields like `input`, `op`
+- `ArchiveSearchReadStep` uses fields like `input`, `op`
+- `ReadOnlyFinishStep` uses fields like `op`, `reply`
+- `ReadOnlyResponse` uses fields like `message`, `next_step`
+- `SupportSlackOpenStep` uses fields like `op`, `tool_name`
+Do not mix fields from different object shapes.
+Do not add text before or after the JSON object.
+
+Phase policy:
+- Derived state rule: this entry return union excludes `Send`, `Finish`, and `Abort`.
 "#
 
 }
 
-/// Phase: act — first post-Open hop: Send, SearchRead, PageRead, or Abort (support/slack).
-function ChooseSlackAction__act__support_slack(
-  goal: string,
-  step_description: string,
-  session_context: SessionContext
-) -> SupportSlackSendStep | SupportSlackSearchReadStep | SupportSlackPageReadStep | SupportSlackAbortStep {
-
-  client DefaultClient
-  prompt #"[ACT] A support/slack session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\n\nYou execute ONE retrieve step of a read-only Slack plan.
-Overall goal: {{ goal }}
-This step: {{ step_description }}
-
-Looping policy: each reply is EITHER one `SupportSlackSessionPlan` step (narrowed by `ctx.output_format`) or `ReadOnlyResponse` when this step is done. Open/Send payloads use the generated `*OpenInput` and `*SendInput` / union members in the merged runtime — do not restate their JSON in prose. Enum keys: prefer snake_case; match the schema in `ctx.output_format`.
-
-Use session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
-
-{% if ctx.tags['conversation_history'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
-
-{{ ctx.output_format }}
-
-PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
-"#
-
-}
-
-/// Phase: continue — SearchRead/PageRead, send again, finish, or abort support/slack.
-function ChooseSlackAction__continue__support_slack(
+/// Active step executor: stable prefix, transcript, task body, compact contract, and phase policy.
+function ChooseSlackAction__active__support_slack(
   goal: string,
   step_description: string,
   session_context: SessionContext
 ) -> SupportSlackSendStep | SupportSlackSearchReadStep | SupportSlackPageReadStep | SupportSlackFinishStep | SupportSlackAbortStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] support/slack result is archived.\nArchive fallback when content must be inspected:\n- Use the visible @N archive handle from conversation/history; do not guess one.\n- See \"@N support/slack\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\n- See \"@N support/slack\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate.\n- See \"@N support/slack\" with no content yet → emit SearchRead or PageRead against the visible @N.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\n\nYou execute ONE retrieve step of a read-only Slack plan.
-Overall goal: {{ goal }}
-This step: {{ step_description }}
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
-Looping policy: each reply is EITHER one `SupportSlackSessionPlan` step (narrowed by `ctx.output_format`) or `ReadOnlyResponse` when this step is done. Open/Send payloads use the generated `*OpenInput` and `*SendInput` / union members in the merged runtime — do not restate their JSON in prose. Enum keys: prefer snake_case; match the schema in `ctx.output_format`.
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and operation types:
+{{ ctx.tags['tool_schema_prelude'] }}
 
-Use session history for channel_ids, cursors, and `thread_ts` (Slack API form: <unix>.<frac>; not permalink `p…` forms).
-
-{% if ctx.tags['conversation_history'] %}
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+You execute ONE retrieve step of a read-only Slack plan (support/slack session FSM).
+Overall goal: {{ goal }}
+This step: {{ step_description }}
 
-{{ ctx.output_format }}
+Domain rules:
+- Emit the minimal SlackInput for this step only — do not chain extra discovery calls.
+- When the step names channel_id and thread_ts (or GetThreadReplies / thread replies), emit op Send with
+  GetThreadRepliesInput fields directly. Do NOT call ListConversations or GetConversationHistory first unless
+  the step explicitly asks to list channels or browse history without a thread_ts.
+- thread_ts MUST be Slack Web API form <unix_seconds>.<six_fractional_digits> (e.g. 1735689600.000000).
+  Permalink p-segments (e.g. p1735689600000000) are NOT thread_ts — convert before Send.
+- When resolve_users is needed, set resolve_users to resolve_users on the Send input.
+- Reuse channel_id, thread_ts, and cursors from session history when already visible.
 
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
+When this retrieve step is complete without further tool work, return ReadOnlyResponse instead of a session step.
+
+Return exactly one JSON object of type `SupportSlackAbortStep | SupportSlackFinishStep | SupportSlackPageReadStep | SupportSlackSearchReadStep | SupportSlackSendStep`.
+
+Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
+Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.
+Calculator Send: set input.expression.operation to exactly one JSON string token: "+", "-", "*", "/", or Add|Subtract|Multiply|Divide — never an object or sentence.
+Do not add text before or after the JSON object.
+
+Phase policy:
+- Derived state rule: this active return union has no `Open` variant.
 "#
 
 }

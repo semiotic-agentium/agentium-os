@@ -463,7 +463,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ExecuteStep" | "ExecuteStep__act__support_crm" | "ExecuteStep__act__support_email" | "ExecuteStep__continue__support_crm" | "ExecuteStep__continue__support_email" | "ExecuteStep__select";
+export type StepExecutorFunctionName = "ExecuteStep" | "ExecuteStep__active__support_crm" | "ExecuteStep__active__support_email" | "ExecuteStep__entry";
 
 export interface SessionContext {
     contract_version: "session_context_v2";
@@ -500,25 +500,36 @@ export interface StepExecutorRunOptions {
     max_steps?: number;
 }
 
+export type ErrorDisposition =
+    | "host_retriable"
+    | "llm_correctable"
+    | "inform_and_continue"
+    | "fatal";
+
+export interface StepPlanRecovery {
+    code: string;
+    disposition: ErrorDisposition;
+    mistake: string;
+    invariant: string;
+    fix_steps?: string[];
+}
+
+export type StepExecutorRunEnvelope<R = unknown> = { outcome: "completed", last: R, steps: R[], session_context: SessionContext, selected_tool: string | null } | { outcome: "agent_correctable", recovery: StepPlanRecovery } | { outcome: "fatal", message: string, code?: string | null };
+
 /**
- * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
- * User-facing replies are synthesized once at session completion (and recorded there).
+ * Result of runGeneratedStepExecutor: discriminated envelope (`outcome`).
+ * On `completed`, fields match the former flat telemetry shape.
+ * `agent_correctable` carries structured recovery — not a thrown JS error.
+ * User-facing replies are still SessionResult.message from the chat handler.
  */
 
-export interface StepExecutorRunResult<R = unknown> {
-    last: R;
-    steps: R[];
-    session_context: SessionContext;
-    selected_tool: string | null;
-}
+export type StepExecutorRunResult<R = unknown> = StepExecutorRunEnvelope<R>;
 
 export interface StepExecutorFunctionMap {
   ExecuteStep: { args: Parameters<typeof ExecuteStep>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ExecuteStep>>; };
-  ExecuteStep__act__support_crm: { args: Parameters<typeof ExecuteStep__act__support_crm>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ExecuteStep__act__support_crm>>; };
-  ExecuteStep__act__support_email: { args: Parameters<typeof ExecuteStep__act__support_email>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ExecuteStep__act__support_email>>; };
-  ExecuteStep__continue__support_crm: { args: Parameters<typeof ExecuteStep__continue__support_crm>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ExecuteStep__continue__support_crm>>; };
-  ExecuteStep__continue__support_email: { args: Parameters<typeof ExecuteStep__continue__support_email>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ExecuteStep__continue__support_email>>; };
-  ExecuteStep__select: { args: Parameters<typeof ExecuteStep__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ExecuteStep__select>>; };
+  ExecuteStep__active__support_crm: { args: Parameters<typeof ExecuteStep__active__support_crm>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ExecuteStep__active__support_crm>>; };
+  ExecuteStep__active__support_email: { args: Parameters<typeof ExecuteStep__active__support_email>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ExecuteStep__active__support_email>>; };
+  ExecuteStep__entry: { args: Parameters<typeof ExecuteStep__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ExecuteStep__entry>>; };
 }
 
 declare global {
@@ -526,5 +537,5 @@ declare global {
     stepExecutor: F,
     args: Omit<StepExecutorFunctionMap[F]["args"], keyof StepExecutorStateInput>,
     options?: StepExecutorRunOptions
-  ): Promise<StepExecutorRunResult<StepExecutorFunctionMap[F]["result"]>>;
+  ): Promise<StepExecutorRunEnvelope<StepExecutorFunctionMap[F]["result"]>>;
 }

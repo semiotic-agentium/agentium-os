@@ -103,7 +103,7 @@ export type DriftSeverity = "acceptable" | "warn" | "block";
 
 /** One resolved citation: the raw ref the LLM emitted plus the actual evidence text. */
 export interface CitationDetail {
-  /** Exact string the LLM emitted, e.g. `"#1"`, `"@2:3-5"`, `"!@1"`. */
+  /** Exact string the LLM emitted, e.g. `"#1"`, `"@2:L3-L5"`, `"!@1"`. */
   raw: string;
   n: number;
   /** `true` = history ref (`#N`), `false` = archive ref (`@N`). */
@@ -191,6 +191,10 @@ export interface ContextPlanningTaskSnapshot {
   taskId: string;
   currentIntent: PlanningIntentView | null;
   currentPlan: PlanningPlanView | null;
+  /** Superseded plan revisions from provenance (`plan_history`); current plan is `currentPlan`. */
+  planHistory?: PlanningPlanView[];
+  /** Prior intents for this task (`intent_history`). */
+  intentHistory?: PlanningIntentView[];
   stepSummary: PlanningStepSummary;
   drift?: TaskPlanDriftSummary;
 }
@@ -253,7 +257,7 @@ export interface EpisodeTranscriptEntry {
   citation_strings?: string[];
 }
 
-/** BAML `conversation_history` mirror: role + projection-shaped content (episode-prefixed refs). */
+/** Episode/session history line mirror (projection-shaped content; aligns with transcript source rows). */
 export interface EpisodeSessionHistoryLine {
   role: string;
   content: string;

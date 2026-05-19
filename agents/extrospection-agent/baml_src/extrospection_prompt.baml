@@ -1,3 +1,8 @@
+// Unified step-executor harness: `GetDiscoverAgentsPlan` / `BuildExtrospectionPlan` are *SessionPlan roots —
+// drive them with `runGeneratedStepExecutor` (same Rust loop, prefix algebra, transcript-only tags, intra supplement
+// as unified-primary). IR narrows host-tool Open/act/continue. Direct invokes (`DetermineExtrospectionIntent`, …)
+// stay plain `invoke`; planner-only unions opt into `unified_step_executors.json` for single-hop `FuncName__entry`.
+
 enum QueryResource {
   Auto
   Llm_calls
@@ -12,10 +17,12 @@ enum QueryOutcome {
 }
 
 class NeedClarification {
+  kind "clarify"
   question string
 }
 
 class QueryIntent {
+  kind "query"
   resource QueryResource
   outcome QueryOutcome
   priority_sort string
@@ -34,14 +41,28 @@ class SelectedAgent {
 
 function DetermineExtrospectionIntent(user_message: string) -> NeedClarification | QueryIntent {
   client DefaultClient
-  prompt #"
-    You are an austere frontier magistrate-analyst: severe, prophetic, and precise.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and operation types:
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
+You are an austere frontier magistrate-analyst: severe, prophetic, and precise.
     Keep voice original and non-derivative; do not imitate named copyrighted characters.
 
     Classify the user request for extrospection:
-    - Prefer QueryIntent by default, even for broad/open prompts.
-    - Return NeedClarification only when input is empty, incoherent, or non-operational.
-    - Otherwise return QueryIntent with:
+    - Prefer a query classification by default, even for broad/open prompts.
+    - Ask one clarifying question only when input is empty, incoherent, or non-operational.
+    - Otherwise fill the query fields with:
       - resource: Auto | Llm_calls | Tool_calls | Messages
       - outcome: failed_only / successful_only / both
       - priority_sort: timestamp_ms | duration_ms | total_tokens
@@ -63,12 +84,15 @@ function DetermineExtrospectionIntent(user_message: string) -> NeedClarification
     {{ _.role('user') }}
     {{ user_message }}
 
-    {% if ctx.tags['conversation_history'] %}
-    {{ ctx.tags['conversation_transcript'] }}
-    {% endif %}
+{{ ctx.output_format }}
 
-    {{ ctx.output_format }}
-  "#
+Return exactly one JSON object.
+Select the object shape with discriminator `kind`:
+- `kind: "clarify"` -> NeedClarification
+- `kind: "query"` -> QueryIntent
+Set `kind` exactly. Do not mix fields from different object shapes.
+Do not add text before or after the JSON object.
+"#
 }
 
 // FSM phase instructions are injected by codegen — this prompt carries goal context only.
@@ -78,16 +102,8 @@ function GetDiscoverAgentsPlan(
   client DefaultClient
   prompt #"
     Discover available agents relevant to the user's request.
-    Send input shape and empty-payload cases are defined on `DiscoverAgentsSendInput` in the merged runtime — do not restate those fields here.
 
     Context: {{ user_message }}
-
-    {% if ctx.tags['conversation_history'] %}
-    Session history:
-    {{ ctx.tags['conversation_transcript'] }}
-    {% endif %}
-
-    {{ ctx.output_format }}
   "#
 }
 
@@ -96,8 +112,22 @@ function SelectAgentFocus(
   agents: AgentCardDto[],
 ) -> SelectedAgent | null {
   client DefaultClient
-  prompt #"
-    Choose at most one discovered agent that best matches the user's target-of-interest.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and operation types:
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
+Choose at most one discovered agent that best matches the user's target-of-interest.
     Return null when the user did not identify or imply a specific agent.
 
     Selection signals:
@@ -110,12 +140,11 @@ function SelectAgentFocus(
     {{ user_message }}
     Agents: {{ agents }}
 
-    {% if ctx.tags['conversation_history'] %}
-    {{ ctx.tags['conversation_transcript'] }}
-    {% endif %}
+{{ ctx.output_format }}
 
-    {{ ctx.output_format }}
-  "#
+Return exactly one `SelectedAgent` JSON object.
+Do not add text before or after the JSON object.
+"#
 }
 
 // FSM phase instructions are injected by codegen — this prompt carries goal context only.
@@ -125,17 +154,11 @@ function BuildExtrospectionPlan(
 ) -> SystemExtrospectionSessionPlan {
   client DefaultClient
   prompt #"
-    Query provenance data matching the intent. Fill `ProvenanceQuerySendInput` (and other step payloads) from the field `@@description` on those types and this hop’s narrowed return union — do not duplicate the JSON field list in prose. Do not set `agentId` from `selected_agent` unless the user gave an explicit provenance agent_id.
+    Query provenance data matching the intent.
+    Do not set `agentId` from `selected_agent` unless the user gave an explicit provenance agent_id.
 
     intent: {{ intent }}
     selected_agent: {{ selected_agent }}
-
-    {% if ctx.tags['conversation_history'] %}
-    Session history:
-    {{ ctx.tags['conversation_transcript'] }}
-    {% endif %}
-
-    {{ ctx.output_format }}
   "#
 }
 
@@ -150,8 +173,22 @@ function SummarizeExtrospectionReport(
   secondary_payload_json: string,
 ) -> StructuredReply {
   client DefaultClient
-  prompt #"
-    You are an operations analyst. Be precise, restrained, and useful.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and operation types:
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
+You are an operations analyst. Be precise, restrained, and useful.
     Match the output schema exactly (StructuredReply: parts + citations).
 
     Produce a concise operator report in prose that explicitly separates:
@@ -194,12 +231,15 @@ function SummarizeExtrospectionReport(
     primary_payload_json: {{ primary_payload_json }}
     secondary_payload_json: {{ secondary_payload_json }}
 
-    {% if ctx.tags['conversation_history'] %}
-    {{ ctx.tags['conversation_transcript'] }}
-    {% endif %}
+{{ ctx.output_format }}
 
-    {{ ctx.output_format }}
-  "#
+Return exactly one `StructuredReply` JSON object.
+If `parts[]` is present, choose each item with discriminator `type`:
+- `type: "text"` -> TextPart
+- `type: "data"` -> DataPart
+Set `type` exactly for each `parts[]` item.
+Do not add text before or after the JSON object.
+"#
 }
 
 client DefaultClient {

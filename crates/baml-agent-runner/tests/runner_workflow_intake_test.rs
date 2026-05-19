@@ -95,7 +95,7 @@ async fn collect_responses(
     let stream = agent
         .handle_a2a_stream(A2aWireRequest::from(request))
         .await?;
-    let chunks = baml_rt_core::collect_a2a_stream(stream).await;
+    let chunks = baml_rt_core::collect_a2a_stream_one_shot(stream).await;
     Ok(chunks.into_iter().map(A2aStreamChunk::into_inner).collect())
 }
 

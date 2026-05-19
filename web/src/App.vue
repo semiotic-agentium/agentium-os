@@ -17,6 +17,7 @@ import { useTheme } from "./composables/useTheme";
 import { useConfirm } from "./composables/useConfirm";
 import { parseMermaidBlocks } from "./utils/parseMermaid";
 import type { AgentDiscoveryEntry, ChatMessage, LlmPromptOperation } from "./types/a2a";
+import type { ProvenancePaneTab } from "./composables/useDashboardViewModel";
 
 /** First inline mermaid block in agent messages (stops at first hit). */
 function firstInlineMermaidDiagram(messages: ChatMessage[]): string | null {
@@ -46,8 +47,8 @@ const isLoading = computed(() => activeClient.value?.isLoading.value ?? false);
 const provenanceDiagram = computed(() => activeClient.value?.provenanceDiagram.value ?? "");
 const traceRefreshGeneration = computed(() => activeClient.value?.traceRefreshGeneration.value ?? 0);
 const contextMetrics = computed(() => activeClient.value?.contextMetrics.value ?? null);
-const promptContextBytesSessionCurrent = computed(
-  () => activeClient.value?.promptContextBytesSessionCurrent.value ?? null,
+const promptMessageCharsSessionCurrent = computed(
+  () => activeClient.value?.promptMessageCharsSessionCurrent.value ?? null,
 );
 const llmPromptOperations = computed<LlmPromptOperation[]>(
   () => activeClient.value?.llmPromptOperations.value ?? [],
@@ -62,6 +63,29 @@ const historyLoading = computed(() => activeClient.value?.historyLoading.value ?
 const historyHydrateState = computed(() => activeClient.value?.historyHydrateState.value ?? "idle");
 const contextId = computed(() => activeClient.value?.contextId.value ?? undefined);
 const taskId = computed(() => activeClient.value?.taskId.value ?? null);
+
+const dashboardLaneSnapshots = computed(() =>
+  tabs.value.map((t) => ({
+    tabId: t.id,
+    title: t.title,
+    contextId: t.client.contextId.value,
+    agent: t.client.selectedAgent.value,
+    isStreaming: t.client.isLoading.value,
+    isActive: t.id === activeTabId.value,
+  })),
+);
+
+const provenanceExternalFocus = ref<{ nonce: number; tab: ProvenancePaneTab } | undefined>();
+
+function onDashboardGoChat(payload?: { tabId?: string; provenanceTab?: ProvenancePaneTab }) {
+  if (payload?.tabId) {
+    switchTab(payload.tabId);
+  }
+  view.value = "chat";
+  if (payload?.provenanceTab) {
+    provenanceExternalFocus.value = { nonce: Date.now(), tab: payload.provenanceTab };
+  }
+}
 const workflowProgress = computed(() => activeClient.value?.workflowProgress.value ?? { phase: "idle" as const, nodes: [], completedNodes: [] });
 const awaitingInput = computed(() => activeClient.value?.awaitingInput.value ?? false);
 const inputRequiredPrompt = computed(() => activeClient.value?.inputRequiredPrompt.value ?? "");
@@ -226,6 +250,30 @@ function onPopState(): void {
   void applyRouteStateFromUrl();
 }
 
+watch(
+  [
+    () => activeClient.value?.clientId ?? null,
+    () => selectedAgent.value?.agent_package ?? null,
+    () => selectedAgent.value?.agent_instance_id ?? null,
+    () => selectedHistoryContextId.value ?? contextId.value ?? null,
+    () => messages.value.length,
+  ],
+  ([clientId, agentPackage, agentInstance, currentContextId, messageCount]) => {
+    if (window.location.hostname !== "localhost") return;
+    console.debug(
+      "[transcript]",
+      JSON.stringify({
+        activeClientId: clientId,
+        agentPackage,
+        agentInstance,
+        contextId: currentContextId,
+        messageCount,
+      }),
+    );
+  },
+  { immediate: true },
+);
+
 // Trace pane only displays the first diagram; avoid parsing/rendering all agent mermaid blocks.
 const provenancePaneDiagrams = computed(() => {
   const prov = provenanceDiagram.value.trim();
@@ -337,13 +385,16 @@ watch(
       <ErrorBoundary v-if="view === 'dashboard'">
         <Dashboard
           :agents="agents"
+          :lane-snapshots="dashboardLaneSnapshots"
+          :runner-online="systemOnline"
           :context-id="contextId"
           :context-metrics="contextMetrics"
-          :prompt-context-bytes-session-current="promptContextBytesSessionCurrent"
+          :prompt-message-chars-session-current="promptMessageCharsSessionCurrent"
           :provenance-diagram="provenanceDiagram"
           :messages="messages"
           :provenance-summary="provenanceDashboardSummary"
           @open-settings="view = 'settings'"
+          @go-chat="onDashboardGoChat"
         />
       </ErrorBoundary>
 
@@ -403,6 +454,7 @@ watch(
             :diagrams="provenancePaneDiagrams"
             :trace-refresh-tick="traceRefreshGeneration"
             :llm-prompt-operations="llmPromptOperations"
+            :external-tab-focus="provenanceExternalFocus"
           />
         </div>
       </div>

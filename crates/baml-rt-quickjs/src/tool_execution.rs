@@ -21,6 +21,35 @@ use tokio::sync::Mutex as TokioMutex;
 
 use crate::baml::tool_extraction::{extract_tool_call, resolve_tool_name_from_input_with_registry};
 
+/// Overwrite `message_id`, `agent_id`, and `task_id` (when task-scoped) on tool-effect metadata
+/// using the authoritative [`context::RuntimeScope`].
+///
+/// Downstream code may enrich the JSON map after [`build_metadata_map_with_phase`]; this keeps
+/// provenance effect metadata aligned with the scope actually executing the tool so
+/// `ProvenanceEffectSubscriber` always records task-scoped tool calls under the correct task.
+pub(crate) fn stamp_tool_effect_metadata_scope(
+    scope: &context::RuntimeScope,
+    metadata: &mut Value,
+) {
+    let Value::Object(obj) = metadata else {
+        return;
+    };
+    obj.insert(
+        "message_id".to_string(),
+        Value::String(scope.message_id().as_str().to_string()),
+    );
+    obj.insert(
+        "agent_id".to_string(),
+        Value::String(scope.agent_id().as_str().to_string()),
+    );
+    if let Some(task_id) = scope.task_id_opt() {
+        obj.insert(
+            "task_id".to_string(),
+            Value::String(task_id.as_str().to_string()),
+        );
+    }
+}
+
 /// Build a metadata map for tool/session effects, including correlation, scope IDs, and optional FSM phase.
 pub(crate) fn build_metadata_map_with_phase(
     scope: &context::RuntimeScope,
@@ -134,6 +163,7 @@ impl ToolExecutionContext {
         let context_id = scope.context_id().clone();
         let agent_id = scope.agent_id().clone();
         let mut metadata = build_metadata_map_with_phase(&scope, Some("execute"));
+        stamp_tool_effect_metadata_scope(&scope, &mut metadata);
         if let Some((plan_id, step_id)) = resolve_planning_step(&self.execution_sessions, &scope)
             && let Some(obj) = metadata.as_object_mut()
         {

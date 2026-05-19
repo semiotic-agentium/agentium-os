@@ -60,7 +60,7 @@ pub struct PlanningStepSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CitationDetail {
-    /// Exact string the LLM emitted, e.g. `"#1"`, `"@2:3-5"`, `"!@1"`.
+    /// Exact string the LLM emitted, e.g. `"#1"`, `"@2:L3-L5"`, `"!@1"`.
     /// The leading `!` indicates counter-evidence.
     pub raw: String,
     /// The ref number `N`.

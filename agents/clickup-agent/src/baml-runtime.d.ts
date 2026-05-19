@@ -17,7 +17,8 @@ offset: number | null;
 limit: number | null;
  }
 
-export interface ClickUpIntent { intent: string;
+export interface ClickUpIntent { kind: "intent";
+intent: string;
 operation_kind: "read" | "write" | "delete";
  }
 
@@ -50,10 +51,12 @@ export interface ListTasksInput { list_id: string;
 
 export interface ListTeamsInput { }
 
-export interface NeedClarification { question: string;
+export interface NeedClarification { kind: "clarify";
+question: string;
  }
 
-export interface NotRelevant { reason: string;
+export interface NotRelevant { kind: "not_relevant";
+reason: string;
  }
 
 export interface SessionContext { contract_version: string;
@@ -444,7 +447,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseClickUpAction" | "ChooseClickUpAction__act__support_clickup" | "ChooseClickUpAction__continue__support_clickup" | "ChooseClickUpAction__select";
+export type StepExecutorFunctionName = "ChooseClickUpAction" | "ChooseClickUpAction__active__support_clickup" | "ChooseClickUpAction__entry";
 
 export interface SessionContext {
     contract_version: "session_context_v2";
@@ -481,23 +484,35 @@ export interface StepExecutorRunOptions {
     max_steps?: number;
 }
 
+export type ErrorDisposition =
+    | "host_retriable"
+    | "llm_correctable"
+    | "inform_and_continue"
+    | "fatal";
+
+export interface StepPlanRecovery {
+    code: string;
+    disposition: ErrorDisposition;
+    mistake: string;
+    invariant: string;
+    fix_steps?: string[];
+}
+
+export type StepExecutorRunEnvelope<R = unknown> = { outcome: "completed", last: R, steps: R[], session_context: SessionContext, selected_tool: string | null } | { outcome: "agent_correctable", recovery: StepPlanRecovery } | { outcome: "fatal", message: string, code?: string | null };
+
 /**
- * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
- * User-facing replies are synthesized once at session completion (and recorded there).
+ * Result of runGeneratedStepExecutor: discriminated envelope (`outcome`).
+ * On `completed`, fields match the former flat telemetry shape.
+ * `agent_correctable` carries structured recovery — not a thrown JS error.
+ * User-facing replies are still SessionResult.message from the chat handler.
  */
 
-export interface StepExecutorRunResult<R = unknown> {
-    last: R;
-    steps: R[];
-    session_context: SessionContext;
-    selected_tool: string | null;
-}
+export type StepExecutorRunResult<R = unknown> = StepExecutorRunEnvelope<R>;
 
 export interface StepExecutorFunctionMap {
   ChooseClickUpAction: { args: Parameters<typeof ChooseClickUpAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClickUpAction>>; };
-  ChooseClickUpAction__act__support_clickup: { args: Parameters<typeof ChooseClickUpAction__act__support_clickup>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClickUpAction__act__support_clickup>>; };
-  ChooseClickUpAction__continue__support_clickup: { args: Parameters<typeof ChooseClickUpAction__continue__support_clickup>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClickUpAction__continue__support_clickup>>; };
-  ChooseClickUpAction__select: { args: Parameters<typeof ChooseClickUpAction__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClickUpAction__select>>; };
+  ChooseClickUpAction__active__support_clickup: { args: Parameters<typeof ChooseClickUpAction__active__support_clickup>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClickUpAction__active__support_clickup>>; };
+  ChooseClickUpAction__entry: { args: Parameters<typeof ChooseClickUpAction__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClickUpAction__entry>>; };
 }
 
 declare global {
@@ -505,5 +520,5 @@ declare global {
     stepExecutor: F,
     args: Omit<StepExecutorFunctionMap[F]["args"], keyof StepExecutorStateInput>,
     options?: StepExecutorRunOptions
-  ): Promise<StepExecutorRunResult<StepExecutorFunctionMap[F]["result"]>>;
+  ): Promise<StepExecutorRunEnvelope<StepExecutorFunctionMap[F]["result"]>>;
 }

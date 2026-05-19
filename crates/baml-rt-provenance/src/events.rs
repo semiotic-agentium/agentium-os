@@ -14,8 +14,11 @@ use baml_rt_core::{
     },
 };
 use baml_rt_embedding::{BipiaSignalInputs, DriftMode, DriftSeverity};
+use baml_rt_tools::prompt_message_char_count;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, Value as JsonValue};
+
+use crate::metamodel::TaskStatusKind;
 
 // Process-local monotonic counter for provenance event IDs.
 //
@@ -186,7 +189,7 @@ pub struct ResolvedCitationTarget {
     /// For history refs (`#N`): `"message:{context_id}:{message_id}"`.
     /// For archive refs (`@N`): `"session-step:{activity_anchor}"` of the SendDone.
     pub target_node_id: String,
-    /// Original citation string exactly as the model emitted it (`"#7"`, `"@8"`, `"@4:2-5"`).
+    /// Original citation string exactly as the model emitted it (`"#7"`, `"@8"`, `"@4:L2-L5"`).
     /// Stored as the `raw` attribute on the CITED graph edge so graph traversal consumers
     /// can reconstruct the citation without re-resolving ref numbers.
     #[serde(default)]
@@ -227,7 +230,7 @@ pub struct LlmCitationSimilarity {
     pub negated: bool,
     /// Cosine similarity between the decision text and the cited content.
     pub similarity: f32,
-    /// Raw citation string exactly as the LLM emitted it (e.g. `"#1"`, `"@2:3-5"`, `"!@1"`).
+    /// Raw citation string exactly as the LLM emitted it (e.g. `"#1"`, `"@2:L3-L5"`, `"!@1"`).
     #[serde(default)]
     pub raw: String,
     /// Stable event ID of the cited activity — usable for provenance graph lookup.
@@ -512,6 +515,9 @@ pub enum ProvEventData {
         /// Measured once at construction via [`serialized_prompt_utf8_len`] on `prompt`.
         #[serde(default)]
         prompt_serialized_utf8_bytes: u64,
+        /// Unicode scalar count of chat message text in `prompt` (`baml_rt_tools::prompt_message_char_count`).
+        #[serde(default)]
+        prompt_message_chars: u64,
     },
     ToolCallStarted {
         scope: CallScope,
@@ -606,6 +612,12 @@ pub enum ProvEventData {
         task_id: TaskId,
         old_status: Option<String>,
         new_status: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        old_status_kind: Option<TaskStatusKind>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        new_status_kind: Option<TaskStatusKind>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        old_status_anchor: Option<ActivityAnchorId>,
     },
     TaskArtifactGenerated {
         task_id: TaskId,
@@ -891,6 +903,7 @@ impl ProvEvent {
         resolved_citations: Vec<ResolvedCitationTarget>,
     ) -> Self {
         let prompt_serialized_utf8_bytes = serialized_prompt_utf8_len(&prompt);
+        let prompt_message_chars = prompt_message_char_count(&prompt);
         ProvEvent::Global(GlobalEvent {
             id: next_activity_anchor_id(),
             context_id,
@@ -909,6 +922,7 @@ impl ProvEvent {
                 citations,
                 resolved_citations,
                 prompt_serialized_utf8_bytes,
+                prompt_message_chars,
             },
         })
     }
@@ -960,6 +974,7 @@ impl ProvEvent {
         resolved_citations: Vec<ResolvedCitationTarget>,
     ) -> Self {
         let prompt_serialized_utf8_bytes = serialized_prompt_utf8_len(&prompt);
+        let prompt_message_chars = prompt_message_char_count(&prompt);
         ProvEvent::Task(TaskScopedEvent {
             id: next_activity_anchor_id(),
             context_id,
@@ -979,6 +994,7 @@ impl ProvEvent {
                 citations,
                 resolved_citations,
                 prompt_serialized_utf8_bytes,
+                prompt_message_chars,
             },
         })
     }
@@ -1275,23 +1291,33 @@ impl ProvEvent {
             SessionStepOp::SendDone { informed_by, .. } => Some(informed_by.clone()),
             _ => None,
         };
-        ProvEvent::Global(GlobalEvent {
-            id: next_activity_anchor_id(),
-            context_id,
-            timestamp_ms: now_millis(),
-            data: ProvEventData::ToolSessionStep {
-                scope,
-                tool_name,
-                session_id,
-                op_kind,
-                header,
-                archive_ref,
-                grep,
-                offset,
-                limit,
-                informed_by_tool_activity_anchor: informed_by,
-            },
-        })
+        let data = ProvEventData::ToolSessionStep {
+            scope: scope.clone(),
+            tool_name,
+            session_id,
+            op_kind,
+            header,
+            archive_ref,
+            grep,
+            offset,
+            limit,
+            informed_by_tool_activity_anchor: informed_by,
+        };
+        match scope {
+            CallScope::Task { task_id } => ProvEvent::Task(TaskScopedEvent {
+                id: next_activity_anchor_id(),
+                context_id,
+                task_id,
+                timestamp_ms: now_millis(),
+                data,
+            }),
+            CallScope::Message { .. } => ProvEvent::Global(GlobalEvent {
+                id: next_activity_anchor_id(),
+                context_id,
+                timestamp_ms: now_millis(),
+                data,
+            }),
+        }
     }
 
     /// Annotate a `ToolCallStarted` / `ToolCallCompleted` event with execution
@@ -1435,6 +1461,23 @@ impl ProvEvent {
         )
     }
 
+    pub fn task_status_changed_typed(
+        context_id: ContextId,
+        task_id: TaskId,
+        old_status: Option<TaskStatusKind>,
+        old_status_anchor: Option<ActivityAnchorId>,
+        new_status: Option<TaskStatusKind>,
+    ) -> Self {
+        Self::task_status_changed_typed_with_id(
+            next_activity_anchor_id(),
+            context_id,
+            task_id,
+            old_status,
+            old_status_anchor,
+            new_status,
+        )
+    }
+
     /// Construct a [`ProvEvent::TaskStatusChanged`] using a pre-allocated anchor.
     ///
     /// Pass a [`ReservedAnchor`] (preferred — `#[must_use]` enforces pre-allocation) or a
@@ -1448,6 +1491,8 @@ impl ProvEvent {
         old_status: Option<String>,
         new_status: Option<String>,
     ) -> Self {
+        let old_status_kind = old_status.as_deref().and_then(parse_task_status_kind_lossy);
+        let new_status_kind = new_status.as_deref().and_then(parse_task_status_kind_lossy);
         ProvEvent::Task(TaskScopedEvent {
             id: id.into(),
             context_id,
@@ -1457,6 +1502,37 @@ impl ProvEvent {
                 task_id,
                 old_status,
                 new_status,
+                old_status_kind,
+                new_status_kind,
+                old_status_anchor: None,
+            },
+        })
+    }
+
+    pub fn task_status_changed_typed_with_id(
+        id: impl Into<ActivityAnchorId>,
+        context_id: ContextId,
+        task_id: TaskId,
+        old_status: Option<TaskStatusKind>,
+        old_status_anchor: Option<ActivityAnchorId>,
+        new_status: Option<TaskStatusKind>,
+    ) -> Self {
+        ProvEvent::Task(TaskScopedEvent {
+            id: id.into(),
+            context_id,
+            task_id: task_id.clone(),
+            timestamp_ms: now_millis(),
+            data: ProvEventData::TaskStatusChanged {
+                task_id,
+                old_status: old_status
+                    .as_ref()
+                    .map(|status| status.as_wire_str().to_string()),
+                new_status: new_status
+                    .as_ref()
+                    .map(|status| status.as_wire_str().to_string()),
+                old_status_kind: old_status,
+                new_status_kind: new_status,
+                old_status_anchor,
             },
         })
     }
@@ -1687,5 +1763,19 @@ impl ProvEvent {
                 agent_id,
             },
         })
+    }
+}
+
+fn parse_task_status_kind_lossy(raw: &str) -> Option<TaskStatusKind> {
+    match raw {
+        "TASK_STATE_SUBMITTED" | "submitted" => Some(TaskStatusKind::Submitted),
+        "TASK_STATE_WORKING" | "working" => Some(TaskStatusKind::Working),
+        "TASK_STATE_AUTH_REQUIRED" | "auth-required" | "auth_required" => {
+            Some(TaskStatusKind::AuthRequired)
+        }
+        "TASK_STATE_COMPLETED" | "completed" => Some(TaskStatusKind::Completed),
+        "TASK_STATE_CANCELED" | "canceled" | "cancelled" => Some(TaskStatusKind::Canceled),
+        "TASK_STATE_REJECTED" | "rejected" => Some(TaskStatusKind::Rejected),
+        _ => None,
     }
 }

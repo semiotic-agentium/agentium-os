@@ -15,6 +15,7 @@ pub mod events;
 pub mod handlers;
 pub(crate) mod live_stream;
 pub(crate) mod live_stream_working_relay;
+pub(crate) mod provenance_notify_writer;
 pub mod request_router;
 pub mod response;
 pub mod result_deduplicator;
@@ -22,6 +23,9 @@ pub mod result_extractor;
 pub mod result_pipeline;
 pub mod result_processor;
 pub mod task_subgraph_store;
+pub mod task_update_broadcaster;
+pub mod task_update_drain;
+pub mod task_update_session;
 pub(crate) mod wire;
 
 pub use a2a::{A2aMethod, A2aOutcome, A2aRequest};

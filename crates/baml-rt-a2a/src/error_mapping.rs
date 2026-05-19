@@ -62,6 +62,17 @@ fn mapping(
 /// Maps a BamlRtError to code, message, optional data, classifier, and retryable.
 pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
     match error {
+        BamlRtError::StepPlanCorrectable(recovery) => mapping(
+            error,
+            -32600,
+            "Invalid request",
+            Some(
+                serde_json::to_value(recovery)
+                    .unwrap_or_else(|_| serde_json::json!({ "code": recovery.code.as_str() })),
+            ),
+            "step_plan_correctable",
+            Retryability::Permanent,
+        ),
         BamlRtError::AgentNotFound(message) => mapping(
             error,
             -32601,

@@ -1,6 +1,6 @@
 use std::{collections::HashSet, fmt, fs, path::Path};
 
-use baml_rt_tools::ts_gen::render_tool_typescript;
+use baml_rt_tools::{UnifiedStepExecutorFunctionsMap, ts_gen::render_tool_typescript};
 use genco::{fmt::Error as GencoFmtError, lang::js, prelude::*};
 use internal_baml_core::ir::ir_hasher::IRSignature;
 
@@ -50,6 +50,7 @@ pub fn render_ts_declarations(
     ir_signature: &IRSignature,
     tool_names: &[String],
     session_plan_functions: &baml_rt_tools::SessionPlanFunctionsMap,
+    unified_step_executors: &UnifiedStepExecutorFunctionsMap,
 ) -> Result<String> {
     let header = "/**
  * BAML runtime TypeScript declarations.
@@ -111,6 +112,11 @@ pub fn render_ts_declarations(
 
         // Stable output for snapshots.
         let mut step_executor_names: Vec<String> = session_plan_functions.keys().cloned().collect();
+        for k in unified_step_executors.keys() {
+            if !step_executor_names.iter().any(|e| e == k) {
+                step_executor_names.push(k.clone());
+            }
+        }
         step_executor_names.sort();
         let step_executor_union = step_executor_names
             .iter()
@@ -173,17 +179,37 @@ pub fn render_ts_declarations(
             }
         );
         tokens.line();
-        let step_run_result_comment = "/**\n * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.\n * User-facing replies are synthesized once at session completion (and recorded there).\n */";
+        quote_in!(
+            tokens =>
+            export type ErrorDisposition =
+                | "host_retriable"
+                | "llm_correctable"
+                | "inform_and_continue"
+                | "fatal";
+        );
+        tokens.line();
+        quote_in!(
+            tokens =>
+            export interface StepPlanRecovery {
+                code: string;
+                disposition: ErrorDisposition;
+                mistake: string;
+                invariant: string;
+                fix_steps?: string[];
+            }
+        );
+        tokens.line();
+        quote_in!(
+            tokens =>
+            export type StepExecutorRunEnvelope<R = unknown> = { outcome: "completed", last: R, steps: R[], session_context: SessionContext, selected_tool: string | null } | { outcome: "agent_correctable", recovery: StepPlanRecovery } | { outcome: "fatal", message: string, code?: string | null };
+        );
+        tokens.line();
+        let step_run_result_comment = "/**\n * Result of runGeneratedStepExecutor: discriminated envelope (`outcome`).\n * On `completed`, fields match the former flat telemetry shape.\n * `agent_correctable` carries structured recovery — not a thrown JS error.\n * User-facing replies are still SessionResult.message from the chat handler.\n */";
         quote_in!(tokens => $(step_run_result_comment));
         tokens.line();
         quote_in!(
             tokens =>
-            export interface StepExecutorRunResult<R = unknown> {
-                last: R;
-                steps: R[];
-                session_context: SessionContext;
-                selected_tool: string | null;
-            }
+            export type StepExecutorRunResult<R = unknown> = StepExecutorRunEnvelope<R>;
         );
         tokens.line();
         let map_open = "export interface StepExecutorFunctionMap {";
@@ -218,7 +244,7 @@ pub fn render_ts_declarations(
         quote_in!(tokens => $(step_fn_l4));
         tokens.push();
         let step_fn_l5 =
-            "  ): Promise<StepExecutorRunResult<StepExecutorFunctionMap[F][\"result\"]>>;";
+            "  ): Promise<StepExecutorRunEnvelope<StepExecutorFunctionMap[F][\"result\"]>>;";
         quote_in!(tokens => $(step_fn_l5));
         tokens.push();
         let global_close = "}";

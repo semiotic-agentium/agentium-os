@@ -2,7 +2,11 @@
 
 use std::{net::SocketAddr, time::Instant};
 
-use baml_rt_core::{AgentInstanceId, AgentPackageName, BamlRtError, parse_a2a_sse_json_rpc_chunks};
+use baml_rt_core::{
+    A2aSseDecoder, A2aStreamChunk, AgentInstanceId, AgentPackageName, BamlRtError,
+    bus::{BusStream, bus_stream_channel},
+    parse_a2a_sse_json_rpc_chunks,
+};
 use baml_rt_observability::{INGRESS_SERVICE_INSTANCE_ID_BAGGAGE_KEY, metrics, spans};
 use opentelemetry::{KeyValue, baggage::BaggageExt};
 use tracing::Instrument;
@@ -15,7 +19,7 @@ use crate::ssrf;
 const MAX_RESPONSE_BYTES: usize = 50 * 1024 * 1024;
 
 /// Validated and DNS-pinned forwarding target.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ForwardTarget {
     /// Full URL for the A2A endpoint (e.g. `http://runner-0:18080/agents/pkg/inst/a2a`).
     /// IPv6 literals are correctly bracketed (`http://[fd12::1]:18080/...`)
@@ -144,6 +148,196 @@ pub async fn forward_request(
             start.elapsed(),
         );
         out
+    }
+    .instrument(span)
+    .await
+}
+
+/// Forward a JSON body to a remote runner and surface each SSE `data:` JSON-RPC
+/// object as it arrives (no full-body buffer before the first chunk).
+///
+/// Uses the same DNS pinning, trace/baggage injection, and byte cap as
+/// [`forward_request`]. Metrics are recorded when the HTTP body read finishes
+/// (success or transport/parse/cap failure).
+pub async fn forward_stream_request(
+    target: &ForwardTarget,
+    body: &serde_json::Value,
+    agent_package: &AgentPackageName,
+    agent_instance_id: &AgentInstanceId,
+    ingress_service_instance_id: &str,
+    target_service_instance_id: Option<&str>,
+) -> Result<BusStream<A2aStreamChunk>, BamlRtError> {
+    let span = spans::cluster_a2a_forward(
+        agent_package,
+        agent_instance_id,
+        &target.url,
+        ingress_service_instance_id,
+        target_service_instance_id,
+    );
+    let span_reader = span.clone();
+
+    let target = target.clone();
+    let body = body.clone();
+    let agent_package = agent_package.clone();
+    let agent_instance_id = agent_instance_id.clone();
+    let ingress_service_instance_id = ingress_service_instance_id.to_string();
+    let target_service_instance_id = target_service_instance_id.map(str::to_string);
+
+    async move {
+        let start = Instant::now();
+        let record_early = |label: &'static str| {
+            metrics::record_cluster_a2a_forward(
+                &agent_package,
+                &agent_instance_id,
+                label,
+                ingress_service_instance_id.as_str(),
+                target_service_instance_id.as_deref(),
+                start.elapsed(),
+            );
+        };
+
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(60))
+            .redirect(reqwest::redirect::Policy::none());
+
+        builder = builder.resolve_to_addrs(&target.host, &target.resolved_addrs);
+        tracing::debug!(
+            url = %target.url,
+            host = %target.host,
+            resolved_addrs = ?target.resolved_addrs,
+            "forwarding cluster A2A request (streaming) with DNS-pinned addresses"
+        );
+
+        let client = builder.build().map_err(|e| {
+            let err = BamlRtError::Io(std::io::Error::other(format!(
+                "HTTP client build failed: {e}"
+            )));
+            record_early(cluster_forward_error_label(&err));
+            err
+        })?;
+
+        let mut request = client.post(&target.url).json(&body).build().map_err(|e| {
+            let err = BamlRtError::Io(std::io::Error::other(format!(
+                "cluster A2A request build: {e}"
+            )));
+            record_early(cluster_forward_error_label(&err));
+            err
+        })?;
+
+        let ctx = tracing::Span::current()
+            .context()
+            .with_baggage(vec![KeyValue::new(
+                INGRESS_SERVICE_INSTANCE_ID_BAGGAGE_KEY,
+                ingress_service_instance_id.clone(),
+            )]);
+        opentelemetry::global::get_text_map_propagator(|propagator| {
+            let mut injector = opentelemetry_http::HeaderInjector(request.headers_mut());
+            propagator.inject_context(&ctx, &mut injector);
+        });
+
+        let resp = client.execute(request).await.map_err(|e| {
+            let err = BamlRtError::Io(std::io::Error::other(format!(
+                "cluster A2A forward failed: {e}"
+            )));
+            record_early(cluster_forward_error_label(&err));
+            err
+        })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = read_body_lossy(resp, 512).await;
+            let text = ssrf::truncate_body(&text, 512);
+            let err = BamlRtError::Io(std::io::Error::other(format!(
+                "cluster A2A forward returned {status}: {text}"
+            )));
+            record_early("http_error");
+            return Err(err);
+        }
+
+        let (tx, stream) = bus_stream_channel::<A2aStreamChunk>(32);
+        let ingress_for_task = ingress_service_instance_id.clone();
+        let target_si_for_task = target_service_instance_id.clone();
+
+        tokio::spawn(
+            {
+                let agent_package = agent_package.clone();
+                let agent_instance_id = agent_instance_id.clone();
+                async move {
+                    let task_start = Instant::now();
+                    let mut decoder = A2aSseDecoder::new();
+                    let mut total: usize = 0;
+                    let mut resp = resp;
+                    let label = 'read: loop {
+                        match resp.chunk().await {
+                            Ok(Some(chunk)) => {
+                                total = total.saturating_add(chunk.len());
+                                if total > MAX_RESPONSE_BYTES {
+                                    tracing::warn!(
+                                        cap = MAX_RESPONSE_BYTES,
+                                        "cluster A2A streaming response exceeded byte cap"
+                                    );
+                                    break 'read "invalid_argument";
+                                }
+                                match decoder.feed(chunk.as_ref()) {
+                                    Ok(events) => {
+                                        for v in events {
+                                            if tx.send(A2aStreamChunk(v)).await.is_err() {
+                                                break 'read "success";
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            "cluster A2A SSE incremental parse failed"
+                                        );
+                                        break 'read "parse_error";
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                match decoder.finish() {
+                                    Ok(events) => {
+                                        for v in events {
+                                            if tx.send(A2aStreamChunk(v)).await.is_err() {
+                                                break 'read "success";
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            "cluster A2A SSE finish parse failed"
+                                        );
+                                        break 'read "parse_error";
+                                    }
+                                }
+                                break 'read "success";
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "cluster A2A streaming body read failed"
+                                );
+                                break 'read "transport_error";
+                            }
+                        }
+                    };
+                    metrics::record_cluster_a2a_forward(
+                        &agent_package,
+                        &agent_instance_id,
+                        label,
+                        ingress_for_task.as_str(),
+                        target_si_for_task.as_deref(),
+                        task_start.elapsed(),
+                    );
+                }
+            }
+            .instrument(span_reader),
+        );
+
+        Ok(stream)
     }
     .instrument(span)
     .await

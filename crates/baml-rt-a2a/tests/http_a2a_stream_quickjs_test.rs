@@ -29,7 +29,7 @@ use std::{
 };
 
 use baml_rt::{A2aAgent, A2aRequestHandler, QuickJSConfig, baml::BamlRuntimeManager};
-use baml_rt_core::{A2aStreamChunk, A2aWireRequest, collect_a2a_stream};
+use baml_rt_core::{A2aStreamChunk, A2aWireRequest, collect_a2a_stream_one_shot};
 use serde_json::Value;
 use test_support::common::{
     CalculatorTool, agent_fixture, build_fixture_package_to_temp, chunk_content,
@@ -101,7 +101,7 @@ async fn collect_stream(agent: &A2aAgent, request: Value) -> baml_rt::Result<Vec
     let stream = agent
         .handle_a2a_stream(A2aWireRequest::from(request))
         .await?;
-    let chunks: Vec<A2aStreamChunk> = collect_a2a_stream(stream).await;
+    let chunks: Vec<A2aStreamChunk> = collect_a2a_stream_one_shot(stream).await;
     Ok(chunks.into_iter().map(A2aStreamChunk::into_inner).collect())
 }
 
@@ -312,7 +312,7 @@ async fn test_a2a_stream_input_required_suspends_quickjs() {
         is_final || state.as_deref() == Some("TASK_STATE_INPUT_REQUIRED")
     };
     let responses: Vec<A2aStreamChunk> =
-        baml_rt_core::collect_a2a_stream_until(stream, stop_at_input_required).await;
+        baml_rt_core::collect_a2a_stream_until_one_shot(stream, stop_at_input_required).await;
     let responses_values: Vec<Value> = responses
         .into_iter()
         .map(A2aStreamChunk::into_inner)

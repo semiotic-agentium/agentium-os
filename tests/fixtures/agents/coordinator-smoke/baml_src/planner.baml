@@ -50,8 +50,22 @@ function PlanCoordinatorWorkflow(
   available_agents: AgentCandidate[],
 ) -> WorkflowPlan {
   client OpenRouterGPT
-  prompt #"
-    You are a coordinator planner that decomposes user requests into a workflow DAG.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and operation types:
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
+You are a coordinator planner that decomposes user requests into a workflow DAG.
     Return a WorkflowPlan with explicit dependencies and node kinds.
 
     Rules:
@@ -68,26 +82,20 @@ function PlanCoordinatorWorkflow(
     - Cap nodes at 30.
 
     Planner expectations:
-    - `call_agent` requires target and prompt_template.
-    - `foreach` requires foreach_from and foreach_template.
-    - `clarify` and `direct_answer` require prompt_template.
     - Use references like n1.output_text only when there is a dependency on n1.
-
-    {{ ctx.output_format }}
 
     ---AVAILABLE AGENTS---
     {{ available_agents }}
     ---END AVAILABLE AGENTS---
 
-    {% if ctx.tags['conversation_history'] %}
-    ---CONVERSATION CONTEXT---
-    {{ ctx.tags['conversation_transcript'] }}
-    ---END CONVERSATION CONTEXT---
-    {% endif %}
-
     {{ _.role('user') }}
     ---BEGIN USER REQUEST---
     {{ user_message }}
     ---END USER REQUEST---
-  "#
+
+{{ ctx.output_format }}
+
+Return exactly one `WorkflowPlan` JSON object.
+Do not add text before or after the JSON object.
+"#
 }

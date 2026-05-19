@@ -1,3 +1,16 @@
+Looking at this merge, I can see several significant architectural changes:
+
+1. **New crates**: `baml-rt-core` with new types like `step_executor_outcome.rs` and `ids.rs`
+2. **Major provenance refactoring**: New `metamodel/` module with comprehensive query system
+3. **Task update system**: New files like `task_update_broadcaster.rs`, `task_update_drain.rs`, `task_update_session.rs`
+4. **Web dashboard**: New narrative dashboard with provenance drilldown capabilities
+5. **Removed fixture**: `conversational-persona-demo` agent fixture removed
+6. **New unified harness**: `unified-step-harness-demo` fixture added
+7. **BAML conversation history changes**: Script now rejects `ctx.tags['conversation_history']` entirely
+8. **TypeScript config updates**: All `tsconfig.json` files updated (likely moduleResolution changes)
+
+These changes represent significant architectural evolution in the provenance system, task management, and web interface. The CLAUDE.md updates in the merge show the TypeScript 6.x requirement description changed from `ignoreDeprecations: "6.0"` to `moduleResolution: "bundler"`, and test model updated from `grok-4.1-fast` to `grok-4.3`.
+
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
@@ -58,11 +71,11 @@ scripts/meteo_mcp.sh chat                     # deploy and chat with meteo agent
 
 API keys for tests are resolved through `fnox.toml` via `FnoxFileSecretResolver`. The file maps secret names to values with a `default` field. CI writes this file from GitHub secrets; locally, create `fnox.toml` in the project root.
 
-The test model for LLM tests is controlled by the `BAML_TEST_MODEL` environment variable, which defaults to `x-ai/grok-4.1-fast`. This can be overridden to use different models for testing.
+The test model for LLM tests is controlled by the `BAML_TEST_MODEL` environment variable, which defaults to `x-ai/grok-4.3`. This can be overridden to use different models for testing.
 
 ## Local Setup (Linux)
 
-Local release builds — `just persona-claude-notion`, `just dev-all-agents`, `cargo test` paths that link the runner binary — need three system-level dependencies that the runner Docker image installs but a fresh Linux host does not:
+Local release builds — `just coordinator-claude-notion`, `just dev-all-agents`, `cargo test` paths that link the runner binary — need three system-level dependencies that the runner Docker image installs but a fresh Linux host does not:
 
 ```bash
 sudo apt install -y libdbus-1-dev libcap-ng-dev pkg-config
@@ -71,7 +84,7 @@ npm install -g typescript@6
 
 - `libdbus-1-dev` — pulled in via `fnox` → `keyring` → `dbus-secret-service` (the secret-resolver chain).
 - `libcap-ng-dev` — pulled in via `microsandbox` for syscall capability filtering at the runner sandbox boundary.
-- `typescript@6` — required on `PATH` for the agent build pipeline; the canonical `tsconfig.json` pins `"ignoreDeprecations": "6.0"`, which TypeScript 5.x rejects.
+- `typescript@6` — required on `PATH` for the agent build pipeline; the canonical `tsconfig.json` uses `moduleResolution: "bundler"` with TypeScript 6.x.
 
 Run `just check-host` to verify all three are present before kicking off a release build. The recipe exits non-zero with a clear "missing X (install with Y)" message; on non-Linux hosts the Linux-only checks are skipped.
 
@@ -86,7 +99,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 ### Crate Map
 
 **Foundation**
-- **baml-rt-core** — Shared error types, result types, correlation helpers, event bus with effect subscriber observability
+- **baml-rt-core** — Shared error types, result types, correlation helpers, event bus with effect subscriber observability, step executor outcomes, ID types
 - **baml-rt-id** — Newtype ID wrappers (UUID-based)
 - **baml-rt-hash** — Canonical content-addressable hashing for agent source bundles
 - **baml-rt-config** — Tool configuration storage and resolution
@@ -100,9 +113,9 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 - **baml-rt-interceptor** — Interceptor trait + pipeline (pre/post execution hooks)
 - **baml-rt-observability** — OpenTelemetry tracing setup, spans, metrics; `init_tracing()` uses per-layer filters (`RUST_LOG_FMT`, `RUST_LOG_OTEL`); central `spans.rs` keeps A2A ingress at `info` and agent execution spans at `debug` (see `docs/otel-trace-instrumentation-guide.md`); exported OTLP metric names: `docs/metrics-inventory.md`; runner identity foundation for K8s pilot with service.instance.id and deployment.environment resource attributes; distributed tracing support for cross-pod A2A forwarding
 - **baml-rt-quickjs** — QuickJS runtime host: loads JS, bridges JS↔Rust, manages BAML runtime invocations, provenance error mapping
-- **baml-rt-a2a** — Agent-to-agent protocol: JSON-RPC types, SSE streaming transport, streaming task handling
+- **baml-rt-a2a** — Agent-to-agent protocol: JSON-RPC types, SSE streaming transport, streaming task handling, task update broadcasting and session management
 - **baml-rt-conversation** — Agent-visible conversation history projection and episode types; pure computation (no I/O); see `docs/agent-conversation-crate.md` and normative spec `docs/baml-rt-conversation-spec.md`
-- **baml-rt-provenance** — Provenance graph: event normalization, SurrealDB persistence, cluster-safe archive refs with activity-anchor idempotency, effect subscriber observability
+- **baml-rt-provenance** — Provenance graph: event normalization, SurrealDB persistence, cluster-safe archive refs with activity-anchor idempotency, effect subscriber observability, metamodel query system for graph traversal
 - **baml-rt-repository** — Agent package repository: content-addressable archive with lineage, versioning, and search; MCP server registry and schema storage
 - **baml-rt-router** — Cluster routing, SSRF validation, token auth, cross-pod A2A forwarding with distributed trace propagation
 - **baml-rt-api** — HTTP API surface: agent discovery (GET /agents), A2A JSON-RPC forwarding, OpenAPI via utoipa, RFC 7807 errors, operator auth boundary, OpenTelemetry middleware for distributed tracing, conversation history endpoints, context metrics, runtime-progress-gated readiness probe, cluster-wide deployment fan-out (POST /cluster/deploy)
@@ -225,8 +238,8 @@ Single job in `rust-ci.yml` (push/PR to main, plus manual dispatch):
 - **nextest (workspace)** — `cargo nextest run --workspace --locked --profile ci` with all feature flags enabled (`http-tools`, `llm-tests`, `memory`). Uses rust-cache with shared key `ci-nextest`. JUnit report published via `mikepenz/action-junit-report`. Secrets written to `fnox.toml` from GitHub secrets. **`regen_fixtures` is not run in CI**; generated `agents/**` and `tests/fixtures/agents/**` outputs stay committed, refreshed locally via `just regen-fixtures` / the pre-commit `regen-fixtures` hook.
 - Toolchain: stable for build/test, nightly for `cargo fmt --check` only.
 - **APT reliability:** CI uses `scripts/ci/apt-update-retry.sh` to mitigate transient Ubuntu mirror sync failures during package installation.
-- **TypeScript 6.x:** CI installs `typescript@6` globally to match the runner image and ensure consistent fixture builds. The canonical `tsconfig.json` uses `"ignoreDeprecations": "6.0"`, which TypeScript 5.x rejects.
-- **Test model configuration:** CI sets `BAML_TEST_MODEL` from the `vars.BAML_TEST_MODEL` repository variable with fallback to `x-ai/grok-4.1-fast` for backward compatibility.
+- **TypeScript 6.x:** CI installs `typescript@6` globally to match the runner image and ensure consistent fixture builds. The canonical `tsconfig.json` uses `moduleResolution: "bundler"` with TypeScript 6.x.
+- **Test model configuration:** CI sets `BAML_TEST_MODEL` from the `vars.BAML_TEST_MODEL` repository variable with fallback to `x-ai/grok-4.3` for backward compatibility.
 
 ## Testing Conventions
 
@@ -296,4 +309,4 @@ The raw manifests under `deploy/k8s/` and the `deploy/demo/run-demo.sh` script a
 - **QuickJS**: `quickjs_runtime` crate for JS execution
 - **SurrealDB**: Embedded multi-model database for provenance graph persistence
 - **MCP SDK**: `rmcp` crate for Model Context Protocol client implementation with stdio transport
-- **TypeScript 6.x**: required on `PATH` (or via `npx`) for any code path that exercises the agent build pipeline — `cargo test` on builder fixtures, local `baml-agent-builder package`, and the runner image (Dockerfile installs `typescript@6` globally). The canonical `tsconfig.json` written by bootstrap pins `"ignoreDeprecations": "6.0"`, which TypeScript 5.x rejects. Install with `npm install -g typescript@6`.
+- **TypeScript 6.x**: required on `PATH` (or via `npx`) for any code path that exercises the agent build pipeline — `cargo test` on builder fixtures, local `baml-agent-builder package`, and the runner image (Dockerfile installs `typescript@6` globally). The canonical `tsconfig.json` written by bootstrap uses `moduleResolution: "bundler"`. Install with `npm install -g typescript@6`.

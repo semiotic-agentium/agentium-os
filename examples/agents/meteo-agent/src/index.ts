@@ -7,9 +7,21 @@ __chat_register({
   run: async (ctx: RunContext): Promise<SessionResult> => {
     const userText = typeof ctx.text === "string" && ctx.text.length > 0 ? ctx.text : "unknown";
 
-    await runGeneratedStepExecutor("ChooseMeteoAgentAction", {
-      user_message: userText,
-    }, { max_steps: MAX_REACT_STEPS });
+    const meteoRun = await runGeneratedStepExecutor(
+      "ChooseMeteoAgentAction",
+      {
+        user_message: userText,
+      },
+      { max_steps: MAX_REACT_STEPS },
+    );
+    if (meteoRun.outcome !== "completed") {
+      return {
+        error:
+          meteoRun.outcome === "fatal"
+            ? meteoRun.message
+            : `[${meteoRun.recovery.code}] ${meteoRun.recovery.mistake}`,
+      };
+    }
 
     const message = await PresentMeteoAgentReply({ user_message: userText });
     return { message };

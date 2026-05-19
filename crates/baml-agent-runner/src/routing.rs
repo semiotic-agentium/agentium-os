@@ -257,7 +257,7 @@ impl InternalA2aRouter {
             baml_rt_router::forward::resolve_forward_target(&placement.endpoint, pkg, inst).await?;
         let body = request.into_inner();
         let ingress_service_instance_id = baml_rt_observability::service_instance_id();
-        let items = baml_rt_router::forward::forward_request(
+        baml_rt_router::forward::forward_stream_request(
             &target,
             &body,
             &key.agent_package,
@@ -265,15 +265,8 @@ impl InternalA2aRouter {
             ingress_service_instance_id,
             Some(placement.service_instance_id.as_str()),
         )
-        .await?;
-        let chunks = response_body_to_chunks(items);
-        Ok(Box::pin(futures_util::stream::iter(chunks)))
+        .await
     }
-}
-
-/// Convert a list of JSON values from a forwarded HTTP response into individual stream chunks.
-fn response_body_to_chunks(items: Vec<Value>) -> Vec<A2aStreamChunk> {
-    items.into_iter().map(A2aStreamChunk::from).collect()
 }
 
 /// Caller-scoped wrapper for `InternalA2aRouter`.
@@ -329,26 +322,111 @@ impl A2aRequestHandler for ScopedInternalA2aRouter {
 
 #[cfg(test)]
 mod tests {
+    use std::net::UdpSocket;
+
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
     use super::*;
 
-    #[test]
-    fn array_response_produces_individual_chunks() {
-        let items: Vec<Value> = vec![
-            serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"status": "working"}}),
-            serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"status": "completed"}}),
-        ];
-        let chunks = response_body_to_chunks(items);
-        assert_eq!(
-            chunks.len(),
-            2,
-            "each JSON-RPC object should be a separate chunk"
+    fn discover_cluster_test_ip() -> std::net::IpAddr {
+        let socket = UdpSocket::bind("0.0.0.0:0").expect("bind UDP probe");
+        socket.connect("8.8.8.8:80").expect("connect UDP probe");
+        let ip = socket.local_addr().expect("local addr").ip();
+        assert!(
+            !ip.is_loopback() && !ip.is_unspecified(),
+            "expected non-loopback cluster-test IP, got {ip}"
         );
+        ip
     }
 
     #[test]
-    fn single_object_wrapped_produces_one_chunk() {
-        let items: Vec<Value> = vec![serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {}})];
-        let chunks = response_body_to_chunks(items);
-        assert_eq!(chunks.len(), 1);
+    fn extract_internal_a2a_target_reads_metadata_target() {
+        let request = serde_json::json!({
+            "params": {
+                "metadata": {
+                    "target": {
+                        "agent_package": "remote-agent",
+                        "agent_instance_id": "default"
+                    }
+                }
+            }
+        });
+        let key = extract_internal_a2a_target(&request).expect("target route key");
+        assert_eq!(key.agent_package.as_str(), "remote-agent");
+        assert_eq!(key.agent_instance_id.as_str(), "default");
+    }
+
+    #[tokio::test]
+    async fn forward_to_runner_preserves_incremental_remote_streaming() {
+        let cluster_ip = discover_cluster_test_ip();
+        let listener = TcpListener::bind(("0.0.0.0", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let mut acc = Vec::new();
+            loop {
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                acc.extend_from_slice(&buf[..n]);
+                if acc.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let headers =
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+            let first = b"data: {\"jsonrpc\":\"2.0\",\"id\":\"corr\",\"result\":{\"stream\":true,\"index\":0,\"final\":false}}\n\n";
+            let second = b"data: {\"jsonrpc\":\"2.0\",\"id\":\"corr\",\"result\":{\"stream\":true,\"index\":1,\"final\":true}}\n\n";
+            let _ = socket.write_all(headers.as_bytes()).await;
+            let _ = socket.write_all(first).await;
+            let _ = socket.flush().await;
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            let _ = socket.write_all(second).await;
+            let _ = socket.shutdown().await;
+        });
+
+        let router = InternalA2aRouter::new();
+        let placement = Placement {
+            endpoint: format!("http://{cluster_ip}:{port}"),
+            service_instance_id: "runner-serving".to_string(),
+        };
+        let key = AgentRouteKey::new(
+            AgentPackageName::parse("remote-agent").unwrap(),
+            AgentInstanceId::default(),
+        );
+        let request = A2aWireRequest::from(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "corr",
+            "method": "message.sendStream",
+            "params": {
+                "message": {
+                    "messageId": "msg-1",
+                    "role": "ROLE_USER",
+                    "parts": [{"text": "hello"}]
+                }
+            }
+        }));
+
+        let stream = router
+            .forward_to_runner(&placement, &key, request)
+            .await
+            .expect("forward stream");
+        let first = tokio::time::timeout(
+            std::time::Duration::from_millis(75),
+            baml_rt_core::collect_a2a_stream_until_one_shot(stream, |_| true),
+        )
+        .await
+        .expect("first chunk should arrive before delayed terminal chunk");
+        let _ = server.await;
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].as_ref()["result"]["index"], 0);
     }
 }

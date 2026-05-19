@@ -84,6 +84,13 @@ use baml_rt_tools::BundleName;
 #[cfg(feature = "llm-tests")]
 use common::try_load_dotenv_for_tests;
 use common::{e2e_secs_ci_or_local, e2e_serial_gate};
+
+/// Idle gap allowed on the A2A stream collector while waiting for the next `__chat_yield`.
+/// Default QuickJS is **60s**; full-workspace `nextest` runs LLM tests beside heavy crates, so OpenRouter
+/// + scheduler stalls can exceed that without indicating a product bug.
+fn e2e_llm_stream_collector_idle_secs() -> Option<u64> {
+    Some(e2e_secs_ci_or_local(300, 180))
+}
 #[cfg(feature = "llm-tests")]
 use test_support::common::message_visible_content_from_chunks;
 #[cfg(feature = "llm-tests")]
@@ -287,7 +294,7 @@ async fn collect_stream_responses(
     let stream = agent
         .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(request_value))
         .await?;
-    let chunks = baml_rt::collect_a2a_stream_until(stream, |item| {
+    let chunks = baml_rt::collect_a2a_stream_until_one_shot(stream, |item| {
         let v = item.as_ref();
         let chunk = v.get("result").and_then(|r| r.get("chunk").or(Some(r)));
         let state = chunk.and_then(chunk_state);
@@ -321,6 +328,10 @@ async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_quickjs_config(
+            baml_rt::QuickJSConfig::new()
+                .with_stream_collector_idle_secs(e2e_llm_stream_collector_idle_secs()),
+        )
         .with_surreal_store(test_surreal_store().await)
         .build()
         .await
@@ -368,11 +379,9 @@ async fn setup_tool_discovery_demo_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        // Grok-4.1-fast can stall longer than three minutes between yield
-        // chunks; the default 60s collector idle would trip first.
         .with_quickjs_config(
             baml_rt::QuickJSConfig::new()
-                .with_stream_collector_idle_secs(Some(e2e_secs_ci_or_local(300, 120))),
+                .with_stream_collector_idle_secs(e2e_llm_stream_collector_idle_secs()),
         )
         .with_surreal_store(test_surreal_store().await)
         .build()
@@ -676,6 +685,10 @@ globalThis.onChatMessage = async function(message) {
         .with_a2a_session_tool(RegistrationMode::Register)
         .with_a2a_session_router(router)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_quickjs_config(
+            baml_rt::QuickJSConfig::new()
+                .with_stream_collector_idle_secs(Some(e2e_secs_ci_or_local(300, 120))),
+        )
         .with_surreal_store(initiator_store.clone())
         .build()
         .await
@@ -730,6 +743,10 @@ async fn setup_argument_fixture_agent(fixture: &str) -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_quickjs_config(
+            baml_rt::QuickJSConfig::new()
+                .with_stream_collector_idle_secs(e2e_llm_stream_collector_idle_secs()),
+        )
         .with_surreal_store(test_surreal_store().await)
         .build()
         .await
@@ -798,12 +815,9 @@ async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::pat
         .with_runtime_manager(manager)
         .with_init_js(entry_js)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        // Grok-4.1-fast can produce minute-long gaps between yield chunks on
-        // CI; the default 60s collector idle trips before the agent emits its
-        // terminal frame.
         .with_quickjs_config(
             baml_rt::QuickJSConfig::new()
-                .with_stream_collector_idle_secs(Some(e2e_secs_ci_or_local(300, 90))),
+                .with_stream_collector_idle_secs(e2e_llm_stream_collector_idle_secs()),
         )
         .with_surreal_store(test_surreal_store().await)
         .build()
@@ -811,64 +825,6 @@ async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::pat
         .expect("build packaged A2A agent");
 
     (agent, extract_dir)
-}
-
-/// Build coordinator-agent from workspace agents/coordinator-agent and return an A2aAgent.
-/// Uses SurrealDB store so persistent mode is satisfied. Call only when agents/coordinator-agent exists.
-/// Kept for use by test on base branch after merge (test removed here to avoid duplicate definition in PR #62).
-#[cfg(feature = "llm-tests")]
-#[allow(dead_code)] // used by coordinator E2E when run with llm-tests feature
-async fn setup_coordinator_agent() -> baml_rt::A2aAgent {
-    ensure_fixture_runtime_types();
-    let agent_dir = workspace_root().join("agents").join("coordinator-agent");
-    if !agent_dir.exists() || !agent_dir.join("baml_src").exists() {
-        panic!(
-            "coordinator-agent dir missing or invalid: {}",
-            agent_dir.display()
-        );
-    }
-    let extract_dir = common::build_agent_dir_to_temp_async(agent_dir, "coordinator-agent").await;
-
-    let mut manager = BamlRuntimeManager::builder()
-        .with_fnox_llm_resolver(workspace_fnox_path())
-        .build()
-        .expect("runtime manager");
-    manager
-        .load_schema(extract_dir.to_str().expect("utf8 path"))
-        .expect("load coordinator schema");
-    let allowlist: HashSet<String> = ["system/internal_a2a", "system/callback"]
-        .into_iter()
-        .map(String::from)
-        .collect();
-    manager
-        .set_tool_allowlist(allowlist)
-        .await
-        .expect("set allowlist");
-    let policy = parse_access_allowlist();
-    let manifest_tools = ManifestToolNames::parse(&["system/internal_a2a".to_string()])
-        .expect("parse manifest tools");
-    let registry = manager.tool_registry();
-    register_manifest_tools(registry.as_ref(), &manifest_tools, &policy).expect("register tools");
-    registry
-        .register_bundle(SystemBundle::new(
-            Arc::new(EmptyAgentList),
-            registry.clone(),
-            Arc::new(EmptyA2aHandler),
-        ))
-        .expect("register SystemBundle");
-
-    let entry_js = fs::read_to_string(extract_dir.join("dist").join("index.js"))
-        .expect("coordinator-agent dist/index.js");
-    // Persistent mode requires a store; omit and A2aAgent::build() returns InvalidArgument.
-    let store = test_surreal_store().await;
-    baml_rt::A2aAgent::builder()
-        .with_runtime_manager(manager)
-        .with_init_js(entry_js)
-        .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_surreal_store(store)
-        .build()
-        .await
-        .expect("build coordinator agent")
 }
 
 #[tokio::test]
@@ -1498,8 +1454,7 @@ async fn run_argument_sketch_two_agents_body() {
         .iter()
         .filter_map(|c| task_state(c))
         .collect();
-    let chapman_task_id = first_task_id_from_stream(&chapman_first_responses)
-        .map(|s| TaskId::from_external(ExternalId::new(s)));
+    let chapman_task_id = first_task_id_from_stream(&chapman_first_responses);
     assert!(
         chapman_first_states.contains(&"TASK_STATE_INPUT_REQUIRED".to_string()),
         "Expected TASK_STATE_INPUT_REQUIRED from Chapman (awaitInput after first line); states: {:?}",
@@ -1585,7 +1540,7 @@ async fn test_e2e_stream_js_tool() {
         ))
         .await
         .unwrap();
-    let responses: Vec<serde_json::Value> = baml_rt::collect_a2a_stream(stream)
+    let responses: Vec<serde_json::Value> = baml_rt::collect_a2a_stream_one_shot(stream)
         .await
         .into_iter()
         .map(baml_rt_core::A2aStreamChunk::into_inner)
@@ -1783,6 +1738,7 @@ async fn test_internal_a2a_parallel_same_context_child_tasks_and_provenance() {
         "Expected {request_count} fanout results"
     );
     let mut child_ids_from_summary: HashSet<String> = HashSet::new();
+    let mut child_id_by_input: HashMap<String, String> = HashMap::new();
     for i in 0..request_count {
         let expected_input = format!("ping parallel {i}");
         let expected = format!("Responder saw: ping parallel {i}");
@@ -1821,7 +1777,12 @@ async fn test_internal_a2a_parallel_same_context_child_tasks_and_provenance() {
             1,
             "Expected exactly one child task id for index {i}, got {ids:?}"
         );
-        child_ids_from_summary.extend(ids);
+        let child_id = ids
+            .into_iter()
+            .next()
+            .expect("exactly one child task id enforced above");
+        child_ids_from_summary.insert(child_id.clone());
+        child_id_by_input.insert(expected_input, child_id);
     }
     assert_eq!(
         child_ids_from_summary.len(),
@@ -1829,26 +1790,38 @@ async fn test_internal_a2a_parallel_same_context_child_tasks_and_provenance() {
         "Expected one unique child task id per fanout branch, got {child_ids_from_summary:?}"
     );
 
-    // Provenance regression: all delegated user messages must be queryable under the same root context.
-    let mut matched_messages = 0usize;
-    for _ in 0..60 {
-        let messages = responder_store
-            .context_messages(&context_id, Some(200))
-            .await
-            .expect("read responder context messages");
-        matched_messages = messages
-            .iter()
-            .filter(|m| m.content.iter().any(|c| c.starts_with("ping parallel ")))
-            .count();
-        if matched_messages >= request_count {
-            break;
+    // Provenance regression: each delegated child task must materialize its inbound user
+    // message under that child context, not collapse onto the root caller context.
+    for i in 0..request_count {
+        let expected_input = format!("ping parallel {i}");
+        let child_task_id = child_id_by_input
+            .get(&expected_input)
+            .expect("child task id recorded for each fanout input");
+        let child_context_id = ContextId::for_a2a_child(
+            &context_id,
+            "responder-agent",
+            "default",
+            &TaskId::from_external(ExternalId::new(child_task_id.clone())),
+        );
+        let mut found = false;
+        for _ in 0..60 {
+            let messages = responder_store
+                .context_messages(&child_context_id, Some(50))
+                .await
+                .expect("read responder child-context messages");
+            found = messages
+                .iter()
+                .any(|m| m.content.iter().any(|c| c == &expected_input));
+            if found {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            found,
+            "Expected delegated user message '{expected_input}' in responder child context {child_context_id}"
+        );
     }
-    assert!(
-        matched_messages >= request_count,
-        "Expected at least {request_count} delegated user messages in responder provenance context, got {matched_messages}"
-    );
 }
 
 #[tokio::test]
@@ -1956,7 +1929,6 @@ async fn test_e2e_task_lifecycle_demo() {
         first_texts
     );
     let lifecycle_task_id = first_task_id_from_stream(&first_responses)
-        .map(|task_id| TaskId::from_external(ExternalId::new(task_id)))
         .expect("Expected task id in first stream for resume turns");
 
     let second_params = SendMessageRequest {

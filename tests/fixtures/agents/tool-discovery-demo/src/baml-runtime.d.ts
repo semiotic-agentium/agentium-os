@@ -382,7 +382,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseDiscoverToolsQuery" | "ChooseDiscoverToolsQuery__act__system_discover_tools" | "ChooseDiscoverToolsQuery__continue__system_discover_tools" | "ChooseDiscoverToolsQuery__select";
+export type StepExecutorFunctionName = "ChooseDiscoverToolsQuery" | "ChooseDiscoverToolsQuery__active__system_discover_tools" | "ChooseDiscoverToolsQuery__entry";
 
 export interface SessionContext {
     contract_version: "session_context_v2";
@@ -419,23 +419,35 @@ export interface StepExecutorRunOptions {
     max_steps?: number;
 }
 
+export type ErrorDisposition =
+    | "host_retriable"
+    | "llm_correctable"
+    | "inform_and_continue"
+    | "fatal";
+
+export interface StepPlanRecovery {
+    code: string;
+    disposition: ErrorDisposition;
+    mistake: string;
+    invariant: string;
+    fix_steps?: string[];
+}
+
+export type StepExecutorRunEnvelope<R = unknown> = { outcome: "completed", last: R, steps: R[], session_context: SessionContext, selected_tool: string | null } | { outcome: "agent_correctable", recovery: StepPlanRecovery } | { outcome: "fatal", message: string, code?: string | null };
+
 /**
- * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
- * User-facing replies are synthesized once at session completion (and recorded there).
+ * Result of runGeneratedStepExecutor: discriminated envelope (`outcome`).
+ * On `completed`, fields match the former flat telemetry shape.
+ * `agent_correctable` carries structured recovery — not a thrown JS error.
+ * User-facing replies are still SessionResult.message from the chat handler.
  */
 
-export interface StepExecutorRunResult<R = unknown> {
-    last: R;
-    steps: R[];
-    session_context: SessionContext;
-    selected_tool: string | null;
-}
+export type StepExecutorRunResult<R = unknown> = StepExecutorRunEnvelope<R>;
 
 export interface StepExecutorFunctionMap {
   ChooseDiscoverToolsQuery: { args: Parameters<typeof ChooseDiscoverToolsQuery>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDiscoverToolsQuery>>; };
-  ChooseDiscoverToolsQuery__act__system_discover_tools: { args: Parameters<typeof ChooseDiscoverToolsQuery__act__system_discover_tools>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDiscoverToolsQuery__act__system_discover_tools>>; };
-  ChooseDiscoverToolsQuery__continue__system_discover_tools: { args: Parameters<typeof ChooseDiscoverToolsQuery__continue__system_discover_tools>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDiscoverToolsQuery__continue__system_discover_tools>>; };
-  ChooseDiscoverToolsQuery__select: { args: Parameters<typeof ChooseDiscoverToolsQuery__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDiscoverToolsQuery__select>>; };
+  ChooseDiscoverToolsQuery__active__system_discover_tools: { args: Parameters<typeof ChooseDiscoverToolsQuery__active__system_discover_tools>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDiscoverToolsQuery__active__system_discover_tools>>; };
+  ChooseDiscoverToolsQuery__entry: { args: Parameters<typeof ChooseDiscoverToolsQuery__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDiscoverToolsQuery__entry>>; };
 }
 
 declare global {
@@ -443,5 +455,5 @@ declare global {
     stepExecutor: F,
     args: Omit<StepExecutorFunctionMap[F]["args"], keyof StepExecutorStateInput>,
     options?: StepExecutorRunOptions
-  ): Promise<StepExecutorRunResult<StepExecutorFunctionMap[F]["result"]>>;
+  ): Promise<StepExecutorRunEnvelope<StepExecutorFunctionMap[F]["result"]>>;
 }

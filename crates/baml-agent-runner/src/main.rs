@@ -323,6 +323,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         external_tools_dirs: config.external_tools_dirs.clone(),
         sandbox_bind_roots: config.sandbox_bind_roots.clone(),
         runtime_progress: runtime_progress.clone(),
+        conversation_history_notify: None,
     })
     .map_err(|e| anyhow::anyhow!("runner builder init: {e}"))?;
 
@@ -514,6 +515,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             as Arc<dyn baml_rt_api::ConversationHistoryService>);
         let conversation_history_events = Some(Arc::new(ConversationHistoryEventServiceImpl::new(
             runner.clone(),
+            ready.conversation_history_tx(),
         ))
             as Arc<dyn baml_rt_api::ConversationHistoryEventService>);
         let context_index = Some(Arc::new(ContextIndexServiceImpl::new(
@@ -600,6 +602,10 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         )
         .await
         .context("loading configured event producers")?;
+        info!(
+            producer_count = configured_producers.len(),
+            "configured event producers loaded for poll loop"
+        );
 
         // Determine effective interval:
         // - Explicit --event-poll-interval-secs > 0 → use that
@@ -1033,6 +1039,7 @@ globalThis.onChatMessage = async function(_message) {
                 external_tools_dirs: Vec::new(),
                 sandbox_bind_roots: Vec::new(),
                 runtime_progress: baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
+                conversation_history_notify: None,
             })
             .expect("test runner construction"),
         );
@@ -1164,7 +1171,9 @@ globalThis.onChatMessage = async function(_message) {
 
     #[tokio::test]
     async fn test_scoped_internal_router_routes_to_agent() {
-        use baml_rt_core::{AgentInstanceId, AgentPackageName, AgentRouteKey, collect_a2a_stream};
+        use baml_rt_core::{
+            AgentInstanceId, AgentPackageName, AgentRouteKey, collect_a2a_stream_one_shot,
+        };
         let prov = test_provenance_config().await;
         let (_dir, state) = test_deployment_state().await;
         let runner = make_runner(prov, state);
@@ -1198,7 +1207,7 @@ globalThis.onChatMessage = async function(_message) {
         });
         let wire = baml_rt_core::A2aWireRequest::from(request_val);
         let stream = scoped.handle_a2a_stream(wire).await.expect("stream");
-        let chunks = collect_a2a_stream(stream).await;
+        let chunks = collect_a2a_stream_one_shot(stream).await;
         assert!(!chunks.is_empty());
     }
 
@@ -1721,141 +1730,6 @@ globalThis.onChatMessage = async function(_message) {
         );
         assert_eq!(result.tasks.len(), 1);
         assert_eq!(result.tasks[0].task_id, task_with_planning.to_string());
-    }
-
-    // TODO: update to current EffectEvent API (bus shapes changed after this test was written)
-    #[allow(dead_code)]
-    #[cfg(any())]
-    #[tokio::test]
-    async fn test_planning_service_returns_tasks_with_provenance_data() {
-        use baml_rt_core::{
-            Outcome,
-            bus::{BusWithEffects, EffectEmitter},
-            ids::{ContextId, ExternalId, TaskId},
-        };
-        use baml_rt_provenance::ProvenanceWriter;
-        let prov = test_provenance_config().await;
-        let store = prov.store().clone();
-        let context_id = ContextId::new(42, 1);
-        let message_id = MessageId::from_external(ExternalId::new("msg-test-001".to_string()));
-        let task_id = TaskId::from_external(ExternalId::new(format!(
-            "live-task:{}:{}",
-            context_id.as_str(),
-            message_id.as_str()
-        )));
-
-        let agent_id = baml_rt_core::ids::AgentId::from_uuid(
-            baml_rt_core::ids::UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap(),
-        );
-
-        // Write a message received event to create a provenance trail.
-        let writer = store.clone() as Arc<dyn ProvenanceWriter>;
-        let event = baml_rt_provenance::ProvEvent::message_received_task(
-            context_id.clone(),
-            message_id.clone(),
-            task_id.clone(),
-            "ROLE_USER".to_string(),
-            vec!["What is 2+2?".to_string()],
-            None,
-            agent_id,
-            baml_rt_provenance::events::allocate_activity_anchor(),
-        );
-        writer.add_event(event).await.expect("write event");
-
-        // Write intent via provenance event directly (bypasses bus effect system,
-        // which has a different API shape to what was originally written here).
-        let intent_id = IntentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
-        let bus = Arc::new(BusWithEffects::new());
-        bus.emit(baml_rt_core::bus::EffectEvent::IntentResolved {
-            context_id: context_id.clone(),
-            task_id: task_id.clone(),
-            intent_id: intent_id.clone(),
-            description: "Compute the answer".to_string(),
-            citations: vec![],
-            supersession: None,
-            epoch: None,
-        })
-        .await
-        .unwrap();
-
-        let plan_id = PlanId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
-        bus.emit(baml_rt_core::bus::EffectEvent::PlanGenerated {
-            context_id: context_id.clone(),
-            task_id: task_id.clone(),
-            plan_id: plan_id.clone(),
-            intent_id: intent_id.clone(),
-            steps: serde_json::json!([{"step_id": "s1", "description": "Add 2 and 2", "status": "pending"}]),
-            supersession: None,
-            epoch: None,
-        })
-        .await
-        .unwrap();
-
-        let svc = PlanningServiceImpl::new(store);
-        let result = svc.planning_for_context(context_id.as_str()).await;
-        assert!(result.is_ok(), "Expected OK, got: {:?}", result);
-        let response = result.unwrap();
-        assert_eq!(response.context_id, context_id.as_str());
-        assert!(!response.tasks.is_empty(), "Expected non-empty tasks");
-    }
-
-    // ── surreal provenance ────────────────────────────────────────────────────
-
-    // TODO: update to current EffectEvent API (bus shapes changed after this test was written)
-    #[cfg(any())]
-    #[tokio::test]
-    async fn surreal_runtime_store_insert_message_records_provenance_message_event() {
-        use baml_rt_core::{
-            bus::EffectEmitter,
-            ids::{ContextId, ExternalId, MessageId, TaskId},
-        };
-        use baml_rt_provenance::{ProvenanceOpsFilters, ProvenanceOpsQuery};
-
-        let provenance = baml_rt_provenance::SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("in-memory provenance store");
-        let bus = Arc::new(baml_rt_core::bus::BusWithEffects::new());
-        let prov_subscriber =
-            baml_rt_provenance::ProvenanceBusSubscriber::new(Arc::new(provenance.clone()));
-        bus.subscribe(Arc::new(prov_subscriber)).await;
-
-        let context_id = ContextId::new(99, 1);
-        let message_id = MessageId::from_external(ExternalId::new("msg-1".to_string()));
-        let task_id = TaskId::from_external(ExternalId::new("task-1".to_string()));
-        let agent_id = baml_rt_core::ids::AgentId::from_uuid(UuidId::new_v4());
-
-        bus.emit(baml_rt_core::bus::EffectEvent::A2aStarted {
-            context_id: context_id.clone(),
-            metadata: baml_rt_core::bus::A2aEffectMetadata {
-                agent_id: agent_id.clone(),
-                method: "message.sendStream".to_string(),
-                request_id: Some(message_id.as_str().to_string()),
-                liveness_role: baml_rt_core::bus::A2aLivenessRole::Command,
-                metadata: serde_json::json!({}),
-            },
-        })
-        .await
-        .unwrap();
-
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        let query_result = provenance
-            .query_ops(baml_rt_provenance::ProvenanceOpsQueryRequest {
-                resource: baml_rt_provenance::ProvenanceOpsResource::Messages,
-                filters: ProvenanceOpsFilters {
-                    context_id: Some(context_id.clone()),
-                    ..Default::default()
-                },
-                page_size: Some(50),
-                ..Default::default()
-            })
-            .await
-            .expect("query succeeded");
-        assert!(
-            !query_result.rows.is_empty(),
-            "Expected at least one message row"
-        );
     }
 
     #[test]

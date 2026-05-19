@@ -108,10 +108,8 @@ client DefaultClient {{
 
     {{{{ ctx.output_format }}}}
 
-    {{% if ctx.tags.conversation_history %}}
-    {{% for msg in ctx.tags.conversation_history %}}
-    {{{{ msg.role }}}}: {{{{ msg.content }}}}
-    {{% endfor %}}
+    {{% if ctx.tags.conversation_transcript %}}
+    {{{{ ctx.tags.conversation_transcript }}}}
     {{% endif %}}
 
     {{{{ _.role('user') }}}}
@@ -127,10 +125,8 @@ function Present{pascal_name}Reply(user_message: string) -> StructuredReply {{
 
     {{{{ ctx.output_format }}}}
 
-    {{% if ctx.tags.conversation_history %}}
-    {{% for msg in ctx.tags.conversation_history %}}
-    {{{{ msg.role }}}}: {{{{ msg.content }}}}
-    {{% endfor %}}
+    {{% if ctx.tags.conversation_transcript %}}
+    {{{{ ctx.tags.conversation_transcript }}}}
     {{% endif %}}
 
     {{{{ _.role('user') }}}}
@@ -200,7 +196,7 @@ pub fn generate_tsconfig() -> String {
   "compilerOptions": {
     "target": "ES2022",
     "module": "ES2022",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,

@@ -20,7 +20,7 @@ __chat_register({
 
     try {
       for (let hop = 0; hop < 24; hop++) {
-        // LLM derives current state from ctx.tags['conversation_history'] — no op list passed.
+        // LLM derives current state from ctx.tags['conversation_transcript'] — no op list passed.
         const plan = await PlanSessionToolEvalStep({ objective });
         const step = plan.plan_steps?.[0];
         if (!step) return { error: "planner returned no plan_steps[0]" };

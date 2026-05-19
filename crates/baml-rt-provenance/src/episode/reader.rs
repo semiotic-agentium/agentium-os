@@ -20,9 +20,7 @@ use baml_rt_core::{
 use baml_rt_tools::{
     archive_read::{PageLimit, RenderedContent, format_session_read_body_from_rendered},
     archive_refs::RefTable,
-    prompt_projection::{
-        episode_session_history_projection_options, format_send_done_projection_line,
-    },
+    prompt_projection::episode_session_history_projection_options,
     tools::ToolRegistry,
 };
 use futures_util::future::try_join_all;
@@ -760,35 +758,8 @@ fn conv_item_to_entries(
             )
         }
         ConversationItemContent::SessionStep(ss) => match &ss.op {
-            SessionStepOp::Open => (
-                StepType::ToolCall,
-                EpisodeContent::ToolInvocation {
-                    tool_name: ss.tool_name.clone(),
-                    description: format!("{} session opened", ss.tool_name),
-                },
-            ),
-            SessionStepOp::SendDone {
-                header,
-                archive_ref,
-                ..
-            } => {
-                let line = format_send_done_projection_line(header, archive_ref.as_str());
-                let prefixed = prefix_wire_citations_in_text(&line, ref_prefix);
-                let lines: Vec<String> = prefixed.lines().map(str::to_string).collect();
-                let line_count = lines.len();
-                let byte_count: usize = lines.iter().map(|s| s.len().saturating_add(1)).sum();
-                let summary = lines.first().cloned().unwrap_or_else(|| prefixed.clone());
-                (
-                    StepType::ToolResult,
-                    EpisodeContent::ToolOutput {
-                        tool_name: ss.tool_name.clone(),
-                        summary,
-                        line_count,
-                        byte_count,
-                        lines,
-                    },
-                )
-            }
+            SessionStepOp::Open => return Ok(Vec::new()),
+            SessionStepOp::SendDone { .. } => return Ok(Vec::new()),
             SessionStepOp::SearchRead {
                 archive_ref,
                 grep,

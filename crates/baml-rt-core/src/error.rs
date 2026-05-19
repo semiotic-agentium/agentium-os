@@ -6,7 +6,10 @@
 use anyhow::Error as AnyhowError;
 use thiserror::Error;
 
-use crate::semantics::{ErrorDisposition, Retryability};
+use crate::{
+    semantics::{ErrorDisposition, Retryability},
+    step_executor_outcome::StepPlanRecovery,
+};
 
 /// Structured tool failure for LLM-visible payloads and host retry policy.
 ///
@@ -124,6 +127,10 @@ pub enum BamlRtError {
     /// Invalid argument provided to a function
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
+
+    /// Tool session plan step violated a correctable contract (structured for `StepExecutorOutcome`).
+    #[error(transparent)]
+    StepPlanCorrectable(#[from] StepPlanRecovery),
 
     /// Request conflicts with current runtime/session state
     #[error("Conflict: {0}")]
@@ -304,6 +311,7 @@ fn code_for_classified(err: &BamlRtError, disposition: ErrorDisposition) -> Stri
         | BamlRtError::JsonWithRaw { .. }
         | BamlRtError::FunctionNotFound(_)
         | BamlRtError::TypeConversion(_) => "invalid_argument".to_string(),
+        BamlRtError::StepPlanCorrectable(r) => r.code.as_str().to_string(),
         BamlRtError::ToolExecution(_) => match disposition {
             ErrorDisposition::HostRetriable => "transient_tool_execution".to_string(),
             ErrorDisposition::LlmCorrectable
@@ -336,6 +344,7 @@ pub fn baml_error_disposition(err: &BamlRtError) -> ErrorDisposition {
         | BamlRtError::JsonWithRaw { .. }
         | BamlRtError::FunctionNotFound(_)
         | BamlRtError::TypeConversion(_) => ErrorDisposition::LlmCorrectable,
+        BamlRtError::StepPlanCorrectable(r) => r.disposition,
         BamlRtError::AgentNotFound(_) => ErrorDisposition::InformAndContinue,
         BamlRtError::Conflict(_) => ErrorDisposition::HostRetriable,
         BamlRtError::SessionLifecycle(

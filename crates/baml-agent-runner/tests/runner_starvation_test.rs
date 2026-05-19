@@ -467,7 +467,9 @@ async fn t1_cpu_peg_deploy_keeps_probes_responsive() {
 async fn t4_listener_task_death_exits_nonzero() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
 
-    let listener_lifetime_secs = 2u64;
+    // Give the harness enough time to observe at least one successful HTTP response
+    // before the injected listener shutdown fires, especially on slower CI boots.
+    let listener_lifetime_secs = e2e_secs_ci_or_local(10, 5);
     let mut runner = StandaloneRunner::start_with_env(&[(
         baml_rt_api::LISTENER_EXIT_AFTER_SECS_ENV,
         &listener_lifetime_secs.to_string(),

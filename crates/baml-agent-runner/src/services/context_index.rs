@@ -3,8 +3,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use baml_rt_provenance::{
-    ProvenanceOpsQuery as _, ProvenanceOpsQueryRequest, ProvenanceOpsResource,
-    ProvenanceOutcomeSegment, ProvenanceResponseProfile,
+    ProvenanceOpsFilters, ProvenanceOpsQuery as _, ProvenanceOpsQueryRequest,
+    ProvenanceOpsResource, ProvenanceOutcomeSegment, ProvenanceResponseProfile,
 };
 use serde_json::Value;
 
@@ -59,6 +59,13 @@ impl baml_rt_api::ContextIndexService for ContextIndexServiceImpl {
         let mut grouped: HashMap<String, ContextAggregate> = HashMap::new();
 
         loop {
+            // The `agent_package` filter is pushed into the SurrealQL
+            // query as an edge traversal
+            // (Message ↔ MessageProcessing -> AgentRuntimeInstance ->
+            // AgentBoot -> AgentArchive), so the picker receives only
+            // matching rows. No per-row property filter on
+            // `props.a2a_agent_id` is needed (or supported — that
+            // property is not written on Message entities).
             let response = self
                 .store
                 .query_ops(ProvenanceOpsQueryRequest {
@@ -69,6 +76,10 @@ impl baml_rt_api::ContextIndexService for ContextIndexServiceImpl {
                     cursor: cursor.clone(),
                     outcome: Some(ProvenanceOutcomeSegment::Both),
                     response_profile: Some(ProvenanceResponseProfile::UiFull),
+                    filters: ProvenanceOpsFilters {
+                        agent_package: request.agent_package.clone(),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 })
                 .await
@@ -86,15 +97,6 @@ impl baml_rt_api::ContextIndexService for ContextIndexServiceImpl {
                 let Some(context_id) = context_id else {
                     continue;
                 };
-                if let Some(filter_pkg) = request.agent_package.as_deref() {
-                    let row_pkg = row
-                        .get("agent_package")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default();
-                    if row_pkg != filter_pkg {
-                        continue;
-                    }
-                }
 
                 let timestamp_ms = as_u64(row.get("timestamp_ms"));
                 let message_text = row

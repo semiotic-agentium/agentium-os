@@ -412,9 +412,9 @@ async fn coordinator_flow_shows_initial_user_message_before_delegated_message() 
     store
         .add_event(ProvEvent::agent_booted(
             coordinator_id.clone(),
-            AgentType::new("conversational_persona_demo").expect("agent_type"),
+            AgentType::new("coordinator_agent").expect("agent_type"),
             "1.0.0".to_string(),
-            "conversational-persona-demo@1.0.0".to_string(),
+            "coordinator-agent@1.0.0".to_string(),
         ))
         .await
         .expect("agent_booted");
@@ -512,9 +512,9 @@ async fn two_tasks_in_same_context_both_render_with_separate_rects() {
     store
         .add_event(ProvEvent::agent_booted(
             agent_id.clone(),
-            AgentType::new("conversational_persona_demo").expect("agent_type"),
+            AgentType::new("coordinator_agent").expect("agent_type"),
             "1.0.0".to_string(),
-            "conversational-persona-demo@1.0.0".to_string(),
+            "coordinator-agent@1.0.0".to_string(),
         ))
         .await
         .expect("agent_booted");

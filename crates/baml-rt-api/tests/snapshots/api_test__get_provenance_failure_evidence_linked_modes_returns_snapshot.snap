@@ -26,6 +26,7 @@ expression: snapshot
           },
           "a2a_message_id": "msg-b",
           "a2a_model": "claude-3-7-sonnet",
+          "a2a_prompt_message_chars": 0,
           "a2a_prompt_name": "DraftPrompt",
           "a2a_prompt_serialized_utf8_bytes": 17,
           "a2a_usage_completion_tokens": 5,
@@ -119,7 +120,7 @@ expression: snapshot
             "args": {
               "objective": "narrow evidence fixture"
             },
-            "phase": null
+            "phase": "unknown"
           },
           "prov_endTime": "[timestamp_ms]",
           "prov_type": "a2a:ToolCall",

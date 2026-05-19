@@ -765,19 +765,24 @@ fn make_channel_closed_completion_chunk(
             scope.context_id().as_str().to_string(),
         ),
     };
-    let (state, message) = match completion {
-        StreamCompletion::Timeout => (
-            "TASK_STATE_FAILED",
-            Some(json!({
-                "parts": [{ "text": "Request timed out before the agent produced a terminal response." }]
-            })),
-        ),
-        StreamCompletion::ChannelClosed => ("TASK_STATE_COMPLETED", None),
-        _ => ("TASK_STATE_COMPLETED", None),
-    };
+    let (state, message, error_reason): (&str, Option<Value>, Option<&'static str>) =
+        match completion {
+            StreamCompletion::Timeout => (
+                "TASK_STATE_FAILED",
+                Some(json!({
+                    "parts": [{ "text": "Request timed out before the agent produced a terminal response." }]
+                })),
+                Some("request_timed_out_before_agent_response"),
+            ),
+            StreamCompletion::ChannelClosed => ("TASK_STATE_COMPLETED", None, None),
+            _ => ("TASK_STATE_COMPLETED", None, None),
+        };
     let mut status = json!({ "state": state });
     if let Some(msg) = message {
         status["message"] = msg;
+    }
+    if let Some(reason) = error_reason {
+        status["error_reason"] = json!(reason);
     }
     json!({
         "task": {

@@ -158,10 +158,8 @@ function Infer{pascal_name}Intent(user_message: string) -> NeedClarification | N
 
     {{{{ ctx.output_format }}}}
 
-    {{% if ctx.tags.conversation_history %}}
-    {{% for msg in ctx.tags.conversation_history %}}
-    {{{{ msg.role }}}}: {{{{ msg.content }}}}
-    {{% endfor %}}
+    {{% if ctx.tags.conversation_transcript %}}
+    {{{{ ctx.tags.conversation_transcript }}}}
     {{% endif %}}
 
     {{{{ _.role('user') }}}}
@@ -212,10 +210,8 @@ function Choose{pascal_name}Action(
     Step: {{{{ step_description }}}}
     Operation kind: {{{{ operation_kind }}}}
 
-    {{% if ctx.tags.conversation_history %}}
-    {{% for msg in ctx.tags.conversation_history %}}
-    {{{{ msg.role }}}}: {{{{ msg.content }}}}
-    {{% endfor %}}
+    {{% if ctx.tags.conversation_transcript %}}
+    {{{{ ctx.tags.conversation_transcript }}}}
     {{% endif %}}
 
     Return exactly one valid tool-session step object for the current phase.
@@ -241,10 +237,8 @@ function Present{pascal_name}ToUser(
     User request: {{{{ user_message }}}}
     Goal: {{{{ goal }}}}
 
-    {{% if ctx.tags.conversation_history %}}
-    {{% for msg in ctx.tags.conversation_history %}}
-    {{{{ msg.role }}}}: {{{{ msg.content }}}}
-    {{% endfor %}}
+    {{% if ctx.tags.conversation_transcript %}}
+    {{{{ ctx.tags.conversation_transcript }}}}
     {{% endif %}}
 
     {{{{ ctx.output_format }}}}

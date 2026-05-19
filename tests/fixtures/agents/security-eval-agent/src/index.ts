@@ -78,10 +78,18 @@ __chat_register({
 
         await executable.startStep(stepId, ["#1"]);
 
-        await runGeneratedStepExecutor("ExecuteStep", {
+        const execRun = await runGeneratedStepExecutor("ExecuteStep", {
           objective: plan.objective,
           step_description: step.description,
         });
+        if (execRun.outcome !== "completed") {
+          return {
+            error:
+              execRun.outcome === "fatal"
+                ? execRun.message
+                : `[${execRun.recovery.code}] ${execRun.recovery.mistake}`,
+          };
+        }
 
         await executable.completeStep(stepId, ["#1"]);
       }

@@ -5,7 +5,15 @@ mod common;
 #[path = "common/http_tool_test_helpers.rs"]
 mod http_tool_test_helpers;
 
-use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use async_trait::async_trait;
 use baml_rt::{InterceptorDecision, LLMCallContext, LLMInterceptor, baml::BamlRuntimeManager};
@@ -104,6 +112,24 @@ async fn start_slack_mock_server() -> std::io::Result<(RunningHttpServer, MockSl
         }))
     }
 
+    async fn conversations_list(
+        AxumState(state): AxumState<MockSlackState>,
+        uri: OriginalUri,
+    ) -> Json<Value> {
+        state.push_hit(format!("GET {}", uri.0)).await;
+        Json(json!({
+            "ok": true,
+            "channels": [{
+                "id": "C12345678",
+                "name": "eng-releases",
+                "is_channel": true,
+                "is_archived": false,
+                "is_member": true
+            }],
+            "response_metadata": { "next_cursor": "" }
+        }))
+    }
+
     async fn users_info(
         AxumState(state): AxumState<MockSlackState>,
         uri: OriginalUri,
@@ -148,6 +174,7 @@ async fn start_slack_mock_server() -> std::io::Result<(RunningHttpServer, MockSl
 
     let state = MockSlackState::default();
     let app = Router::new()
+        .route("/api/conversations.list", get(conversations_list))
         .route("/api/conversations.history", get(conversation_history))
         .route("/api/conversations.replies", get(thread_replies))
         .route("/api/users.info", get(users_info))
@@ -156,28 +183,44 @@ async fn start_slack_mock_server() -> std::io::Result<(RunningHttpServer, MockSl
     Ok((server, state))
 }
 
-/// `ChooseSlackAction__select` in the **AwaitingOpen** phase only allows `Open | ReadOnlyResponse` in the
+/// `ChooseSlackAction__entry` in the **Entry** phase only allows `Open | ReadOnlyResponse` in the
 /// generated schema, but capable models often skip straight to `Send` (valid FSM intent, invalid for that
 /// hop's union). That yields "Parsed result conversion failed" — a **codegen/schema vs prompt** tension, not
-/// product slack. Pin the open hop so this E2E exercises the local Slack API fixture + synthesis; all later hops still hit
-/// the real model.
-#[derive(Clone, Copy)]
-struct SlackE2eOpenHopInterceptor;
+/// product slack. Pin the open hop so this E2E exercises the local Slack API fixture + synthesis; pin the
+/// first active Send when the plan targets the fixture thread so flaky models do not waste hops on
+/// ListConversations against the minimal mock.
+#[derive(Clone)]
+struct SlackE2eHopInterceptor {
+    pinned_thread_send: Arc<AtomicBool>,
+}
 
 #[async_trait]
-impl LLMInterceptor for SlackE2eOpenHopInterceptor {
+impl LLMInterceptor for SlackE2eHopInterceptor {
     async fn intercept_llm_call(
         &self,
         ctx: &LLMCallContext,
     ) -> baml_rt_core::Result<InterceptorDecision> {
-        if ctx.function_id.full_name() != "ChooseSlackAction__select" {
-            return Ok(InterceptorDecision::Allow);
-        }
+        let name = ctx.function_id.full_name();
         let prompt_blob = serde_json::to_string(&ctx.prompt).unwrap_or_default();
-        if prompt_blob.contains("[OPEN]") {
+        if name == "ChooseSlackAction__entry" && prompt_blob.contains("Phase: ENTRY") {
             return Ok(InterceptorDecision::Substitute(json!({
                 "op": "Open",
                 "tool_name": "support/slack",
+            })));
+        }
+        if name == "ChooseSlackAction__active__support_slack"
+            && (prompt_blob.contains("C12345678") || prompt_blob.contains("1735689600.000000"))
+            && !self.pinned_thread_send.swap(true, Ordering::SeqCst)
+        {
+            return Ok(InterceptorDecision::Substitute(json!({
+                "op": "Send",
+                "input": {
+                    "channel_id": "C12345678",
+                    "thread_ts": "1735689600.000000",
+                    "limit": 200,
+                    "resolve_users": "resolve_users",
+                    "order": "oldest_first"
+                }
             })));
         }
         Ok(InterceptorDecision::Allow)
@@ -203,7 +246,9 @@ async fn setup_slack_agent_with_provenance()
         .load_schema(built.to_str().expect("slack built path utf8"))
         .expect("load slack schema");
     manager
-        .register_llm_interceptor(SlackE2eOpenHopInterceptor)
+        .register_llm_interceptor(SlackE2eHopInterceptor {
+            pinned_thread_send: Arc::new(AtomicBool::new(false)),
+        })
         .await;
     manager
         .register_tool(SlackTool::new())

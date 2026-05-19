@@ -14,6 +14,7 @@ use baml_rt_llm_config::LlmClientResolver;
 use baml_rt_tools::prompt_projection::format_conversation_history_transcript;
 use baml_runtime::{
     BamlRuntime, FunctionResultStream, RuntimeContextManager, client_registry::ClientRegistry,
+    internal::llm_client::LLMResponse,
 };
 use baml_types::{BamlMap, BamlValue};
 use serde_json::Value;
@@ -26,6 +27,7 @@ use crate::{
     baml_collector::{BamlLLMCollector, LLMCompletionHandle},
     baml_pre_execution::intercept_llm_call_pre_execution,
     llm_client_registry::{LlmSecretResolver, build_llm_client_registry},
+    llm_json_salvage::try_salvage_json_from_llm_content,
 };
 
 /// Logs a terminal BAML `call_function` failure at ERROR severity (single source for tests).
@@ -173,8 +175,8 @@ impl Default for ParseRetryPolicy {
 pub trait ConversationContextProvider: Send + Sync {
     /// Return conversation-history payload for the current runtime scope.
     ///
-    /// The payload is injected as `ctx.tags['conversation_history']` and
-    /// `ctx.tags['conversation_transcript']` in BAML templates.
+    /// The projection is merged into BAML `ctx.tags` as **`conversation_transcript`** only
+    /// (formatted string). The raw JSON array is used internally to build that transcript.
     /// Provider is called with the runtime scope of the current invocation. For resume,
     /// scope must be TaskScoped with the session's `context_id` so history includes
     /// prior turns. Used in both stream and non-stream paths when conversation context
@@ -257,6 +259,10 @@ impl BamlExecutor {
     /// Set the effect emitter (for effects-first liveness)
     pub fn set_effect_emitter(&mut self, emitter: Arc<dyn EffectEmitter>) {
         self.effect_emitter = Some(emitter);
+    }
+
+    pub(crate) fn effect_emitter(&self) -> Option<&Arc<dyn EffectEmitter>> {
+        self.effect_emitter.as_ref()
     }
 
     /// Set a provider that supplies conversation context for template tags.
@@ -540,7 +546,27 @@ impl BamlExecutor {
                     return Ok((json_value, handle));
                 }
                 Err(e) => {
-                    last_parse_err = Some(anyhow::Error::msg(e.to_string()));
+                    let parse_msg = e.to_string();
+                    last_parse_err = Some(anyhow::Error::msg(parse_msg.clone()));
+                    if parse_msg.contains("MathOperation")
+                        && let LLMResponse::Success(response) = function_result.llm_response()
+                        && let Some(json_value) =
+                            try_salvage_json_from_llm_content(&response.content)
+                    {
+                        tracing::warn!(
+                            function = function_name,
+                            "Recovered session-plan JSON from LLM text after MathOperation parse failure"
+                        );
+                        let handle = collector.as_ref().map(|c| {
+                            BamlLLMCollector::completion_handle(
+                                c.clone(),
+                                start_time,
+                                scope.clone(),
+                                json_value.clone(),
+                            )
+                        });
+                        return Ok((json_value, handle));
+                    }
                     if attempt + 1 >= max_attempts {
                         if let Some(ref collector) = collector {
                             collector
@@ -646,8 +672,8 @@ impl BamlExecutor {
         Ok(ctx_manager)
     }
 
-    /// Raw `conversation_history` line objects from the provider only (no intra-turn merge).
-    /// Matches `ctx.tags['conversation_history']` capping (e.g. last _N_ graph items).
+    /// Raw projected line objects from the provider only (no intra-turn merge).
+    /// Uses the same cap policy as the transcript shown to the LLM (e.g. last _N_ graph items).
     pub(crate) async fn provider_conversation_history_lines(
         &self,
         scope: &context::RuntimeScope,
@@ -678,7 +704,7 @@ impl BamlExecutor {
         Ok(extract_conversation_array_from_payload(&payload))
     }
 
-    /// Build `ctx.tags` from a merged `conversation_history` line list.
+    /// Build `ctx.tags` from a merged projected line list (transcript only — canonical BAML history).
     pub(crate) fn tags_from_merged_conversation_lines(
         &self,
         lines: Vec<Value>,
@@ -688,10 +714,6 @@ impl BamlExecutor {
         }
         let mut tags = HashMap::new();
         let transcript = format_conversation_history_transcript(&lines);
-        tags.insert(
-            "conversation_history".to_string(),
-            self.json_to_baml_value(&Value::Array(lines))?,
-        );
         tags.insert(
             "conversation_transcript".to_string(),
             self.json_to_baml_value(&Value::String(transcript))?,

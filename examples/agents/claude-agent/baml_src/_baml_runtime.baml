@@ -4,7 +4,8 @@
 // Host tools use a session FSM. Which ops are valid on a given model hop is defined only by the
 // narrowed BAML return type for that function, not by duplicated prose. Step classes (Open/Send/…)
 // and `*SendInput` / `*OpenInput` give field names and @description; see the shared prelude
-// and each session-plan `prompt` order: stable types, task, transcript, then ctx.output_format last.
+// and each session-plan parent `prompt`: task + domain lines only; generated per-phase executors
+// add archive prefix, optional tool_schema_prelude, narrowed union, transcript, and output binding.
 
 // Shared standard planning types
 class StandardAgentPlanStep {
@@ -80,7 +81,7 @@ class StructuredReply {
 
 /// Line-filtered archive read (emit op SearchRead).
 class ArchiveSearchReadInput {
-  archive_ref string @description("Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.")
+  archive_ref string @description("archive_ref names a Send output archive: set it to the exact @N shown on that Send line in the transcript (e.g. @1, @2). Do not use #N or any # prefix — # is for session history lines only and is invalid in this field. Do not invent @N. PageRead/SearchRead materialize line bodies from that handle; allowed with a real visible @N without Open or an active session.")
   grep string @description("Non-empty filter over rendered archive lines. SearchRead is for locating lines that match; use when you have a concrete term. Shape: substring or regex per host (e.g. name, -i error). For full contiguous slices without filtering, use PageRead.")
   offset int? @description("0-based offset over grep matches (after the filter). First window: offset=0; next: previous next_offset while matches remain.")
   limit int? @description("Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).")
@@ -88,7 +89,7 @@ class ArchiveSearchReadInput {
 
 /// Contiguous archive paging without a line filter (emit op PageRead).
 class ArchivePageReadInput {
-  archive_ref string @description("Which archive to open: an existing @N from conversation (Send output). This field names the handle; use PageRead/SearchRead to read the lines behind it. Do not invent refs. SearchRead/PageRead are legal with a real visible @N without Open or an active session.")
+  archive_ref string @description("archive_ref names a Send output archive: set it to the exact @N shown on that Send line in the transcript (e.g. @1, @2). Do not use #N or any # prefix — # is for session history lines only and is invalid in this field. Do not invent @N. PageRead/SearchRead materialize line bodies from that handle; allowed with a real visible @N without Open or an active session.")
   offset int? @description("0-based offset over full rendered archive lines (no grep). First window: offset=0; next: previous next_offset while lines remain.")
   limit int? @description("Max lines in this read window. Prefer a small explicit value when exploring. Omitting limit uses the host default (bounded).")
 }
@@ -96,13 +97,20 @@ class ArchivePageReadInput {
 /// Global line-filtered archive read step. Legal before Open, during a session, or after a Send.
 class ArchiveSearchReadStep {
   op "SearchRead"
-  input ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+  input ArchiveSearchReadInput @description("SearchRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a filtered window: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
 }
 
 /// Global contiguous archive paging step. Legal before Open, during a session, or after a Send.
 class ArchivePageReadStep {
   op "PageRead"
-  input ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+  input ArchivePageReadInput @description("PageRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a contiguous window: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+}
+
+/// Terminal hop without a host tool session: answer from visible conversation archives only.
+/// Do not emit when you need a fresh Open/Send — use ENTRY Open or ACTIVE Send instead.
+class ReadOnlyFinishStep {
+  op "ReadOnlyFinish"
+  reply StructuredReply @description("User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.")
 }
 // Domain types generated from JSON schemas
 class DevClaudeExtInputContent {
@@ -170,17 +178,17 @@ class DevClaudeExtOpenStep {
 class DevClaudeExtSendStep {
   op "Send"
   input DevClaudeExtInput @description("Payload for this step.")
-  citations string[] @description("Cite what informed this Send. History: #N. For archive evidence, prefer @N:L (or @N:L1–L2) only after you have read those lines via PageRead/SearchRead. Do not use a bare @N as proof of archive content you have not read. Counter-evidence: ! prefix.")
+  citations string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }
 
 class DevClaudeExtSearchReadStep {
   op "SearchRead"
-  input ArchiveSearchReadInput @description("Read a filtered window of an existing archive: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
+  input ArchiveSearchReadInput @description("SearchRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a filtered window: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
 }
 
 class DevClaudeExtPageReadStep {
   op "PageRead"
-  input ArchivePageReadInput @description("Read a contiguous window of an existing archive: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
+  input ArchivePageReadInput @description("PageRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a contiguous window: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
 }
 
 class DevClaudeExtFinishStep {
@@ -194,7 +202,7 @@ class DevClaudeExtAbortStep {
 type DevClaudeExtSessionStep = DevClaudeExtOpenStep | DevClaudeExtSendStep | DevClaudeExtSearchReadStep | DevClaudeExtPageReadStep | DevClaudeExtFinishStep | DevClaudeExtAbortStep
 
 class DevClaudeExtSessionPlan {
-  step DevClaudeExtSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes in this file — do not paraphrase JSON field lists in the prompt. A @N in history is a handle until you read it. Access: write.")
+  step DevClaudeExtSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes in this file — do not paraphrase JSON field lists in the prompt. @N beside a prior Send is an archive handle for PageRead/SearchRead (archive_ref is @ only). Do not use #N as an archive handle — #N indexes transcript lines only. Access: write.")
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
@@ -256,14 +264,33 @@ function ChooseDevClaudeExtAction(user_message: string) -> DevClaudeExtSessionPl
 // Auto-generated per-phase step executor functions.
 // Each phase narrows the return type to only the legal FSM ops.
 
-/// Phase: select — open a tool session.
-function ChooseDevClaudeExtAction__select(
+/// Phase: entry — archive reuse, read-only finish, or Open a tool session.
+function ChooseDevClaudeExtAction__entry(
   user_message: string,
   session_context: SessionContext
-) -> DevClaudeExtOpenStep {
+) -> ArchivePageReadStep | ArchiveSearchReadStep | DevClaudeExtOpenStep | ReadOnlyFinishStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: dev/claude-ext.\n\nYou drive a Claude Code session via the dev/claude-ext tool. Your only
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Phase: ENTRY — reuse a visible archive (@N), ReadOnlyFinish without Open, or Open a tool session; legal ops only as in the narrowed union below.
+
+ENTRY: reuse a visible tool archive (@N) via SearchRead/PageRead, answer with ReadOnlyFinish when no new Open is needed, or Open a session with: dev/claude-ext.
+
+
+---
+Narrowed return union for this hop only:
+- ArchivePageReadStep
+- ArchiveSearchReadStep
+- DevClaudeExtOpenStep
+- ReadOnlyFinishStep
+You drive a Claude Code session via the dev/claude-ext tool. Your only
 job is to manage the session FSM: Open the session, Send the user's
 request, then Finish once Claude returns a terminal result. Do NOT
 implement, rewrite, or answer the user's task yourself — Claude Code does
@@ -289,71 +316,57 @@ exactly the allowed shape):
 Output: a single JSON object matching the narrowed phase return type. No
 markdown, no prose, no surrounding text.
 
-{{ ctx.output_format }}
-
-{{ ctx.tags['conversation_transcript'] }}
-
 {{ _.role('user') }}
 {{ user_message }}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
-PHASE CONSTRAINT (select — open): The JSON root must match ONLY this hop: Report, AskUser, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for ClaudeDevSessionPlan on the full Choose* function, not this narrowed hop.
+
+Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
+
+
+
+PHASE CONSTRAINT (entry): The JSON root must match ONLY this hop: Report, AskUser, ReadOnlyFinish (StructuredReply), ArchiveSearchReadStep, ArchivePageReadStep, or a bare Open step (fields: op, tool_name, initial_input as applicable). Do NOT wrap Open under a parent step property — that wrapper is for session plans on the full Choose* function, not this narrowed hop. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N). ReadOnlyFinish is terminal — no host tool session; cite every @N used.
 "#
 
 }
 
-/// Phase: act — first post-Open hop: Send, SearchRead, PageRead, or Abort (dev/claude-ext).
-function ChooseDevClaudeExtAction__act__dev_claude_ext(
-  user_message: string,
-  session_context: SessionContext
-) -> DevClaudeExtSendStep | DevClaudeExtSearchReadStep | DevClaudeExtPageReadStep | DevClaudeExtAbortStep {
-
-  client DefaultClient
-  prompt #"[ACT] A dev/claude-ext session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.\n\nYou drive a Claude Code session via the dev/claude-ext tool. Your only
-job is to manage the session FSM: Open the session, Send the user's
-request, then Finish once Claude returns a terminal result. Do NOT
-implement, rewrite, or answer the user's task yourself — Claude Code does
-the work.
-
-Phase contract (the runtime narrows your return type per hop — emit
-exactly the allowed shape):
-
-- [OPEN] / select phase: emit a single Open step. No payload inference.
-- [ACT] / first hop after Open: emit Send with input.prompt = user_message.
-  Set content = null and userInput = null. Do not include validation
-  prose, planner context, or extra flavour — forward the user request
-  verbatim.
-- [CONTINUE] / close-only phase:
-  - Send is forbidden in Continue, even if the generated output schema lists
-    Send as one possible shape. SearchRead and PageRead are also forbidden
-    for this thin wrapper agent.
-  - If session_context.last_completion == "INTERRUPTED", emit Abort.
-  - Otherwise emit {"op":"Finish"}. If unsure, emit Finish.
-  - A second user message is handled as a new agent turn, not as a same-turn
-    Continue Send.
-
-Output: a single JSON object matching the narrowed phase return type. No
-markdown, no prose, no surrounding text.
-
-{{ ctx.output_format }}
-
-{{ ctx.tags['conversation_transcript'] }}
-
-{{ _.role('user') }}
-{{ user_message }}
-
-PHASE CONSTRAINT (act — Send, Abort, or archive read): The JSON root must be exactly one Send, SearchRead, PageRead, or Abort step. op must be exactly the string Send, SearchRead, PageRead, or Abort — never Read (Read is not a legal op). Include input and citations per schema. Do NOT return Report, AskUser, Open, or Finish. Do NOT wrap under a step property. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N).
-"#
-
-}
-
-/// Phase: continue — SearchRead/PageRead, send again, finish, or abort dev/claude-ext.
-function ChooseDevClaudeExtAction__continue__dev_claude_ext(
+/// Phase: active — Send, archive reads, Finish, or Abort (dev/claude-ext).
+function ChooseDevClaudeExtAction__active__dev_claude_ext(
   user_message: string,
   session_context: SessionContext
 ) -> DevClaudeExtSendStep | DevClaudeExtSearchReadStep | DevClaudeExtPageReadStep | DevClaudeExtFinishStep | DevClaudeExtAbortStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] dev/claude-ext result is archived.\nArchive fallback when content must be inspected:\n- Use the visible @N archive handle from conversation/history; do not guess one.\n- See \"@N dev/claude-ext\" followed by numbered lines → content is inline; decide from that content and tool-specific instructions.\n- See \"@N dev/claude-ext\" with \"more lines\" indicator → emit SearchRead or PageRead to paginate.\n- See \"@N dev/claude-ext\" with no content yet → emit SearchRead or PageRead against the visible @N.\n- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern.\n- Do not re-Send the same work solely because archive body content is compact; inspect the archive when needed.\n\nYou drive a Claude Code session via the dev/claude-ext tool. Your only
+  prompt #"Archive: a `tool: @N` line is a handle, not the body. Read with SearchRead or PageRead before citing line content. Prefer reading an existing @N that could answer the task over another Send to repeat the same ask.
+
+For `op: "Open"`, emit `tool_name` as a sibling of `op` in the same JSON object. Do not nest `tool_name` under `input` — `input` is only for Send, SearchRead, and PageRead.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and session-step types (authoritative field shapes):
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}Phase: ACTIVE — for dev/claude-ext: Send, SearchRead, PageRead, Finish (after Done Send only), or Abort; legal ops only as below.
+
+A dev/claude-ext session is open. Emit Send for new work, or SearchRead/PageRead an existing @N archive when tool output is already archived — do not re-Send the same listing.
+dev/claude-ext result is archived.
+Check session history:
+- See "@N dev/claude-ext" followed by numbered lines → content is inline; emit Finish
+- See "@N dev/claude-ext" with "more lines" indicator → emit SearchRead or PageRead to paginate
+- See "@N dev/claude-ext" with no content yet → emit SearchRead or PageRead with archive_ref="@N"
+- Large or unknown @N: set grep, small limit, offset to page; do not open wide PageRead windows without a pattern
+
+
+---
+Narrowed return union for this hop only:
+- DevClaudeExtSendStep
+- DevClaudeExtSearchReadStep
+- DevClaudeExtPageReadStep
+- DevClaudeExtFinishStep
+- DevClaudeExtAbortStep
+You drive a Claude Code session via the dev/claude-ext tool. Your only
 job is to manage the session FSM: Open the session, Send the user's
 request, then Finish once Claude returns a terminal result. Do NOT
 implement, rewrite, or answer the user's task yourself — Claude Code does
@@ -379,15 +392,19 @@ exactly the allowed shape):
 Output: a single JSON object matching the narrowed phase return type. No
 markdown, no prose, no surrounding text.
 
-{{ ctx.output_format }}
-
-{{ ctx.tags['conversation_transcript'] }}
-
 {{ _.role('user') }}
 {{ user_message }}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
 
-PHASE CONSTRAINT (continue): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N).
+
+Emit exactly one JSON root matching one narrowed class name above. Use the field shapes and descriptions in the Tool and session-step types block at the top of this prompt (when present).
+
+
+
+PHASE CONSTRAINT (active): The JSON root must be exactly one Send, SearchRead, PageRead, Finish, or Abort step. op must be Send, SearchRead, PageRead, Finish, or Abort — never Read. Include input and citations per schema. Do NOT return Report, AskUser, or Open. Do NOT use a step wrapper object. For SearchRead use ArchiveSearchReadInput; for PageRead use ArchivePageReadInput (archive_ref uses @N — never #N). Finish is legal only after the host has a Done result from Send for this session (the runtime enforces this).
 "#
 
 }
-

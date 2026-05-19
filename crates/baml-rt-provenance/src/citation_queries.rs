@@ -7,13 +7,14 @@
 //!   `props.citations IS NOT NONE` and do emptiness checks in Rust instead.
 //!
 //! Queries citations recorded on LLM activity nodes and plan step entities.
-//! Citations are stored as a `citations` attribute (raw strings like `"#1"`, `"@4:2"`)
+//! Citations are stored as a `citations` attribute (raw strings like `"#1"`, `"@4:L2"`)
 //! on:
 //! - LLM call activities (`label = 'LlmCall'`)
 //! - Plan step entities (`label = 'PlanStep'`)
 //!
-//! Full `WAS_DERIVED_FROM` edge creation is Phase 3 work (requires resolving
-//! ref numbers to activity anchors via RefTable at call time, before the emission is recorded).
+//! Full `WAS_DERIVED_FROM` edge creation is deferred work: it requires
+//! resolving ref numbers to activity anchors via RefTable at call time,
+//! before the emission is recorded.
 
 use baml_rt_core::Citation;
 use serde_json::Value;
