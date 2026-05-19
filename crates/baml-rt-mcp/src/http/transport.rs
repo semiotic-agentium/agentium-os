@@ -29,6 +29,7 @@ use crate::{
 pub type RmcpHttpTransport = StreamableHttpClientTransport<reqwest::Client>;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum HttpTransportBuildError {
     #[error("network policy violation: {0}")]
     Policy(#[from] PolicyError),

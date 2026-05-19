@@ -98,9 +98,9 @@ pub enum ConnectionError {
     #[error("MCP call timed out after {0:?}")]
     CallTimeout(Duration),
     #[error(
-        "MCP server `{server_id}` is stale (startup tools/list or tools/list_changed observed drift); operator must re-import and approve a new registry snapshot"
+        "MCP server `{server_id}` approved snapshot is stale (startup tools/list or tools/list_changed observed drift); operator must re-import and approve a new registry snapshot"
     )]
-    Stale { server_id: String },
+    SnapshotStale { server_id: String },
     #[error(
         "MCP server `{server_id}` identity digest mismatch (expected `{expected}`, observed `{observed}`); operator must re-import and approve a new registry snapshot"
     )]
@@ -529,7 +529,7 @@ impl McpConnection {
         cancel_slot: Option<McpCancelSlot>,
     ) -> Result<CallToolResult, ConnectionError> {
         if self.is_drifted() {
-            return Err(ConnectionError::Stale {
+            return Err(ConnectionError::SnapshotStale {
                 server_id: self.launch.server_id.clone(),
             });
         }
@@ -575,7 +575,7 @@ impl McpConnection {
             response = handle.await_response() => response,
             () = local_token.cancelled() => {
                 if let Some(slot) = &cancel_slot {
-                    let _ = slot.lock().await.take();
+                    drop(slot.lock().await.take());
                 }
                 return Err(ConnectionError::CallCancelled {
                     server_id: self.launch.server_id.clone(),
@@ -584,7 +584,7 @@ impl McpConnection {
             }
         };
         if let Some(slot) = &cancel_slot {
-            let _ = slot.lock().await.take();
+            drop(slot.lock().await.take());
         }
         match response {
             Ok(ServerResult::CallToolResult(result)) => Ok(result),
@@ -692,7 +692,14 @@ impl Drop for McpConnection {
             Ok(service) => match tokio::runtime::Handle::try_current() {
                 Ok(handle) => {
                     handle.spawn(async move {
-                        let _ = service.cancel().await;
+                        if let Err(err) = service.cancel().await {
+                            tracing::debug!(
+                                target: "mcp.runtime",
+                                error = %err,
+                                event = "mcp.connection_drop_cancel_failed",
+                                "failed to cancel MCP service during connection drop",
+                            );
+                        }
                     });
                 }
                 Err(_) => {

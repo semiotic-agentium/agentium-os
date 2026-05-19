@@ -246,58 +246,45 @@ fn connection_error_to_session(err: ConnectionError) -> ToolSessionError {
             ToolSessionError::Transport(BamlRtError::InvalidArgument(err.to_string()))
         }
         ConnectionError::CallTool(ref service_err) => classify_service_error(&err, service_err),
-        ConnectionError::InitializeFailed(_) => classified_transport(
+        ConnectionError::InitializeFailed(_) => retriable_transport(
             "mcp_initialize_failed",
-            ErrorDisposition::HostRetriable,
             err.to_string(),
-            Some("MCP initialize failed before tool call; host may retry after transport recovery"),
+            "MCP initialize failed before tool call; host may retry after transport recovery",
         ),
-        ConnectionError::InitializeTimeout(_) => classified_transport(
+        ConnectionError::InitializeTimeout(_) => retriable_transport(
             "mcp_initialize_timeout",
-            ErrorDisposition::HostRetriable,
             err.to_string(),
-            Some("MCP initialize exceeded configured timeout"),
+            "MCP initialize exceeded configured timeout",
         ),
-        ConnectionError::CallCancelled { .. } => classified_transport(
+        ConnectionError::CallCancelled { .. } => inform_transport(
             "mcp_call_cancelled",
-            ErrorDisposition::InformAndContinue,
             err.to_string(),
-            Some(
-                "MCP tools/call was cancelled locally and a best-effort cancellation notification was sent",
-            ),
+            "MCP tools/call was cancelled locally and a best-effort cancellation notification was sent",
         ),
-        ConnectionError::CallTimeout(_) => classified_transport(
+        ConnectionError::CallTimeout(_) => retriable_transport(
             "mcp_call_timeout",
-            ErrorDisposition::HostRetriable,
             err.to_string(),
-            Some("MCP tools/call exceeded configured timeout and rmcp sent cancellation"),
+            "MCP tools/call exceeded configured timeout and rmcp sent cancellation",
         ),
         ConnectionError::IdentityMismatch { .. }
         | ConnectionError::ToolsDigestMismatch { .. }
         | ConnectionError::StartupToolsListFailed { .. }
         | ConnectionError::MissingPeerInfo { .. }
         | ConnectionError::IdentitySerializeFailed { .. }
-        | ConnectionError::Stale { .. } => classified_transport(
+        | ConnectionError::SnapshotStale { .. } => fatal_transport(
             "mcp_contract_violation",
-            ErrorDisposition::Fatal,
             err.to_string(),
-            Some(
-                "MCP approved snapshot no longer matches live server; operator must re-import and approve",
-            ),
+            "MCP approved snapshot no longer matches live server; operator must re-import and approve",
         ),
-        ConnectionError::SessionExpired { .. } => classified_transport(
+        ConnectionError::SessionExpired { .. } => inform_transport(
             "mcp_session_expired",
-            ErrorDisposition::InformAndContinue,
             err.to_string(),
-            Some(
-                "MCP HTTP session expired; next resolve rebuilds connection, but this call is not replayed",
-            ),
+            "MCP HTTP session expired; next resolve rebuilds connection, but this call is not replayed",
         ),
-        ConnectionError::Spawn { .. } => classified_transport(
+        ConnectionError::Spawn { .. } => retriable_transport(
             "mcp_spawn_failed",
-            ErrorDisposition::HostRetriable,
             err.to_string(),
-            Some("MCP stdio server failed to spawn"),
+            "MCP stdio server failed to spawn",
         ),
         ConnectionError::Transport(ref source) => classify_transport_build_error(&err, source),
     }
@@ -308,35 +295,30 @@ fn classify_transport_build_error(
     err: &HttpTransportBuildError,
 ) -> ToolSessionError {
     match err {
-        HttpTransportBuildError::Policy(_) => classified_transport(
+        HttpTransportBuildError::Policy(_) => fatal_transport(
             "mcp_transport_policy_rejected",
-            ErrorDisposition::Fatal,
             top.to_string(),
-            Some("MCP HTTP transport network policy rejected the configured target"),
+            "MCP HTTP transport network policy rejected the configured target",
         ),
-        HttpTransportBuildError::Header(_) => classified_transport(
+        HttpTransportBuildError::Header(_) => fatal_transport(
             "mcp_transport_header_rejected",
-            ErrorDisposition::Fatal,
             top.to_string(),
-            Some("MCP HTTP transport static header configuration was rejected"),
+            "MCP HTTP transport static header configuration was rejected",
         ),
-        HttpTransportBuildError::InvalidAuthHeader { .. } => classified_transport(
+        HttpTransportBuildError::InvalidAuthHeader { .. } => fatal_transport(
             "mcp_transport_auth_header_invalid",
-            ErrorDisposition::Fatal,
             top.to_string(),
-            Some("MCP HTTP transport auth secret produced an invalid header"),
+            "MCP HTTP transport auth secret produced an invalid header",
         ),
-        HttpTransportBuildError::InvalidExtraCaCert { .. } => classified_transport(
+        HttpTransportBuildError::InvalidExtraCaCert { .. } => fatal_transport(
             "mcp_transport_ca_cert_invalid",
-            ErrorDisposition::Fatal,
             top.to_string(),
-            Some("MCP HTTP transport extra CA certificate was invalid"),
+            "MCP HTTP transport extra CA certificate was invalid",
         ),
-        HttpTransportBuildError::Client(_) => classified_transport(
+        HttpTransportBuildError::Client(_) => fatal_transport(
             "mcp_transport_client_build_failed",
-            ErrorDisposition::Fatal,
             top.to_string(),
-            Some("MCP HTTP transport reqwest client build failed"),
+            "MCP HTTP transport reqwest client build failed",
         ),
     }
 }
@@ -383,11 +365,10 @@ fn classify_service_error(top: &ConnectionError, err: &ServiceError) -> ToolSess
             top.to_string(),
             Some("MCP request timed out"),
         ),
-        _ => classified_transport(
+        _ => fatal_transport(
             "mcp_service_error",
-            ErrorDisposition::Fatal,
             top.to_string(),
-            Some("MCP service returned an unclassified error"),
+            "MCP service returned an unclassified error",
         ),
     }
 }
@@ -502,8 +483,31 @@ fn classify_streamable_http_variant(
         | StreamableHttpError::UnexpectedEndOfStream
         | StreamableHttpError::TokioJoinError(_)
         | StreamableHttpError::TransportChannelClosed => HttpTransportFailure::Network,
+        // rmcp marks this enum `#[non_exhaustive]`; new variants fail safe as network errors
+        // until classified explicitly above.
         _ => HttpTransportFailure::Network,
     }
+}
+
+fn fatal_transport(code: &'static str, message: String, hint: &'static str) -> ToolSessionError {
+    classified_transport(code, ErrorDisposition::Fatal, message, Some(hint))
+}
+
+fn retriable_transport(
+    code: &'static str,
+    message: String,
+    hint: &'static str,
+) -> ToolSessionError {
+    classified_transport(code, ErrorDisposition::HostRetriable, message, Some(hint))
+}
+
+fn inform_transport(code: &'static str, message: String, hint: &'static str) -> ToolSessionError {
+    classified_transport(
+        code,
+        ErrorDisposition::InformAndContinue,
+        message,
+        Some(hint),
+    )
 }
 
 fn classified_transport(
