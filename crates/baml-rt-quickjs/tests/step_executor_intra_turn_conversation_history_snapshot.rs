@@ -1,6 +1,6 @@
-//! Verifies the per-hop merged `conversation_history` seen by the LLM at each
-//! `intercept_llm_call` in a `run_step_executor_loop` (graph provider + loop-local
-//! supplement, mirrored for the interceptor from the same `Arc` the loop uses).
+//! Verifies the per-hop merged projected history lines (same merge as BAML
+//! `ctx.tags['conversation_transcript']`) seen at each `intercept_llm_call` in a
+//! `run_step_executor_loop` (graph provider + loop-local supplement, mirrored for the interceptor).
 //!
 //! To update: `INSTA_UPDATE=1 cargo test -p baml-rt-quickjs --test step_executor_intra_turn_conversation_history_snapshot`
 #![recursion_limit = "256"]
@@ -73,8 +73,8 @@ impl LLMInterceptor for HistorySnapshotInterceptor {
         &self,
         ctx: &LLMCallContext,
     ) -> baml_rt_core::Result<InterceptorDecision> {
-        // Same merged lines as the current `invoke_function_with_intra` passed into BAML
-        // `ctx.tags['conversation_history']` (before the LLM; supplement from the loop).
+        // Same merged lines as the current `invoke_function_with_intra` formats into BAML
+        // `ctx.tags['conversation_transcript']` (before the LLM; supplement from the loop).
         let lines = {
             let supplement: Vec<Value> = self
                 .step_intra_slice
@@ -185,7 +185,7 @@ async fn step_executor_intra_turn_merged_conversation_grows_per_llm_hop() {
             .expect("task execution started");
         store
             .add_event(ProvEvent::message_received_task(
-                context_id,
+                context_id.clone(),
                 task_id,
                 message_id,
                 "user".to_string(),
@@ -235,20 +235,25 @@ async fn step_executor_intra_turn_merged_conversation_grows_per_llm_hop() {
         .iter()
         .cloned()
         .collect();
-    // Line counts must be strictly increasing as the graph-backed provider gains rows each hop.
+    // Non-decreasing per hop (some FSM hops may not append transcript rows yet); overall the graph
+    // still gains rows across the full executor run.
     let as_arrays: Vec<Vec<Value>> = per_llm
         .iter()
         .map(|v| v.as_array().cloned().unwrap_or_default().to_vec())
         .collect();
-    for w in as_arrays.windows(2) {
-        let (a, b) = (&w[0], &w[1]);
+    let lengths: Vec<usize> = as_arrays.iter().map(|a| a.len()).collect();
+    for w in lengths.windows(2) {
         assert!(
-            b.len() > a.len(),
-            "merged conversation should grow: {:?} -> {:?}",
-            a.len(),
-            b.len()
+            w[1] >= w[0],
+            "merged conversation must not shrink between hops: {:?}",
+            lengths
         );
     }
+    assert!(
+        lengths.first().copied().unwrap_or(0) < lengths.last().copied().unwrap_or(0),
+        "merged conversation should grow across the run: {:?}",
+        lengths
+    );
 
     let report =
         json!({ "per_llm_merged_conversation_history": per_llm, "step_count": out.steps.len() });

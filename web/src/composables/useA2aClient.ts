@@ -1,11 +1,8 @@
 import { ref, computed, type Ref } from "vue";
-import {
-  applyConversationHistoryDelta,
-  applyConversationHistoryPage,
-  liveAgentBubbleBlocksHistoryReplace,
-  provenanceSnapshotLagsLiveChat,
-  shouldDeferProvenanceHistoryRebuild,
-} from "../chat/conversationHistoryHydration";
+
+/** Per-request page size for GET/stream conversation-history (must match server default chunking). */
+const CONVERSATION_HISTORY_PAGE_SIZE = 50;
+import { applyConversationHistoryIngress } from "../chat/conversationHistorySync";
 import { normalizeEpochMs, normalizePreview } from "../chat/chatTime";
 import {
   ensureContentBlocks,
@@ -14,6 +11,9 @@ import {
   pushTextBlock,
 } from "../chat/chatMessageBlocks";
 import { appendExecutionErrorCard, parseExecutionErrorText } from "../chat/executionErrorCard";
+import { readA2aSseJsonRpcStream } from "../chat/a2aSse";
+import { collectChunkAssistantPlainText, extractWireMessageText } from "../chat/a2aStreamAssistantText";
+import { digestA2aProcessEvent } from "../chat/a2aStreamChunkDigest";
 import {
   deriveToolStatus,
   detectToolAppendMode,
@@ -29,6 +29,7 @@ import type {
   AgentDiscoveryEntry,
   A2aMessage,
   ChatMessage,
+  ConversationHistoryItem,
   ConversationHistoryPage,
   ContextPickerPage,
   ContextMetricsResponse,
@@ -45,38 +46,6 @@ import type {
 let counter = 0;
 function nextId(prefix: string): string {
   return `${prefix}-${Date.now()}-${++counter}`;
-}
-
-/** Extract `data:` payloads from one SSE event block (between blank-line separators). */
-function sseEventDataPayload(block: string): string | null {
-  const lines = block.split("\n");
-  const parts: string[] = [];
-  for (const line of lines) {
-    const t = line.trimEnd();
-    if (t.startsWith("data:")) {
-      parts.push(t.slice(5).trimStart());
-    }
-  }
-  if (parts.length === 0) return null;
-  return parts.join("\n");
-}
-
-/**
- * Parse a full `text/event-stream` body into JSON-RPC objects (aligned with
- * `baml_rt_core::parse_a2a_sse_json_rpc_chunks`). We use `response.text()` rather than
- * ReadableStream parsing so dev proxies (Vite) and gzip cannot break SSE framing.
- */
-function parseA2aSseJsonRpcBody(body: string): JSONRPCResponse[] {
-  const normalized = body.replace(/\r\n/g, "\n");
-  const out: JSONRPCResponse[] = [];
-  for (const rawEvent of normalized.split("\n\n")) {
-    const trimmed = rawEvent.trim();
-    if (!trimmed) continue;
-    const payload = sseEventDataPayload(trimmed);
-    if (!payload?.trim()) continue;
-    out.push(JSON.parse(payload) as JSONRPCResponse);
-  }
-  return out;
 }
 
 function sortLlmPromptOperations(a: LlmPromptOperation, b: LlmPromptOperation): number {
@@ -101,9 +70,16 @@ function updateMessage(
   updater: (msg: ChatMessage) => void,
 ): void {
   const idx = messages.value.findIndex((m) => m.id === id);
-  if (idx !== -1) {
-    updater(messages.value[idx]!);
+  if (idx === -1) {
+    if (typeof window !== "undefined" && window.location.hostname === "localhost") {
+      console.warn(
+        "[transcript] updateMessage skipped: unknown message id (orphan streaming row?)",
+        id,
+      );
+    }
+    return;
   }
+  updater(messages.value[idx]!);
 }
 
 function tryApplyStructuredMessage(msg: ChatMessage, wire: A2aMessage): boolean {
@@ -126,6 +102,7 @@ function tryApplyStructuredMessage(msg: ChatMessage, wire: A2aMessage): boolean 
 }
 
 export function useA2aClient() {
+  const clientId = nextId("client");
   const agents: Ref<AgentDiscoveryEntry[]> = ref([]);
   const selectedAgent: Ref<AgentDiscoveryEntry | null> = ref(null);
   const messages: Ref<ChatMessage[]> = ref([]);
@@ -137,9 +114,9 @@ export function useA2aClient() {
 
   // Context metrics (fetched after each response)
   const contextMetrics = ref<ContextMetricsResponse | null>(null);
-  /** From conversation-history SSE/HTTP: temporal tail + per-LLM prompt JSON sizes */
+  /** From conversation-history SSE/HTTP: temporal tail + per-LLM prompt telemetry */
   const llmPromptOperations = ref<LlmPromptOperation[]>([]);
-  const promptContextBytesSessionCurrent = ref<number | null>(null);
+  const promptMessageCharsSessionCurrent = ref<number | null>(null);
   const conversationHistoryOptions = ref<ConversationHistoryOption[]>([]);
   const selectedHistoryContextId = ref<string | null>(null);
   const historyLoading = ref(false);
@@ -166,15 +143,35 @@ export function useA2aClient() {
 
   function replaceLlmPromptStateFromPage(page: ConversationHistoryPage): void {
     llmPromptOperations.value = [...(page.llmPromptOperations ?? [])].sort(sortLlmPromptOperations);
-    promptContextBytesSessionCurrent.value = page.promptContextBytesSessionCurrent ?? null;
+    promptMessageCharsSessionCurrent.value = page.promptMessageCharsSessionCurrent ?? null;
   }
 
   function extendLlmPromptStateFromPage(page: ConversationHistoryPage): void {
     llmPromptOperations.value = mergeLlmPromptOperations(llmPromptOperations.value, page.llmPromptOperations);
-    if (page.promptContextBytesSessionCurrent != null) {
-      promptContextBytesSessionCurrent.value = page.promptContextBytesSessionCurrent;
+    if (page.promptMessageCharsSessionCurrent != null) {
+      promptMessageCharsSessionCurrent.value = page.promptMessageCharsSessionCurrent;
     }
   }
+
+  const sseConversationHistoryIngressDeps = {
+    messages,
+    getHistoryVersion: () => _historyVersion,
+    setHistoryVersion: (v: string) => {
+      _historyVersion = v;
+    },
+    setHydrateState: (s: HistoryHydrateState) => {
+      historyHydrateState.value = s;
+    },
+    setSelectedContextId: (id: string) => {
+      selectedHistoryContextId.value = id;
+    },
+    setTaskId: (id: string | null) => {
+      _taskId.value = id;
+    },
+    replaceLlmFromPage: replaceLlmPromptStateFromPage,
+    extendLlmFromPage: extendLlmPromptStateFromPage,
+    deferFullSnapshotWhileA2aInFlight: () => isLoading.value,
+  };
 
   /** Incremented (debounced) when SSE implies new provenance rows; ProvenancePane watches this */
   const traceRefreshGeneration = ref(0);
@@ -185,6 +182,22 @@ export function useA2aClient() {
 
   /** One-shot retry when hydration is skipped because provenance lags behind the live stream. */
   let pendingHydrateRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const traceTranscript = (...args: unknown[]) => {
+    if (typeof window !== "undefined" && window.location.hostname === "localhost") {
+      console.debug(
+        "[transcript]",
+        ...args.map((arg) =>
+          typeof arg === "string"
+            ? `[${clientId}] ${arg}`
+            : JSON.stringify({
+                clientId,
+                payload: arg,
+              }),
+        ),
+      );
+    }
+  };
 
   function scheduleTraceRefreshBump(): void {
     if (!_contextId.value) return;
@@ -212,20 +225,18 @@ export function useA2aClient() {
 
     closeConversationHistoryStream();
     const params = new URLSearchParams();
-    params.set("limit", "500");
+    params.set("limit", String(CONVERSATION_HISTORY_PAGE_SIZE));
     const url = `/contexts/${_contextId.value}/conversation-history/stream?${params.toString()}`;
     const stream = new EventSource(url);
 
     stream.addEventListener("snapshot", (ev) => {
       try {
         const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
-        if (page.version === _historyVersion) return;
-        if (shouldDeferProvenanceHistoryRebuild(messages.value, page)) return;
-        applyConversationHistoryPage(messages, page);
-        replaceLlmPromptStateFromPage(page);
-        _historyVersion = page.version;
-        selectedHistoryContextId.value = page.contextId;
-        historyHydrateState.value = "ready";
+        applyConversationHistoryIngress(sseConversationHistoryIngressDeps, {
+          kind: "full",
+          mode: "evented",
+          page,
+        });
       } catch {
         // Ignore malformed stream event payloads.
       }
@@ -233,13 +244,11 @@ export function useA2aClient() {
     stream.addEventListener("delta", (ev) => {
       try {
         const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
-        if (page.version === _historyVersion) return;
-        if (shouldDeferProvenanceHistoryRebuild(messages.value, page)) return;
-        applyConversationHistoryDelta(messages, page);
-        extendLlmPromptStateFromPage(page);
-        _historyVersion = page.version;
-        selectedHistoryContextId.value = page.contextId;
-        historyHydrateState.value = "ready";
+        applyConversationHistoryIngress(sseConversationHistoryIngressDeps, {
+          kind: "delta",
+          mode: "evented",
+          page,
+        });
       } catch {
         // Ignore malformed stream event payloads.
       }
@@ -331,6 +340,11 @@ export function useA2aClient() {
   }
 
   function selectAgent(agent: AgentDiscoveryEntry): void {
+    traceTranscript("selectAgent.clear", {
+      agent: `${agent.agent_package}/${agent.agent_instance_id}`,
+      priorMessages: messages.value.length,
+      priorContextId: _contextId.value ?? null,
+    });
     selectedAgent.value = agent;
     historyHydrateState.value = "idle";
     messages.value = [];
@@ -347,7 +361,7 @@ export function useA2aClient() {
     closeConversationHistoryStream();
     _historyVersion = "";
     llmPromptOperations.value = [];
-    promptContextBytesSessionCurrent.value = null;
+    promptMessageCharsSessionCurrent.value = null;
     conversationHistoryOptions.value = [];
     selectedHistoryContextId.value = null;
     void fetchConversationHistoryOptions();
@@ -418,8 +432,8 @@ export function useA2aClient() {
       pendingHydrateRetryTimer = null;
     }
 
-    // Clear input-required state on the last agent message when user replies (resume turn)
     const lastAgent = [...messages.value].reverse().find((m) => m.role === "agent");
+    // Clear input-required UI on the last agent bubble once the user sends a resume reply.
     if (lastAgent?.awaitingInput) {
       lastAgent.awaitingInput = false;
       lastAgent.inputRequiredPrompt = undefined;
@@ -449,7 +463,6 @@ export function useA2aClient() {
     }
     if (_contextId.value) message.contextId = _contextId.value;
     if (_taskId.value) message.taskId = _taskId.value;
-    ensureConversationHistoryStream();
 
     const request = {
       jsonrpc: "2.0",
@@ -473,6 +486,10 @@ export function useA2aClient() {
       contentBlocks: [],
     });
 
+    // Open provenance SSE only after the streaming row exists; otherwise the initial `snapshot`
+    // can full-replace [user] and orphan `agentMsgId` before POST /a2a chunks arrive.
+    ensureConversationHistoryStream();
+
     const controller = new AbortController();
     _abortController = controller;
 
@@ -489,23 +506,21 @@ export function useA2aClient() {
       }
 
       const ct = response.headers.get("content-type") ?? "";
-      const bodyText = await response.text();
-      if (bodyText.trimStart().startsWith("<")) {
+      if (!response.body) {
         throw new Error(
-          `Unexpected HTML from /a2a — proxy or runner URL misconfigured (content-type: ${ct || "missing"})`,
+          `POST /a2a returned no response body; expected streaming SSE (content-type: ${ct || "missing"})`,
         );
       }
-      if (!ct.toLowerCase().includes("text/event-stream") && bodyText.trim().length > 0) {
-        console.warn(`POST /a2a unexpected Content-Type: ${ct || "(missing)"}; parsing as SSE anyway`);
+      if (!ct.toLowerCase().includes("text/event-stream")) {
+        console.warn(`POST /a2a unexpected Content-Type: ${ct || "(missing)"}; streaming parse anyway`);
       }
-      const events = parseA2aSseJsonRpcBody(bodyText);
-      if (events.length === 0 && bodyText.trim().length > 0) {
+      const eventCount = await readA2aSseJsonRpcStream(response.body, (event) => {
+        processEvent(event, agentMsgId);
+      });
+      if (eventCount === 0) {
         throw new Error(
           `No JSON-RPC events parsed from /a2a body (content-type: ${ct || "missing"})`,
         );
-      }
-      for (const event of events) {
-        processEvent(event, agentMsgId);
       }
       updateMessage(messages, agentMsgId, (msg) => {
         msg.isStreaming = false;
@@ -570,39 +585,44 @@ export function useA2aClient() {
     // Track whether this chunk implies new provenance/planning material.
     let sawProvenanceMutation = false;
 
-    // Shape: toolStreamChunk chunks split into two kinds.
-    // - Phase (status): toolStreamChunk true, no tool payload — statusUpdate.status_update.status.message only (e.g. "Calling model: unknown (PhaseName)", "Invoking tool: X"). One block per "segment" (new segment after each message).
-    // - Tool: toolStreamChunk true, has tool payload — toolName and/or events and/or completion. One block per tool invocation (new block when previous for same tool is DONE).
-    // Backend may send tool data at chunk top level (chunk.toolName/events/completion) or inside chunk.task.
-    const toolChunk = result.toolStreamChunk
-      ? (chunk as ChunkPayload & {
-          toolName?: string;
-          events?: ToolEvent[];
-          completion?: ToolCompletion;
-          task?: { toolName?: string; events?: ToolEvent[]; completion?: ToolCompletion };
-        })
-      : null;
-    const toolName = toolChunk?.toolName ?? toolChunk?.task?.toolName;
+    // Tool stream payloads:
+    // - Relay/async path sets `result.toolStreamChunk` (__toolStreamChunk → toolStreamChunk).
+    // - JS `__chat_yield` chunks often carry `task.toolName` / `task.events` without that flag.
+    // We must handle both; otherwise tool/delegation turns show nothing until the terminal chunk.
+    //
+    // Phase-only relay chunks: toolStreamChunk true, no toolName/events/completion — workflow banner only.
+    type ToolishChunk = ChunkPayload & {
+      toolName?: string;
+      events?: ToolEvent[];
+      completion?: ToolCompletion;
+      task?: { toolName?: string; events?: ToolEvent[]; completion?: ToolCompletion };
+      chunk?: { events?: ToolEvent[]; completion?: ToolCompletion };
+    };
+    const ext = chunk as ToolishChunk;
+    const nestedChunk = ext.chunk;
+    const toolName = ext.toolName ?? ext.task?.toolName;
     const toolEvents =
-      toolChunk?.events ??
-      toolChunk?.task?.events ??
-      (toolChunk &&
-      typeof (toolChunk as { chunk?: unknown }).chunk === "object" &&
-      (toolChunk as { chunk?: { events?: ToolEvent[] } }).chunk &&
-      "events" in (toolChunk as { chunk: object }).chunk
-        ? (toolChunk as { chunk: { events?: ToolEvent[] } }).chunk.events
+      ext.events ??
+      ext.task?.events ??
+      (typeof nestedChunk === "object" &&
+      nestedChunk !== null &&
+      "events" in nestedChunk
+        ? nestedChunk.events
         : undefined) ??
       [];
     const toolCompletion =
-      toolChunk?.completion ??
-      toolChunk?.task?.completion ??
-      (toolChunk &&
-      typeof (toolChunk as { chunk?: unknown }).chunk === "object" &&
-      (toolChunk as { chunk?: object }).chunk &&
-      "completion" in (toolChunk as { chunk: object }).chunk
-        ? (toolChunk as { chunk: { completion?: ToolCompletion } }).chunk.completion
+      ext.completion ??
+      ext.task?.completion ??
+      (typeof nestedChunk === "object" &&
+      nestedChunk !== null &&
+      "completion" in nestedChunk
+        ? nestedChunk.completion
         : undefined);
-    if (toolChunk && (!!toolName || toolEvents.length > 0 || !!toolCompletion)) {
+
+    const hasToolStreamPayload =
+      !!toolName || toolEvents.length > 0 || !!toolCompletion;
+
+    if (hasToolStreamPayload) {
       const baseName = toolName ?? "tool";
       const events = withSessionStepDetailEvents(toolEvents);
       const completion = toolCompletion;
@@ -619,8 +639,39 @@ export function useA2aClient() {
         markWorkflowNodeCompleted(baseName);
         scheduleTraceRefreshBump();
       }
+      let appliedAssistantFromWire = false;
+      updateMessage(messages, agentMsgId, (msg) => {
+        if (chunk.message && tryApplyStructuredMessage(msg, chunk.message)) {
+          appliedAssistantFromWire = true;
+          return;
+        }
+        if (
+          chunk.task?.status?.message &&
+          tryApplyStructuredMessage(msg, chunk.task.status.message)
+        ) {
+          appliedAssistantFromWire = true;
+        }
+      });
+      if (!appliedAssistantFromWire) {
+        const direct = collectChunkAssistantPlainText(chunk);
+        if (direct?.trim()) {
+          const dtrim = direct.trim();
+          if (
+            !shouldSuppressAgentTranscriptText(dtrim) &&
+            !parseExecutionErrorText(dtrim)
+          ) {
+            updateMessage(messages, agentMsgId, (msg) => {
+              if (msg.contentBlocks) {
+                pushTextBlock(msg, direct);
+              } else {
+                msg.text = msg.text ? `${msg.text}\n\n${direct}` : direct;
+              }
+            });
+          }
+        }
+      }
       sawProvenanceMutation = true;
-    } else if (result.toolStreamChunk && toolChunk) {
+    } else if (result.toolStreamChunk) {
       // Relay may still mark toolStreamChunk while attaching real assistant prose on chunk.message.
       // Without this branch, that prose was dropped because phase chunks never reached the handler below.
       let appliedAssistantFromWire = false;
@@ -637,8 +688,7 @@ export function useA2aClient() {
         }
       });
       if (!appliedAssistantFromWire) {
-        const direct =
-          extractText(chunk.message) ?? extractText(chunk.task?.status?.message);
+        const direct = collectChunkAssistantPlainText(chunk);
         if (direct?.trim()) {
           const dtrim = direct.trim();
           if (
@@ -687,6 +737,7 @@ export function useA2aClient() {
 
       if (!appliedStructured) {
         const text =
+          collectChunkAssistantPlainText(chunk) ??
           extractText(chunk.message) ??
           extractText(chunk.task?.status?.message) ??
           extractText(chunk.statusUpdate?.status?.message) ??
@@ -764,6 +815,7 @@ export function useA2aClient() {
         msg.isStreaming = false;
         msg.awaitingInput = true;
         const prompt =
+          collectChunkAssistantPlainText(chunk) ??
           extractTextFromStatusUpdate(chunk) ??
           extractText(chunk.statusUpdate?.status?.message) ??
           extractText(chunk.task?.status?.message);
@@ -780,6 +832,10 @@ export function useA2aClient() {
           }
         }
       });
+    }
+
+    if (typeof window !== "undefined" && window.location.hostname === "localhost") {
+      traceTranscript("processEvent.digest", digestA2aProcessEvent(chunk, result));
     }
   }
 
@@ -809,16 +865,7 @@ export function useA2aClient() {
   function extractText(
     message: { parts?: { text?: string }[] } | undefined | null,
   ): string | undefined {
-    const parts = message?.parts;
-    if (!parts?.length) return undefined;
-    const texts: string[] = [];
-    for (const p of parts) {
-      if (typeof p?.text === "string" && p.text.length > 0) {
-        texts.push(p.text);
-      }
-    }
-    if (texts.length === 0) return undefined;
-    return texts.join("\n\n");
+    return extractWireMessageText(message as A2aMessage | undefined);
   }
 
   async function fetchProvenanceDiagram(): Promise<void> {
@@ -865,55 +912,105 @@ export function useA2aClient() {
       historyHydrateState.value = "loading";
     }
     try {
-      const params = new URLSearchParams();
-      params.set("limit", "500");
-      const response = await fetch(
-        `/contexts/${contextId}/conversation-history?${params.toString()}`,
-      );
-      if (!response.ok) {
+      const PAGE_LIMIT = CONVERSATION_HISTORY_PAGE_SIZE;
+      const allItems: ConversationHistoryItem[] = [];
+      const mergedPromptOps: NonNullable<
+        ConversationHistoryPage["llmPromptOperations"]
+      > = [];
+      let cursor: string | undefined;
+      let lastPage: ConversationHistoryPage | null = null;
+      let maxEventOrder = 0;
+      let fetchCount = 0;
+
+      for (;;) {
+        const params = new URLSearchParams();
+        params.set("limit", String(PAGE_LIMIT));
+        if (cursor) params.set("cursor", cursor);
+        const response = await fetch(
+          `/contexts/${contextId}/conversation-history?${params.toString()}`,
+        );
+        if (!response.ok) {
+          if (!options.quiet) {
+            historyHydrateState.value = "error";
+          }
+          return;
+        }
+
+        const page = (await response.json()) as ConversationHistoryPage;
+        if (!Array.isArray(page.items)) {
+          if (!options.quiet) {
+            historyHydrateState.value = "error";
+          }
+          return;
+        }
+        fetchCount += 1;
+        allItems.push(...page.items);
+        maxEventOrder = Math.max(maxEventOrder, page.maxEventOrder);
+        if (page.llmPromptOperations?.length) {
+          mergedPromptOps.push(...page.llmPromptOperations);
+        }
+        lastPage = page;
+        if (!page.nextCursor) break;
+        cursor = page.nextCursor;
+      }
+
+      if (!lastPage) {
         if (!options.quiet) {
           historyHydrateState.value = "error";
         }
         return;
       }
 
-      const page = (await response.json()) as ConversationHistoryPage;
-      if (!Array.isArray(page.items)) {
-        if (!options.quiet) {
-          historyHydrateState.value = "error";
-        }
-        return;
-      }
-      _taskId.value = page.taskId ?? null;
-      if (liveAgentBubbleBlocksHistoryReplace(messages.value)) {
-        if (!options.quiet) {
-          historyHydrateState.value = "skipped";
-        }
-        if (options.allowRetry !== false && pendingHydrateRetryTimer === null) {
-          pendingHydrateRetryTimer = setTimeout(() => {
-            pendingHydrateRetryTimer = null;
-            void hydrateMessagesFromConversationHistory(contextId, { allowRetry: false });
-          }, 400);
-        }
-        return;
-      }
-      if (provenanceSnapshotLagsLiveChat(messages.value, page)) {
-        if (!options.quiet) {
-          historyHydrateState.value = "skipped";
-        }
-        if (options.allowRetry !== false && pendingHydrateRetryTimer === null) {
-          pendingHydrateRetryTimer = setTimeout(() => {
-            pendingHydrateRetryTimer = null;
-            void hydrateMessagesFromConversationHistory(contextId, { allowRetry: false });
-          }, 400);
-        }
-        return;
-      }
-      applyConversationHistoryPage(messages, page);
-      replaceLlmPromptStateFromPage(page);
-      _historyVersion = page.version;
-      selectedHistoryContextId.value = page.contextId;
-      historyHydrateState.value = "ready";
+      const page: ConversationHistoryPage = {
+        ...lastPage,
+        items: allItems,
+        maxEventOrder,
+        llmPromptOperations:
+          mergedPromptOps.length > 0 ? mergedPromptOps : lastPage.llmPromptOperations,
+        nextCursor: null,
+        version:
+          fetchCount <= 1
+            ? lastPage.version
+            : `merged:${allItems.length}:${maxEventOrder}:${lastPage.version}`,
+      };
+
+      const hydrateIngressDeps = {
+        messages,
+        getHistoryVersion: () => _historyVersion,
+        setHistoryVersion: (v: string) => {
+          _historyVersion = v;
+        },
+        setHydrateState: (s: HistoryHydrateState) => {
+          historyHydrateState.value = s;
+        },
+        setSelectedContextId: (id: string) => {
+          selectedHistoryContextId.value = id;
+        },
+        setTaskId: (id: string | null) => {
+          _taskId.value = id;
+        },
+        replaceLlmFromPage: replaceLlmPromptStateFromPage,
+        extendLlmFromPage: extendLlmPromptStateFromPage,
+        scheduleHydrateRetry:
+          options.allowRetry !== false
+            ? () => {
+                if (pendingHydrateRetryTimer !== null) return;
+                pendingHydrateRetryTimer = setTimeout(() => {
+                  pendingHydrateRetryTimer = null;
+                  void hydrateMessagesFromConversationHistory(contextId, { allowRetry: false });
+                }, 400);
+              }
+            : undefined,
+      };
+
+      applyConversationHistoryIngress(hydrateIngressDeps, {
+        kind: "full",
+        mode: options.quiet ? "background" : "explicit_restore",
+        page,
+        allowRetry: options.allowRetry,
+        respectDuplicateVersion: false,
+        syncTaskIdFromPageBeforeDefer: true,
+      });
     } catch {
       if (!options.quiet) {
         historyHydrateState.value = "error";
@@ -931,13 +1028,20 @@ export function useA2aClient() {
     closeConversationHistoryStream();
     _historyVersion = "";
     llmPromptOperations.value = [];
-    promptContextBytesSessionCurrent.value = null;
+    promptMessageCharsSessionCurrent.value = null;
     _contextId.value = contextId;
     _taskId.value = null;
     workflowProgress.value = { phase: "idle", nodes: [], completedNodes: [] };
     lastSeenTaskState = undefined;
     isLoading.value = false;
     selectedHistoryContextId.value = contextId;
+    traceTranscript("loadContext.clear", {
+      contextId,
+      priorMessages: messages.value.length,
+      selectedAgent: selectedAgent.value
+        ? `${selectedAgent.value.agent_package}/${selectedAgent.value.agent_instance_id}`
+        : null,
+    });
     messages.value = [];
     historyHydrateState.value = "loading";
     await Promise.all([
@@ -987,6 +1091,7 @@ export function useA2aClient() {
   }
 
   return {
+    clientId,
     agents,
     selectedAgent,
     messages,
@@ -995,7 +1100,7 @@ export function useA2aClient() {
     traceRefreshGeneration,
     contextMetrics,
     llmPromptOperations,
-    promptContextBytesSessionCurrent,
+    promptMessageCharsSessionCurrent,
     conversationHistoryOptions,
     selectedHistoryContextId,
     historyLoading,

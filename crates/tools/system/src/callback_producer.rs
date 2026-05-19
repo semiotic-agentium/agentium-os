@@ -263,6 +263,15 @@ impl CallbackEventProducer {
             _ => None,
         };
 
+        tracing::info!(
+            callback_id = %callback_id,
+            dispatch_context = ?callback.context_id.as_ref().map(|c| c.as_str()),
+            dispatch_task = ?callback.task_id.as_ref().map(|t| t.as_str()),
+            scheduling_context = ?callback.scheduling_context_id.as_ref().map(|c| c.as_str()),
+            scheduling_task = ?callback.scheduling_task_id.as_ref().map(|t| t.as_str()),
+            "system/callback producer emitting due callback dispatch envelope"
+        );
+
         Ok(ProducedEvent {
             routing_key: self.routing_key.clone(),
             schema_version: self.schema_version.clone(),

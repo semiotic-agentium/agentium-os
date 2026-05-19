@@ -47,7 +47,8 @@ limit: number | null;
 offset: number | null;
  }
 
-export interface NeedClarification { question: string;
+export interface NeedClarification { kind: "clarify";
+question: string;
  }
 
 export interface ProvenanceQueryOpenInput { reason: string | null;
@@ -72,7 +73,8 @@ cursor: string | null;
 top_k: number | null;
  }
 
-export interface QueryIntent { resource: QueryResource;
+export interface QueryIntent { kind: "query";
+resource: QueryResource;
 outcome: QueryOutcome;
 priority_sort: string;
 page_size: number;
@@ -493,7 +495,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "BuildExtrospectionPlan" | "BuildExtrospectionPlan__act__system_extrospection" | "BuildExtrospectionPlan__continue__system_extrospection" | "BuildExtrospectionPlan__select" | "GetDiscoverAgentsPlan" | "GetDiscoverAgentsPlan__act__system_discover_agents" | "GetDiscoverAgentsPlan__continue__system_discover_agents" | "GetDiscoverAgentsPlan__select";
+export type StepExecutorFunctionName = "BuildExtrospectionPlan" | "BuildExtrospectionPlan__active__system_extrospection" | "BuildExtrospectionPlan__entry" | "GetDiscoverAgentsPlan" | "GetDiscoverAgentsPlan__active__system_discover_agents" | "GetDiscoverAgentsPlan__entry";
 
 export interface SessionContext {
     contract_version: "session_context_v2";
@@ -530,27 +532,38 @@ export interface StepExecutorRunOptions {
     max_steps?: number;
 }
 
+export type ErrorDisposition =
+    | "host_retriable"
+    | "llm_correctable"
+    | "inform_and_continue"
+    | "fatal";
+
+export interface StepPlanRecovery {
+    code: string;
+    disposition: ErrorDisposition;
+    mistake: string;
+    invariant: string;
+    fix_steps?: string[];
+}
+
+export type StepExecutorRunEnvelope<R = unknown> = { outcome: "completed", last: R, steps: R[], session_context: SessionContext, selected_tool: string | null } | { outcome: "agent_correctable", recovery: StepPlanRecovery } | { outcome: "fatal", message: string, code?: string | null };
+
 /**
- * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
- * User-facing replies are synthesized once at session completion (and recorded there).
+ * Result of runGeneratedStepExecutor: discriminated envelope (`outcome`).
+ * On `completed`, fields match the former flat telemetry shape.
+ * `agent_correctable` carries structured recovery — not a thrown JS error.
+ * User-facing replies are still SessionResult.message from the chat handler.
  */
 
-export interface StepExecutorRunResult<R = unknown> {
-    last: R;
-    steps: R[];
-    session_context: SessionContext;
-    selected_tool: string | null;
-}
+export type StepExecutorRunResult<R = unknown> = StepExecutorRunEnvelope<R>;
 
 export interface StepExecutorFunctionMap {
   BuildExtrospectionPlan: { args: Parameters<typeof BuildExtrospectionPlan>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan>>; };
-  BuildExtrospectionPlan__act__system_extrospection: { args: Parameters<typeof BuildExtrospectionPlan__act__system_extrospection>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan__act__system_extrospection>>; };
-  BuildExtrospectionPlan__continue__system_extrospection: { args: Parameters<typeof BuildExtrospectionPlan__continue__system_extrospection>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan__continue__system_extrospection>>; };
-  BuildExtrospectionPlan__select: { args: Parameters<typeof BuildExtrospectionPlan__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan__select>>; };
+  BuildExtrospectionPlan__active__system_extrospection: { args: Parameters<typeof BuildExtrospectionPlan__active__system_extrospection>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan__active__system_extrospection>>; };
+  BuildExtrospectionPlan__entry: { args: Parameters<typeof BuildExtrospectionPlan__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan__entry>>; };
   GetDiscoverAgentsPlan: { args: Parameters<typeof GetDiscoverAgentsPlan>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan>>; };
-  GetDiscoverAgentsPlan__act__system_discover_agents: { args: Parameters<typeof GetDiscoverAgentsPlan__act__system_discover_agents>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__act__system_discover_agents>>; };
-  GetDiscoverAgentsPlan__continue__system_discover_agents: { args: Parameters<typeof GetDiscoverAgentsPlan__continue__system_discover_agents>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__continue__system_discover_agents>>; };
-  GetDiscoverAgentsPlan__select: { args: Parameters<typeof GetDiscoverAgentsPlan__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__select>>; };
+  GetDiscoverAgentsPlan__active__system_discover_agents: { args: Parameters<typeof GetDiscoverAgentsPlan__active__system_discover_agents>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__active__system_discover_agents>>; };
+  GetDiscoverAgentsPlan__entry: { args: Parameters<typeof GetDiscoverAgentsPlan__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__entry>>; };
 }
 
 declare global {
@@ -558,5 +571,5 @@ declare global {
     stepExecutor: F,
     args: Omit<StepExecutorFunctionMap[F]["args"], keyof StepExecutorStateInput>,
     options?: StepExecutorRunOptions
-  ): Promise<StepExecutorRunResult<StepExecutorFunctionMap[F]["result"]>>;
+  ): Promise<StepExecutorRunEnvelope<StepExecutorFunctionMap[F]["result"]>>;
 }

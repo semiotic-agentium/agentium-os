@@ -1591,11 +1591,13 @@ fn prop_f64(node: &ExportedNode, key: &str) -> Option<f64> {
     })
 }
 
-/// Strip known tool name prefixes (`support/`, `system/`) for brevity in
+/// Strip known tool name prefixes (`support/`, `system/`, and slug forms `support_`, `system_`) for brevity in
 /// diagram labels.
 fn strip_tool_prefix(name: &str) -> &str {
     name.strip_prefix("support/")
         .or_else(|| name.strip_prefix("system/"))
+        .or_else(|| name.strip_prefix("support_"))
+        .or_else(|| name.strip_prefix("system_"))
         .unwrap_or(name)
 }
 
@@ -1755,6 +1757,16 @@ fn tool_display_label(raw: &str) -> String {
 }
 
 fn humanize_function_label(raw: &str) -> String {
+    if let Some(base) = raw.strip_suffix("__entry") {
+        return format!("{} Entry", humanize_identifier(base));
+    }
+    if let Some((base, tool)) = raw.split_once("__active__") {
+        return format!(
+            "{} Active {}",
+            humanize_identifier(base),
+            tool_display_label(strip_tool_prefix(tool))
+        );
+    }
     if let Some(base) = raw.strip_suffix("__select") {
         return format!("{} Select", humanize_identifier(base));
     }
@@ -2270,13 +2282,13 @@ mod tests {
 
     #[test]
     fn delegation_shows_coordinator_as_sender_and_recipient_not_user() {
-        let persona = "conversational_persona_demo_1_0_0";
+        let coordinator = "coordinator_agent_1_0_0";
         let worker = "claude_session_demo_1_0_0";
         let mut edges = vec![
-            // Persona receives initial user message
+            // Coordinator receives initial user message
             edge("mp1", EDGE_WAS_RECEIVED_BY, "m1"),
-            edge("mp1", EDGE_WAS_EXECUTED_BY, "a_persona"),
-            // Persona calls internal_a2a (delegation)
+            edge("mp1", EDGE_WAS_EXECUTED_BY, "a_coordinator"),
+            // Coordinator calls internal_a2a (delegation)
             edge("mp1", EDGE_WAS_EXECUTED_BY, "tc1"),
             edge("tc1", semantic_labels::WAS_DELEGATED_TO, "dt1"),
             edge("tc1", "WAS_USED_BY", "args1"),
@@ -2286,15 +2298,15 @@ mod tests {
             // Worker emits reply
             edge("m3", EDGE_WAS_EMITTED_BY, "mp2"),
         ];
-        edges.extend(agent_chain_edges("a_persona", "boot_p", "arch_p"));
+        edges.extend(agent_chain_edges("a_coordinator", "boot_p", "arch_p"));
         edges.extend(agent_chain_edges("a_worker", "boot_w", "arch_w"));
         let g = graph(
             vec![
-                agent_node("a_persona", persona),
+                agent_node("a_coordinator", coordinator),
                 agent_node("a_worker", worker),
                 boot_node("boot_p"),
                 boot_node("boot_w"),
-                archive_node("arch_p", persona),
+                archive_node("arch_p", coordinator),
                 archive_node("arch_w", worker),
                 mp_node("mp1"),
                 mp_node("mp2"),
@@ -2318,11 +2330,11 @@ mod tests {
             "A2A mediator tools (internal_a2a) must be omitted from diagram; got:\n{output}"
         );
         assert!(
-            output.contains(&format!("{persona}->>+{worker}")),
+            output.contains(&format!("{coordinator}->>+{worker}")),
             "delegated user message must show coordinator->>worker, not User->>worker; got:\n{output}"
         );
         assert!(
-            output.contains(&format!("{worker}->>-{persona}")),
+            output.contains(&format!("{worker}->>-{coordinator}")),
             "delegate reply must show worker->>coordinator, not worker->>User; got:\n{output}"
         );
     }
@@ -2955,6 +2967,14 @@ mod tests {
 
     #[test]
     fn humanize_function_label_patterns() {
+        assert_eq!(
+            humanize_function_label("coordinator__entry"),
+            "Coordinator Entry"
+        );
+        assert_eq!(
+            humanize_function_label("coordinator__active__support_crm"),
+            "Coordinator Active CRM"
+        );
         assert_eq!(
             humanize_function_label("coordinator__select"),
             "Coordinator Select"

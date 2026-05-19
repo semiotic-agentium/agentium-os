@@ -28,6 +28,8 @@ const props = defineProps<{
   /** Bumps when evented provenance signals new rows; edge-triggers Live refresh */
   traceRefreshTick?: number;
   llmPromptOperations?: LlmPromptOperation[];
+  /** Dashboard / deep-link: bump `nonce` to switch tabs and expand the pane */
+  externalTabFocus?: { nonce: number; tab: "live" | "failures" | "anomalies" | "drift" | "explore" };
 }>();
 
 const isOpen = ref(typeof window !== "undefined" ? window.innerWidth >= 1280 : true);
@@ -262,6 +264,17 @@ function downloadSvg(svg: string, index: number) {
 }
 
 // ── Watchers & lifecycle ───────────────────────────────────────────────────
+
+watch(
+  () => props.externalTabFocus?.nonce,
+  (nonce) => {
+    if (nonce == null) return;
+    const tab = props.externalTabFocus?.tab;
+    if (!tab) return;
+    activeTab.value = tab;
+    isOpen.value = true;
+  },
+);
 
 watch(
   () => [props.contextId, props.selectedAgentId],

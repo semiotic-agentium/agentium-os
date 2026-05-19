@@ -32,6 +32,9 @@ impl ConversationHistoryServiceImpl {
         page.prompt_context_bytes_session_current = tail
             .as_ref()
             .map(|r| value_as_u64(r.get("prompt_context_bytes_current")));
+        page.prompt_message_chars_session_current = tail
+            .as_ref()
+            .map(|r| value_as_u64(r.get("prompt_message_chars_current")));
 
         let max_eo = page.max_event_order;
         let op_rows = context_metrics_queries::llm_prompt_operations_for_context(
@@ -57,6 +60,9 @@ impl ConversationHistoryServiceImpl {
                     prompt_context_bytes_current: value_as_u64(
                         row.get("prompt_context_bytes_current"),
                     ),
+                    prompt_message_chars_current: value_as_u64(
+                        row.get("prompt_message_chars_current"),
+                    ),
                 })
             })
             .collect();
@@ -73,6 +79,7 @@ impl ConversationHistoryServiceImpl {
             &page.items,
             &page.llm_prompt_operations,
             page.prompt_context_bytes_session_current,
+            page.prompt_message_chars_session_current,
             page.awaiting_input,
             page.input_required_prompt.as_deref(),
         );
@@ -102,6 +109,7 @@ impl ConversationHistoryServiceImpl {
             &page.items,
             &page.llm_prompt_operations,
             page.prompt_context_bytes_session_current,
+            page.prompt_message_chars_session_current,
             page.awaiting_input,
             page.input_required_prompt.as_deref(),
         );
@@ -176,7 +184,11 @@ impl baml_rt_api::ConversationHistoryService for ConversationHistoryServiceImpl 
                 .map(|item| baml_rt_api::profile_filter(item, request.profile))
                 .collect();
         }
-        let max_event_order = items.last().map(|item| item.timestamp_ms).unwrap_or(0);
+        let max_event_order = items
+            .iter()
+            .map(|item| item.timestamp_ms)
+            .max()
+            .unwrap_or(0);
 
         let mut page = baml_rt_api::ConversationHistoryPageDto {
             context_id: request.context_id.as_str().to_string(),
@@ -186,6 +198,7 @@ impl baml_rt_api::ConversationHistoryService for ConversationHistoryServiceImpl 
             items,
             next_cursor: None,
             prompt_context_bytes_session_current: None,
+            prompt_message_chars_session_current: None,
             llm_prompt_operations: Vec::new(),
             awaiting_input: false,
             input_required_prompt: None,

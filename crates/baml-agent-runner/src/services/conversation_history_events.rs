@@ -1,35 +1,33 @@
-//! Conversation-history event service wired to A2A task update broadcasts.
+//! Conversation-history event service: notifies SSE subscribers when the transcript may have changed.
+//!
+//! Notifications fire (1) **after successful provenance commits** (runner wraps the graph writer)
+//! and (2) on **A2A task
+//! updates** (e.g. task-only status transitions that affect resume hints without new graph rows).
 
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
 
 use baml_rt_api::ConversationHistoryUpdate;
-use tokio::sync::broadcast;
+use tokio::{sync::broadcast, task::JoinHandle};
 
 use crate::runner::AgentRunner;
 
 pub(crate) struct ConversationHistoryEventServiceImpl {
-    runner: Arc<AgentRunner>,
+    tx: broadcast::Sender<ConversationHistoryUpdate>,
+    _tasks: Vec<JoinHandle<()>>,
 }
 
 impl ConversationHistoryEventServiceImpl {
-    pub(crate) fn new(runner: Arc<AgentRunner>) -> Self {
-        Self { runner }
-    }
-}
-
-impl baml_rt_api::ConversationHistoryEventService for ConversationHistoryEventServiceImpl {
-    fn subscribe_updates(&self) -> broadcast::Receiver<ConversationHistoryUpdate> {
-        let (tx, rx) = broadcast::channel(1024);
-        let receivers = self.runner.subscribe_task_update_receivers();
-        for mut updates in receivers {
+    pub(crate) fn new(
+        runner: Arc<AgentRunner>,
+        tx: broadcast::Sender<ConversationHistoryUpdate>,
+    ) -> Self {
+        let mut handles = Vec::new();
+        for mut updates in runner.subscribe_task_update_receivers() {
             let tx_clone = tx.clone();
-            tokio::spawn(async move {
-                let deadline = Instant::now() + Duration::from_secs(620);
+            handles.push(tokio::spawn(async move {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(620);
                 loop {
-                    if Instant::now() >= deadline {
+                    if std::time::Instant::now() >= deadline {
                         break;
                     }
                     match updates.recv().await {
@@ -51,8 +49,17 @@ impl baml_rt_api::ConversationHistoryEventService for ConversationHistoryEventSe
                         Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
-            });
+            }));
         }
-        rx
+        Self {
+            tx,
+            _tasks: handles,
+        }
+    }
+}
+
+impl baml_rt_api::ConversationHistoryEventService for ConversationHistoryEventServiceImpl {
+    fn subscribe_updates(&self) -> broadcast::Receiver<ConversationHistoryUpdate> {
+        self.tx.subscribe()
     }
 }

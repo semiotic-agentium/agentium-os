@@ -1,0 +1,16 @@
+{
+  "version": "1.0.0",
+  "name": "unified-step-harness-demo",
+  "entry_point": "src/index.ts",
+  "signature": "unified-step-harness-demo@1.0.0",
+  "tools": [
+    "support/calculate"
+  ],
+  "discovery": {
+    "description": "Fixture: unified structured step executor (AskUser then terminal plan)",
+    "capabilities": []
+  },
+  "tags": [
+    "fixture"
+  ]
+}

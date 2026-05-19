@@ -48,10 +48,12 @@ include_num_members: boolean | null;
 auth: SlackAuthPreference | null;
  }
 
-export interface NeedClarification { question: string;
+export interface NeedClarification { kind: "clarify";
+question: string;
  }
 
-export interface NotRelevant { reason: string;
+export interface NotRelevant { kind: "not_relevant";
+reason: string;
  }
 
 export interface ReadOnlyResponse { message: string;
@@ -77,7 +79,8 @@ export type SlackConversationKind = "PublicChannel" | "PrivateChannel" | "Im" | 
 
 export type SlackHistoryOrder = "LatestFirst" | "OldestFirst";
 
-export interface SlackIntent { intent: string;
+export interface SlackIntent { kind: "intent";
+intent: string;
  }
 
 export interface SlackPlanStep { agent_package: string;
@@ -460,7 +463,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseSlackAction" | "ChooseSlackAction__act__support_slack" | "ChooseSlackAction__continue__support_slack" | "ChooseSlackAction__select";
+export type StepExecutorFunctionName = "ChooseSlackAction" | "ChooseSlackAction__active__support_slack" | "ChooseSlackAction__entry";
 
 export interface SessionContext {
     contract_version: "session_context_v2";
@@ -497,23 +500,35 @@ export interface StepExecutorRunOptions {
     max_steps?: number;
 }
 
+export type ErrorDisposition =
+    | "host_retriable"
+    | "llm_correctable"
+    | "inform_and_continue"
+    | "fatal";
+
+export interface StepPlanRecovery {
+    code: string;
+    disposition: ErrorDisposition;
+    mistake: string;
+    invariant: string;
+    fix_steps?: string[];
+}
+
+export type StepExecutorRunEnvelope<R = unknown> = { outcome: "completed", last: R, steps: R[], session_context: SessionContext, selected_tool: string | null } | { outcome: "agent_correctable", recovery: StepPlanRecovery } | { outcome: "fatal", message: string, code?: string | null };
+
 /**
- * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
- * User-facing replies are synthesized once at session completion (and recorded there).
+ * Result of runGeneratedStepExecutor: discriminated envelope (`outcome`).
+ * On `completed`, fields match the former flat telemetry shape.
+ * `agent_correctable` carries structured recovery — not a thrown JS error.
+ * User-facing replies are still SessionResult.message from the chat handler.
  */
 
-export interface StepExecutorRunResult<R = unknown> {
-    last: R;
-    steps: R[];
-    session_context: SessionContext;
-    selected_tool: string | null;
-}
+export type StepExecutorRunResult<R = unknown> = StepExecutorRunEnvelope<R>;
 
 export interface StepExecutorFunctionMap {
   ChooseSlackAction: { args: Parameters<typeof ChooseSlackAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseSlackAction>>; };
-  ChooseSlackAction__act__support_slack: { args: Parameters<typeof ChooseSlackAction__act__support_slack>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseSlackAction__act__support_slack>>; };
-  ChooseSlackAction__continue__support_slack: { args: Parameters<typeof ChooseSlackAction__continue__support_slack>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseSlackAction__continue__support_slack>>; };
-  ChooseSlackAction__select: { args: Parameters<typeof ChooseSlackAction__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseSlackAction__select>>; };
+  ChooseSlackAction__active__support_slack: { args: Parameters<typeof ChooseSlackAction__active__support_slack>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseSlackAction__active__support_slack>>; };
+  ChooseSlackAction__entry: { args: Parameters<typeof ChooseSlackAction__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseSlackAction__entry>>; };
 }
 
 declare global {
@@ -521,5 +536,5 @@ declare global {
     stepExecutor: F,
     args: Omit<StepExecutorFunctionMap[F]["args"], keyof StepExecutorStateInput>,
     options?: StepExecutorRunOptions
-  ): Promise<StepExecutorRunResult<StepExecutorFunctionMap[F]["result"]>>;
+  ): Promise<StepExecutorRunEnvelope<StepExecutorFunctionMap[F]["result"]>>;
 }

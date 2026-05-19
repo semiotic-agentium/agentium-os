@@ -2323,6 +2323,15 @@ mod tests {
         ) -> crate::error::Result<Vec<ProvenanceConversationContextItem>> {
             Ok(Vec::new())
         }
+
+        async fn conversation_context_with_task(
+            &self,
+            _context_id: &ContextId,
+            _limit: Option<usize>,
+            _task_id: Option<&TaskId>,
+        ) -> crate::error::Result<Vec<ProvenanceConversationContextItem>> {
+            Ok(Vec::new())
+        }
     }
 
     #[async_trait]

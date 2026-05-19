@@ -387,7 +387,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseDevClaudeExtAction" | "ChooseDevClaudeExtAction__act__dev_claude_ext" | "ChooseDevClaudeExtAction__continue__dev_claude_ext" | "ChooseDevClaudeExtAction__select";
+export type StepExecutorFunctionName = "ChooseDevClaudeExtAction" | "ChooseDevClaudeExtAction__active__dev_claude_ext" | "ChooseDevClaudeExtAction__entry";
 
 export interface SessionContext {
     contract_version: "session_context_v2";
@@ -424,23 +424,35 @@ export interface StepExecutorRunOptions {
     max_steps?: number;
 }
 
+export type ErrorDisposition =
+    | "host_retriable"
+    | "llm_correctable"
+    | "inform_and_continue"
+    | "fatal";
+
+export interface StepPlanRecovery {
+    code: string;
+    disposition: ErrorDisposition;
+    mistake: string;
+    invariant: string;
+    fix_steps?: string[];
+}
+
+export type StepExecutorRunEnvelope<R = unknown> = { outcome: "completed", last: R, steps: R[], session_context: SessionContext, selected_tool: string | null } | { outcome: "agent_correctable", recovery: StepPlanRecovery } | { outcome: "fatal", message: string, code?: string | null };
+
 /**
- * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
- * User-facing replies are synthesized once at session completion (and recorded there).
+ * Result of runGeneratedStepExecutor: discriminated envelope (`outcome`).
+ * On `completed`, fields match the former flat telemetry shape.
+ * `agent_correctable` carries structured recovery — not a thrown JS error.
+ * User-facing replies are still SessionResult.message from the chat handler.
  */
 
-export interface StepExecutorRunResult<R = unknown> {
-    last: R;
-    steps: R[];
-    session_context: SessionContext;
-    selected_tool: string | null;
-}
+export type StepExecutorRunResult<R = unknown> = StepExecutorRunEnvelope<R>;
 
 export interface StepExecutorFunctionMap {
   ChooseDevClaudeExtAction: { args: Parameters<typeof ChooseDevClaudeExtAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDevClaudeExtAction>>; };
-  ChooseDevClaudeExtAction__act__dev_claude_ext: { args: Parameters<typeof ChooseDevClaudeExtAction__act__dev_claude_ext>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDevClaudeExtAction__act__dev_claude_ext>>; };
-  ChooseDevClaudeExtAction__continue__dev_claude_ext: { args: Parameters<typeof ChooseDevClaudeExtAction__continue__dev_claude_ext>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDevClaudeExtAction__continue__dev_claude_ext>>; };
-  ChooseDevClaudeExtAction__select: { args: Parameters<typeof ChooseDevClaudeExtAction__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDevClaudeExtAction__select>>; };
+  ChooseDevClaudeExtAction__active__dev_claude_ext: { args: Parameters<typeof ChooseDevClaudeExtAction__active__dev_claude_ext>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDevClaudeExtAction__active__dev_claude_ext>>; };
+  ChooseDevClaudeExtAction__entry: { args: Parameters<typeof ChooseDevClaudeExtAction__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDevClaudeExtAction__entry>>; };
 }
 
 declare global {
@@ -448,5 +460,5 @@ declare global {
     stepExecutor: F,
     args: Omit<StepExecutorFunctionMap[F]["args"], keyof StepExecutorStateInput>,
     options?: StepExecutorRunOptions
-  ): Promise<StepExecutorRunResult<StepExecutorFunctionMap[F]["result"]>>;
+  ): Promise<StepExecutorRunEnvelope<StepExecutorFunctionMap[F]["result"]>>;
 }

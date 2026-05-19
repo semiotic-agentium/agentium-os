@@ -1214,6 +1214,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_due_callbacks_immediately_after_schedule_preserves_dispatch_task_id() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("state.db");
+        let store = DeploymentStateStore::open(&path).await.unwrap();
+        let dispatch_task =
+            TaskId::from_external(ExternalId::new("dispatch-task-immediate".to_string()));
+        let dispatch_ctx = ContextId::new(900, 1);
+        let sched_ctx = ContextId::new(900, 2);
+        let sched_task = TaskId::from_external(ExternalId::new("sched-task-immediate".to_string()));
+        store
+            .schedule_callback(&ScheduleCallbackRequest {
+                source_key: "dispatch-echo:callback:immediate-test".into(),
+                dedupe_key: None,
+                payload: serde_json::json!({ "probe": true }),
+                scheduled_for_unix_ms: 0,
+                requested_at_unix_ms: 0,
+                context_id: Some(dispatch_ctx.clone()),
+                task_id: Some(dispatch_task.clone()),
+                scheduling_context_id: Some(sched_ctx),
+                scheduling_task_id: Some(sched_task),
+                requesting_agent_id: Some("agent-immediate".into()),
+                requesting_message_id: None,
+            })
+            .await
+            .unwrap();
+        let due = store.list_due_callbacks(1_000_000, 10).await.unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(
+            due[0].task_id.as_ref().map(|t| t.as_str()),
+            Some("dispatch-task-immediate")
+        );
+        assert_eq!(
+            due[0].context_id.as_ref().map(|c| c.as_str()),
+            Some(dispatch_ctx.as_str())
+        );
+    }
+
+    #[tokio::test]
     async fn scheduled_callbacks_persist_and_clear_after_delivery() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("state.db");
@@ -1261,6 +1299,19 @@ mod tests {
         assert_eq!(due[0].callback_id, scheduled.callback.callback_id);
         assert_eq!(due[0].source_key, "workflow-intake:resume");
         assert_eq!(due[0].requesting_agent_id.as_deref(), Some("agent-42"));
+        assert_eq!(
+            due[0].context_id.as_ref().map(|c| c.as_str()),
+            Some("ctx-12-2")
+        );
+        assert_eq!(due[0].task_id.as_ref().map(|t| t.as_str()), Some("task-99"));
+        assert_eq!(
+            due[0].scheduling_context_id.as_ref().map(|c| c.as_str()),
+            Some("ctx-12-2")
+        );
+        assert_eq!(
+            due[0].scheduling_task_id.as_ref().map(|t| t.as_str()),
+            Some("task-99")
+        );
 
         reopened
             .mark_callbacks_delivered(std::slice::from_ref(&scheduled.callback.callback_id), 25)

@@ -6,9 +6,8 @@ use async_trait::async_trait;
 use baml_rt_conversation::view::{ProvenanceContextMessage, ProvenanceConversationContextItem};
 use baml_rt_core::{
     A2aJsChatHost, A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentDispatchAck,
-    AgentDispatchRequest, AgentInstanceId, AgentPackageName, BamlRtError, Citation, Result,
+    AgentDispatchRequest, AgentInstanceId, AgentPackageName, BamlRtError, Result,
     bus::{BusStream, EffectEmitter},
-    clock_events,
     context::{self, InvocationScope, OutcomeInvocationContext, RequestScope},
     correlation,
     dispatch::invocation_scope_for_agent_dispatch,
@@ -17,8 +16,8 @@ use baml_rt_core::{
 };
 use baml_rt_observability::{metrics, spans};
 use baml_rt_provenance::{
-    A2aGraphStore, ProvEvent, ProvenanceContextReader, ProvenanceEffectSubscriber,
-    ProvenanceInterceptor, ProvenanceWriter, SurrealProvenanceStore,
+    ProvEvent, ProvenanceContextReader, ProvenanceEffectSubscriber, ProvenanceInterceptor,
+    ProvenanceWriter, SurrealProvenanceStore,
 };
 use baml_rt_quickjs::{
     BamlRuntimeManager, BridgeHandle, QuickJSBridge, QuickJSConfig,
@@ -38,14 +37,12 @@ use tracing::{Instrument, Span};
 use crate::{
     a2a,
     a2a_store::{
-        ConversationContextSource, ProvenanceTaskStore, ProvenanceWriterConversationSource,
+        ConversationContextSource, MessageLifecycleEventInput, ProvenanceWriterConversationSource,
         TaskChunkApplier, TaskEventRecorder, TaskRepository, TaskStoreBackend, TaskUpdateEvent,
-        TaskUpdateQueue, message_role_string, metadata_string_map, validated_message_content,
+        ensure_agent_id_in_metadata, inject_agent_id_into_chunk, now_millis,
+        record_task_store_metrics, require_context_id,
     },
-    a2a_types::{
-        JSONRPCId, Message, ROLE_USER, StreamChunkView, TaskArtifactUpdateEvent,
-        TaskStatusUpdateEvent,
-    },
+    a2a_types::{JSONRPCId, Message, StreamChunkView, StreamResponse},
     auto_status::AutoWorkingStatusSubscriber,
     error_classifier::{A2aErrorClassifier, ErrorClassifier},
     events::{BroadcastEventEmitter, EventEmitter},
@@ -80,10 +77,6 @@ struct SurrealRuntimeStore {
 }
 
 impl SurrealRuntimeStore {
-    fn now_millis() -> u64 {
-        baml_rt_core::now_unix_ms(clock_events::A2A_TRANSPORT)
-    }
-
     /// Single construction point: one TaskSubgraphStore over the same provenance Arc,
     /// so pipeline and handler share the same store/connection. agent_id is required for
     /// message provenance (a message is always sent to/from an agent).
@@ -91,9 +84,16 @@ impl SurrealRuntimeStore {
         provenance: Arc<baml_rt_provenance::SurrealProvenanceStore>,
         agent_id: baml_rt_core::ids::AgentId,
     ) -> Arc<Self> {
-        let graph: Arc<dyn A2aGraphStore> = provenance.clone();
+        // Graph-only: the store reads through `TaskGraphReader`
+        // (implemented by `SurrealProvenanceStore`) and writes via
+        // the `ProvenanceWriter` `add_event` surface — no relational
+        // `a2a_*` mirror remains.
+        let reader: Arc<dyn baml_rt_provenance::TaskGraphReader> = provenance.clone();
+        let writer: Arc<dyn baml_rt_provenance::ProvenanceWriter> = provenance.clone();
         Arc::new(Self {
-            task_store: Arc::new(crate::task_subgraph_store::TaskSubgraphStore::new(graph)),
+            task_store: Arc::new(crate::task_subgraph_store::TaskSubgraphStore::new(
+                reader, writer,
+            )),
             provenance,
             agent_id,
         })
@@ -114,106 +114,144 @@ impl SurrealRuntimeStore {
                 "context_id is required for {operation}; refusing implicit generation"
             ))
         })?;
-        let role = message_role_string(&message.role);
-        let content = validated_message_content(message, operation)?;
-        let metadata = message.metadata.as_ref().map(metadata_string_map);
-        // Extract typed citations from wire metadata before the lossy string-map conversion
-        // drops the array. Citations are model-produced ref-table strings (#N, @N, …).
-        let citations: Vec<Citation> = message
-            .metadata
-            .as_ref()
-            .and_then(|m| m.get("citations"))
-            .and_then(serde_json::Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .filter_map(|s| Citation::try_new(s).ok())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let input = MessageLifecycleEventInput::from_message(
+            message,
+            context_id.clone(),
+            message.task_id.clone(),
+            &self.agent_id,
+            now_millis(),
+            operation,
+        )?;
         tracing::debug!(
             context_id = %context_id,
             message_id = %message.message_id.as_message_id(),
-            role = %role,
-            citation_count = citations.len(),
+            role = %input.role,
+            citation_count = input.citations.len(),
             "emit_message_lifecycle_event: emitting MessageReceived/MessageSent"
         );
-        let event = match (role.as_str(), message.task_id.clone()) {
-            (ROLE_USER, Some(task_id)) => ProvEvent::message_received_task(
-                context_id,
-                task_id,
-                message.message_id.as_message_id().clone(),
-                role,
-                content,
-                metadata,
-                self.agent_id.clone(),
-                Self::now_millis(),
-            ),
-            (ROLE_USER, None) => ProvEvent::message_received_global(
-                context_id,
-                message.message_id.as_message_id().clone(),
-                role,
-                content,
-                metadata,
-                self.agent_id.clone(),
-                Self::now_millis(),
-            ),
-            (_, Some(task_id)) => ProvEvent::message_sent_task(
-                context_id,
-                task_id,
-                message.message_id.as_message_id().clone(),
-                role,
-                content,
-                metadata,
-                self.agent_id.clone(),
-                Self::now_millis(),
-                citations,
-            ),
-            (_, None) => ProvEvent::message_sent_global(
-                context_id,
-                message.message_id.as_message_id().clone(),
-                role,
-                content,
-                metadata,
-                self.agent_id.clone(),
-                Self::now_millis(),
-                citations,
-            ),
-        };
+        let event = input.into_prov_event();
         self.add_provenance_event_required(event, operation).await
+    }
+
+    async fn insert_message_with_scope(
+        &self,
+        message: &Message,
+        context_id: ContextId,
+        task_id: Option<TaskId>,
+    ) -> Result<()> {
+        let role = crate::a2a_store::message_role_string(&message.role);
+        if role != crate::a2a_types::ROLE_USER {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "insert_message_with_scope requires ROLE_USER, got {role}"
+            )));
+        }
+        if let Some(ref tid) = task_id {
+            self.add_provenance_event_required(
+                ProvEvent::task_exists(context_id.clone(), tid.clone()),
+                "insert_message_with_scope task_exists",
+            )
+            .await?;
+            self.add_provenance_event_required(
+                ProvEvent::task_execution_started(
+                    context_id.clone(),
+                    tid.clone(),
+                    self.agent_id.clone(),
+                ),
+                "insert_message_with_scope task_execution_started",
+            )
+            .await?;
+        }
+
+        let mut scoped = message.clone();
+        scoped.context_id = Some(context_id);
+        scoped.task_id = task_id;
+        ensure_agent_id_in_metadata(&mut scoped.metadata, &self.agent_id);
+        self.emit_message_lifecycle_event(&scoped, "insert_message_with_scope")
+            .await?;
+        if scoped.task_id.is_some() {
+            let start = Instant::now();
+            self.task_store.insert_message(&scoped).await?;
+            record_task_store_metrics("insert_message_with_scope", "success", start);
+        }
+        Ok(())
     }
 }
 
 #[async_trait]
 impl TaskRepository for SurrealRuntimeStore {
-    async fn upsert(&self, task: crate::a2a_types::Task) -> Result<Option<crate::a2a_types::Task>> {
-        self.task_store.upsert(task).await
+    async fn upsert(
+        &self,
+        mut task: crate::a2a_types::Task,
+    ) -> Result<Option<crate::a2a_types::Task>> {
+        let start = Instant::now();
+        let context_id = require_context_id(task.context_id.clone(), "task upsert")?;
+        ensure_agent_id_in_metadata(&mut task.metadata, &self.agent_id);
+        if let Some(task_id) = task.id.clone() {
+            self.add_provenance_event_required(
+                ProvEvent::task_exists(context_id.clone(), task_id.clone()),
+                "task upsert task_exists",
+            )
+            .await?;
+            self.add_provenance_event_required(
+                ProvEvent::task_execution_started(context_id, task_id, self.agent_id.clone()),
+                "task upsert task_execution_started",
+            )
+            .await?;
+        }
+        let out = self.task_store.upsert(task).await?;
+        record_task_store_metrics("upsert", "success", start);
+        Ok(out)
     }
     async fn ensure_task_exists(
         &self,
         task_id: &baml_rt_core::ids::TaskId,
         context_id: Option<&baml_rt_core::ids::ContextId>,
     ) -> Result<()> {
+        let start = Instant::now();
         self.task_store
             .ensure_task_exists(task_id, context_id)
-            .await
+            .await?;
+        record_task_store_metrics("ensure_task_exists", "success", start);
+        Ok(())
     }
     async fn get(&self, id: &str, history_length: Option<usize>) -> Option<crate::a2a_types::Task> {
-        self.task_store.get(id, history_length).await
+        let start = Instant::now();
+        let task = self.task_store.get(id, history_length).await;
+        record_task_store_metrics("get", "success", start);
+        task
     }
     async fn list(
         &self,
         request: &crate::a2a_types::ListTasksRequest,
     ) -> crate::a2a_types::ListTasksResponse {
-        self.task_store.list(request).await
+        let start = Instant::now();
+        let response = self.task_store.list(request).await;
+        record_task_store_metrics("list", "success", start);
+        response
     }
     async fn cancel(&self, id: &str) -> Option<crate::a2a_types::Task> {
         self.task_store.cancel(id).await
     }
+    async fn insert_message_for_receiver(
+        &self,
+        message: &crate::a2a_types::Message,
+        context_id: ContextId,
+        task_id: Option<TaskId>,
+    ) -> Result<()> {
+        self.insert_message_with_scope(message, context_id, task_id)
+            .await
+    }
     async fn insert_message(&self, message: &crate::a2a_types::Message) -> Result<()> {
-        self.emit_message_lifecycle_event(message, "surreal insert_message")
+        let start = Instant::now();
+        let mut message = message.clone();
+        ensure_agent_id_in_metadata(&mut message.metadata, &self.agent_id);
+        self.emit_message_lifecycle_event(&message, "surreal insert_message")
             .await?;
-        self.task_store.insert_message(message).await
+        if message.task_id.is_some() {
+            self.task_store.insert_message(&message).await?;
+        }
+        record_task_store_metrics("insert_message", "success", start);
+        Ok(())
     }
 }
 
@@ -222,7 +260,7 @@ impl TaskEventRecorder for SurrealRuntimeStore {
     async fn record_status_update(
         &self,
         task_id: baml_rt_core::ids::TaskId,
-        context_id: Option<baml_rt_core::ids::ContextId>,
+        context_id: baml_rt_core::ids::ContextId,
         status: crate::a2a_types::TaskStatus,
     ) -> Result<Option<TaskUpdateEvent>> {
         self.task_store
@@ -232,7 +270,7 @@ impl TaskEventRecorder for SurrealRuntimeStore {
     async fn record_artifact_update(
         &self,
         task_id: baml_rt_core::ids::TaskId,
-        context_id: Option<baml_rt_core::ids::ContextId>,
+        context_id: baml_rt_core::ids::ContextId,
         artifact: crate::a2a_types::Artifact,
         append: Option<bool>,
         last_chunk: Option<bool>,
@@ -244,24 +282,41 @@ impl TaskEventRecorder for SurrealRuntimeStore {
 }
 
 #[async_trait]
-impl TaskUpdateQueue for SurrealRuntimeStore {
-    async fn drain_updates(&self, task_id: &str) -> Vec<TaskUpdateEvent> {
-        self.task_store.drain_updates(task_id).await
-    }
-}
-
-#[async_trait]
 impl TaskChunkApplier for SurrealRuntimeStore {
-    async fn apply_task_delta(
+    async fn apply_task_chunk(
         &self,
-        task: Option<crate::a2a_types::Task>,
-        message: Option<crate::a2a_types::Message>,
-        status_update: Option<TaskStatusUpdateEvent>,
-        artifact_update: Option<TaskArtifactUpdateEvent>,
+        chunk: crate::a2a_types::ValidatedTaskChunk,
     ) -> Result<Vec<TaskUpdateEvent>> {
-        self.task_store
-            .apply_task_delta(task, message, status_update, artifact_update)
-            .await
+        let new_task_prov = chunk
+            .task()
+            .and_then(|task| Some((task.id.clone()?, task.context_id.clone()?)));
+        let mut sr = chunk.into_stream_response();
+        let (task, message) =
+            inject_agent_id_into_chunk(sr.task.take(), sr.message.take(), &self.agent_id);
+        sr.task = task;
+        sr.message = message;
+        let chunk = crate::a2a_types::ValidatedTaskChunk::try_from(sr)?;
+        let message_for_prov = chunk.resolved_assistant_message().scoped_owned();
+        let start = Instant::now();
+        let events = self.task_store.apply_task_chunk(chunk).await?;
+        record_task_store_metrics("apply_task_chunk", "success", start);
+        if let Some((task_id, context_id)) = new_task_prov {
+            self.add_provenance_event_required(
+                ProvEvent::task_exists(context_id.clone(), task_id.clone()),
+                "apply_task_chunk task_exists",
+            )
+            .await?;
+            self.add_provenance_event_required(
+                ProvEvent::task_execution_started(context_id, task_id, self.agent_id.clone()),
+                "apply_task_chunk task_execution_started",
+            )
+            .await?;
+        }
+        if let Some(message) = message_for_prov {
+            self.emit_message_lifecycle_event(&message, "apply_task_chunk")
+                .await?;
+        }
+        Ok(events)
     }
 }
 
@@ -314,7 +369,8 @@ impl ProvenanceWriter for SurrealRuntimeStore {
     }
 }
 
-/// Projects [`ProvenanceConversationContextItem`] rows into BAML `conversation_history` JSON.
+/// Projects [`ProvenanceConversationContextItem`] rows into **wire** conversation JSON (provider payload).
+/// QuickJS turns the merged line array into BAML **`ctx.tags['conversation_transcript']`** only — there is no history array tag on prompts.
 ///
 /// This is the **runtime** home for the tag pipeline: `ConversationContextSource::conversation_context`
 /// → [`to_projection_item`] ([`baml_rt_conversation::provenance_item_to_projection_item`]) →
@@ -382,26 +438,15 @@ impl ProjectingConversationContextProvider {
             let ctx = context_id_str.clone();
             let boxed: BoxedArchiveReader =
                 Box::new(move |archive_ref_str, grep_str, offset, limit| {
-                    let short_ref = baml_rt_tools::archive_read::ShortRef::parse(archive_ref_str)?;
                     let ref_table = baml_rt_tools::archive_refs::get_ref_table(&t, &ctx)?;
-                    let entry = ref_table.get(short_ref)?;
-                    let grep = grep_str
-                        .filter(|s| !s.is_empty())
-                        .and_then(|s| baml_rt_tools::archive_read::GrepPattern::parse(s).ok());
-                    let page = baml_rt_tools::archive_read::grep_paginate(
-                        &entry.content,
-                        grep.as_ref(),
-                        baml_rt_tools::archive_read::LineOffset(offset),
-                        baml_rt_tools::archive_read::PageLimit::new(limit),
-                    );
                     // CLI invocation without $ — role attribution is handled by the
                     // separate history entry that carries this as content.
-                    Some(
-                        baml_rt_tools::archive_read::format_grep_page_as_session_read_body(
-                            &page,
-                            archive_ref_str,
-                            grep_str,
-                        ),
+                    baml_rt_tools::archive_read::format_session_read_from_vtable(
+                        &ref_table,
+                        archive_ref_str,
+                        grep_str,
+                        offset,
+                        limit,
                     )
                 });
             boxed
@@ -714,6 +759,34 @@ impl A2aAgent {
         self.update_tx.subscribe()
     }
 
+    /// Single-source-of-truth: persist an inbound `message.sendStream` user `Message`
+    /// against the canonical session scope.
+    ///
+    /// EVERY ingress path that accepts a `MessageSendStream` request — first turn
+    /// AND `awaitInput`-style live-stream resume — MUST funnel through this method.
+    /// Skipping it loses the user turn from the conversation graph (Bug A.2);
+    /// having it in two places is exactly what allowed the resume path to drift.
+    ///
+    /// Failure semantics: returns `Err` so callers explicitly choose the policy.
+    /// Callers MUST NOT silently swallow the error (forbidden by `CLAUDE.md`'s
+    /// "no silent None → skip in write paths" rule). Both call sites currently
+    /// fail the turn and surface a JSON-RPC error to the client.
+    async fn persist_inbound_message_send_stream(
+        &self,
+        message: &crate::a2a_types::Message,
+        canonical_context_id: ContextId,
+        receiver_task_id: Option<TaskId>,
+    ) -> Result<()> {
+        if let Some(ref task_id) = receiver_task_id {
+            self.task_store
+                .ensure_task_exists(task_id, Some(&canonical_context_id))
+                .await?;
+        }
+        self.task_store
+            .insert_message_for_receiver(message, canonical_context_id, receiver_task_id)
+            .await
+    }
+
     /// Evaluate synchronous JavaScript in the agent runtime (no invocation scope).
     /// For setup/init code only — must not invoke BAML functions or JS tools.
     pub async fn evaluate_js(&self, code: &str) -> Result<Value> {
@@ -816,15 +889,31 @@ impl A2aAgent {
     /// Uses the bridge handover lane so this future is [`Send`] (required by `async_trait` HTTP
     /// registries); see [`baml_rt_quickjs::invoke_optional_js_function_handover`].
     pub async fn handle_dispatch(&self, request: AgentDispatchRequest) -> Result<AgentDispatchAck> {
-        let scope = invocation_scope_for_agent_dispatch(self.agent_id().clone(), &request);
+        tracing::info!(
+            routing = %request.routing_key.as_str(),
+            dispatch_task = ?request.task_id.as_ref().map(|t| t.as_str()),
+            dispatch_context = ?request.context_id.as_ref().map(|c| c.as_str()),
+            "A2aAgent::handle_dispatch envelope"
+        );
+        let invocation_scope =
+            invocation_scope_for_agent_dispatch(self.agent_id().clone(), &request);
         let js_payload = serde_json::to_value(&request).map_err(BamlRtError::Json)?;
 
-        let result = invoke_optional_js_function_handover(
-            self.bridge_handle().as_ref(),
-            scope,
-            "onDispatch",
-            js_payload,
-        )
+        // Mirror `handle_a2a_stream`: install tokio task-local [`RuntimeScope`] for the whole
+        // dispatch so any `context::current_scope()` reads (and scope-aligned helpers) match the
+        // dispatch envelope while `onDispatch` awaits host tool sessions.
+        let runtime_scope = invocation_scope.as_scope().clone();
+        let scope_for_handover = invocation_scope.clone();
+        let bridge = self.bridge_handle().clone();
+        let result = context::with_scope(runtime_scope, async move {
+            invoke_optional_js_function_handover(
+                bridge.as_ref(),
+                scope_for_handover,
+                "onDispatch",
+                js_payload,
+            )
+            .await
+        })
         .await?;
         let Some(value) = result else {
             return Err(BamlRtError::FunctionNotFound("onDispatch".into()));
@@ -846,6 +935,9 @@ pub struct A2aAgentBuilder {
     agent_identity: AgentIdentityConfig,
     register_a2a_session_tool: RegistrationMode,
     a2a_session_route_mode: A2aSessionRouteMode,
+    /// When set, provenance commits notify this channel so transcript consumers refresh after graph writes.
+    conversation_history_notify:
+        Option<tokio::sync::broadcast::Sender<baml_rt_core::ConversationHistoryUpdate>>,
 }
 
 pub struct A2aAgentBuilderWithEffectEmitter {
@@ -861,6 +953,8 @@ pub struct A2aAgentBuilderWithEffectEmitter {
     register_a2a_session_tool: RegistrationMode,
     a2a_session_route_mode: A2aSessionRouteMode,
     effect_emitter: Arc<dyn EffectEmitter>, // REQUIRED - enforced by typestate
+    conversation_history_notify:
+        Option<tokio::sync::broadcast::Sender<baml_rt_core::ConversationHistoryUpdate>>,
 }
 
 /// Runtime configuration: either provided or default.
@@ -875,16 +969,17 @@ enum BridgeConfig {
     AutoCreate,
 }
 
-/// Task store configuration: either provided or default (InMemory).
+/// Task store configuration: preserved only long enough to reject the legacy
+/// custom-backend path with an explicit build error.
 enum TaskStoreConfig {
-    Provided(Arc<dyn TaskStoreBackend>),
+    Provided,
     Default,
 }
 
 /// Provenance graph configuration. A writer is **always** mounted at build time.
 enum ProvenanceWriterConfig {
     Provided(Arc<dyn ProvenanceWriter>),
-    /// Task state and provenance in the same SurrealDB store (ProvenanceTaskStore over SurrealRuntimeStore).
+    /// Task state and provenance in the same SurrealDB store via the canonical graph-backed runtime store.
     Surreal(Arc<baml_rt_provenance::SurrealProvenanceStore>),
     /// Opens a dedicated **in-memory** SurrealDB graph (tests and local defaults). Not optional: no agent without a database.
     Default,
@@ -964,7 +1059,17 @@ impl A2aAgentBuilder {
             agent_identity: AgentIdentityConfig::Default,
             register_a2a_session_tool: RegistrationMode::Skip,
             a2a_session_route_mode: A2aSessionRouteMode::SelfAgent,
+            conversation_history_notify: None,
         }
+    }
+
+    /// Notify this channel after each successful context-scoped provenance write (operator transcript SSE).
+    pub fn with_conversation_history_notify(
+        mut self,
+        tx: tokio::sync::broadcast::Sender<baml_rt_core::ConversationHistoryUpdate>,
+    ) -> Self {
+        self.conversation_history_notify = Some(tx);
+        self
     }
 
     /// Provide an existing runtime manager (overrides default).
@@ -1004,9 +1109,9 @@ impl A2aAgentBuilder {
         self
     }
 
-    /// Provide a custom task store backend (overrides default).
-    pub fn with_task_store_backend(mut self, task_store: Arc<dyn TaskStoreBackend>) -> Self {
-        self.task_store = TaskStoreConfig::Provided(task_store);
+    /// Legacy API retained only to produce a deterministic build-time rejection.
+    pub fn with_task_store_backend(mut self, _task_store: Arc<dyn TaskStoreBackend>) -> Self {
+        self.task_store = TaskStoreConfig::Provided;
         self
     }
 
@@ -1085,6 +1190,7 @@ impl A2aAgentBuilder {
             register_a2a_session_tool: self.register_a2a_session_tool,
             a2a_session_route_mode: self.a2a_session_route_mode,
             effect_emitter: emitter,
+            conversation_history_notify: self.conversation_history_notify,
         }
     }
 }
@@ -1127,9 +1233,9 @@ impl A2aAgentBuilderWithEffectEmitter {
         self
     }
 
-    /// Provide a custom task store backend (overrides default).
-    pub fn with_task_store_backend(mut self, task_store: Arc<dyn TaskStoreBackend>) -> Self {
-        self.task_store = TaskStoreConfig::Provided(task_store);
+    /// Legacy API retained only to produce a deterministic build-time rejection.
+    pub fn with_task_store_backend(mut self, _task_store: Arc<dyn TaskStoreBackend>) -> Self {
+        self.task_store = TaskStoreConfig::Provided;
         self
     }
 
@@ -1145,6 +1251,15 @@ impl A2aAgentBuilderWithEffectEmitter {
         store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
     ) -> Self {
         self.provenance_writer = ProvenanceWriterConfig::Surreal(store);
+        self
+    }
+
+    /// Notify this channel after each successful context-scoped provenance write (operator transcript SSE).
+    pub fn with_conversation_history_notify(
+        mut self,
+        tx: tokio::sync::broadcast::Sender<baml_rt_core::ConversationHistoryUpdate>,
+    ) -> Self {
+        self.conversation_history_notify = Some(tx);
         self
     }
 
@@ -1326,29 +1441,28 @@ impl A2aAgentBuilderWithEffectEmitter {
 
         let (update_tx, _update_rx) = broadcast::channel(256);
 
-        // Resolve task_store and provenance_writer: single construction path per variant so
-        // cardinality is one — the same Arc<dyn TaskStoreBackend> is used for repository,
-        // live_result_pipeline, and request_router (create-stream writes and tasks.subscribe reads
-        // see the same backend instance).
-        let (task_store, provenance_writer, surreal_for_archive) = match (
+        // Resolve the single canonical graph-backed runtime store. Custom task
+        // store injection is rejected so read/write symmetry always routes
+        // through the provenance graph plus `TaskUpdateBroadcaster`.
+        let (runtime_store, provenance_writer, surreal_for_archive) = match (
             self.task_store,
             self.provenance_writer,
         ) {
-            (TaskStoreConfig::Provided(_), ProvenanceWriterConfig::Default) => {
+            (TaskStoreConfig::Provided, _) => {
                 return Err(BamlRtError::InvalidArgument(
-                        "A2aAgentBuilder: a provenance graph is required. \
-                     With a custom task store you must call .with_provenance_writer(...) or .with_surreal_store(...); \
-                     you cannot combine with_task_store_backend alone with the default writer."
-                            .into(),
-                    ));
-            }
-            (TaskStoreConfig::Provided(task_store), ProvenanceWriterConfig::Provided(writer)) => {
-                (task_store, Some(writer), None)
+                    "A2aAgentBuilder: custom task store backends are no longer supported. \
+                     Use the canonical graph-backed runtime store via .with_surreal_store(...) \
+                     or the default in-memory Surreal provenance graph."
+                        .into(),
+                ));
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Provided(writer)) => {
-                let store: Arc<dyn TaskStoreBackend> =
-                    Arc::new(ProvenanceTaskStore::new(writer.clone(), agent_id.clone()));
-                (store, Some(writer), None)
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "A2aAgentBuilder: .with_provenance_writer(...) is no longer sufficient \
+                         for task handling because tasks.subscribe requires graph replay. \
+                         Mount a Surreal provenance graph with .with_surreal_store(...) instead; got writer type {}",
+                    std::any::type_name_of_val(writer.as_ref())
+                )));
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Default) => {
                 let prov = baml_rt_provenance::SurrealStoreBuilder::in_memory_isolated()
@@ -1362,31 +1476,28 @@ impl A2aAgentBuilderWithEffectEmitter {
                 let archive_src = Arc::clone(&prov);
                 let runtime_store = SurrealRuntimeStore::new(prov, agent_id.clone());
                 let w: Arc<dyn ProvenanceWriter> = runtime_store.clone();
-                let task_store: Arc<dyn TaskStoreBackend> = Arc::new(
-                    ProvenanceTaskStore::with_backend(runtime_store, w.clone(), agent_id.clone()),
-                );
-                (task_store, Some(w), Some(archive_src))
+                (runtime_store, Some(w), Some(archive_src))
             }
-            (TaskStoreConfig::Default, ProvenanceWriterConfig::Surreal(store))
-            | (TaskStoreConfig::Provided(_), ProvenanceWriterConfig::Surreal(store)) => {
+            (TaskStoreConfig::Default, ProvenanceWriterConfig::Surreal(store)) => {
                 let archive_src = Arc::clone(&store);
                 let runtime_store = SurrealRuntimeStore::new(store, agent_id.clone());
                 let provenance_writer: Arc<dyn ProvenanceWriter> = runtime_store.clone();
-                let task_store: Arc<dyn TaskStoreBackend> =
-                    Arc::new(ProvenanceTaskStore::with_backend(
-                        runtime_store,
-                        provenance_writer.clone(),
-                        agent_id.clone(),
-                    ));
-                (task_store, Some(provenance_writer), Some(archive_src))
+                (runtime_store, Some(provenance_writer), Some(archive_src))
             }
         };
 
-        let writer = provenance_writer.expect("build always mounts a ProvenanceWriter");
+        let base_writer = provenance_writer.expect("build always mounts a ProvenanceWriter");
+        let writer: Arc<dyn ProvenanceWriter> = match self.conversation_history_notify.clone() {
+            Some(tx) => Arc::new(
+                crate::provenance_notify_writer::NotifyingProvenanceWriter::new(base_writer, tx),
+            ),
+            None => base_writer,
+        };
         let archive_store: Option<Arc<SurrealProvenanceStore>> = surreal_for_archive;
 
         let emitter: Arc<dyn EventEmitter> =
             Arc::new(BroadcastEventEmitter::new(update_tx.clone()));
+        let task_store: Arc<dyn TaskStoreBackend> = runtime_store.clone();
         let inner_pipeline: Arc<dyn ResultStoragePipeline> =
             Arc::new(A2aResultPipeline::new(task_store.clone(), emitter.clone()));
         let deduplicator: Arc<dyn ResultDeduplicator> = Arc::new(HashResultDeduplicator::new());
@@ -1398,11 +1509,11 @@ impl A2aAgentBuilderWithEffectEmitter {
         // Same task_store Arc used for handler repository so subscribe and create-stream share one backend.
         let repository: Arc<dyn TaskRepository> = task_store.clone();
         let recorder: Arc<dyn TaskEventRecorder> = task_store.clone();
-        let update_queue: Arc<dyn TaskUpdateQueue> = task_store.clone();
         let task_handler: Arc<dyn TaskHandler> = Arc::new(DefaultTaskHandler::new(
             repository,
             recorder,
-            update_queue,
+            runtime_store.provenance.clone(),
+            runtime_store.task_store.broadcaster(),
             bridge_handle.bridge().clone(),
             emitter.clone(),
         ));
@@ -1525,11 +1636,27 @@ fn build_stream_sessions_and_relay(
 /// This keeps MessageReceived attributed to the receiver's (agent_id, task_id) without collapsing
 /// task_id to context_id.
 fn synthesized_live_task_id(context_id: &ContextId, message_id: &MessageId) -> TaskId {
-    TaskId::from_external(ExternalId::new(format!(
-        "live-task:{}:{}",
-        context_id.as_str(),
-        message_id.as_str()
-    )))
+    TaskId::for_live_stream(context_id, message_id)
+}
+
+fn strip_message_send_stream_task_id_from_wire(request: &mut Value) {
+    let Some(params) = request.get_mut("params").and_then(|p| p.as_object_mut()) else {
+        return;
+    };
+    let Some(msg) = params.get_mut("message").and_then(|m| m.as_object_mut()) else {
+        return;
+    };
+    msg.remove("taskId");
+}
+
+fn should_preserve_wire_task_id_for_message_send_stream(parsed: &a2a::A2aRequest) -> bool {
+    parsed
+        .params
+        .as_send_message()
+        .and_then(|params| params.metadata.as_ref())
+        .and_then(|metadata| metadata.get("kind"))
+        .and_then(Value::as_str)
+        == Some("agent-to-agent")
 }
 
 fn resolve_scope_for_outcome(
@@ -1620,13 +1747,16 @@ impl A2aJsChatHost for A2aAgent {}
 /// Wire chunk when the collector signals `InputRequired` completion with a null payload.
 /// Not wire-final (`final: false`); both `task.status` and `statusUpdate.status` carry
 /// `TASK_STATE_INPUT_REQUIRED` so clients (e.g. `getStateFromChunk`) stay aligned.
-fn synthetic_input_required_chunk_wire_value(task_id: String, context_id: &str) -> Value {
+fn synthetic_input_required_chunk(task_id: String, context_id: &str) -> StreamResponse {
+    let mid = format!("a2a-synthetic-input-required-{task_id}");
     let prompt_msg = json!({
+        "messageId": mid.clone(),
+        "role": "ROLE_AGENT",
         "parts": [{ "text": "Reply to continue the conversation." }]
     });
-    json!({
+    serde_json::from_value(json!({
         "task": {
-            "id": task_id,
+            "id": task_id.clone(),
             "contextId": context_id,
             "status": {
                 "state": "TASK_STATE_INPUT_REQUIRED",
@@ -1634,13 +1764,16 @@ fn synthetic_input_required_chunk_wire_value(task_id: String, context_id: &str) 
             }
         },
         "statusUpdate": {
+            "taskId": task_id,
+            "contextId": context_id,
             "status": {
                 "state": "TASK_STATE_INPUT_REQUIRED",
                 "message": prompt_msg
             }
         },
         "final": false
-    })
+    }))
+    .expect("synthetic INPUT_REQUIRED chunk shape")
 }
 
 /// Signals whether the outer turn loop should continue or break after an instrumented turn body.
@@ -1652,9 +1785,24 @@ enum TurnAction {
 impl A2aAgent {
     async fn handle_live_message_stream(
         &self,
-        request: Value,
-        parsed: a2a::A2aRequest,
+        mut request: Value,
+        mut parsed: a2a::A2aRequest,
     ) -> Result<BusStream<A2aStreamChunk>> {
+        if let Some(tid) = parsed.task_id_opt() {
+            let stored = self.task_store.get(tid.as_str(), None).await;
+            if crate::a2a_store::should_strip_wire_task_id_for_message_send_stream(stored.as_ref())
+                && !should_preserve_wire_task_id_for_message_send_stream(&parsed)
+            {
+                tracing::debug!(
+                    task_id = %tid.as_str(),
+                    had_record = stored.is_some(),
+                    "message.sendStream: stripping stale taskId (missing or terminal task)"
+                );
+                strip_message_send_stream_task_id_from_wire(&mut request);
+                parsed = a2a::A2aRequest::from_value(request.clone())?;
+            }
+        }
+
         let context_id = parsed.context_id().clone();
         let requested_session_key =
             LiveStreamSessionKey::from_context_and_task(&context_id, parsed.task_id_opt());
@@ -1763,7 +1911,7 @@ impl A2aAgent {
         /// alive: dropping it closes abort_rx which immediately fires the abort arm in the
         /// collector's tokio::select!, terminating the collector before the resume can arrive.
         type SuspendedState = (
-            mpsc::Receiver<(Value, usize, Option<StreamCompletion>)>,
+            mpsc::Receiver<(StreamResponse, usize, Option<StreamCompletion>)>,
             mpsc::Sender<Value>,
             Option<mpsc::Sender<()>>, // abort_tx — keep alive until stream fully terminates
         );
@@ -1794,6 +1942,58 @@ impl A2aAgent {
                 // Resume path: send turn request on resume_tx so collector delivers into same JS run; drain same rx.
                 // Keep resume_tx and abort_tx so when we hit InputRequired again we can suspend again.
                 let request_id = a2a::extract_jsonrpc_id(&turn.request);
+                // Parse the resume request ONCE — used for both the inbound persistence
+                // write and the resume task-id resolution below. Avoids the double parse
+                // the prior implementation paid per resume turn.
+                let parsed_resume = a2a::A2aRequest::from_value(turn.request.clone()).ok();
+
+                // Bug A.2 contract: the resume branch bypasses `handle_a2a_outcome_inner`,
+                // so the inbound user `Message` is persisted here through the SAME
+                // `persist_inbound_message_send_stream` method as the first-turn path.
+                // Per `CLAUDE.md` ("no silent None → skip in write paths") a persist
+                // failure FAILS THE TURN: we emit a JSON-RPC error to the client and
+                // break the loop rather than silently dropping the user message.
+                if let Some(ref parsed) = parsed_resume
+                    && let a2a::A2aParams::MessageSendStream(params) = &parsed.params
+                {
+                    let canonical_context_id = session_context_id.clone();
+                    let receiver_task_id = session_task_id.clone();
+                    if let Err(err) = self
+                        .persist_inbound_message_send_stream(
+                            &params.message,
+                            canonical_context_id,
+                            receiver_task_id,
+                        )
+                        .await
+                    {
+                        tracing::error!(
+                            error = %err,
+                            context_id = %session_context_id,
+                            "live stream resume: inbound persistence failed; failing turn to surface provenance corruption"
+                        );
+                        metrics::record_live_stream_event("resume_inbound_persist_err");
+                        let formatter = JsonRpcResponseFormatter;
+                        let formatted = formatter.format_error(request_id.clone(), &err);
+                        if response_tx
+                            .send(LiveResponseChunk(formatted))
+                            .await
+                            .is_err()
+                        {
+                            tracing::debug!(
+                                "live stream resume error send failed (receiver dropped)"
+                            );
+                        }
+                        // We are tearing down this live session — let `abort_tx`,
+                        // `resume_tx`, `rx` drop here so the collector observes the
+                        // abort signal and terminates promptly. Session-map cleanup
+                        // happens in the post-loop block (line ~2290).
+                        drop(rx);
+                        drop(resume_tx);
+                        drop(abort_tx);
+                        return TurnAction::Break;
+                    }
+                }
+
                 if resume_tx.send(turn.request).await.is_err() {
                     tracing::debug!("resume_tx send failed (collector dropped)");
                     return TurnAction::Break;
@@ -1803,20 +2003,21 @@ impl A2aAgent {
                     context_id = %session_context_id,
                     "live stream resume: sent request on resume_tx, re-entering drain"
                 );
+                let resume_session_task_id = session_task_id
+                    .as_ref()
+                    .map(|t| t.as_str().to_string())
+                    .or_else(|| {
+                        parsed_resume
+                            .as_ref()
+                            .and_then(|p| p.task_id_opt().map(|t| t.as_str().to_string()))
+                    });
                 (
                     rx,
                     Some(resume_tx),
                     abort_tx,
                     response_tx,
                     request_id,
-                    session_task_id
-                        .as_ref()
-                        .map(|t| t.as_str().to_string())
-                        .or_else(|| {
-                            a2a::A2aRequest::from_value(request_value.clone())
-                                .ok()
-                                .and_then(|p| p.task_id_opt().map(|t| t.as_str().to_string()))
-                        }),
+                    resume_session_task_id,
                     true,
                 )
             } else {
@@ -1985,17 +2186,20 @@ impl A2aAgent {
                                     .and_then(|p| p.task_id_opt().map(|t| t.as_str().to_string()))
                             })
                             .unwrap_or_else(|| format!("stream-{}", session_context_id));
-                        let completion_chunk = json!({
+                        let completion_chunk: StreamResponse = serde_json::from_value(json!({
                             "task": {
                                 "id": tid,
                                 "contextId": session_context_id.as_str(),
                                 "status": { "state": "TASK_STATE_COMPLETED" },
                                 "final": true
                             }
-                        });
+                        }))
+                        .expect("rx-closed completion chunk shape");
+                        let completion_wire =
+                            serde_json::to_value(&completion_chunk).unwrap_or(Value::Null);
                         if let Err(e) = self
                             .live_result_pipeline
-                            .store_result(&completion_chunk)
+                            .store_result(&completion_wire)
                             .await
                         {
                             tracing::warn!(
@@ -2005,7 +2209,7 @@ impl A2aAgent {
                         }
                         let formatted = self.response_formatter.format_stream_chunk(
                             request_id.clone(),
-                            completion_chunk,
+                            completion_wire,
                             0_usize,
                             true,
                         );
@@ -2038,7 +2242,7 @@ impl A2aAgent {
                     let (chunk, index, comp) = outcome_msg;
 
                     completion = comp;
-                    let view = StreamChunkView::new(chunk);
+                    let view = StreamChunkView::from_stream_response(&chunk);
                     if !view.is_null() {
                         if let Some(tid) = view.task_id() {
                             last_task_id = Some(tid.as_str().to_string());
@@ -2046,14 +2250,15 @@ impl A2aAgent {
                         let store_span =
                             spans::live_stream_store_result(index, view.has_storable_payload());
                         async {
-                            let raw_for_store = if view.raw.get("__toolStreamChunk").is_some() {
-                                let mut c = view.raw.clone();
-                                c.as_object_mut()
-                                    .and_then(|o| o.remove("__toolStreamChunk"));
-                                c
-                            } else {
-                                view.raw.clone()
-                            };
+                            let mut raw_for_store =
+                                serde_json::to_value(&chunk).unwrap_or(Value::Null);
+                            if raw_for_store
+                                .get("__toolStreamChunk")
+                                .is_some_and(|v| v.as_bool() == Some(true))
+                                && let Some(obj) = raw_for_store.as_object_mut()
+                            {
+                                obj.remove("__toolStreamChunk");
+                            }
                             let store_result =
                                 self.live_result_pipeline.store_result(&raw_for_store).await;
                             let ok = store_result.is_ok();
@@ -2076,13 +2281,13 @@ impl A2aAgent {
                             .clone()
                             .or(session_task_id_str.clone())
                             .unwrap_or_else(|| format!("stream-{}", session_context_id));
-                        let input_required_chunk = synthetic_input_required_chunk_wire_value(
-                            tid,
-                            session_context_id.as_str(),
-                        );
+                        let input_required_chunk =
+                            synthetic_input_required_chunk(tid, session_context_id.as_str());
+                        let input_wire =
+                            serde_json::to_value(&input_required_chunk).unwrap_or(Value::Null);
                         let formatted = self.response_formatter.format_stream_chunk(
                             request_id.clone(),
-                            input_required_chunk,
+                            input_wire,
                             index,
                             false,
                         );
@@ -2099,7 +2304,8 @@ impl A2aAgent {
                         break;
                     }
                     let is_final = comp.is_some_and(StreamCompletion::is_wire_final);
-                    let mut chunk_for_format = view.raw.clone();
+                    let mut chunk_for_format =
+                        serde_json::to_value(&chunk).unwrap_or(Value::Null);
                     let is_tool_stream = chunk_for_format
                         .as_object_mut()
                         .and_then(|o| o.remove("__toolStreamChunk"))
@@ -2223,7 +2429,7 @@ impl A2aAgent {
                 let mut last_task_id: Option<String> = None;
                 // Stream in real time: receive → format → send immediately. No buffering.
                 while let Some((chunk, index, comp)) = rx.recv().await {
-                    let view = StreamChunkView::new(chunk);
+                    let view = StreamChunkView::from_stream_response(&chunk);
                     if let Some(tid) = view.task_id() {
                         last_task_id = Some(tid.as_str().to_string());
                     }
@@ -2231,13 +2437,13 @@ impl A2aAgent {
                         let tid = last_task_id
                             .clone()
                             .unwrap_or_else(|| format!("stream-{synthetic_context}"));
-                        let input_required_chunk = synthetic_input_required_chunk_wire_value(
-                            tid,
-                            synthetic_context.as_str(),
-                        );
+                        let input_required_chunk =
+                            synthetic_input_required_chunk(tid, synthetic_context.as_str());
+                        let input_wire =
+                            serde_json::to_value(&input_required_chunk).unwrap_or(Value::Null);
                         let formatted = self.response_formatter.format_stream_chunk(
                             request_id.clone(),
-                            input_required_chunk,
+                            input_wire,
                             index,
                             false,
                         );
@@ -2245,7 +2451,7 @@ impl A2aAgent {
                         break;
                     }
                     let is_final = comp.is_some_and(StreamCompletion::is_wire_final);
-                    let mut chunk_for_format = view.raw.clone();
+                    let mut chunk_for_format = serde_json::to_value(&chunk).unwrap_or(Value::Null);
                     let is_tool_stream = chunk_for_format
                         .as_object_mut()
                         .and_then(|o| o.remove("__toolStreamChunk"))
@@ -2353,20 +2559,14 @@ impl A2aAgent {
                 let invocation_scope = InvocationScope::new(scope.clone());
                 context::with_scope(scope, async move {
                     if let a2a::A2aParams::MessageSendStream(params) = &parsed_request.params {
-                        let canonical_context_id = invocation_scope.context_id().clone();
-                        let receiver_task_id = invocation_scope.task_id_opt().cloned();
-                        if let Some(ref task_id) = receiver_task_id {
-                            self.task_store
-                                .ensure_task_exists(task_id, Some(&canonical_context_id))
-                                .await?;
-                        }
-                        self.task_store
-                            .insert_message_for_receiver(
-                                &params.message,
-                                canonical_context_id,
-                                receiver_task_id,
-                            )
-                            .await?;
+                        // Bug A.2 contract: route through `persist_inbound_message_send_stream`
+                        // so first-turn and resume share one persistence call site.
+                        self.persist_inbound_message_send_stream(
+                            &params.message,
+                            invocation_scope.context_id().clone(),
+                            invocation_scope.task_id_opt().cloned(),
+                        )
+                        .await?;
                     }
                     self.request_router
                         .route(&parsed_request, &invocation_scope, resume_channel, relay_rx)
@@ -2567,8 +2767,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        A2aAgent, SurrealRuntimeStore, TaskRepository, synthesized_live_task_id,
-        synthetic_input_required_chunk_wire_value,
+        A2aAgent, SurrealRuntimeStore, TaskRepository,
+        should_preserve_wire_task_id_for_message_send_stream, synthesized_live_task_id,
+        synthetic_input_required_chunk,
     };
     use crate::a2a_types::{A2aMessageId, Message, MessageRole, Part};
 
@@ -2579,7 +2780,11 @@ mod tests {
             "InputRequired must not set final: true on the wire"
         );
 
-        let v = synthetic_input_required_chunk_wire_value("task-wire-test".to_string(), "ctx-9");
+        let v = serde_json::to_value(synthetic_input_required_chunk(
+            "task-wire-test".to_string(),
+            "ctx-9",
+        ))
+        .unwrap();
         assert_eq!(v.get("final"), Some(&json!(false)));
 
         let task = v.get("task").expect("task object");
@@ -2632,6 +2837,53 @@ mod tests {
             left, right,
             "same context/message scope must map to one task identity"
         );
+    }
+
+    #[test]
+    fn preserves_wire_task_id_for_internal_agent_to_agent_send() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": "a2a-1",
+            "method": "message.sendStream",
+            "params": {
+                "message": {
+                    "messageId": "msg-a2a-1",
+                    "role": "ROLE_USER",
+                    "parts": [{ "text": "delegate" }],
+                    "contextId": "ctx-a2a",
+                    "taskId": "a2a-child-123"
+                },
+                "metadata": {
+                    "kind": "agent-to-agent"
+                }
+            }
+        });
+        let parsed = crate::a2a::A2aRequest::from_value(request).expect("parse request");
+        assert!(should_preserve_wire_task_id_for_message_send_stream(
+            &parsed
+        ));
+    }
+
+    #[test]
+    fn does_not_preserve_wire_task_id_for_plain_client_send() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": "user-1",
+            "method": "message.sendStream",
+            "params": {
+                "message": {
+                    "messageId": "msg-user-1",
+                    "role": "ROLE_USER",
+                    "parts": [{ "text": "hello" }],
+                    "contextId": "ctx-user",
+                    "taskId": "task-user-1"
+                }
+            }
+        });
+        let parsed = crate::a2a::A2aRequest::from_value(request).expect("parse request");
+        assert!(!should_preserve_wire_task_id_for_message_send_stream(
+            &parsed
+        ));
     }
 
     #[tokio::test]

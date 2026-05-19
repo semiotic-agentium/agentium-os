@@ -23,5 +23,4 @@ tokio = { workspace = true, features = ["fs"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-assert_cmd = "2"
 tokio = { workspace = true, features = ["macros", "process", "time"] }

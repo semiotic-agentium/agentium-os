@@ -27,7 +27,7 @@ expression: snapshot
           "args": {
             "expression": "2+2"
           },
-          "phase": null
+          "phase": "unknown"
         },
         "a2a_tool_name": "support/calculate",
         "tool_result_ref": "[prov_activity_anchor]",

@@ -6,8 +6,8 @@ use super::helpers::map_surreal_error;
 use crate::{
     error::Result,
     surreal_tables::{
-        TBL_A2A_MESSAGE, TBL_A2A_TASK, TBL_A2A_UPDATE, TBL_ARCHIVE_BODY, TBL_ARCHIVE_LOCAL_COUNTER,
-        TBL_ARCHIVE_PREFIX_REGISTRY, TBL_EDGE, TBL_NODE, TBL_PAYLOAD, TBL_PAYLOAD_BLOB,
+        TBL_ARCHIVE_BODY, TBL_ARCHIVE_LOCAL_COUNTER, TBL_ARCHIVE_PREFIX_REGISTRY, TBL_EDGE,
+        TBL_NODE, TBL_PAYLOAD, TBL_PAYLOAD_BLOB,
     },
 };
 
@@ -31,20 +31,27 @@ pub(super) async fn init_schema(db: &Surreal<Any>) -> Result<()> {
         format!("DEFINE INDEX IF NOT EXISTS idx_edge_to_rel ON {TBL_EDGE} FIELDS to_id, rel_type"),
         format!("DEFINE INDEX IF NOT EXISTS idx_edge_to_rel_from_label ON {TBL_EDGE} FIELDS to_id, rel_type, from_label"),
         format!("DEFINE INDEX IF NOT EXISTS idx_edge_from_label_rel ON {TBL_EDGE} FIELDS from_label, rel_type"),
+        // Head-pointer edges (`WAS_LAST_TRANSITIONED_TO`,
+        // `WAS_LAST_EXECUTED_BY`) carry a cardinality-one invariant per
+        // `(rel_type, from_id)`: a Task has exactly one current TaskState
+        // and exactly one current AgentRuntimeInstance. SurrealDB v3 does
+        // not support partial / WHERE-filtered UNIQUE indexes, so an
+        // unconditional `(rel_type, from_id) UNIQUE` would break the
+        // existing fan-out edges (e.g. `A2A_TASK_MESSAGE`,
+        // `A2A_TASK_ARTIFACT`) that legitimately share a `from_id`. The
+        // invariant is therefore enforced procedurally by
+        // `surreal_write_batch::push_head_pointer_repoint`, which emits
+        // `DELETE prov_edge WHERE from_id = ? AND rel_type = ?` followed
+        // by an `UPSERT` for the new head, both inside the same
+        // `BEGIN..COMMIT` transaction as the rest of the event's writes.
         // Payload table: unique payload_id, indexed by activity_anchor_id and activity_id
         format!("DEFINE INDEX IF NOT EXISTS idx_payload_id ON {TBL_PAYLOAD} FIELDS payload_id UNIQUE"),
         format!("DEFINE INDEX IF NOT EXISTS idx_payload_activity_anchor ON {TBL_PAYLOAD} FIELDS activity_anchor_id"),
         format!("DEFINE INDEX IF NOT EXISTS idx_payload_activity ON {TBL_PAYLOAD} FIELDS activity_id, payload_kind"),
         format!("DEFINE INDEX IF NOT EXISTS idx_payload_blob_hash ON {TBL_PAYLOAD_BLOB} FIELDS content_hash UNIQUE"),
-        // A2A task table
-        format!("DEFINE INDEX IF NOT EXISTS idx_a2a_task_id ON {TBL_A2A_TASK} FIELDS task_id UNIQUE"),
-        format!("DEFINE INDEX IF NOT EXISTS idx_a2a_task_ctx ON {TBL_A2A_TASK} FIELDS context_id"),
-        // A2A message table
-        format!("DEFINE INDEX IF NOT EXISTS idx_a2a_msg_id ON {TBL_A2A_MESSAGE} FIELDS msg_id UNIQUE"),
-        format!("DEFINE INDEX IF NOT EXISTS idx_a2a_msg_task ON {TBL_A2A_MESSAGE} FIELDS task_id, seq"),
-        // A2A update table
-        format!("DEFINE INDEX IF NOT EXISTS idx_a2a_upd_id ON {TBL_A2A_UPDATE} FIELDS update_id UNIQUE"),
-        format!("DEFINE INDEX IF NOT EXISTS idx_a2a_upd_task ON {TBL_A2A_UPDATE} FIELDS task_id, seq"),
+        // Task storage is graph-backed. This schema initializes only the
+        // provenance node/edge/payload tables required by
+        // `TaskGraphReader` and live task-update delivery.
         // Cluster-safe session archive refs: stable prefix per (context, agent), monotonic local per prefix.
         format!("DEFINE TABLE IF NOT EXISTS {TBL_ARCHIVE_PREFIX_REGISTRY}"),
         format!("DEFINE INDEX IF NOT EXISTS idx_archive_prefix_ctx_agent ON {TBL_ARCHIVE_PREFIX_REGISTRY} FIELDS context_id, agent_id UNIQUE"),

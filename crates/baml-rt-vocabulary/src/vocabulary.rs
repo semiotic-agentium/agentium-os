@@ -28,6 +28,8 @@ pub mod a2a {
     pub const TASK_STATE: &str = "a2a:task_state";
     pub const TASK_STATE_TIME: &str = "a2a:task_state_time";
     pub const OLD_STATUS: &str = "a2a:old_status";
+    pub const INPUT_REQUIRED_PROMPT: &str = "a2a:input_required_prompt";
+    pub const OLD_INPUT_REQUIRED_PROMPT: &str = "a2a:old_input_required_prompt";
     pub const MESSAGE_ID: &str = "a2a:message_id";
     pub const ROLE: &str = "a2a:role";
     pub const CONTENT: &str = "a2a:content";
@@ -48,6 +50,8 @@ pub mod a2a {
     pub const PROMPT: &str = "a2a:prompt";
     /// UTF-8 length of JSON-serialized prompt (`serde_json::to_string`) measured once at emission.
     pub const PROMPT_SERIALIZED_UTF8_BYTES: &str = "a2a:prompt_serialized_utf8_bytes";
+    /// Unicode scalar count of textual chat `messages` content (see prompt projection / display helpers).
+    pub const PROMPT_MESSAGE_CHARS: &str = "a2a:prompt_message_chars";
     pub const USAGE_PROMPT_TOKENS: &str = "a2a:usage_prompt_tokens";
     pub const USAGE_COMPLETION_TOKENS: &str = "a2a:usage_completion_tokens";
     pub const USAGE_TOTAL_TOKENS: &str = "a2a:usage_total_tokens";
@@ -82,6 +86,7 @@ pub mod a2a {
     pub const ARTIFACT_TYPE: &str = "a2a:artifact_type";
     pub const CONTEXT_ID: &str = "a2a:context_id";
     pub const REASON: &str = "a2a:reason";
+    pub const OLD_REASON: &str = "a2a:old_reason";
     pub const TIMESTAMP_MS: &str = "a2a:timestamp_ms";
     /// Monotonic event counter parsed from the activity anchor at write time.
     pub const EVENT_ORDER: &str = "a2a:event_order";
@@ -99,6 +104,22 @@ pub mod prov_types {
     pub const ENTITY: &str = "prov:Entity";
     pub const ACTIVITY: &str = "prov:Activity";
     pub const AGENT: &str = "prov:Agent";
+}
+
+/// On-disk values stored in `props.a2a_activity_outcome` (see
+/// `a2a::ACTIVITY_OUTCOME` for the property key). Centralised so reads
+/// and writes never disagree on capitalisation.
+pub mod activity_outcome {
+    /// Activity completed without error.
+    pub const SUCCESS: &str = "Success";
+    /// Activity completed with a recorded failure.
+    pub const FAILURE: &str = "Failed";
+    /// Activity reached a terminal state but the outcome could not be
+    /// determined.
+    pub const INDETERMINATE: &str = "Indeterminate";
+    /// Activity has a start but no end time yet (still running or never
+    /// finalised).
+    pub const IN_PROGRESS: &str = "InProgress";
 }
 
 pub mod base_types {
@@ -180,6 +201,19 @@ pub mod semantic_labels {
     pub const WAS_CALLED_BY: &str = "WAS_CALLED_BY";
     pub const WAS_TRANSITIONED_FROM: &str = "WAS_TRANSITIONED_FROM";
     pub const WAS_TRANSITIONED_TO: &str = "WAS_TRANSITIONED_TO";
+    /// Head-pointer edge `Task -> TaskState` naming the most-recent
+    /// `TaskState` along the immutable `WAS_TRANSITIONED_FROM` chain.
+    /// Re-pointed atomically by the normalizer on every `TaskStatusChanged`;
+    /// cardinality (one per Task) is enforced by a UNIQUE index on
+    /// `(rel_type, from_id)` filtered to this rel_type.
+    pub const WAS_LAST_TRANSITIONED_TO: &str = "WAS_LAST_TRANSITIONED_TO";
+    /// Head-pointer edge `Task -> AgentRuntimeInstance` naming the
+    /// most-recent execution-owning agent. The chain edge
+    /// `WAS_EXECUTED_BY` (`TaskExecution -> AgentRuntimeInstance`) carries
+    /// per-execution history; this edge collapses agent-identity lookup
+    /// from a multi-hop traversal to a single indexed edge hop and
+    /// obsoletes the application-level `task_agent_id_cache`.
+    pub const WAS_LAST_EXECUTED_BY: &str = "WAS_LAST_EXECUTED_BY";
     /// Archive / observation citation lineage (contrast `prov_relations::WAS_DERIVED_FROM` for `#N` intent history).
     pub const WAS_INFORMED_BY: &str = "WAS_INFORMED_BY";
     pub const WAS_REPLACED_BY: &str = "WAS_REPLACED_BY";
@@ -188,8 +222,10 @@ pub mod semantic_labels {
     pub const WAS_DELEGATED_TO: &str = "WAS_DELEGATED_TO";
     /// Detached `system/callback` dispatch task was scheduled from a parent A2A scheduling task.
     pub const WAS_SCHEDULED_FROM: &str = "WAS_SCHEDULED_FROM";
-    pub const TASK_TRIGGERED_BY_MESSAGE: &str = "TASK_TRIGGERED_BY_MESSAGE";
-    pub const TASK_EMITTED_MESSAGE: &str = "TASK_EMITTED_MESSAGE";
+    // The canonical task↔message edge is `a2a_relations::TASK_MESSAGE`
+    // (`A2A_TASK_MESSAGE`) with a `direction` attribute distinguishing
+    // received-vs-sent. No separate `TASK_TRIGGERED_BY_MESSAGE` /
+    // `TASK_EMITTED_MESSAGE` labels exist on disk.
     /// LLM decision cited a specific evidence source (`#N` history or `@N` archive).
     pub const CITED: &str = "CITED";
     pub const HAS_INTENT: &str = "HAS_INTENT";
@@ -266,6 +302,10 @@ pub mod storage_safe {
     pub const A2A_TASK_STATE: &str = "a2a_task_state";
     pub const A2A_TASK_STATE_TIME: &str = "a2a_task_state_time";
     pub const A2A_OLD_STATUS: &str = "a2a_old_status";
+    pub const A2A_INPUT_REQUIRED_PROMPT: &str = "a2a_input_required_prompt";
+    pub const A2A_OLD_INPUT_REQUIRED_PROMPT: &str = "a2a_old_input_required_prompt";
+    pub const A2A_REASON: &str = "a2a_reason";
+    pub const A2A_OLD_REASON: &str = "a2a_old_reason";
     pub const A2A_MESSAGE_ID: &str = "a2a_message_id";
     pub const A2A_ROLE: &str = "a2a_role";
     pub const A2A_CONTENT: &str = "a2a_content";
@@ -285,6 +325,8 @@ pub mod storage_safe {
     pub const A2A_PROMPT: &str = "a2a_prompt";
     /// UTF-8 byte length of JSON-serialized LLM prompt payload on `LlmCall` nodes (single measurement at emission).
     pub const A2A_PROMPT_SERIALIZED_UTF8_BYTES: &str = "a2a_prompt_serialized_utf8_bytes";
+    /// Unicode scalar count of chat message text in the LLM request (same rules as display flattening).
+    pub const A2A_PROMPT_MESSAGE_CHARS: &str = "a2a_prompt_message_chars";
     pub const A2A_USAGE_PROMPT_TOKENS: &str = "a2a_usage_prompt_tokens";
     pub const A2A_USAGE_COMPLETION_TOKENS: &str = "a2a_usage_completion_tokens";
     pub const A2A_USAGE_TOTAL_TOKENS: &str = "a2a_usage_total_tokens";

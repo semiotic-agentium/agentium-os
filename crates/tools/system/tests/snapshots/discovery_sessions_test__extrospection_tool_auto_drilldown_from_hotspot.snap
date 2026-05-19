@@ -86,7 +86,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"pass1\": snapshot_
             "expression": "1+1"
           },
           "name": "support/calculate",
-          "phase": null
+          "phase": "unknown"
         },
         "tool_call_ref": "[prov_payload_ref]",
         "tool_name": "support/calculate",
@@ -127,7 +127,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"pass1\": snapshot_
             "objective": "linked emitted message evidence"
           },
           "name": "support/delegate",
-          "phase": null
+          "phase": "unknown"
         },
         "tool_call_ref": "[prov_payload_ref]",
         "tool_name": "support/delegate",
@@ -213,7 +213,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"pass1\": snapshot_
             "expression": "1+1"
           },
           "name": "support/calculate",
-          "phase": null
+          "phase": "unknown"
         },
         "tool_call_ref": "[prov_payload_ref]",
         "tool_name": "support/calculate",

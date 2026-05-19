@@ -11,7 +11,7 @@ This note captures **why** planning and provenance use **ref-table `citations`**
 
 | Dimension | PUD / archive-centric baseline | This runtime |
 |-----------|----------------------------------|--------------|
-| **What can be cited** | Often **tool/archive blobs only** (e.g. `@N` or attachment-like evidence) | **Session history and archives**: `#N` indexes into `conversation_history` / ref table; `@N` / `@N:L` for archives — **citable history**, not archive-only. |
+| **What can be cited** | Often **tool/archive blobs only** (e.g. `@N` or attachment-like evidence) | **Session history and archives**: `#N` indexes into the ref table (rendered in **`conversation_transcript`**); `@N` / `@N:L` for archives — **citable history**, not archive-only. |
 | **What gets stored on intent / step** | Short **evidence prose** or untyped ids | **The same citation strings** the model (or shim) used, so provenance can **reconcile** with the ref table and scoring. |
 | **Downstream treatment** | Treat evidence as display text | **Parse → check**: `ParsedCitation` in `baml_rt_tools::citations`, drift / BIPIA signals over **resolved** content, negation (`!#N`), etc. |
 

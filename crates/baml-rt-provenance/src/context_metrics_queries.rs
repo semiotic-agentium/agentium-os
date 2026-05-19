@@ -152,6 +152,7 @@ pub async fn turn_totals_by_context(
         tail_event_order: u64,
         tail_anchor: String,
         prompt_context_bytes_current: u64,
+        prompt_message_chars_current: u64,
     }
 
     // Join edges with node data to compute per-message aggregates
@@ -206,12 +207,17 @@ pub async fn turn_totals_by_context(
             .get(storage_safe::A2A_PROMPT_SERIALIZED_UTF8_BYTES)
             .and_then(Value::as_u64)
             .unwrap_or(0);
+        let pchars = props
+            .get(storage_safe::A2A_PROMPT_MESSAGE_CHARS)
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         if eo > entry.tail_event_order
             || (eo == entry.tail_event_order && anchor > entry.tail_anchor.as_str())
         {
             entry.tail_event_order = eo;
             entry.tail_anchor = anchor.to_string();
             entry.prompt_context_bytes_current = pbytes;
+            entry.prompt_message_chars_current = pchars;
         }
     }
 
@@ -238,6 +244,10 @@ pub async fn turn_totals_by_context(
             row.insert(
                 "prompt_context_bytes_current".into(),
                 serde_json::json!(acc.prompt_context_bytes_current),
+            );
+            row.insert(
+                "prompt_message_chars_current".into(),
+                serde_json::json!(acc.prompt_message_chars_current),
             );
             (acc.first_activity_anchor.clone(), row)
         })
@@ -278,7 +288,7 @@ pub async fn user_prompts_by_context(
         .collect())
 }
 
-/// Latest completed `LlmCall` in the context (optional task filter): temporal tail for prompt JSON bytes.
+/// Latest completed `LlmCall` in the context (optional task filter): temporal tail for prompt metrics.
 pub async fn session_prompt_context_tail(
     store: &SurrealProvenanceStore,
     context_id: &str,
@@ -299,12 +309,14 @@ pub async fn session_prompt_context_tail(
     let a_anchor = storage_safe::A2A_ACTIVITY_ANCHOR;
     let a_eo = storage_safe::A2A_EVENT_ORDER;
     let a_bytes = storage_safe::A2A_PROMPT_SERIALIZED_UTF8_BYTES;
+    let a_chars = storage_safe::A2A_PROMPT_MESSAGE_CHARS;
 
     let query = format!(
         "SELECT \
            props.{a_anchor} AS activity_anchor, \
            props.{a_eo} AS event_order, \
-           props.{a_bytes} AS prompt_context_bytes_current \
+           props.{a_bytes} AS prompt_context_bytes_current, \
+           props.{a_chars} AS prompt_message_chars_current \
          FROM {TBL_NODE} \
          WHERE label = 'LlmCall' \
            AND node_id IN (SELECT VALUE from_id FROM {TBL_EDGE} \
@@ -355,12 +367,14 @@ pub async fn llm_prompt_operations_for_context(
 
     let a_anchor = storage_safe::A2A_ACTIVITY_ANCHOR;
     let a_bytes = storage_safe::A2A_PROMPT_SERIALIZED_UTF8_BYTES;
+    let a_chars = storage_safe::A2A_PROMPT_MESSAGE_CHARS;
 
     let query = format!(
         "SELECT \
            props.{a_anchor} AS activity_anchor, \
            props.{a_eo} AS event_order, \
-           props.{a_bytes} AS prompt_context_bytes_current \
+           props.{a_bytes} AS prompt_context_bytes_current, \
+           props.{a_chars} AS prompt_message_chars_current \
          FROM {TBL_NODE} \
          WHERE label = 'LlmCall' \
            AND node_id IN (SELECT VALUE from_id FROM {TBL_EDGE} \

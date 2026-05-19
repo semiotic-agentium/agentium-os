@@ -9,13 +9,14 @@
 
 use std::sync::Arc;
 
+use baml_rt::BamlRuntimeManager;
 use baml_rt_a2a::{
-    a2a_store::{ProvenanceTaskStore, TaskRepository},
+    A2aAgent,
     a2a_types::{Message, MessageRole, Part},
 };
 use baml_rt_conversation::view::ProvenanceContextMessage;
 use baml_rt_core::ids::{AgentId, ContextId, ExternalId, TaskId, UuidId};
-use baml_rt_provenance::{ProvenanceContextReader, ProvenanceWriter, SurrealStoreBuilder};
+use baml_rt_provenance::{ProvenanceContextReader, SurrealStoreBuilder};
 use uuid::Uuid;
 
 fn make_message(
@@ -62,9 +63,20 @@ async fn test_resume_message_visible_after_insert() {
         .build()
         .await
         .expect("in-memory isolated provenance store");
-    let writer: Arc<dyn ProvenanceWriter> = prov.clone();
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
-    let store = Arc::new(ProvenanceTaskStore::new(writer, agent_id));
+    let agent = A2aAgent::builder()
+        .with_agent_id(agent_id)
+        .with_runtime_manager(
+            BamlRuntimeManager::builder()
+                .build()
+                .expect("runtime manager"),
+        )
+        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+        .with_surreal_store(prov.clone())
+        .build()
+        .await
+        .expect("graph-backed agent");
+    let store = agent.task_store();
 
     let context_id = ContextId::new(10, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-resume-1"));
@@ -103,7 +115,7 @@ async fn test_resume_message_visible_after_insert() {
         .expect("context_messages");
     assert!(
         !ctx_items.is_empty(),
-        "context_messages must return rows after ProvenanceTaskStore::insert_message"
+        "context_messages must return rows after graph-backed insert_message"
     );
     assert_context_messages_contain(&ctx_items, resume_text);
     assert_context_messages_contain(&ctx_items, "first turn");

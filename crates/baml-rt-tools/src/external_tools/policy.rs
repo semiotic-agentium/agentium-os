@@ -14,8 +14,11 @@ use tokio::sync::{Mutex, Semaphore};
 
 use crate::ToolName;
 
-/// V1 default timeout for `tool/describe`.
-pub const DEFAULT_DESCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// V1 default timeout for `tool/describe` (spawn + JSON-RPC handshake).
+///
+/// Parallel CI / `cargo test --workspace` can exhaust fork bandwidth; keep headroom beyond a
+/// tight 5s so dev-mode fixture tools still complete their first describe under load.
+pub const DEFAULT_DESCRIBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// V1 default timeout for `tool/invoke`.
 pub const DEFAULT_INVOKE_TIMEOUT: Duration = Duration::from_secs(30);

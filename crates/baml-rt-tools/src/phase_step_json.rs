@@ -70,7 +70,7 @@ mod tests {
     fn unwrap_promotes_step_to_root() {
         let v = json!({
             "step": { "op": "PageRead", "input": { "archive_ref": "@1", "offset": 0, "limit": 10 } },
-            "citations": ["@1:1-3"]
+            "citations": ["@1:L1-L3"]
         });
         let out = unwrap_session_plan_step_shape_for_phase_output(v);
         assert_eq!(

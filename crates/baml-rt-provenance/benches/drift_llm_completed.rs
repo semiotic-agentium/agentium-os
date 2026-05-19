@@ -12,7 +12,7 @@ use baml_rt_conversation::view::{ProvenanceContextMessage, ProvenanceConversatio
 use baml_rt_core::{
     Outcome,
     bus::{EffectEvent, EffectSubscriber, LlmEffectMetadata},
-    ids::{ContextId, MessageId},
+    ids::{ContextId, MessageId, TaskId},
 };
 use baml_rt_embedding::{DriftConfig, EmbeddingProvider, provider::EmbeddingError};
 use baml_rt_provenance::{
@@ -81,6 +81,15 @@ impl ProvenanceContextReader for RecordingWriter {
         &self,
         _context_id: &ContextId,
         _limit: Option<usize>,
+    ) -> baml_rt_provenance::error::Result<Vec<ProvenanceConversationContextItem>> {
+        Ok(Vec::new())
+    }
+
+    async fn conversation_context_with_task(
+        &self,
+        _context_id: &ContextId,
+        _limit: Option<usize>,
+        _task_id: Option<&TaskId>,
     ) -> baml_rt_provenance::error::Result<Vec<ProvenanceConversationContextItem>> {
         Ok(Vec::new())
     }

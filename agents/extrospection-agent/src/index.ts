@@ -57,6 +57,7 @@ function isNeedClarification(value: unknown): value is NeedClarification {
 function isQueryIntent(value: unknown): value is QueryIntent {
   return (
     isObject(value)
+    && value.kind === "query"
     && typeof value.resource === "string"
     && typeof value.outcome === "string"
     && typeof value.priority_sort === "string"
@@ -70,6 +71,7 @@ function normalizeQueryIntent(value: QueryIntent): QueryIntent {
   const page = Number.isFinite(value.page_size) ? Math.round(value.page_size) : 10;
   const topK = Number.isFinite(value.top_k) ? Math.round(value.top_k) : 8;
   return {
+    kind: "query",
     resource: value.resource,
     outcome: value.outcome,
     priority_sort: value.priority_sort,
@@ -154,6 +156,7 @@ function fallbackIntentFromOpenInput(userText: string): QueryIntent {
   const outcome = wantsFailures ? "Failed_only" : "Both";
 
   return {
+    kind: "query",
     resource,
     outcome,
     priority_sort: prioritySort,
@@ -165,6 +168,7 @@ function fallbackIntentFromOpenInput(userText: string): QueryIntent {
 
 __chat_register({
   run: async (ctx) => {
+    // `BuildExtrospectionPlan`: unified step executor (`runGeneratedStepExecutor`, tool-session IR). Intent/summary: direct BAML invokes. Planner-only unions use `unified_step_executors.json` for structured hops.
     let userText = normalizeDelegatedText(toText(ctx.text));
     if (!userText) {
       return {
@@ -259,6 +263,12 @@ __chat_register({
         },
         { max_steps: 6 },
       );
+      if (extrospectionRun.outcome !== "completed") {
+        if (extrospectionRun.outcome === "agent_correctable") {
+          return { error: `[${extrospectionRun.recovery.code}] ${extrospectionRun.recovery.mistake}` };
+        }
+        return { error: extrospectionRun.message };
+      }
 
       const payloadCandidates: unknown[] = [extrospectionRun.last, ...extrospectionRun.steps.slice().reverse()];
       const payloads: string[] = [];

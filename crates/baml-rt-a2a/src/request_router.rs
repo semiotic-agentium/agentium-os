@@ -17,9 +17,18 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
-use crate::{a2a, a2a_types, handlers::TaskHandler, result_pipeline::ResultStoragePipeline};
+use crate::{
+    a2a,
+    a2a_types::{self, StreamResponse},
+    handlers::TaskHandler,
+    result_pipeline::ResultStoragePipeline,
+};
 
 /// Extracts task ID string from a normalized stream chunk (task.id, statusUpdate.taskId, or message.taskId).
+fn normalized_to_stream_response(normalized: Value) -> StreamResponse {
+    serde_json::from_value(normalized).unwrap_or_default()
+}
+
 fn task_id_from_chunk(value: &Value) -> Option<String> {
     value
         .get("task")
@@ -43,11 +52,11 @@ fn task_id_from_chunk(value: &Value) -> Option<String> {
 }
 
 /// Builds a stream chunk for TASK_STATE_SUBMITTED so the client FSM sees SUBMITTED before WORKING.
-/// This chunk is applied through the same pipeline as agent yields (store_result → apply_task_delta):
+/// This chunk is applied through the same pipeline as agent yields (store_result → apply_task_chunk):
 /// the task is created/recorded and SUBMITTED is written to the store and to provenance (task_exists + task_execution_started,
 /// task_status_changed). So the wire and PROV stay aligned—we record the task.
-fn make_submitted_chunk(context_id: &str, task_id: &str) -> Value {
-    serde_json::json!({
+fn make_submitted_chunk(context_id: &str, task_id: &str) -> StreamResponse {
+    serde_json::from_value(serde_json::json!({
         "statusUpdate": {
             "status": { "state": "TASK_STATE_SUBMITTED" },
             "taskId": task_id,
@@ -58,7 +67,8 @@ fn make_submitted_chunk(context_id: &str, task_id: &str) -> Value {
             "contextId": context_id,
             "status": { "state": "TASK_STATE_SUBMITTED" }
         }
-    })
+    }))
+    .expect("submitted chunk static JSON deserializes to StreamResponse")
 }
 
 /// Non-stream invocation: waits for JS promise to resolve and returns the result.
@@ -304,8 +314,11 @@ impl RequestRouter for MethodBasedRouter {
                                                     context_id_str,
                                                     task_id_str,
                                                 );
+                                                let submitted_wire =
+                                                    serde_json::to_value(&submitted_chunk)
+                                                        .unwrap_or(Value::Null);
                                                 if pipeline
-                                                    .store_result(&submitted_chunk)
+                                                    .store_result(&submitted_wire)
                                                     .await
                                                     .is_ok()
                                                     && tx
@@ -324,14 +337,18 @@ impl RequestRouter for MethodBasedRouter {
                                                 "stream: store_result failed for chunk; still forwarding to client"
                                             );
                                         }
-                                        if tx.send((normalized, index, completion)).await.is_err() {
+                                        let sr = normalized_to_stream_response(normalized.clone());
+                                        if tx.send((sr, index, completion)).await.is_err() {
                                             break;
                                         }
                                         index += 1;
                                     }
                                     Err(e) => {
-                                        if tx.send((
+                                        let err_chunk = normalized_to_stream_response(
                                             serde_json::json!({"error": e.to_string()}),
+                                        );
+                                        if tx.send((
+                                            err_chunk,
                                             index,
                                             Some(StreamCompletion::SemanticFinal),
                                         ))
@@ -353,7 +370,7 @@ impl RequestRouter for MethodBasedRouter {
                             }
                             if last_completion.is_none() && !tx.is_closed()
                                 && tx.send((
-                                    Value::Null,
+                                    StreamResponse::default(),
                                     index,
                                     Some(StreamCompletion::ChannelClosed),
                                 ))
@@ -540,11 +557,12 @@ mod tests {
             a2a::A2aOutcome::Stream(handle) => {
                 let mut rx = handle.receiver;
                 let mut chunks: Vec<Value> = Vec::new();
-                while let Some((v, _index, completion)) = rx.recv().await {
+                while let Some((sr, _index, completion)) = rx.recv().await {
                     if completion.is_some() {
                         break;
                     }
-                    if v != Value::Null {
+                    let v = serde_json::to_value(&sr).unwrap_or(Value::Null);
+                    if v != Value::Null && v != json!({}) {
                         chunks.push(v);
                     }
                 }

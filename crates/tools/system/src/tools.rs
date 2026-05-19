@@ -25,14 +25,23 @@ pub struct InternalA2aOpenInput {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationPart {
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[baml(description = "Plain text content for this conversation part.")]
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[baml(
+        description = "Raw provider-native content when plain text would be lossy or unavailable."
+    )]
     pub raw: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[baml(
+        description = "Remote URL for this part when the content points to a web or attachment resource."
+    )]
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[baml(description = "Attachment filename when this part refers to a file.")]
     pub filename: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[baml(description = "MIME type for this part, for example text/plain or image/png.")]
     pub media_type: Option<String>,
 }
 

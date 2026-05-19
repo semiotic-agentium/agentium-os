@@ -413,6 +413,7 @@ impl ToolSession for ProvenanceQuerySession {
                 context_id,
                 task_id,
                 agent_id,
+                agent_package: None,
                 provider: send.provider,
                 model: send.model,
                 tool_name: send.tool_name,

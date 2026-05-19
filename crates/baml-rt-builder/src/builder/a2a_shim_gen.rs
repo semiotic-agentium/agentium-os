@@ -261,8 +261,10 @@ pub fn render_a2a_shim() -> Result<String> {
    * All FSM state, policy resolution, polymorphic narrowing, and multi-hop
    * coordination live in the Rust host. JS is only the call-through.
    *
-   * Return value is FSM execution telemetry (last, steps, session_context, …).
-   * Do not use it as the provenance copy of the user-visible reply — return
+   * Return value is a discriminated envelope (`outcome`: completed | agent_correctable | fatal).
+   * On `completed`, `last` / `steps` / `session_context` / `selected_tool` match the legacy flat shape.
+   * On `agent_correctable`, use `recovery.code` and `recovery.mistake` — the promise still resolved.
+   * Do not use this payload as the provenance copy of the user-visible reply — return
    * StructuredReply (or equivalent) from the chat handler as SessionResult.message.
    */
   async function runGeneratedStepExecutor(stepExecutor, args, options) {
@@ -272,7 +274,11 @@ pub fn render_a2a_shim() -> Result<String> {
     var argsJson = JSON.stringify((args != null && typeof args === "object") ? args : {});
     var optionsJson = (options != null && typeof options === "object") ? JSON.stringify(options) : null;
     var resultJson = await globalThis.__run_step_executor(String(stepExecutor), argsJson, optionsJson);
-    return JSON.parse(resultJson);
+    var envelope = JSON.parse(resultJson);
+    if (envelope == null || typeof envelope !== "object" || typeof envelope.outcome !== "string") {
+      throw new Error("runGeneratedStepExecutor: host returned invalid step executor envelope");
+    }
+    return envelope;
   }
   globalThis.runGeneratedStepExecutor = runGeneratedStepExecutor;
 

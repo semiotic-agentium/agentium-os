@@ -26,7 +26,10 @@ use crate::{
     },
     provenance_errors::map_archive_provenance_err,
     quickjs_bridge::stream_yield::emit_stream_chunk_static,
-    tool_execution::{ToolExecutionContext, build_metadata_map_with_phase, resolve_planning_step},
+    tool_execution::{
+        ToolExecutionContext, build_metadata_map_with_phase, resolve_planning_step,
+        stamp_tool_effect_metadata_scope,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -67,6 +70,7 @@ impl ToolSessionExecutionHandle {
 
         let start = Instant::now();
         let mut metadata = build_metadata_map_with_phase(&scope, Some("open"));
+        stamp_tool_effect_metadata_scope(&scope, &mut metadata);
         if let Some((plan_id, step_id)) =
             resolve_planning_step(&self.ctx.execution_sessions, &scope)
             && let Some(obj) = metadata.as_object_mut()
@@ -84,9 +88,10 @@ impl ToolSessionExecutionHandle {
             delegation_target,
         };
 
-        tracing::debug!(
+        tracing::info!(
             tool_name = tool_name,
             context_id = %context_id,
+            task_in_scope = ?scope.task_id_opt(),
             "Tool session open: start"
         );
 
@@ -325,6 +330,7 @@ impl ToolSessionExecutionHandle {
         let run = || async {
             let start = Instant::now();
             let mut metadata = build_metadata_map_with_phase(&session_scope.scope, Some("send"));
+            stamp_tool_effect_metadata_scope(&session_scope.scope, &mut metadata);
             if let Some((plan_id, step_id)) =
                 resolve_planning_step(&self.ctx.execution_sessions, &session_scope.scope)
                 && let Some(obj) = metadata.as_object_mut()
@@ -388,12 +394,23 @@ impl ToolSessionExecutionHandle {
                     if let Some(ref target) = context.delegation_target {
                         effect_metadata.delegation_target = Some(target.clone());
                     }
-                    if let Ok(token) = emitter
+                    match emitter
                         .start_tool(session_scope.scope.context_id().clone(), effect_metadata)
                         .await
                     {
-                        self.tool_session_effect_tokens
-                            .insert(session_id.clone(), token);
+                        Ok(token) => {
+                            self.tool_session_effect_tokens
+                                .insert(session_id.clone(), token);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                session_id = %session_id,
+                                tool_name = %session_scope.tool_name,
+                                context_id = %session_scope.scope.context_id(),
+                                error = ?e,
+                                "tool session send: start_tool effect failed; provenance may miss this invocation"
+                            );
+                        }
                     }
                 }
             } else {
@@ -516,6 +533,7 @@ impl ToolSessionExecutionHandle {
                     let reserved_anchor_id = reserved_anchor.into_id();
                     let mut read_meta_val =
                         build_metadata_map_with_phase(&scope_entry.scope, Some("read"));
+                    stamp_tool_effect_metadata_scope(&scope_entry.scope, &mut read_meta_val);
                     if let Value::Object(ref mut m) = read_meta_val {
                         m.insert(
                             BAML_PROV_RESERVED_TOOL_COMPLETION_ANCHOR.to_string(),
@@ -547,17 +565,27 @@ impl ToolSessionExecutionHandle {
                     }
                     let ctx_id = scope_entry.scope.context_id().clone();
                     drop(scope_entry);
-                    if let Ok(token) = emitter.start_tool(ctx_id, read_metadata).await {
-                        self.tool_session_effect_tokens
-                            .insert(session_id.clone(), token);
+                    match emitter.start_tool(ctx_id, read_metadata).await {
+                        Ok(token) => {
+                            self.tool_session_effect_tokens
+                                .insert(session_id.clone(), token);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                session_id = %session_id,
+                                error = ?e,
+                                "tool session read: start_tool effect failed; provenance may miss this read hop"
+                            );
+                        }
                     }
                 }
                 // Also ensure a state entry exists for the interceptor completion path.
                 if !self.tool_session_states.contains_key(session_id)
                     && let Some(scope_entry) = self.tool_session_scopes.get(session_id)
                 {
-                    let read_ctx_meta =
+                    let mut read_ctx_meta =
                         build_metadata_map_with_phase(&scope_entry.scope, Some("read"));
+                    stamp_tool_effect_metadata_scope(&scope_entry.scope, &mut read_ctx_meta);
                     let read_context = ToolCallContext {
                         tool_name: scope_entry.tool_name.clone(),
                         function_name: None,

@@ -21,21 +21,18 @@ use crate::builder::{
 /// `rootDir` is explicitly `"./src"` (must match the inferred common source path; see
 /// <https://aka.ms/ts6> migration notes).
 ///
-/// **`moduleResolution`** is `node` so `module: "ESNext"` emits script-friendly ESM
-/// instead of CommonJS `exports` assignments, which QuickJS script evaluation does not provide.
-/// `ignoreDeprecations` silences the TS deprecation warning for legacy node resolution
-/// until the QuickJS packaging path can use an ESM-aware resolver without changing emitted
-/// code shape. `"6.0"` is the value TypeScript 6.x accepts to suppress the warning;
-/// `"5.0"` no longer works once the runner image upgrades to typescript@6. TS 7.x will
-/// turn the deprecation into a hard error regardless of the flag, so the canonical tsconfig
-/// will need a real ESM-aware fix before then (follow-up to issue #356).
+/// **`module`** is `ESNext` so emitted JS stays script-friendly ESM (no CommonJS `exports`
+/// assignments), which QuickJS script evaluation does not provide.
+///
+/// **`moduleResolution`** is `bundler` (not deprecated `node` / Node10): TypeScript resolves
+/// imports from the local project graph and `node_modules` only — the same on-disk model as
+/// `tsc` always used; this mode does not enable URL or registry fetches during compilation.
 pub const TSCONFIG_JSON: &str = r#"{
   "compilerOptions": {
     "target": "ES2020",
     "lib": ["ES2020"],
     "module": "ESNext",
-    "moduleResolution": "node",
-    "ignoreDeprecations": "6.0",
+    "moduleResolution": "bundler",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,

@@ -1,0 +1,7 @@
+{
+  "roots": {
+    "UnifiedHarnessPick": {
+      "include_archive_reads": false
+    }
+  }
+}

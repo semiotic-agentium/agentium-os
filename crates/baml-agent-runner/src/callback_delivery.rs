@@ -26,9 +26,19 @@ impl CallbackDeliveryGate for RunnerCallbackDeliveryGate {
             );
             return Ok(false);
         };
-        Ok(!self
+        let still_in_flight = self
             .runner
             .requesting_task_still_in_flight(requesting_agent_id, context_id, task_id)
-            .await)
+            .await;
+        if still_in_flight {
+            tracing::debug!(
+                callback_id = %callback.callback_id,
+                requesting_agent_id,
+                scheduling_context_id = %context_id,
+                scheduling_task_id = %task_id,
+                "callback delivery deferred: scheduling A2A turn still in flight"
+            );
+        }
+        Ok(!still_in_flight)
     }
 }

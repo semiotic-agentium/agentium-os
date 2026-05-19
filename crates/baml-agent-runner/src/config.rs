@@ -73,7 +73,10 @@ pub(crate) struct RunnerConfig {
     about = "Run the BAML agent server. Agents are deployed exclusively via the repository API.",
     long_about = "Starts the runner and restores any previously-deployed agents from --state-dir.\n\
                   \nTo add agents, use `baml-agent-builder publish` or POST /deploy.\n\
-                  Positional package paths are no longer accepted — all deployment goes through the repository."
+                  Positional package paths are no longer accepted — all deployment goes through the repository.\n\
+                  \nDeployment rows (what GET /agents lists after boot) live under --state-dir/state.db.\n\
+                  Clearing or resetting --provenance-db alone does not undeploy agents; use POST /undeploy,\n\
+                  remove state.db, or wipe the entire --state-dir."
 )]
 pub(crate) struct Cli {
     /// Repository base URL used for hash-based deploy/restore (e.g. http://127.0.0.1:18080/repository).
@@ -104,11 +107,14 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "DIR")]
     pub(crate) web_dir: Option<PathBuf>,
 
-    /// Provenance storage path: `:memory:` or a directory for embedded SurrealKV.
+    /// Provenance graph store (`:memory:` or a directory for embedded SurrealKV, unless --surreal-endpoint).
+    /// Independent of the deployment registry: resetting this does not remove deployed agents from GET /agents.
     #[arg(long, value_name = "PATH", default_value = ":memory:")]
     pub(crate) provenance_db: String,
 
-    /// Runner-local deployment state directory (embedded SurrealKV for deployment metadata/state).
+    /// Directory holding the deployment registry (`state.db`, embedded SurrealKV).
+    /// On startup the runner replays active deployments from here (same set as GET /agents). To drop
+    /// every deployed agent without POST /undeploy per hash, stop the runner and remove this directory or `state.db` inside it.
     #[arg(long, value_name = "DIR", default_value = "./.runner-state")]
     pub(crate) state_dir: PathBuf,
 

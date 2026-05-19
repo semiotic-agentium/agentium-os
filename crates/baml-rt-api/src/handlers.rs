@@ -38,7 +38,7 @@ use crate::{
     conversation_history::{
         ConversationHistoryDeltaRequest, ConversationHistoryPageDto,
         ConversationHistoryQueryParams, ConversationHistoryRequest,
-        ConversationHistoryRequestParseError,
+        ConversationHistoryRequestParseError, merge_conversation_history_pages,
     },
     episode::EpisodeSnapshotDto,
     mermaid::MermaidError,
@@ -1022,6 +1022,7 @@ fn to_ops_request(
             context_id: q.context_id,
             task_id: q.task_id,
             agent_id: q.agent_id,
+            agent_package: None,
             provider: q.provider,
             model: q.model,
             tool_name: q.tool_name,
@@ -1573,7 +1574,7 @@ pub async fn get_context_index(
     params(
         ("context_id" = String, Path, description = "Provenance context ID"),
         ("taskId" = Option<String>, Query, description = "Optional task scope"),
-        ("limit" = Option<u32>, Query, description = "Page size in range [1, 500], default 100"),
+        ("limit" = Option<u32>, Query, description = "Page size in range [1, 500], default 50"),
         ("cursor" = Option<String>, Query, description = "Opaque pagination cursor"),
         ("profile" = Option<String>, Query, description = "Payload profile: full or compact"),
         ("format" = Option<String>, Query, description = "Response format: full")
@@ -1616,7 +1617,7 @@ pub async fn get_conversation_history(
     params(
         ("context_id" = String, Path, description = "Provenance context ID"),
         ("taskId" = Option<String>, Query, description = "Optional task scope"),
-        ("limit" = Option<u32>, Query, description = "Page size in range [1, 500], default 100"),
+        ("limit" = Option<u32>, Query, description = "Page size in range [1, 500], default 50"),
         ("cursor" = Option<String>, Query, description = "Opaque pagination cursor"),
         ("profile" = Option<String>, Query, description = "Payload profile: full or compact"),
         ("format" = Option<String>, Query, description = "Response format: full")
@@ -1665,7 +1666,7 @@ pub async fn get_conversation_history_stream(
     let initial = match service_result_to_http(
         "get_conversation_history_stream",
         start,
-        svc.page(&req).await,
+        merge_conversation_history_pages(svc.as_ref(), &req).await,
     ) {
         Ok(axum::Json(s)) => s,
         Err(e) => return Err(e),
@@ -1750,6 +1751,8 @@ pub async fn get_conversation_history_stream(
                         .extend(page.llm_prompt_operations.clone());
                     latest.prompt_context_bytes_session_current =
                         page.prompt_context_bytes_session_current;
+                    latest.prompt_message_chars_session_current =
+                        page.prompt_message_chars_session_current;
                     latest.max_event_order = page.max_event_order.max(latest.max_event_order);
                     latest.awaiting_input = page.awaiting_input;
                     latest.input_required_prompt = page.input_required_prompt.clone();

@@ -1,6 +1,6 @@
 //! Step-executor hop graph deltas: **provenance-backed** `conversation_context` line changes
-//! (strict prefix extension or set-delta) for composing `ctx.tags['conversation_history']` /
-//! `ctx.tags['conversation_transcript']` with a loop-local `Vec<serde_json::Value>` that augments
+//! (strict prefix extension or set-delta) for composing merged lines that become
+//! `ctx.tags['conversation_transcript']`, using a loop-local `Vec<serde_json::Value>` that augments
 //! the provider when the graph
 //! lags a hop. No second copy of history on [`BamlRuntimeState`].
 
@@ -11,7 +11,6 @@ use std::{
 
 use baml_rt_core::{BamlFunctionId, Result, context};
 use baml_rt_provenance::DEFAULT_LLM_CONTEXT_ITEM_CAP;
-use baml_rt_tools::{CTX_TAG_SESSION_STEP_STABLE_PREFIX, SESSION_STEP_STABLE_PREFIX_VALUE};
 use baml_types::BamlValue;
 use serde_json::Value;
 use tokio::sync::RwLock;
@@ -141,7 +140,7 @@ pub(crate) async fn read_provider_conversation_after_hop(
 
 impl BamlRuntimeManager {
     /// Provider conversation lines plus an explicit step-executor local supplement, as JSON
-    /// line objects in the same order and cap policy as `ctx.tags['conversation_history']`
+    /// line objects in the same order and cap policy as the merged transcript source lines
     /// (supplement rows that match a line already in the provider are **not** repeated).
     ///
     /// Pass an empty `step_intra_supplement` for provider-only (same as graph projection
@@ -161,9 +160,11 @@ impl BamlRuntimeManager {
         Ok(Value::Array(merged))
     }
 
-    /// `conversation_history` BAML tags: graph provider + optional loop-local supplement
+    /// BAML conversation tags (transcript): graph provider + optional loop-local supplement
     /// (no duplicate `Value` lines vs the provider slice; same merge as
-    /// `append_intra_lines_to_provider_then_cap` in this module).
+    /// `append_intra_lines_to_provider_then_cap` in this module). The catalog injection comes
+    /// from the shared [`Self::enrich_with_tool_schema_prelude`] helper, so plain and
+    /// step-executor invocations produce byte-identical `tool_schema_prelude` tags.
     pub(in crate::baml) async fn build_conversation_context_tags_with_intra(
         &self,
         scope: &context::RuntimeScope,
@@ -175,14 +176,9 @@ impl BamlRuntimeManager {
         let prov = exec.provider_conversation_history_lines(scope).await?;
         let merged =
             append_intra_lines_to_provider_then_cap(prov, step_intra_supplement.iter().cloned());
-        let mut tags = exec
-            .tags_from_merged_conversation_lines(merged)?
-            .unwrap_or_default();
-        tags.insert(
-            CTX_TAG_SESSION_STEP_STABLE_PREFIX.to_string(),
-            BamlValue::String(SESSION_STEP_STABLE_PREFIX_VALUE.to_string()),
-        );
-        Ok(Some(tags))
+        let mut tags = exec.tags_from_merged_conversation_lines(merged)?;
+        self.enrich_with_tool_schema_prelude(&mut tags);
+        Ok(tags)
     }
 
     /// Full projected graph lines for step-executor `p_before` / `p_after` (uncapped when the

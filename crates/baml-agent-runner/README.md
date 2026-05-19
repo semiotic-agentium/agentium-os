@@ -6,6 +6,8 @@ CLI for the A2A host: embedded repository, deploy-by-hash, QuickJS + BAML execut
 
 **Deploy path:** `baml-agent-builder publish` (to `/repository`) then `POST /deploy` with the content hash, or restore from `--state-dir`. The CLI does not accept positional package paths.
 
+**Deployment state vs provenance:** `--state-dir` (default `./.runner-state`, file `state.db`) stores which packages are deployed and is what startup restore and `GET /agents` use. `--provenance-db` is only the task/provenance graph. Clearing or wiping the provenance database does **not** undeploy agents; use `POST /undeploy`, delete `state.db`, or remove the whole `--state-dir` while the runner is stopped.
+
 ## Responsibilities
 
 - Fetch and boot agent packages from the repository blob store (built tar.gz with manifest, dist, baml_src).

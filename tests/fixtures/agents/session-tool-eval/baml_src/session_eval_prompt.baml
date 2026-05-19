@@ -5,8 +5,22 @@ function PlanSessionToolEvalStep(
   objective: string,
 ) -> StandardStructuredPlan {
   client DefaultClient
-  prompt #"
-    Output ONLY one JSON object matching StandardStructuredPlan. No prose. No markdown.
+  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
+{% if ctx.tags['tool_schema_prelude'] %}
+Tool and operation types:
+{{ ctx.tags['tool_schema_prelude'] }}
+
+{% endif %}
+{% if ctx.tags['conversation_transcript'] %}
+Session history:
+{{ ctx.tags['conversation_transcript'] }}
+{% endif %}
+Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
+Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
+
+Output ONLY one JSON object matching StandardStructuredPlan. No prose. No markdown.
 
     User objective (seed): {{ objective }}
 
@@ -37,13 +51,11 @@ function PlanSessionToolEvalStep(
     The allowed ops and current session state are implied by session history below.
     Read the history to determine what has already been done, then emit the single next step.
 
-    {% if ctx.tags['conversation_history'] %}
-    Session history:
-    {{ ctx.tags['conversation_transcript'] }}
-    {% endif %}
+{{ ctx.output_format }}
 
-    {{ ctx.output_format }}
-  "#
+Return exactly one `StandardStructuredPlan` JSON object.
+Do not add text before or after the JSON object.
+"#
 }
 
 client DefaultClient {

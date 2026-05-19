@@ -165,7 +165,7 @@ async function runSlackStructuredPlan(
       if (executable) await executable.startStep?.(stepId);
 
       if (pkg === PKG_RETRIEVE) {
-        await runGeneratedStepExecutor(
+        const slackRun = await runGeneratedStepExecutor(
           "ChooseSlackAction",
           {
             goal,
@@ -173,6 +173,13 @@ async function runSlackStructuredPlan(
           },
           { max_steps: MAX_REACT_STEPS },
         );
+        if (slackRun.outcome !== "completed") {
+          throw new Error(
+            slackRun.outcome === "fatal"
+              ? slackRun.message
+              : `[${slackRun.recovery.code}] ${slackRun.recovery.mistake}`,
+          );
+        }
       } else if (pkg === PKG_SYNTH) {
         const finalMessage = await ReactToSlackResults({
           goal: `${goal}\nSynthesis brief: ${step.sub_message}`,

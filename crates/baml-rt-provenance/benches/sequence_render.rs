@@ -1,7 +1,7 @@
 //! Criterion benchmarks for sequence diagram rendering.
 //!
 //! Measures simplify_graph + render_sequence_diagram on synthetic graphs.
-//! Target: < 1ms for ~20 nodes (conversational_persona_demo scale).
+//! Target: < 1ms for ~20 nodes (coordinator-agent–scale graphs).
 
 use std::collections::HashMap;
 
@@ -143,9 +143,9 @@ fn agent_chain_edges(agent_id: &str, boot_id: &str, archive_id: &str) -> Vec<Exp
     ]
 }
 
-/// ~20 nodes: 1 user msg, 4 LLM calls, 1 agent (conversational_persona_demo scale).
+/// ~20 nodes: 1 user msg, 4 LLM calls, 1 agent (typical coordinator-heavy trace).
 fn fixture_20_nodes() -> ExportedGraph {
-    let agent = "conversational_persona_demo_1_0_0";
+    let agent = "coordinator_agent_1_0_0";
     let mut edges = vec![
         edge("mp1", EDGE_WAS_RECEIVED_BY, "m1"),
         edge("mp1", EDGE_WAS_EXECUTED_BY, "a1"),

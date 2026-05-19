@@ -10,8 +10,8 @@ single crate and opt into specific capabilities.
 - Feature-gated re-exports of core, tools, interceptors, QuickJS runtime, A2A,
   builder, and observability crates.
 - Stable external API surface for consumers.
-- Re-exports stream collection helpers (`collect_a2a_stream`,
-  `collect_a2a_stream_until`) so edge adapters can choose collection semantics.
+- Re-exports explicit one-shot stream collection helpers (`collect_a2a_stream_one_shot`,
+  `collect_a2a_stream_until_one_shot`) for tests and buffered adapters.
 
 ## Features
 - `tools`: Tool traits and registry.

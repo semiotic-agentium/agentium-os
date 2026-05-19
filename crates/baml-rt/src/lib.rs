@@ -3,7 +3,7 @@
 //! This crate re-exports functionality from the workspace sub-crates.
 
 pub use baml_rt_core::{
-    BamlRtError, Result, collect_a2a_stream, collect_a2a_stream_until,
+    BamlRtError, Result, collect_a2a_stream_one_shot, collect_a2a_stream_until_one_shot,
     context::generate_context_id,
     correlation::{current_correlation_id, generate_correlation_id},
 };

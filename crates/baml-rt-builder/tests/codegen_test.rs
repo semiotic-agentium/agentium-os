@@ -239,8 +239,13 @@ async fn test_typescript_declaration_generation() {
     let tool_names = load_manifest_tools(&baml_src).expect("load manifest tools");
 
     let session_plan_map = session_plan_functions_map(&ir_signature);
-    let ts_output = render_ts_declarations(&ir_signature, &tool_names, &session_plan_map)
-        .expect("Should generate TypeScript declarations");
+    let ts_output = render_ts_declarations(
+        &ir_signature,
+        &tool_names,
+        &session_plan_map,
+        &Default::default(),
+    )
+    .expect("Should generate TypeScript declarations");
 
     insta::assert_snapshot!("typescript_declarations", ts_output);
 }

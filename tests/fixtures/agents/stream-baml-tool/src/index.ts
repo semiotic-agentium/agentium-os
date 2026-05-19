@@ -11,7 +11,17 @@
 __chat_register({
   run: async (ctx) => {
     const text = ctx.text || "unknown";
-    const run = await runGeneratedStepExecutor("ChooseCalcTool", { user_message: text }, { max_steps: 6 });
+    const run = await runGeneratedStepExecutor(
+      "ChooseCalcTool",
+      { user_message: text },
+      { max_steps: 6 },
+    );
+    if (run.outcome !== "completed") {
+      if (run.outcome === "agent_correctable") {
+        return { error: `[${run.recovery.code}] ${run.recovery.mistake}` };
+      }
+      return { error: run.message };
+    }
 
     // Blocking Send result: { status:"done", output:"@1 header", archive_ref:"@1", result:{result,expression,...} }
     // Scan steps in reverse for the first step that carries a numeric `result.result`.

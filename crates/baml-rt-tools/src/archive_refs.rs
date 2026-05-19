@@ -248,9 +248,17 @@ impl RefTable {
     }
 
     /// Insert at a composite ref (multi-agent archive namespace).
+    ///
+    /// Flat replay refs (`@N`, prefix `1`) share the same allocator as history refs, so bump the
+    /// counter past replayed slots. Composite refs preserve their exact namespace without affecting
+    /// flat local allocation.
     pub fn insert_virtual_archive_ref(&self, archive_ref: ShortRef, entry: ArchiveEntry) {
         debug_assert!(archive_ref.local > 0, "ref local indices start at 1");
         self.entries.insert(archive_ref.cell_key(), entry);
+        if archive_ref.prefix == 1 {
+            self.next
+                .fetch_max(archive_ref.local.saturating_add(1), Ordering::Relaxed);
+        }
     }
 
     /// Insert a history entry at an explicit `#N` index (historic replay, episodes).
@@ -494,6 +502,40 @@ mod tests {
         assert_eq!(
             table.history_text_for_activity("anchor-a").as_deref(),
             Some("second body")
+        );
+    }
+
+    #[test]
+    fn virtual_flat_archive_ref_advances_shared_counter() {
+        let table = RefTable::new();
+        table.insert_virtual_archive_ref(ShortRef::new(8), make_entry("t", "replayed"));
+
+        let h = table.insert_history(
+            HistoryEntry::new("after-replay".into(), "message".into()),
+            "msg",
+        );
+
+        assert_eq!(
+            h.as_u32(),
+            9,
+            "history refs must not reuse a graph-replayed flat archive slot"
+        );
+    }
+
+    #[test]
+    fn virtual_composite_archive_ref_preserves_flat_counter() {
+        let table = RefTable::new();
+        table.insert_virtual_archive_ref(ShortRef::new_prefixed(7, 8), make_entry("t", "replayed"));
+
+        let h = table.insert_history(
+            HistoryEntry::new("after-composite".into(), "message".into()),
+            "msg",
+        );
+
+        assert_eq!(
+            h.as_u32(),
+            1,
+            "composite replay namespaces must not consume flat @N/#N slots"
         );
     }
 }

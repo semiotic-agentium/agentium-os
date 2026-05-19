@@ -1,3 +1,5 @@
+use baml_rt_tools::TOOL_SCHEMA_PRELUDE_TAG;
+
 use super::{BamlRuntimeManager, manager_prelude::*, tool_extraction};
 
 impl BamlRuntimeManager {
@@ -8,9 +10,13 @@ impl BamlRuntimeManager {
 
     /// Build conversation context tags for the given scope.
     ///
-    /// Graph / provider provenance only (the projection `ConversationContextProvider` exposes).
-    /// Step-executor FSM uses [`BamlRuntimeManager::invoke_function_with_intra`]
-    /// to merge a loop-local supplement with the same provider.
+    /// Graph / provider provenance only (the projection `ConversationContextProvider` exposes),
+    /// plus the agent-wide `ctx.tags['tool_schema_prelude']` injection when a rendered catalog
+    /// sidecar is loaded. Step-executor FSM uses
+    /// [`BamlRuntimeManager::invoke_function_with_intra`] to merge a loop-local supplement
+    /// with the same provider; both code paths share
+    /// [`Self::enrich_with_tool_schema_prelude`] so plain and step-executor invocations
+    /// produce byte-identical opening tags.
     pub async fn build_conversation_context_tags(
         &self,
         scope: &context::RuntimeScope,
@@ -18,7 +24,28 @@ impl BamlRuntimeManager {
         let Some(ref exec) = self.state.executor else {
             return Ok(None);
         };
-        exec.build_conversation_context_tags(scope).await
+        let mut tags = exec.build_conversation_context_tags(scope).await?;
+        self.enrich_with_tool_schema_prelude(&mut tags);
+        Ok(tags)
+    }
+
+    /// Insert `ctx.tags['tool_schema_prelude']` from the loaded catalog sidecar (when present)
+    /// into the supplied tag map, allocating the map only when the prelude is available.
+    /// Single source of truth for both plain `invoke_function` and step-executor
+    /// `invoke_function_with_intra` paths — adding either path to the catalog requires changing
+    /// nothing else.
+    pub(in crate::baml) fn enrich_with_tool_schema_prelude(
+        &self,
+        tags: &mut Option<HashMap<String, BamlValue>>,
+    ) {
+        let Some(prelude) = self.state.tool_schema_prelude.as_ref() else {
+            return;
+        };
+        let map = tags.get_or_insert_with(HashMap::new);
+        map.insert(
+            TOOL_SCHEMA_PRELUDE_TAG.to_string(),
+            BamlValue::String(prelude.as_ref().to_string()),
+        );
     }
 
     /// List all available BAML functions
@@ -146,5 +173,98 @@ impl BamlRuntimeManager {
     ) {
         let mut registry = self.state.interceptor_registry.lock().await;
         registry.register_tool_interceptor(interceptor);
+    }
+}
+
+#[cfg(test)]
+mod tool_schema_prelude_tests {
+    //! `enrich_with_tool_schema_prelude` is the single source of truth that lifts the catalog
+    //! sidecar text into `ctx.tags['tool_schema_prelude']` for every invocation surface — plain
+    //! `invoke_function`, step-executor `invoke_function_with_intra`, and the streaming bridge.
+    //! These unit tests exercise the helper in isolation so a regression in either invocation
+    //! path is caught at the seam where the tag is produced.
+
+    use std::{collections::HashMap, sync::Arc};
+
+    use baml_rt_tools::TOOL_SCHEMA_PRELUDE_TAG;
+    use baml_types::BamlValue;
+
+    use super::super::BamlRuntimeManager;
+
+    fn manager_with_prelude(prelude: Option<Arc<str>>) -> BamlRuntimeManager {
+        let mut manager = BamlRuntimeManager::default();
+        manager.state.tool_schema_prelude = prelude;
+        manager
+    }
+
+    #[test]
+    fn enrich_inserts_prelude_when_sidecar_loaded() {
+        let prelude_text: Arc<str> = Arc::from("RENDERED CATALOG TEXT");
+        let manager = manager_with_prelude(Some(prelude_text.clone()));
+
+        let mut tags: Option<HashMap<String, BamlValue>> = None;
+        manager.enrich_with_tool_schema_prelude(&mut tags);
+
+        let tags = tags.expect("enrichment must allocate a tag map when prelude is present");
+        match tags.get(TOOL_SCHEMA_PRELUDE_TAG) {
+            Some(BamlValue::String(s)) => {
+                assert_eq!(
+                    s.as_str(),
+                    prelude_text.as_ref(),
+                    "tag value must match catalog sidecar text byte-for-byte"
+                );
+            }
+            other => panic!("expected string tag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enrich_preserves_existing_tags_when_sidecar_loaded() {
+        let manager = manager_with_prelude(Some(Arc::from("CATALOG")));
+
+        let mut tags: Option<HashMap<String, BamlValue>> = Some({
+            let mut m = HashMap::new();
+            m.insert(
+                "conversation_transcript".to_string(),
+                BamlValue::String("user: hi".into()),
+            );
+            m
+        });
+        manager.enrich_with_tool_schema_prelude(&mut tags);
+
+        let tags = tags.expect("tag map must remain Some when prelude is present");
+        assert_eq!(
+            tags.len(),
+            2,
+            "transcript tag must be preserved alongside prelude: {tags:?}"
+        );
+        assert!(tags.contains_key("conversation_transcript"));
+        assert!(tags.contains_key(TOOL_SCHEMA_PRELUDE_TAG));
+    }
+
+    #[test]
+    fn enrich_is_noop_when_no_sidecar_loaded() {
+        let manager = manager_with_prelude(None);
+
+        let mut tags: Option<HashMap<String, BamlValue>> = None;
+        manager.enrich_with_tool_schema_prelude(&mut tags);
+        assert!(
+            tags.is_none(),
+            "no-prelude path must not allocate a tag map (cache discipline)"
+        );
+
+        let mut tags: Option<HashMap<String, BamlValue>> = Some({
+            let mut m = HashMap::new();
+            m.insert("k".to_string(), BamlValue::String("v".into()));
+            m
+        });
+        manager.enrich_with_tool_schema_prelude(&mut tags);
+        let tags = tags.expect("pre-existing map must remain");
+        assert_eq!(
+            tags.len(),
+            1,
+            "no-prelude path must not insert any tag: {tags:?}"
+        );
+        assert!(!tags.contains_key(TOOL_SCHEMA_PRELUDE_TAG));
     }
 }

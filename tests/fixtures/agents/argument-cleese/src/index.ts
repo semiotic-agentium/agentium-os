@@ -39,8 +39,14 @@ __chat_register({
       const chapmanRun = await runGeneratedStepExecutor(
         "CleeseSendToChapman",
         { first_line: myLine },
-        { max_steps: 6 }
+        { max_steps: 6 },
       );
+      if (chapmanRun.outcome !== "completed") {
+        if (chapmanRun.outcome === "agent_correctable") {
+          return { error: `[${chapmanRun.recovery.code}] ${chapmanRun.recovery.mistake}` };
+        }
+        return { error: chapmanRun.message };
+      }
       emitFromStepExecutorResult(ctx.emit, chapmanRun.steps);
 
       await ctx.emit.awaitInput("Say 'done' to finish.");

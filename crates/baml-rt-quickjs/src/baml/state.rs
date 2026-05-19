@@ -12,7 +12,9 @@ use baml_rt_core::{
 };
 use baml_rt_interceptor::InterceptorRegistry;
 use baml_rt_llm_config::LlmClientResolver;
-use baml_rt_tools::{ToolRegistry as ConcreteToolRegistry, ToolSessionId};
+use baml_rt_tools::{
+    ToolRegistry as ConcreteToolRegistry, ToolSessionId, UnifiedStepExecutorFunctionsMap,
+};
 use dashmap::DashMap;
 use tokio::sync::Mutex as TokioMutex;
 
@@ -31,6 +33,7 @@ pub(in crate::baml) struct BamlRuntimeState {
     pub(in crate::baml) executor: Option<BamlExecutor>,
     pub(in crate::baml) tool_registry: Arc<ConcreteToolRegistry>,
     pub(in crate::baml) session_plan_functions: Option<SessionPlanFunctionsMap>,
+    pub(in crate::baml) unified_step_executor_functions: Option<UnifiedStepExecutorFunctionsMap>,
     pub(in crate::baml) tool_step_executors: Option<HashMap<String, String>>,
     pub(in crate::baml) function_tool_manifest: Arc<FunctionToolManifest>,
     pub(in crate::baml) interceptor_registry: Arc<TokioMutex<InterceptorRegistry>>,
@@ -51,6 +54,12 @@ pub(in crate::baml) struct BamlRuntimeState {
     pub(in crate::baml) planning_resolver: Arc<dyn PlanningResolver>,
     pub(in crate::baml) execution_sessions:
         Arc<DashMap<String, crate::quickjs_bridge::ExecutionSession>>,
+    /// Rendered tool / session-step JSON schema catalog (loaded from
+    /// `baml_src/_baml_tool_schema_catalog.txt` at runtime startup) injected as
+    /// `ctx.tags['tool_schema_prelude']` for every BAML invocation — both plain
+    /// `invoke_function` and step-executor `invoke_function_with_intra` paths.
+    /// Single source of truth lives in `BamlRuntimeManager::enrich_with_tool_schema_prelude`.
+    pub(in crate::baml) tool_schema_prelude: Option<Arc<str>>,
 }
 
 impl Default for BamlRuntimeState {
@@ -60,6 +69,7 @@ impl Default for BamlRuntimeState {
             executor: None,
             tool_registry: Arc::new(ConcreteToolRegistry::new()),
             session_plan_functions: None,
+            unified_step_executor_functions: None,
             tool_step_executors: None,
             function_tool_manifest: Arc::new(FunctionToolManifest::default()),
             interceptor_registry: Arc::new(TokioMutex::new(InterceptorRegistry::new())),
@@ -76,6 +86,7 @@ impl Default for BamlRuntimeState {
             llm_client_resolver: None,
             planning_resolver: Arc::new(DefaultPlanningResolver),
             execution_sessions: Arc::new(DashMap::new()),
+            tool_schema_prelude: None,
         }
     }
 }

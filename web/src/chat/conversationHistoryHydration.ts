@@ -1,3 +1,8 @@
+/**
+ * Transcript contract: the Primary pane renders **conversation-history** (GET hydrate + SSE
+ * snapshot/delta). A2A stream text is progressive decoration only — never treat it as canonical
+ * transcript content or merge it as a competing source of truth once hydration runs.
+ */
 import type { Ref } from "vue";
 import type {
   ChatMessage,
@@ -66,6 +71,34 @@ export function chatMessagesHaveStreamedAgentBody(messages: ChatMessage[]): bool
   });
 }
 
+function agentMessageHasRenderableBody(message: ChatMessage): boolean {
+  if (message.role !== "agent") return false;
+  if (message.text?.trim()) return true;
+  const blocks = message.contentBlocks;
+  if (!blocks?.length) return false;
+  return blocks.some((b) => {
+    if (b.type === "text") return (b.text ?? "").trim().length > 0;
+    return true;
+  });
+}
+
+/**
+ * Explicit restore should not let an empty live placeholder veto a real persisted transcript page.
+ * Preserve only visible streamed content or genuine INPUT_REQUIRED suspension.
+ */
+export function explicitRestoreMayIgnoreEmptyLivePlaceholder(
+  messages: ChatMessage[],
+  page: ConversationHistoryPage,
+): boolean {
+  if (!Array.isArray(page.items) || page.items.length === 0) return false;
+  const hasLocalUserTurn = messages.some((m) => m.role === "user" && (m.text ?? "").trim().length > 0);
+  if (!hasLocalUserTurn) return false;
+  if (messages.some((m) => m.role === "agent" && m.awaitingInput === true)) return false;
+  const hasStreamingAgent = messages.some((m) => m.role === "agent" && m.isStreaming === true);
+  if (!hasStreamingAgent) return false;
+  return !messages.some(agentMessageHasRenderableBody);
+}
+
 /** Live assistant row is mid-stream or suspended for INPUT_REQUIRED — never replace from provenance. */
 export function liveAgentBubbleBlocksHistoryReplace(messages: ChatMessage[]): boolean {
   return messages.some(
@@ -84,6 +117,31 @@ export function provenanceSnapshotLagsLiveChat(
   );
 }
 
+/**
+ * Live sends use `user-msg-*` ids (see `useA2aClient`); persisted rows hydrate as `prov-user-*`.
+ * A full provenance replace must not run while GET still omits a client user turn — otherwise the
+ * UI wipes recent history even when an older assistant `message` row is already present (weak lag test).
+ */
+export function provenancePageOmitsPersistedClientUserTurns(
+  messages: ChatMessage[],
+  page: ConversationHistoryPage,
+): boolean {
+  const clientUsers = messages.filter(
+    (m) => m.role === "user" && typeof m.id === "string" && m.id.startsWith("user-msg-"),
+  );
+  if (clientUsers.length === 0) return false;
+  const pageUserTexts = new Set(
+    page.items.flatMap((i) => {
+      if (i.role.toLowerCase() !== "user") return [];
+      const c = i.content;
+      if (c.type !== "message") return [];
+      const t = String(c.text ?? "").trim();
+      return t.length > 0 ? [t] : [];
+    }),
+  );
+  return clientUsers.some((m) => !pageUserTexts.has(String(m.text ?? "").trim()));
+}
+
 /** SSE snapshot/delta: skip rebuild/merge when the in-memory transcript must win. */
 export function shouldDeferProvenanceHistoryRebuild(
   messages: ChatMessage[],
@@ -91,6 +149,7 @@ export function shouldDeferProvenanceHistoryRebuild(
 ): boolean {
   if (liveAgentBubbleBlocksHistoryReplace(messages)) return true;
   if (page !== undefined && provenanceSnapshotLagsLiveChat(messages, page)) return true;
+  if (page !== undefined && provenancePageOmitsPersistedClientUserTurns(messages, page)) return true;
   return false;
 }
 
@@ -123,6 +182,14 @@ export function applyConversationHistoryPage(
   messages: Ref<ChatMessage[]>,
   page: ConversationHistoryPage,
 ): void {
+  const traceTranscript = (...args: unknown[]) => {
+    if (typeof window !== "undefined" && window.location.hostname === "localhost") {
+      console.debug(
+        "[transcript]",
+        ...args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))),
+      );
+    }
+  };
   const sorted = [...page.items].sort((a, b) => a.timestampMs - b.timestampMs);
   const rebuilt: ChatMessage[] = [];
   let turnOrdinal = 0;
@@ -247,12 +314,38 @@ export function applyConversationHistoryPage(
   }
 
   messages.value = rebuilt;
+  traceTranscript("applyPage.commit", {
+    contextId: page.contextId,
+    version: page.version,
+    items: sorted.length,
+    rebuilt: rebuilt.length,
+    sample: rebuilt.slice(0, 4).map((m) => ({
+      id: m.id,
+      role: m.role,
+      text: (m.text ?? "").slice(0, 60),
+    })),
+  });
   syncResumeHintsFromPage(messages, page);
 }
+
+/**
+ * - **`full`**: apply every delta row (default).
+ * - **`structural_only`**: while the tail agent row is streaming, merge only `tool_*` and
+ *   `session_step` rows from provenance — skip user rows and assistant `message` text so POST /a2a
+ *   stream text remains authoritative. Keeps Primary tool/session traces aligned with Observe.
+ */
+export const ConversationHistoryDeltaApplyMode = {
+  Full: "full",
+  StructuralOnly: "structural_only",
+} as const;
+
+export type ConversationHistoryDeltaApplyMode =
+  (typeof ConversationHistoryDeltaApplyMode)[keyof typeof ConversationHistoryDeltaApplyMode];
 
 export function applyConversationHistoryDelta(
   messages: Ref<ChatMessage[]>,
   page: ConversationHistoryPage,
+  applyMode: ConversationHistoryDeltaApplyMode = ConversationHistoryDeltaApplyMode.Full,
 ): void {
   if (Array.isArray(page.items) && page.items.length > 0) {
     const sorted = [...page.items].sort((a, b) => a.timestampMs - b.timestampMs);
@@ -261,6 +354,9 @@ export function applyConversationHistoryDelta(
       const ts = new Date(normalizeEpochMs(item.timestampMs));
       const content = item.content;
       if (isUser) {
+        if (applyMode === ConversationHistoryDeltaApplyMode.StructuralOnly) {
+          continue;
+        }
         const text = content.type === "message" ? content.text : "";
         const sk = inferUserSpeakerKind(item);
         messages.value.push({
@@ -274,6 +370,10 @@ export function applyConversationHistoryDelta(
       }
 
       if (content.type === "message" && isWorkflowStatusText(content.text ?? "")) {
+        continue;
+      }
+
+      if (applyMode === ConversationHistoryDeltaApplyMode.StructuralOnly && content.type === "message") {
         continue;
       }
 

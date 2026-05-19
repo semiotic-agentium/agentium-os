@@ -95,7 +95,7 @@ declare function ProduceSpec(args: { requirements_summary: string } & { __baml_i
 
 declare function RequirementsPhase(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<NeedMoreInput | RequirementsReady>;
 
-declare function SummarizeDevWorkInPersonality(args: { session_report: string } & { __baml_invocation_token?: string }): Promise<StructuredReply>;
+declare function SummarizeDevWork(args: { session_report: string } & { __baml_invocation_token?: string }): Promise<StructuredReply>;
 
 }
 
@@ -421,7 +421,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseClaudeDevAction" | "ChooseClaudeDevAction__act__claude_dev" | "ChooseClaudeDevAction__continue__claude_dev" | "ChooseClaudeDevAction__select";
+export type StepExecutorFunctionName = "ChooseClaudeDevAction" | "ChooseClaudeDevAction__active__claude_dev" | "ChooseClaudeDevAction__entry";
 
 export interface SessionContext {
     contract_version: "session_context_v2";
@@ -458,23 +458,35 @@ export interface StepExecutorRunOptions {
     max_steps?: number;
 }
 
+export type ErrorDisposition =
+    | "host_retriable"
+    | "llm_correctable"
+    | "inform_and_continue"
+    | "fatal";
+
+export interface StepPlanRecovery {
+    code: string;
+    disposition: ErrorDisposition;
+    mistake: string;
+    invariant: string;
+    fix_steps?: string[];
+}
+
+export type StepExecutorRunEnvelope<R = unknown> = { outcome: "completed", last: R, steps: R[], session_context: SessionContext, selected_tool: string | null } | { outcome: "agent_correctable", recovery: StepPlanRecovery } | { outcome: "fatal", message: string, code?: string | null };
+
 /**
- * FSM hop telemetry from runGeneratedStepExecutor — not the chat SessionResult.message.
- * User-facing replies are synthesized once at session completion (and recorded there).
+ * Result of runGeneratedStepExecutor: discriminated envelope (`outcome`).
+ * On `completed`, fields match the former flat telemetry shape.
+ * `agent_correctable` carries structured recovery — not a thrown JS error.
+ * User-facing replies are still SessionResult.message from the chat handler.
  */
 
-export interface StepExecutorRunResult<R = unknown> {
-    last: R;
-    steps: R[];
-    session_context: SessionContext;
-    selected_tool: string | null;
-}
+export type StepExecutorRunResult<R = unknown> = StepExecutorRunEnvelope<R>;
 
 export interface StepExecutorFunctionMap {
   ChooseClaudeDevAction: { args: Parameters<typeof ChooseClaudeDevAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction>>; };
-  ChooseClaudeDevAction__act__claude_dev: { args: Parameters<typeof ChooseClaudeDevAction__act__claude_dev>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction__act__claude_dev>>; };
-  ChooseClaudeDevAction__continue__claude_dev: { args: Parameters<typeof ChooseClaudeDevAction__continue__claude_dev>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction__continue__claude_dev>>; };
-  ChooseClaudeDevAction__select: { args: Parameters<typeof ChooseClaudeDevAction__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction__select>>; };
+  ChooseClaudeDevAction__active__claude_dev: { args: Parameters<typeof ChooseClaudeDevAction__active__claude_dev>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction__active__claude_dev>>; };
+  ChooseClaudeDevAction__entry: { args: Parameters<typeof ChooseClaudeDevAction__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction__entry>>; };
 }
 
 declare global {
@@ -482,5 +494,5 @@ declare global {
     stepExecutor: F,
     args: Omit<StepExecutorFunctionMap[F]["args"], keyof StepExecutorStateInput>,
     options?: StepExecutorRunOptions
-  ): Promise<StepExecutorRunResult<StepExecutorFunctionMap[F]["result"]>>;
+  ): Promise<StepExecutorRunEnvelope<StepExecutorFunctionMap[F]["result"]>>;
 }

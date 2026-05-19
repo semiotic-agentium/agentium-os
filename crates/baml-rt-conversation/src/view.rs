@@ -94,10 +94,10 @@ impl ConversationItemContent {
     }
 }
 
-/// Maps a graph Message `a2a_role` into the `role` field exposed on BAML `ctx.tags['conversation_history']`.
+/// Maps a graph Message `a2a_role` into the `role` field on projected history rows (rendered into `conversation_transcript`).
 ///
 /// Canonical chat labels: **`user`**, **`assistant`**. (Graph may store `ROLE_USER` / `ROLE_AGENT`.)
-/// Tool/session rows use **`tool`**; duplicate SendDone bodies may use **`read`** (see `prompt_projection`).
+/// Tool/session rows use **`tool`**; explicit read bodies may use **`read`** (see `prompt_projection`).
 #[must_use]
 pub fn conversation_history_role_for_message(a2a_role: &str) -> String {
     let r = a2a_role.trim();

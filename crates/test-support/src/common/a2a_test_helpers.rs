@@ -285,11 +285,11 @@ pub fn first_message_text_from_stream(responses: &[Value]) -> String {
     String::new()
 }
 
-pub fn first_task_id_from_stream(responses: &[Value]) -> Option<String> {
-    fn task_id_from_val(task: &Value) -> Option<String> {
+pub fn first_task_id_from_stream(responses: &[Value]) -> Option<TaskId> {
+    fn task_id_from_val(task: &Value) -> Option<TaskId> {
         task.get("id")
             .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
+            .map(|id| TaskId::from_external(ExternalId::new(id.to_string())))
             .or_else(|| {
                 task.as_str().and_then(|s| {
                     serde_json::from_str::<Value>(s)

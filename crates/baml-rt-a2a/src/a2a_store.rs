@@ -7,14 +7,15 @@ use baml_rt_core::{
     ids::{AgentId, ContextId, TaskId},
 };
 use baml_rt_observability::metrics;
-use baml_rt_provenance::{ProvEvent, ProvenanceError, ProvenanceWriter, events::ReservedAnchor};
+use baml_rt_provenance::{
+    ProvEvent, ProvenanceWriter,
+    metamodel::{NonEmptyString, TaskStatusKind},
+};
 use serde_json::Value;
-use tokio::sync::Mutex;
 
 use crate::a2a_types::{
-    Artifact, ListTasksRequest, ListTasksResponse, Message, MessageRole, Part, ROLE_USER,
-    TASK_STATE_CANCELED, Task, TaskArtifactUpdateEvent, TaskState, TaskStatus,
-    TaskStatusUpdateEvent,
+    Artifact, ListTasksRequest, ListTasksResponse, Message, MessageRole, Part, ROLE_USER, Task,
+    TaskArtifactUpdateEvent, TaskState, TaskStatus, TaskStatusUpdateEvent, ValidatedTaskChunk,
 };
 
 #[derive(Debug, Clone)]
@@ -37,13 +38,6 @@ impl TaskUpdateEvent {
             TaskUpdateEvent::Artifact(event) => event.context_id.as_ref(),
         }
     }
-}
-
-#[derive(Debug, Default)]
-pub struct TaskStore {
-    tasks: HashMap<String, Task>,
-    order: Vec<String>,
-    updates: HashMap<String, Vec<TaskUpdateEvent>>,
 }
 
 /// Task persistence. Status transitions are **not** enforced on `upsert`; only
@@ -81,25 +75,36 @@ pub trait TaskRepository: Send + Sync {
 
 #[async_trait]
 pub trait TaskEventRecorder: Send + Sync {
+    /// Record a status transition for an A2A task.
+    ///
+    /// `context_id` is required: the provenance graph is the sole source
+    /// of truth for tasks/messages/status, and a `context_id`-less
+    /// status update would silently drop the
+    /// `ProvEvent::TaskStatusChanged` emission. Callers that only have
+    /// `Option<ContextId>` must hard-fail or skip-with-logged-degradation
+    /// at the call site, never pass a synthesised default.
     async fn record_status_update(
         &self,
         task_id: TaskId,
-        context_id: Option<ContextId>,
+        context_id: ContextId,
         status: TaskStatus,
     ) -> Result<Option<TaskUpdateEvent>>;
+    /// Record an artifact update for an A2A task.
+    ///
+    /// `context_id` is required: the provenance graph is the sole source of
+    /// truth for tasks/messages/artifacts, and a `context_id`-less
+    /// artifact update would silently drop the `ProvEvent::TaskArtifactGenerated`
+    /// emission. Callers that only have `Option<ContextId>` must hard-fail
+    /// or skip-with-logged-degradation at the call site, never pass a
+    /// synthesised default.
     async fn record_artifact_update(
         &self,
         task_id: TaskId,
-        context_id: Option<ContextId>,
+        context_id: ContextId,
         artifact: Artifact,
         append: Option<bool>,
         last_chunk: Option<bool>,
     ) -> Result<Option<TaskUpdateEvent>>;
-}
-
-#[async_trait]
-pub trait TaskUpdateQueue: Send + Sync {
-    async fn drain_updates(&self, task_id: &str) -> Vec<TaskUpdateEvent>;
 }
 
 /// Atomic application of a stream chunk: task merge (status-none) + status + artifacts + message
@@ -108,13 +113,7 @@ pub trait TaskUpdateQueue: Send + Sync {
 pub trait TaskChunkApplier: Send + Sync {
     /// Applies task delta atomically. Task status is never applied via merge; status changes
     /// go through the FSM in `record_status_update`. Returns events for accepted updates.
-    async fn apply_task_delta(
-        &self,
-        task: Option<Task>,
-        message: Option<Message>,
-        status_update: Option<TaskStatusUpdateEvent>,
-        artifact_update: Option<TaskArtifactUpdateEvent>,
-    ) -> Result<Vec<TaskUpdateEvent>>;
+    async fn apply_task_chunk(&self, chunk: ValidatedTaskChunk) -> Result<Vec<TaskUpdateEvent>>;
 }
 
 /// Source of **BAML conversation rows** (`ProvenanceConversationContextItem`) for prompt projection.
@@ -169,297 +168,29 @@ impl ConversationContextSource for ProvenanceWriterConversationSource {
 }
 
 #[async_trait]
-pub trait TaskStoreBackend:
-    TaskRepository + TaskEventRecorder + TaskUpdateQueue + TaskChunkApplier
-{
-}
+pub trait TaskStoreBackend: TaskRepository + TaskEventRecorder + TaskChunkApplier {}
 
-impl<T> TaskStoreBackend for T where
-    T: TaskRepository + TaskEventRecorder + TaskUpdateQueue + TaskChunkApplier
-{
-}
+impl<T> TaskStoreBackend for T where T: TaskRepository + TaskEventRecorder + TaskChunkApplier {}
 
-#[async_trait]
-impl TaskRepository for Mutex<TaskStore> {
-    async fn upsert(&self, task: Task) -> Result<Option<Task>> {
-        let mut store = self.lock().await;
-        Ok(store.upsert(task))
-    }
-
-    async fn ensure_task_exists(
-        &self,
-        task_id: &TaskId,
-        context_id: Option<&ContextId>,
-    ) -> Result<()> {
-        let mut store = self.lock().await;
-        store.ensure_task_exists(task_id.clone(), context_id.cloned());
-        Ok(())
-    }
-
-    async fn get(&self, id: &str, history_length: Option<usize>) -> Option<Task> {
-        let store = self.lock().await;
-        store.get(id, history_length)
-    }
-
-    async fn list(&self, request: &ListTasksRequest) -> ListTasksResponse {
-        let store = self.lock().await;
-        store.list(request)
-    }
-
-    async fn cancel(&self, id: &str) -> Option<Task> {
-        let mut store = self.lock().await;
-        store.cancel(id)
-    }
-
-    async fn insert_message(&self, message: &Message) -> Result<()> {
-        let mut store = self.lock().await;
-        store.insert_message(message);
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl TaskEventRecorder for Mutex<TaskStore> {
-    async fn record_status_update(
-        &self,
-        task_id: TaskId,
-        context_id: Option<ContextId>,
-        status: TaskStatus,
-    ) -> Result<Option<TaskUpdateEvent>> {
-        let mut store = self.lock().await;
-        Ok(store.record_status_update(Some(task_id), context_id, status))
-    }
-
-    async fn record_artifact_update(
-        &self,
-        task_id: TaskId,
-        context_id: Option<ContextId>,
-        artifact: Artifact,
-        append: Option<bool>,
-        last_chunk: Option<bool>,
-    ) -> Result<Option<TaskUpdateEvent>> {
-        let mut store = self.lock().await;
-        Ok(store.record_artifact_update(Some(task_id), context_id, artifact, append, last_chunk))
-    }
-}
-
-#[async_trait]
-impl TaskUpdateQueue for Mutex<TaskStore> {
-    async fn drain_updates(&self, task_id: &str) -> Vec<TaskUpdateEvent> {
-        let mut store = self.lock().await;
-        store.drain_updates(task_id)
-    }
-}
-
-#[async_trait]
-impl TaskChunkApplier for Mutex<TaskStore> {
-    async fn apply_task_delta(
-        &self,
-        task: Option<Task>,
-        message: Option<Message>,
-        status_update: Option<TaskStatusUpdateEvent>,
-        artifact_update: Option<TaskArtifactUpdateEvent>,
-    ) -> Result<Vec<TaskUpdateEvent>> {
-        if task.is_none() && (status_update.is_some() || artifact_update.is_some()) {
-            return Err(BamlRtError::InvalidArgument(
-                "status_update or artifact_update requires task in chunk".into(),
-            ));
-        }
-        let mut store = self.lock().await;
-        Ok(store.apply_task_delta(task, message, status_update, artifact_update))
-    }
-}
-
-pub struct ProvenanceTaskStore {
-    inner: Arc<dyn TaskStoreBackend>,
-    /// Required: all task/message side effects are mirrored into this graph for audit and for
-    /// [`ProvenanceWriter::conversation_context`]. There is no task-history path for LLM-visible rows.
-    writer: Arc<dyn ProvenanceWriter>,
-    agent_id: AgentId,
-}
-
-impl ProvenanceTaskStore {
-    /// In-memory task mirror with a provenance writer (conversation context is **only** via the graph).
-    pub fn new(writer: Arc<dyn ProvenanceWriter>, agent_id: AgentId) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(TaskStore::new())),
-            writer,
-            agent_id,
-        }
-    }
-
-    /// Task store backed by a persistent backend (e.g. [crate::task_subgraph_store::TaskSubgraphStore])
-    /// with the same provenance writer used for graph writes and conversation reads.
-    pub fn with_backend(
-        inner: Arc<dyn TaskStoreBackend>,
-        writer: Arc<dyn ProvenanceWriter>,
-        agent_id: AgentId,
-    ) -> Self {
-        Self {
-            inner,
-            writer,
-            agent_id,
-        }
-    }
-
-    async fn record_event(&self, event: ProvEvent) {
-        self.writer
-            .add_event_with_logging(event, "task store operation")
-            .await;
-    }
-
-    /// Emit a `TaskStatusChanged` provenance event using a pre-allocated anchor, then
-    /// conditionally emit `TaskExecutionEnded` for terminal states.
-    ///
-    /// The `anchor` should be a [`ReservedAnchor`] allocated **before** any `async` await
-    /// that precedes this call, to preserve logical `event_order` under concurrency.
-    async fn emit_status_provenance(
-        &self,
-        anchor: ReservedAnchor,
-        context_id: baml_rt_core::ids::ContextId,
-        task_id: baml_rt_core::ids::TaskId,
-        status_str: Option<String>,
-    ) {
-        let event = ProvEvent::task_status_changed_with_id(
-            anchor,
-            context_id.clone(),
-            task_id.clone(),
-            None,
-            status_str.clone(),
-        );
-        self.record_event(event).await;
-        if status_str.as_deref().is_some_and(is_terminal_state) {
-            self.record_event(ProvEvent::task_execution_ended(context_id, task_id))
-                .await;
-        }
-    }
-
-    async fn record_event_required(&self, event: ProvEvent, context: &str) -> Result<()> {
-        self.writer
-            .add_event(event)
-            .await
-            .map_err(|source| match source {
-                // Bounded write contention is host-retriable, not LLM-correctable —
-                // it means concurrent writers raced on a shared graph record (agent
-                // runtime instance, context entity), not that the caller's input
-                // was malformed. The HostRetriable disposition lets clients re-queue.
-                ProvenanceError::Contention { ref details } => BamlRtError::Conflict(format!(
-                    "provenance write contention for {context}: {details}"
-                )),
-                other => BamlRtError::InvalidArgumentWithSource {
-                    message: format!("failed to record provenance event for {context}"),
-                    source: Box::new(other),
-                },
-            })?;
-        Ok(())
-    }
-
-    fn inject_agent_id_into_chunk(
-        task: Option<Task>,
-        message: Option<Message>,
-        agent_id: &AgentId,
-    ) -> (Option<Task>, Option<Message>) {
-        let task = task.map(|mut t| {
-            ensure_agent_id_in_metadata(&mut t.metadata, agent_id);
-            t
-        });
-        let message = message.map(|mut m| {
-            ensure_agent_id_in_metadata(&mut m.metadata, agent_id);
-            m
-        });
-        (task, message)
-    }
-
-    /// Insert received message using explicit scope. Never reads context_id/task_id from message.
-    /// Caller must pass ROLE_USER messages only.
-    async fn insert_message_with_scope(
-        &self,
-        message: &Message,
-        context_id: ContextId,
-        task_id: Option<TaskId>,
-    ) -> Result<()> {
-        let role = message_role_string(&message.role);
-        if role != ROLE_USER {
-            return Err(BamlRtError::InvalidArgument(format!(
-                "insert_message_with_scope requires ROLE_USER, got {role}"
-            )));
-        }
-        let content = validated_message_content(message, "insert_message_with_scope")?;
-        tracing::trace!(
-            context_id = context_id.as_str(),
-            task_id = task_id.as_ref().map(|t| t.as_str()),
-            message_id = message.message_id.as_message_id().as_str(),
-            role = role.as_str(),
-            "Storing received message with explicit scope (no wire-derived context/task)",
-        );
-        let mut msg_metadata = message.metadata.clone();
-        ensure_agent_id_in_metadata(&mut msg_metadata, &self.agent_id);
-        let metadata = msg_metadata.as_ref().map(metadata_string_map);
-        if let Some(ref tid) = task_id {
-            self.record_event_required(
-                ProvEvent::task_exists(context_id.clone(), tid.clone()),
-                "insert_message_with_scope task_exists",
-            )
-            .await?;
-            self.record_event_required(
-                ProvEvent::task_execution_started(
-                    context_id.clone(),
-                    tid.clone(),
-                    self.agent_id.clone(),
-                ),
-                "insert_message_with_scope task_execution_started",
-            )
-            .await?;
-        }
-        let event = match task_id.clone() {
-            Some(tid) => ProvEvent::message_received_task(
-                context_id.clone(),
-                tid,
-                message.message_id.as_message_id().clone(),
-                role,
-                content,
-                metadata,
-                self.agent_id.clone(),
-                now_millis(),
-            ),
-            None => ProvEvent::message_received_global(
-                context_id.clone(),
-                message.message_id.as_message_id().clone(),
-                role,
-                content,
-                metadata,
-                self.agent_id.clone(),
-                now_millis(),
-            ),
-        };
-        self.record_event_required(event, "insert_message_with_scope message lifecycle")
-            .await?;
-        if task_id.is_some() {
-            let mut msg = message.clone();
-            msg.context_id = Some(context_id);
-            msg.task_id = task_id;
-            let start = Instant::now();
-            self.inner.insert_message(&msg).await?;
-            record_task_store_metrics("insert_message_with_scope", "success", start);
-        }
-        Ok(())
-    }
-}
-
-fn now_millis() -> u64 {
+pub(crate) fn now_millis() -> u64 {
     baml_rt_core::now_unix_ms(clock_events::A2A_STORE)
 }
 
-fn require_context_id(context_id: Option<ContextId>, operation: &str) -> Result<ContextId> {
+pub(crate) fn require_context_id(
+    context_id: Option<ContextId>,
+    operation: &str,
+) -> Result<ContextId> {
     context_id.ok_or_else(|| {
         BamlRtError::InvalidArgument(format!(
-            "context_id is required for {} in ProvenanceTaskStore; refusing implicit generation",
-            operation
+            "context_id is required for {operation}; refusing implicit generation",
         ))
     })
 }
 
-fn ensure_agent_id_in_metadata(metadata: &mut Option<HashMap<String, Value>>, agent_id: &AgentId) {
+pub(crate) fn ensure_agent_id_in_metadata(
+    metadata: &mut Option<HashMap<String, Value>>,
+    agent_id: &AgentId,
+) {
     if metadata
         .as_ref()
         .is_none_or(|m| !m.contains_key("agent_id"))
@@ -473,180 +204,32 @@ fn ensure_agent_id_in_metadata(metadata: &mut Option<HashMap<String, Value>>, ag
     }
 }
 
-fn record_task_store_metrics(op: &str, outcome: &str, start: Instant) {
+pub(crate) fn record_task_store_metrics(op: &str, outcome: &str, start: Instant) {
     metrics::record_task_store_operation(op, outcome, start.elapsed());
 }
 
-#[async_trait]
-impl TaskRepository for ProvenanceTaskStore {
-    async fn upsert(&self, mut task: Task) -> Result<Option<Task>> {
-        let start = Instant::now();
-        let context_id = require_context_id(task.context_id.clone(), "task upsert")?;
-
-        ensure_agent_id_in_metadata(&mut task.metadata, &self.agent_id);
-
-        if let Some(task_id) = task.id.clone() {
-            self.record_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
-                .await;
-            self.record_event(ProvEvent::task_execution_started(
-                context_id,
-                task_id,
-                self.agent_id.clone(),
-            ))
-            .await;
-        }
-        let out = self.inner.upsert(task).await?;
-        record_task_store_metrics("upsert", "success", start);
-        Ok(out)
-    }
-
-    async fn ensure_task_exists(
-        &self,
-        task_id: &TaskId,
-        context_id: Option<&ContextId>,
-    ) -> Result<()> {
-        let start = Instant::now();
-        self.inner.ensure_task_exists(task_id, context_id).await?;
-        record_task_store_metrics("ensure_task_exists", "success", start);
-        Ok(())
-    }
-
-    async fn get(&self, id: &str, history_length: Option<usize>) -> Option<Task> {
-        let start = Instant::now();
-        let out = self.inner.get(id, history_length).await;
-        record_task_store_metrics("get", "success", start);
-        out
-    }
-
-    async fn list(&self, request: &ListTasksRequest) -> ListTasksResponse {
-        let start = Instant::now();
-        let out = self.inner.list(request).await;
-        record_task_store_metrics("list", "success", start);
-        out
-    }
-
-    async fn cancel(&self, id: &str) -> Option<Task> {
-        // Reserve anchor before the await — same race as record_status_update / apply_task_delta.
-        let prov_anchor = ReservedAnchor::allocate();
-        let out = self.inner.cancel(id).await;
-        if let Some(ref task) = out
-            && let (Some(cid), Some(tid)) = (task.context_id.clone(), task.id.clone())
-            && let Ok(context_id) = require_context_id(Some(cid), "provenance cancel")
-        {
-            self.emit_status_provenance(
-                prov_anchor,
-                context_id,
-                tid,
-                Some(TASK_STATE_CANCELED.to_string()),
-            )
-            .await;
-        }
-        out
-    }
-
-    async fn insert_message_for_receiver(
-        &self,
-        message: &Message,
-        context_id: ContextId,
-        task_id: Option<TaskId>,
-    ) -> Result<()> {
-        // Provenance: use explicit scope only; never read context_id/task_id from message.
-        self.insert_message_with_scope(message, context_id, task_id)
-            .await
-    }
-
-    async fn insert_message(&self, message: &Message) -> Result<()> {
-        let context_id = require_context_id(message.context_id.clone(), "message insert")?;
-        let task_id = message.task_id.clone();
-        let role = message_role_string(&message.role);
-        let content = validated_message_content(message, "insert_message")?;
-        tracing::trace!(
-            context_id = context_id.as_str(),
-            task_id = task_id.as_ref().map(|t| t.as_str()),
-            message_id = message.message_id.as_message_id().as_str(),
-            role = role.as_str(),
-            content_parts = content.len(),
-            "Storing message in provenance",
-        );
-
-        let mut msg_metadata = message.metadata.clone();
-        ensure_agent_id_in_metadata(&mut msg_metadata, &self.agent_id);
-        let metadata = msg_metadata.as_ref().map(metadata_string_map);
-
-        // agent_id is always available from store level
-        if let Some(task_id) = task_id.clone() {
-            self.record_event_required(
-                ProvEvent::task_exists(context_id.clone(), task_id.clone()),
-                "insert_message task_exists",
-            )
-            .await?;
-            self.record_event_required(
-                ProvEvent::task_execution_started(
-                    context_id.clone(),
-                    task_id,
-                    self.agent_id.clone(),
-                ),
-                "insert_message task_execution_started",
-            )
-            .await?;
-        }
-        let task_id_for_event = task_id.clone();
-
-        let event = match (role.as_str(), task_id_for_event.clone()) {
-            (ROLE_USER, Some(task_id)) => ProvEvent::message_received_task(
-                context_id.clone(),
-                task_id,
-                message.message_id.as_message_id().clone(),
-                role,
-                content,
-                metadata,
-                self.agent_id.clone(),
-                now_millis(),
-            ),
-            (ROLE_USER, None) => ProvEvent::message_received_global(
-                context_id.clone(),
-                message.message_id.as_message_id().clone(),
-                role,
-                content,
-                metadata,
-                self.agent_id.clone(),
-                now_millis(),
-            ),
-            (_, Some(task_id)) => ProvEvent::message_sent_task(
-                context_id.clone(),
-                task_id,
-                message.message_id.as_message_id().clone(),
-                role,
-                content,
-                metadata,
-                self.agent_id.clone(),
-                now_millis(),
-                Vec::new(),
-            ),
-            (_, None) => ProvEvent::message_sent_global(
-                context_id.clone(),
-                message.message_id.as_message_id().clone(),
-                role,
-                content,
-                metadata,
-                self.agent_id.clone(),
-                now_millis(),
-                Vec::new(),
-            ),
-        };
-        self.record_event_required(event, "insert_message message lifecycle")
-            .await?;
-
-        // Task-scoped backends (e.g. TaskSubgraphStore) require task_id; global
-        // messages are only in the provenance event stream and appear in context_messages.
-        if message.task_id.is_some() {
-            let start = Instant::now();
-            self.inner.insert_message(message).await?;
-            record_task_store_metrics("insert_message", "success", start);
-        }
-        Ok(())
-    }
+pub(crate) fn inject_agent_id_into_chunk(
+    task: Option<Task>,
+    message: Option<Message>,
+    agent_id: &AgentId,
+) -> (Option<Task>, Option<Message>) {
+    let task = task.map(|mut t| {
+        ensure_agent_id_in_metadata(&mut t.metadata, agent_id);
+        t
+    });
+    let message = message.map(|mut m| {
+        ensure_agent_id_in_metadata(&mut m.metadata, agent_id);
+        m
+    });
+    (task, message)
 }
+
+// Bug A.3 chunk-message resolution now lives on `ValidatedTaskChunk` itself
+// (`resolved_assistant_message()` + `ResolvedAssistantMessage::scoped_owned()`).
+// Centralising the precedence and scope backfill next to the validator keeps
+// the wire invariant compile-adjacent and lets the hot path (top-level
+// `StreamResponse.message`) stay zero-clone until provenance actually needs the
+// owned `Message`.
 
 pub(crate) fn message_role_string(role: &MessageRole) -> String {
     role.as_wire_str().to_string()
@@ -736,248 +319,267 @@ pub(crate) fn metadata_string_map(metadata: &HashMap<String, Value>) -> HashMap<
         .collect()
 }
 
-#[async_trait]
-impl TaskEventRecorder for ProvenanceTaskStore {
-    /// I3: provenance emitted only after store accepts the status update.
-    async fn record_status_update(
-        &self,
-        task_id: TaskId,
-        context_id: Option<ContextId>,
-        status: TaskStatus,
-    ) -> Result<Option<TaskUpdateEvent>> {
-        let start = Instant::now();
-        // Reserve the activity anchor BEFORE the inner await so that event_order is
-        // assigned in logical emission order, not in DB-round-trip completion order.
-        // (Two tokio tasks can race here: the QuickJS task emits WORKING via this path
-        // while the drain-loop task emits COMPLETED via apply_task_delta.)
-        let prov_anchor = ReservedAnchor::allocate();
-        let out = self
-            .inner
-            .record_status_update(task_id, context_id, status)
-            .await?;
-        let outcome = if out.is_some() { "success" } else { "rejected" };
-        record_task_store_metrics("record_status_update", outcome, start);
-        if let Some(TaskUpdateEvent::Status(ref ev)) = out
-            && let (Some(tid), Some(cid)) = (ev.task_id.as_ref(), ev.context_id.as_ref())
-            && let Ok(context_id) = require_context_id(Some(cid.clone()), "provenance status")
-        {
-            self.emit_status_provenance(
-                prov_anchor,
-                context_id,
-                tid.clone(),
-                ev.status.as_ref().and_then(status_to_string),
-            )
-            .await;
-        }
-        Ok(out)
-    }
-
-    /// I3: provenance emitted only after store accepts the artifact update.
-    async fn record_artifact_update(
-        &self,
-        task_id: TaskId,
-        context_id: Option<ContextId>,
-        artifact: Artifact,
-        append: Option<bool>,
-        last_chunk: Option<bool>,
-    ) -> Result<Option<TaskUpdateEvent>> {
-        let start = Instant::now();
-        let out = self
-            .inner
-            .record_artifact_update(task_id, context_id, artifact, append, last_chunk)
-            .await?;
-        let outcome = if out.is_some() { "success" } else { "rejected" };
-        record_task_store_metrics("record_artifact_update", outcome, start);
-        if let Some(TaskUpdateEvent::Artifact(ref ev)) = out
-            && let (Some(tid), Some(cid)) = (ev.task_id.as_ref(), ev.context_id.as_ref())
-            && let Ok(context_id) = require_context_id(Some(cid.clone()), "provenance artifact")
-        {
-            let (aid, name) = ev
-                .artifact
-                .as_ref()
-                .map(|a| (a.artifact_id.clone(), a.name.clone()))
-                .unwrap_or((None, None));
-            let event = ProvEvent::task_artifact_generated(context_id, tid.clone(), aid, name);
-            self.record_event(event).await;
-        }
-        Ok(out)
-    }
-}
-
-#[async_trait]
-impl TaskUpdateQueue for ProvenanceTaskStore {
-    async fn drain_updates(&self, task_id: &str) -> Vec<TaskUpdateEvent> {
-        self.inner.drain_updates(task_id).await
-    }
-}
-
-#[async_trait]
-impl TaskChunkApplier for ProvenanceTaskStore {
-    async fn apply_task_delta(
-        &self,
-        task: Option<Task>,
-        message: Option<Message>,
-        status_update: Option<TaskStatusUpdateEvent>,
-        artifact_update: Option<TaskArtifactUpdateEvent>,
-    ) -> Result<Vec<TaskUpdateEvent>> {
-        if task.is_none() && (status_update.is_some() || artifact_update.is_some()) {
-            return Err(BamlRtError::InvalidArgument(
-                "status_update or artifact_update requires task in chunk".into(),
-            ));
-        }
-        let new_task_prov = task.as_ref().and_then(|t| {
-            let cid = t.context_id.clone()?;
-            let tid = t.id.clone()?;
-            Some((tid, cid))
-        });
-        let (task, message) = Self::inject_agent_id_into_chunk(task, message, &self.agent_id);
-        let message_for_prov = message.clone();
-        // Reserve an activity anchor BEFORE the inner await so that event_order is assigned
-        // in logical emission order, not DB-round-trip completion order.
-        // The drain-loop task (COMPLETED) and the QuickJS task (WORKING) race through here
-        // concurrently; one pre-reserved anchor suffices for the typical single status
-        // transition per chunk. Additional transitions take fresh anchors (rare).
-        let mut status_anchor = Some(ReservedAnchor::allocate());
-        let start = Instant::now();
-        let events = self
-            .inner
-            .apply_task_delta(task, message, status_update, artifact_update)
-            .await?;
-        record_task_store_metrics("apply_task_delta", "success", start);
-        // I3: emit provenance only after store accepted the updates
-        if let Some((tid, cid)) = new_task_prov
-            && let Ok(context_id) = require_context_id(Some(cid), "provenance task_exists")
-        {
-            self.record_event(ProvEvent::task_exists(context_id.clone(), tid.clone()))
-                .await;
-            self.record_event(ProvEvent::task_execution_started(
-                context_id,
-                tid,
-                self.agent_id.clone(),
-            ))
-            .await;
-        }
-        for event in &events {
-            if let Ok(context_id) =
-                require_context_id(event.context_id().cloned(), "provenance after apply")
-            {
-                match event {
-                    TaskUpdateEvent::Status(ev) => {
-                        if let (Some(task_id), Some(status)) =
-                            (ev.task_id.clone(), ev.status.as_ref())
-                        {
-                            // Consume the pre-reserved anchor on first use; allocate fresh
-                            // ones for subsequent status events in the same chunk.
-                            let anchor = status_anchor
-                                .take()
-                                .unwrap_or_else(ReservedAnchor::allocate);
-                            self.emit_status_provenance(
-                                anchor,
-                                context_id,
-                                task_id,
-                                status_to_string(status),
-                            )
-                            .await;
-                        }
+/// Extract validated `Citation`s from `metadata.citations` (the wire-side typed
+/// ref-table strings: `#N`, `@N`, …). Only present on assistant emissions; user
+/// turns return an empty vec. Parse failures are skipped with a warn-level log
+/// so a malformed string doesn't sink the lifecycle write.
+pub(crate) fn extract_message_citations(message: &Message) -> Vec<Citation> {
+    message
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("citations"))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .filter_map(|s| match Citation::try_new(s) {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        tracing::warn!(raw = s, error = %e, "citation parse failed; skipping");
+                        None
                     }
-                    TaskUpdateEvent::Artifact(ev) => {
-                        if let Some(task_id) = ev.task_id.clone() {
-                            let (aid, name) = ev
-                                .artifact
-                                .as_ref()
-                                .map(|a| (a.artifact_id.clone(), a.name.clone()))
-                                .unwrap_or((None, None));
-                            let prov =
-                                ProvEvent::task_artifact_generated(context_id, task_id, aid, name);
-                            self.record_event(prov).await;
-                        }
-                    }
-                }
-            }
-        }
-        // I3: emit message lifecycle events for any chunk message accepted by the store.
-        if let Some(ref msg) = message_for_prov {
-            let context_id = require_context_id(
-                msg.context_id.clone(),
-                "provenance message in apply_task_delta",
-            )?;
-            let role = message_role_string(&msg.role);
-            let content = validated_message_content(msg, "apply_task_delta")?;
-            let metadata = msg.metadata.as_ref().map(metadata_string_map);
-            // Extract validated citation refs from wire metadata before the lossy string-map
-            // conversion drops the array. Citations are model-produced #N/@N ref strings.
-            let citations: Vec<Citation> = msg
-                .metadata
-                .as_ref()
-                .and_then(|m| m.get("citations"))
-                .and_then(Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str())
-                        .filter_map(|s| match Citation::try_new(s) {
-                            Ok(c) => Some(c),
-                            Err(e) => {
-                                tracing::warn!(raw = s, error = %e, "citation parse failed; skipping");
-                                None
-                            }
-                        })
-                        .collect()
                 })
-                .unwrap_or_default();
-            let event = match (role.as_str(), msg.task_id.clone()) {
-                (ROLE_USER, Some(task_id)) => ProvEvent::message_received_task(
-                    context_id,
-                    task_id,
-                    msg.message_id.as_message_id().clone(),
-                    role,
-                    content,
-                    metadata,
-                    self.agent_id.clone(),
-                    now_millis(),
-                ),
-                (ROLE_USER, None) => ProvEvent::message_received_global(
-                    context_id,
-                    msg.message_id.as_message_id().clone(),
-                    role,
-                    content,
-                    metadata,
-                    self.agent_id.clone(),
-                    now_millis(),
-                ),
-                (_, Some(task_id)) => ProvEvent::message_sent_task(
-                    context_id,
-                    task_id,
-                    msg.message_id.as_message_id().clone(),
-                    role,
-                    content,
-                    metadata,
-                    self.agent_id.clone(),
-                    now_millis(),
-                    citations,
-                ),
-                (_, None) => ProvEvent::message_sent_global(
-                    context_id,
-                    msg.message_id.as_message_id().clone(),
-                    role,
-                    content,
-                    metadata,
-                    self.agent_id.clone(),
-                    now_millis(),
-                    citations,
-                ),
-            };
-            self.record_event_required(event, "apply_task_delta message lifecycle")
-                .await?;
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Inputs required to build a `ProvEvent::message_{received,sent}_{task,global}`.
+///
+/// Replaces the near-identical `match (role.as_str(), task_id.clone())`
+/// blocks in the graph-backed runtime store with one builder so the constructor
+/// matrix lives in exactly one place.
+///
+/// Borrows everything; the only allocations are inside `ProvEvent::message_*`
+/// constructors themselves (which clone what they need).
+pub(crate) struct MessageLifecycleEventInput<'a> {
+    pub context_id: ContextId,
+    pub task_id: Option<TaskId>,
+    pub message_id: baml_rt_core::ids::MessageId,
+    pub role: String,
+    pub content: Vec<String>,
+    pub metadata: Option<HashMap<String, String>>,
+    pub citations: Vec<Citation>,
+    pub agent_id: &'a AgentId,
+    pub timestamp_ms: u64,
+}
+
+impl<'a> MessageLifecycleEventInput<'a> {
+    /// Resolve the (`role`, `task_id`) cross-product into the right `ProvEvent`
+    /// constructor. `citations` are only attached to `MessageSent` variants
+    /// (`MessageReceived` constructors do not accept them).
+    pub fn into_prov_event(self) -> ProvEvent {
+        let MessageLifecycleEventInput {
+            context_id,
+            task_id,
+            message_id,
+            role,
+            content,
+            metadata,
+            citations,
+            agent_id,
+            timestamp_ms,
+        } = self;
+        let agent_id = agent_id.clone();
+        let is_user = role == ROLE_USER;
+        match (is_user, task_id) {
+            (true, Some(task_id)) => ProvEvent::message_received_task(
+                context_id,
+                task_id,
+                message_id,
+                role,
+                content,
+                metadata,
+                agent_id,
+                timestamp_ms,
+            ),
+            (true, None) => ProvEvent::message_received_global(
+                context_id,
+                message_id,
+                role,
+                content,
+                metadata,
+                agent_id,
+                timestamp_ms,
+            ),
+            (false, Some(task_id)) => ProvEvent::message_sent_task(
+                context_id,
+                task_id,
+                message_id,
+                role,
+                content,
+                metadata,
+                agent_id,
+                timestamp_ms,
+                citations,
+            ),
+            (false, None) => ProvEvent::message_sent_global(
+                context_id,
+                message_id,
+                role,
+                content,
+                metadata,
+                agent_id,
+                timestamp_ms,
+                citations,
+            ),
         }
-        Ok(events)
+    }
+
+    /// Build a complete input from a wire `Message` and an explicit scope. The
+    /// caller supplies the agent_id (always known at the writer site) and a
+    /// timestamp (caller picks `clock_events::A2A_STORE` or `A2A_TRANSPORT`
+    /// per their own context).
+    ///
+    /// `validated_message_content` errors propagate to the caller — content
+    /// extraction failure is the only way this constructor can fail.
+    pub fn from_message(
+        message: &Message,
+        context_id: ContextId,
+        task_id: Option<TaskId>,
+        agent_id: &'a AgentId,
+        timestamp_ms: u64,
+        operation: &str,
+    ) -> Result<Self> {
+        let role = message_role_string(&message.role);
+        let content = validated_message_content(message, operation)?;
+        let metadata = message.metadata.as_ref().map(metadata_string_map);
+        let citations = if role == ROLE_USER {
+            // Inbound user turns never carry typed citations; skip the
+            // metadata.citations array regardless of what the wire put there.
+            Vec::new()
+        } else {
+            extract_message_citations(message)
+        };
+        Ok(MessageLifecycleEventInput {
+            context_id,
+            task_id,
+            message_id: message.message_id.as_message_id().clone(),
+            role,
+            content,
+            metadata,
+            citations,
+            agent_id,
+            timestamp_ms,
+        })
     }
 }
 
-fn status_to_string(status: &TaskStatus) -> Option<String> {
+pub(crate) fn status_to_string(status: &TaskStatus) -> Option<String> {
     status.state.as_ref().map(|state| match state {
         TaskState::String(value) => value.clone(),
         TaskState::Integer(value) => value.to_string(),
     })
+}
+
+pub(crate) fn transcript_text_from_wire_status_message(msg: &Message) -> Option<String> {
+    let mut lines = Vec::new();
+    for part in &msg.parts {
+        if let Some(text) = part.text.as_deref().map(str::trim)
+            && !text.is_empty()
+        {
+            lines.push(text.to_string());
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    Some(lines.join("\n"))
+}
+
+/// Success witness for wire `TASK_STATE_FAILED`: a validated, non-empty [`NonEmptyString`] reason.
+/// JSON remains [`TaskStatus`]; callers use [`Self::try_parse`] so `TaskStatusKind::Failed` is only
+/// constructed when the wire carried an explicit failure payload (not a host default).
+#[derive(Debug, Clone)]
+pub(crate) struct WireFailedTaskStatus {
+    pub(crate) reason: NonEmptyString,
+}
+
+impl WireFailedTaskStatus {
+    pub(crate) fn try_parse(status: &TaskStatus) -> Result<Self> {
+        fn reason_from_extra(extra: &HashMap<String, Value>) -> Option<&str> {
+            for key in ["error_reason", "errorReason"] {
+                if let Some(s) = extra.get(key).and_then(Value::as_str) {
+                    let t = s.trim();
+                    if !t.is_empty() {
+                        return Some(t);
+                    }
+                }
+            }
+            None
+        }
+
+        let from_extra = reason_from_extra(&status.extra);
+        let from_message = status
+            .message
+            .as_ref()
+            .and_then(transcript_text_from_wire_status_message)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let reason_str = from_extra
+            .map(str::to_string)
+            .or(from_message)
+            .ok_or_else(|| {
+                BamlRtError::InvalidArgument(
+                    "TASK_STATE_FAILED requires a non-empty failure reason; set `errorReason` (or `error_reason`) on the status object and/or non-empty `message.parts[].text`"
+                        .to_string(),
+                )
+            })?;
+
+        let reason = NonEmptyString::new(reason_str).map_err(|_| {
+            BamlRtError::InvalidArgument(
+                "TASK_STATE_FAILED failure reason was empty after normalization".to_string(),
+            )
+        })?;
+
+        Ok(Self { reason })
+    }
+}
+
+pub(crate) fn wire_status_to_kind(status: &TaskStatus) -> Result<TaskStatusKind> {
+    let raw = status_to_string(status).ok_or_else(|| {
+        BamlRtError::InvalidArgument(
+            "task status update is missing `status.state`; payload-bearing statuses must be explicit"
+                .to_string(),
+        )
+    })?;
+    match raw.as_str() {
+        S_INPUT_REQUIRED => {
+            let prompt = status
+                .message
+                .as_ref()
+                .and_then(transcript_text_from_wire_status_message)
+                .ok_or_else(|| {
+                    BamlRtError::InvalidArgument(
+                        "TASK_STATE_INPUT_REQUIRED requires non-empty `status.message.parts[].text`"
+                            .to_string(),
+                    )
+                })?;
+            Ok(TaskStatusKind::InputRequired { prompt })
+        }
+        S_FAILED => {
+            let validated = WireFailedTaskStatus::try_parse(status)?;
+            Ok(TaskStatusKind::Failed {
+                reason: validated.reason,
+            })
+        }
+        _ => parse_tag_only_task_status_kind(raw.as_str()).ok_or_else(|| {
+            BamlRtError::InvalidArgument(format!("unsupported task status state {raw:?}"))
+        }),
+    }
+}
+
+fn parse_tag_only_task_status_kind(raw: &str) -> Option<TaskStatusKind> {
+    match raw {
+        S_SUBMITTED | "submitted" => Some(TaskStatusKind::Submitted),
+        S_WORKING | "working" => Some(TaskStatusKind::Working),
+        S_AUTH_REQUIRED | "auth-required" | "auth_required" => Some(TaskStatusKind::AuthRequired),
+        S_COMPLETED | "completed" => Some(TaskStatusKind::Completed),
+        S_CANCELED | "canceled" | "cancelled" => Some(TaskStatusKind::Canceled),
+        S_REJECTED | "rejected" => Some(TaskStatusKind::Rejected),
+        _ => None,
+    }
 }
 
 // FSM: terminal states and allowed transitions (A2A task lifecycle).
@@ -994,359 +596,408 @@ fn is_terminal_state(s: &str) -> bool {
     matches!(s, S_COMPLETED | S_FAILED | S_CANCELED | S_REJECTED)
 }
 
-fn is_allowed_transition(from: &str, to: &str) -> bool {
-    if from == to {
-        return true;
+/// Drop `message.taskId` on `message.sendStream` when the
+/// referenced task is absent from the store or already reached a terminal lifecycle state. Keeping a
+/// stale pin after `TASK_STATE_*` completion makes the host treat the turn like a task resume and
+/// breaks the next conversational hop under the same `contextId`; clients should not need special
+/// cases if the transport normalizes here.
+pub(crate) fn should_strip_wire_task_id_for_message_send_stream(task: Option<&Task>) -> bool {
+    match task {
+        None => true,
+        Some(t) => {
+            let Some(st) = t.status.as_ref().and_then(status_to_string) else {
+                return true;
+            };
+            is_terminal_state(st.as_str())
+        }
     }
-    if is_terminal_state(from) {
-        return false;
-    }
-    matches!(
-        (from, to),
-        (S_SUBMITTED, S_WORKING)
-            | (S_SUBMITTED, S_COMPLETED)
-            | (S_SUBMITTED, S_FAILED)
-            | (S_SUBMITTED, S_CANCELED)
-            | (S_SUBMITTED, S_REJECTED)
-            | (S_SUBMITTED, S_INPUT_REQUIRED)
-            | (S_SUBMITTED, S_AUTH_REQUIRED)
-            | (S_WORKING, S_INPUT_REQUIRED)
-            | (S_WORKING, S_AUTH_REQUIRED)
-            | (S_WORKING, S_COMPLETED)
-            | (S_WORKING, S_FAILED)
-            | (S_WORKING, S_CANCELED)
-            | (S_WORKING, S_REJECTED)
-            | (S_INPUT_REQUIRED, S_WORKING)
-            | (S_INPUT_REQUIRED, S_CANCELED)
-            | (S_INPUT_REQUIRED, S_REJECTED)
-            | (S_INPUT_REQUIRED, S_COMPLETED)
-            | (S_INPUT_REQUIRED, S_FAILED)
-            | (S_AUTH_REQUIRED, S_WORKING)
-            | (S_AUTH_REQUIRED, S_CANCELED)
-            | (S_AUTH_REQUIRED, S_REJECTED)
-            | (S_AUTH_REQUIRED, S_COMPLETED)
-            | (S_AUTH_REQUIRED, S_FAILED)
-    )
 }
 
-impl TaskStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
+#[cfg(test)]
+mod strip_wire_task_id_tests {
+    use std::collections::HashMap;
 
-    /// Inserts or merges a task shell only. I1: status is never applied here; use
-    /// `record_status_update` for status changes. Incoming `task.status` is ignored
-    /// (stripped); merge-preserve: if existing has status, keep it; else leave None.
-    pub fn upsert(&mut self, mut task: Task) -> Option<Task> {
-        let id = task.id.clone()?;
-        let id_str = id.as_str();
-        if !self.tasks.contains_key(id_str) {
-            self.order.push(id_str.to_string());
-        }
-        // I1: strip incoming status; merge-preserve existing status only.
-        task.status = self
-            .tasks
-            .get(id_str)
-            .and_then(|existing| existing.status.clone());
-        self.tasks.insert(id_str.to_string(), task.clone());
-        Some(task)
-    }
+    use serde_json::Value;
 
-    /// Insert a minimal task shell only when absent; never overwrites existing fields.
-    pub fn ensure_task_exists(&mut self, task_id: TaskId, context_id: Option<ContextId>) {
-        let id = task_id.as_str().to_string();
-        if self.tasks.contains_key(&id) {
-            return;
-        }
-        self.order.push(id.clone());
-        self.tasks.insert(
-            id,
-            Task {
-                id: Some(task_id),
-                context_id,
-                artifacts: Vec::new(),
-                history: Vec::new(),
-                status: None,
-                metadata: None,
+    use super::{
+        Task, TaskState, TaskStatus, should_strip_wire_task_id_for_message_send_stream,
+        wire_status_to_kind,
+    };
+
+    fn task_with_state(state: &str) -> Task {
+        Task {
+            id: None,
+            context_id: None,
+            artifacts: Vec::new(),
+            history: Vec::new(),
+            status: Some(TaskStatus {
+                state: Some(TaskState::String(state.to_string())),
+                message: None,
+                timestamp: None,
                 extra: HashMap::new(),
-            },
-        );
-    }
-
-    pub fn get(&self, id: &str, history_length: Option<usize>) -> Option<Task> {
-        let mut task = self.tasks.get(id).cloned()?;
-        if let Some(limit) = history_length {
-            truncate_history(&mut task, limit);
-        }
-        Some(task)
-    }
-
-    pub fn list(&self, request: &ListTasksRequest) -> ListTasksResponse {
-        let mut tasks: Vec<Task> = self
-            .order
-            .iter()
-            .filter_map(|id| self.tasks.get(id).cloned())
-            .collect();
-
-        if let Some(context_id) = &request.context_id {
-            tasks.retain(|task| {
-                task.context_id.as_ref().map(|id| id.as_str()) == Some(context_id.as_str())
-            });
-        }
-
-        if let Some(status) = &request.status {
-            tasks.retain(|task| matches_task_state(task, status));
-        }
-
-        let include_artifacts = request.include_artifacts.unwrap_or(false);
-        if !include_artifacts {
-            for task in &mut tasks {
-                task.artifacts.clear();
-            }
-        }
-
-        if let Some(limit) = request
-            .history_length
-            .as_ref()
-            .and_then(|value| value.as_usize())
-        {
-            for task in &mut tasks {
-                truncate_history(task, limit);
-            }
-        }
-
-        let total_size = tasks.len() as u64;
-        let page_size = request
-            .page_size
-            .as_ref()
-            .and_then(|value| value.as_usize())
-            .unwrap_or(50);
-        let start = request
-            .page_token
-            .as_ref()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(0);
-        let end = usize::min(start + page_size, tasks.len());
-
-        let page_tasks = if start < tasks.len() {
-            tasks[start..end].to_vec()
-        } else {
-            Vec::new()
-        };
-
-        let next_page_token = if end < tasks.len() {
-            Some(end.to_string())
-        } else {
-            None
-        };
-
-        ListTasksResponse {
-            tasks: page_tasks,
-            next_page_token,
-            total_size: Some(total_size),
-            page_size: Some(page_size as u64),
+            }),
+            metadata: None,
             extra: HashMap::new(),
         }
     }
 
-    /// FSM-aware cancel: applies CANCELED via record_status_update so events and FSM are consistent.
-    pub fn cancel(&mut self, id: &str) -> Option<Task> {
-        let (task_id, context_id) = {
-            let task = self.tasks.get(id)?;
-            (task.id.clone()?, task.context_id.clone())
+    #[test]
+    fn strip_when_task_unknown() {
+        assert!(should_strip_wire_task_id_for_message_send_stream(None));
+    }
+
+    #[test]
+    fn strip_when_status_missing() {
+        let task = Task {
+            id: None,
+            context_id: None,
+            artifacts: Vec::new(),
+            history: Vec::new(),
+            status: None,
+            metadata: None,
+            extra: HashMap::new(),
         };
+        assert!(should_strip_wire_task_id_for_message_send_stream(Some(
+            &task
+        )));
+    }
+
+    #[test]
+    fn strip_when_terminal_completed() {
+        assert!(should_strip_wire_task_id_for_message_send_stream(Some(
+            &task_with_state("TASK_STATE_COMPLETED",)
+        )));
+    }
+
+    #[test]
+    fn keep_when_input_required() {
+        assert!(!should_strip_wire_task_id_for_message_send_stream(Some(
+            &task_with_state("TASK_STATE_INPUT_REQUIRED",)
+        )));
+    }
+
+    #[test]
+    fn keep_when_working() {
+        assert!(!should_strip_wire_task_id_for_message_send_stream(Some(
+            &task_with_state("TASK_STATE_WORKING",)
+        )));
+    }
+
+    #[test]
+    fn wire_status_failed_accepts_message_text_as_reason() {
+        use baml_rt_core::ids::ExternalId;
+        use baml_rt_provenance::metamodel::TaskStatusKind;
+
+        use crate::a2a_types::{A2aMessageId, Message, MessageRole, Part, TaskState, TaskStatus};
+
         let status = TaskStatus {
-            state: Some(TaskState::String(TASK_STATE_CANCELED.to_string())),
+            state: Some(TaskState::String("TASK_STATE_FAILED".to_string())),
+            message: Some(Message {
+                message_id: A2aMessageId::incoming(ExternalId::new("m")),
+                role: MessageRole::Agent,
+                parts: vec![Part {
+                    text: Some("boom from agent".to_string()),
+                    ..Default::default()
+                }],
+                context_id: None,
+                task_id: None,
+                reference_task_ids: Vec::new(),
+                extensions: Vec::new(),
+                metadata: None,
+                extra: HashMap::new(),
+            }),
+            timestamp: None,
+            extra: HashMap::new(),
+        };
+        match wire_status_to_kind(&status).expect("parses") {
+            TaskStatusKind::Failed { reason } => {
+                assert_eq!(reason.as_str(), "boom from agent");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wire_status_failed_without_reason_or_message_is_rejected() {
+        use crate::a2a_types::{TaskState, TaskStatus};
+
+        let status = TaskStatus {
+            state: Some(TaskState::String("TASK_STATE_FAILED".to_string())),
             message: None,
             timestamp: None,
             extra: HashMap::new(),
         };
-        self.record_status_update(Some(task_id), context_id, status)?;
-        self.tasks.get(id).cloned()
+        let err =
+            wire_status_to_kind(&status).expect_err("missing failure payload must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("TASK_STATE_FAILED") && msg.contains("non-empty"),
+            "unexpected error: {msg}"
+        );
     }
 
-    pub fn insert_message(&mut self, message: &Message) {
-        if let Some(task_id) = &message.task_id
-            && let Some(task) = self.tasks.get_mut(task_id.as_str())
-        {
-            task.history.push(message.clone());
-        }
-    }
+    #[test]
+    fn wire_status_failed_accepts_error_reason_camel_case_in_extra() {
+        use baml_rt_provenance::metamodel::TaskStatusKind;
 
-    pub fn record_status_update(
-        &mut self,
-        task_id: Option<TaskId>,
-        context_id: Option<ContextId>,
-        status: TaskStatus,
-    ) -> Option<TaskUpdateEvent> {
-        let task_id = task_id?;
-        let task_id_str = task_id.as_str().to_string();
-        let new_state = status_to_string(&status);
-        let new_state = new_state.as_ref()?.as_str();
+        use crate::a2a_types::{TaskState, TaskStatus};
 
-        let task = self.tasks.get_mut(&task_id_str)?;
-        let current_state_str = task.status.as_ref().and_then(status_to_string);
-        let current_state = current_state_str.as_deref();
-
-        let allowed = match current_state {
-            None => new_state == S_SUBMITTED,
-            Some(current) if is_terminal_state(current) => false,
-            Some(current) => is_allowed_transition(current, new_state),
+        let mut extra = HashMap::new();
+        extra.insert(
+            "errorReason".to_string(),
+            Value::String("quota".to_string()),
+        );
+        let status = TaskStatus {
+            state: Some(TaskState::String("TASK_STATE_FAILED".to_string())),
+            message: None,
+            timestamp: None,
+            extra,
         };
-        if !allowed {
-            return None;
+        match wire_status_to_kind(&status).expect("parses") {
+            TaskStatusKind::Failed { reason } => assert_eq!(reason.as_str(), "quota"),
+            other => panic!("expected Failed, got {other:?}"),
         }
+    }
+}
 
-        task.status = Some(status.clone());
-        let update = TaskStatusUpdateEvent {
-            context_id,
-            task_id: Some(task_id.clone()),
-            status: Some(status),
+/// Bug A.3 regression: assistant emissions arriving in `statusUpdate.status.message`
+/// (or in `task.status.message`) MUST land in provenance as a Message lifecycle event,
+/// not be silently dropped. Without these tests the fix is a no-op the next time
+/// someone refactors `apply_task_chunk`.
+#[cfg(test)]
+mod nested_assistant_message_persistence_tests {
+    use std::collections::HashMap;
+
+    use baml_rt::BamlRuntimeManager;
+    use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId};
+    use baml_rt_provenance::{ProvenanceContextReader, SurrealStoreBuilder, surreal_store};
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::a2a_types::{
+        A2aMessageId, MessageRole, Part, StreamResponse, TaskState, TaskStatus,
+        TaskStatusUpdateEvent,
+    };
+
+    fn make_assistant_message(id: &str, ctx: &ContextId, task: &TaskId, text: &str) -> Message {
+        Message {
+            message_id: A2aMessageId::incoming(ExternalId::new(id)),
+            role: MessageRole::Agent,
+            parts: vec![Part {
+                text: Some(text.to_string()),
+                ..Default::default()
+            }],
+            context_id: Some(ctx.clone()),
+            task_id: Some(task.clone()),
+            reference_task_ids: Vec::new(),
+            extensions: Vec::new(),
             metadata: None,
             extra: HashMap::new(),
-        };
-        let event = TaskUpdateEvent::Status(update.clone());
-        self.updates
-            .entry(task_id_str)
-            .or_default()
-            .push(event.clone());
-        Some(event)
+        }
     }
 
-    pub fn record_artifact_update(
-        &mut self,
-        task_id: Option<TaskId>,
-        context_id: Option<ContextId>,
-        artifact: Artifact,
-        append: Option<bool>,
-        last_chunk: Option<bool>,
-    ) -> Option<TaskUpdateEvent> {
-        if let Some(task_id) = task_id {
-            let task_id_str = task_id.as_str().to_string();
-            let update = TaskArtifactUpdateEvent {
-                context_id,
-                task_id: Some(task_id.clone()),
-                last_chunk,
-                append,
-                artifact: Some(artifact),
+    async fn build_store() -> (
+        std::sync::Arc<surreal_store::SurrealProvenanceStore>,
+        std::sync::Arc<dyn TaskStoreBackend>,
+        ContextId,
+        TaskId,
+    ) {
+        let prov = SurrealStoreBuilder::in_memory_isolated()
+            .build()
+            .await
+            .expect("isolated provenance store");
+        let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
+        let agent = crate::A2aAgent::builder()
+            .with_agent_id(agent_id)
+            .with_runtime_manager(
+                BamlRuntimeManager::builder()
+                    .build()
+                    .expect("runtime manager"),
+            )
+            .with_effect_emitter(std::sync::Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+            .with_surreal_store(prov.clone())
+            .build()
+            .await
+            .expect("graph-backed agent");
+        let task_store = agent.task_store();
+        let ctx = ContextId::new(20240512, 1);
+        let task = TaskId::for_live_stream(&ctx, &MessageId::from("probe"));
+        (prov, task_store, ctx, task)
+    }
+
+    fn make_task_envelope(ctx: &ContextId, task: &TaskId) -> crate::a2a_types::Task {
+        crate::a2a_types::Task {
+            id: Some(task.clone()),
+            context_id: Some(ctx.clone()),
+            artifacts: Vec::new(),
+            history: Vec::new(),
+            status: None,
+            metadata: None,
+            extra: HashMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn assistant_message_in_status_update_is_persisted() {
+        let (prov, task_store, ctx, task) = build_store().await;
+        let assistant_text = "What specific task do you need help with?";
+        let assistant_message_id = "js-msg-await-1";
+
+        let chunk = ValidatedTaskChunk::try_from(StreamResponse {
+            message: None,
+            task: Some(make_task_envelope(&ctx, &task)),
+            status_update: Some(TaskStatusUpdateEvent {
+                context_id: Some(ctx.clone()),
+                task_id: Some(task.clone()),
+                status: Some(TaskStatus {
+                    state: Some(TaskState::String("TASK_STATE_INPUT_REQUIRED".to_string())),
+                    message: Some(make_assistant_message(
+                        assistant_message_id,
+                        &ctx,
+                        &task,
+                        assistant_text,
+                    )),
+                    timestamp: None,
+                    extra: HashMap::new(),
+                }),
                 metadata: None,
                 extra: HashMap::new(),
-            };
-            let event = TaskUpdateEvent::Artifact(update.clone());
-            self.updates
-                .entry(task_id_str)
-                .or_default()
-                .push(event.clone());
-            return Some(event);
-        }
-        None
+            }),
+            artifact_update: None,
+            extra: HashMap::new(),
+        })
+        .expect("validate awaitInput-shaped chunk");
+
+        task_store
+            .apply_task_chunk(chunk)
+            .await
+            .expect("apply_task_chunk for awaitInput-shaped status update");
+
+        let messages = prov
+            .context_messages(&ctx, None)
+            .await
+            .expect("read context messages");
+        let assistant_rows: Vec<_> = messages
+            .iter()
+            .filter(|m| m.message_id.as_str() == assistant_message_id)
+            .collect();
+        assert_eq!(
+            assistant_rows.len(),
+            1,
+            "exactly one assistant Message should be persisted from status_update; rows={messages:?}"
+        );
+        let assistant = assistant_rows[0];
+        assert_eq!(assistant.role, "ROLE_AGENT");
+        assert!(
+            assistant.content.iter().any(|c| c.contains(assistant_text)),
+            "assistant content missing expected text {assistant_text:?}; got {:?}",
+            assistant.content
+        );
     }
 
-    pub fn drain_updates(&mut self, task_id: &str) -> Vec<TaskUpdateEvent> {
-        self.updates.remove(task_id).unwrap_or_default()
+    #[tokio::test]
+    async fn assistant_message_in_task_status_is_persisted() {
+        let (prov, task_store, ctx, task) = build_store().await;
+        let assistant_text = "Reply to continue the conversation.";
+        let assistant_message_id = "js-msg-task-status-1";
+
+        let chunk = ValidatedTaskChunk::try_from(StreamResponse {
+            message: None,
+            task: Some(crate::a2a_types::Task {
+                id: Some(task.clone()),
+                context_id: Some(ctx.clone()),
+                artifacts: Vec::new(),
+                history: Vec::new(),
+                status: Some(TaskStatus {
+                    state: Some(TaskState::String("TASK_STATE_INPUT_REQUIRED".to_string())),
+                    message: Some(make_assistant_message(
+                        assistant_message_id,
+                        &ctx,
+                        &task,
+                        assistant_text,
+                    )),
+                    timestamp: None,
+                    extra: HashMap::new(),
+                }),
+                metadata: None,
+                extra: HashMap::new(),
+            }),
+            status_update: None,
+            artifact_update: None,
+            extra: HashMap::new(),
+        })
+        .expect("validate task-status-shaped chunk");
+
+        task_store
+            .apply_task_chunk(chunk)
+            .await
+            .expect("apply_task_chunk for task.status.message-shaped chunk");
+
+        let messages = prov
+            .context_messages(&ctx, None)
+            .await
+            .expect("read context messages");
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.message_id.as_str() == assistant_message_id),
+            "assistant message lifted from task.status.message must be persisted; rows={messages:?}"
+        );
     }
 
-    /// I2: Applies one stream chunk atomically (merge + status + artifacts + message).
-    /// Task status is never applied via merge; status changes go through the FSM.
-    pub fn apply_task_delta(
-        &mut self,
-        task: Option<Task>,
-        message: Option<Message>,
-        status_update: Option<TaskStatusUpdateEvent>,
-        artifact_update: Option<TaskArtifactUpdateEvent>,
-    ) -> Vec<TaskUpdateEvent> {
-        let mut out = Vec::new();
-        // When a chunk has both task.status and status_update (e.g. make_submitted_chunk), record
-        // status only once to avoid duplicate provenance/sequence notes.
-        let mut status_recorded_from_task: Option<(Option<TaskId>, Option<ContextId>, String)> =
-            None;
-        if let Some(mut t) = task {
-            let status = t.status.take();
-            let context_id = t.context_id.clone();
-            let task_id = t.id.clone();
-            let artifacts = std::mem::take(&mut t.artifacts);
-            let result = self.upsert(t);
-            debug_assert!(
-                result.is_some(),
-                "apply_task_delta: task without id is a logic error"
-            );
-            if let Some(status) = status
-                && let Some(ev) =
-                    self.record_status_update(task_id.clone(), context_id.clone(), status.clone())
-            {
-                let state_str = status_to_string(&status).unwrap_or_default();
-                status_recorded_from_task = Some((task_id.clone(), context_id.clone(), state_str));
-                out.push(ev);
-            }
-            if let Some(tid) = task_id {
-                for artifact in artifacts {
-                    if let Some(ev) = self.record_artifact_update(
-                        Some(tid.clone()),
-                        context_id.clone(),
-                        artifact,
-                        Some(false),
-                        Some(true),
-                    ) {
-                        out.push(ev);
-                    }
-                }
-            }
-        }
-        if let Some(msg) = message {
-            self.insert_message(&msg);
-        }
-        if let Some(ref up) = status_update
-            && let Some(status) = up.status.clone()
-        {
-            let state_str = status_to_string(&status).unwrap_or_default();
-            let is_duplicate = status_recorded_from_task
-                .as_ref()
-                .is_some_and(|(tid, cid, s)| {
-                    tid == &up.task_id && cid == &up.context_id && *s == state_str
-                });
-            if !is_duplicate
-                && let Some(ev) =
-                    self.record_status_update(up.task_id.clone(), up.context_id.clone(), status)
-            {
-                out.push(ev);
-            }
-        }
-        if let Some(ref up) = artifact_update
-            && let Some(ev) = self.record_artifact_update(
-                up.task_id.clone(),
-                up.context_id.clone(),
-                up.artifact.clone().unwrap_or_default(),
-                up.append,
-                up.last_chunk,
-            )
-        {
-            out.push(ev);
-        }
-        out
-    }
-}
+    /// Top-level `StreamResponse.message` must still take precedence over the nested
+    /// fallbacks when both are populated — this preserves the legacy behaviour where
+    /// task chunks carrying both shapes don't double-write.
+    #[tokio::test]
+    async fn top_level_message_takes_precedence_over_nested_fallback() {
+        let (prov, task_store, ctx, task) = build_store().await;
+        let top_text = "top-level wins";
+        let nested_text = "nested loses";
+        let chunk = ValidatedTaskChunk::try_from(StreamResponse {
+            message: Some(make_assistant_message("js-msg-top", &ctx, &task, top_text)),
+            task: Some(make_task_envelope(&ctx, &task)),
+            status_update: Some(TaskStatusUpdateEvent {
+                context_id: Some(ctx.clone()),
+                task_id: Some(task.clone()),
+                status: Some(TaskStatus {
+                    state: Some(TaskState::String("TASK_STATE_WORKING".to_string())),
+                    message: Some(make_assistant_message(
+                        "js-msg-nested",
+                        &ctx,
+                        &task,
+                        nested_text,
+                    )),
+                    timestamp: None,
+                    extra: HashMap::new(),
+                }),
+                metadata: None,
+                extra: HashMap::new(),
+            }),
+            artifact_update: None,
+            extra: HashMap::new(),
+        })
+        .expect("validate dual-shape chunk");
 
-fn truncate_history(task: &mut Task, limit: usize) {
-    if limit == 0 {
-        task.history.clear();
-        return;
-    }
-    if task.history.len() > limit {
-        let start = task.history.len() - limit;
-        task.history = task.history.split_off(start);
-    }
-}
+        task_store
+            .apply_task_chunk(chunk)
+            .await
+            .expect("apply chunk");
 
-fn matches_task_state(task: &Task, desired: &TaskState) -> bool {
-    let Some(status) = &task.status else {
-        return false;
-    };
-    let Some(state) = &status.state else {
-        return false;
-    };
-    match (state, desired) {
-        (TaskState::String(current), TaskState::String(target)) => current == target,
-        (TaskState::Integer(current), TaskState::Integer(target)) => current == target,
-        _ => false,
+        let messages = prov
+            .context_messages(&ctx, None)
+            .await
+            .expect("context messages");
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.message_id.as_str() == "js-msg-top"),
+            "expected top-level message to be persisted"
+        );
+        assert!(
+            messages
+                .iter()
+                .all(|m| m.message_id.as_str() != "js-msg-nested"),
+            "nested fallback must not double-write when top-level is present; rows={messages:?}"
+        );
     }
 }

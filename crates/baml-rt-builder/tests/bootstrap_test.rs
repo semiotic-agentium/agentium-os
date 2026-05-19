@@ -36,6 +36,13 @@ fn collect_artifacts(root_path: &std::path::Path) -> String {
         String::from("<not generated>")
     };
 
+    let catalog_path = baml_src.join(baml_rt_tools::TOOL_SCHEMA_CATALOG_SIDECAR_FILE);
+    let catalog_text = if catalog_path.exists() {
+        fs::read_to_string(&catalog_path).unwrap()
+    } else {
+        String::from("<not rendered>")
+    };
+
     format!(
         r#"=== manifest.json ===
 {manifest_pretty}
@@ -54,9 +61,13 @@ fn collect_artifacts(root_path: &std::path::Path) -> String {
 
 === baml_src/{gen_tools_name} ===
 {generated_tools}
+
+=== baml_src/{catalog_name} ===
+{catalog_text}
 "#,
         prompt_name,
         gen_tools_name = GENERATED_BAML_PRELUDE_FILE,
+        catalog_name = baml_rt_tools::TOOL_SCHEMA_CATALOG_SIDECAR_FILE,
     )
 }
 

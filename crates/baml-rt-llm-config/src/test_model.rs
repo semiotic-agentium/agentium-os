@@ -14,7 +14,7 @@
 //!
 //! Reading this here, you probably want one of:
 //!
-//! - `BAML_TEST_MODEL=x-ai/grok-4.1-fast cargo nextest run …` to swap the
+//! - `BAML_TEST_MODEL=x-ai/grok-4.3 cargo nextest run …` to swap the
 //!   model for a local run.
 //! - Issue #429 in the tracker for the full design rationale.
 
@@ -22,12 +22,12 @@
 /// `sensible_default()` constructor should route through here rather than
 /// embedding a literal.
 ///
-/// The fallback is `x-ai/grok-4.1-fast`: it is the model the workspace's
+/// The fallback is `x-ai/grok-4.3`: it is the model the workspace's
 /// agent prompts and E2E test assertions are tuned against. Forks running
 /// under an OpenRouter account whose policy excludes grok should set
 /// `BAML_TEST_MODEL` to a model their account can route — see #429 for the
 /// design rationale and #428 for the operational tracker.
-pub const FALLBACK_TEST_MODEL: &str = "x-ai/grok-4.1-fast";
+pub const FALLBACK_TEST_MODEL: &str = "x-ai/grok-4.3";
 
 /// The model the workspace's `llm-tests` lane should target.
 ///
@@ -49,6 +49,6 @@ mod tests {
         // Locks the fallback to the model the workspace's agent prompts and
         // E2E test assertions are tuned against. Changing this is a policy
         // decision — read issue #429 before flipping it.
-        assert_eq!(FALLBACK_TEST_MODEL, "x-ai/grok-4.1-fast");
+        assert_eq!(FALLBACK_TEST_MODEL, "x-ai/grok-4.3");
     }
 }

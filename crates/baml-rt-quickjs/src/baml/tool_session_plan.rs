@@ -9,6 +9,32 @@ use crate::{
     tool_session_handle::{SendResult, ToolSessionSendBlockingOutcome},
 };
 
+/// Recoverable miss: LLM cited `@N` before it exists, wrong index, or stale session — return as
+/// tool output instead of `Err` so the hop completes with `Outcome::Success` and the model can
+/// self-correct (no provenance `PromptRejected` from tool execution failure).
+fn archive_ref_not_found_tool_result(
+    op: &'static str,
+    archive_ref: baml_rt_tools::archive_read::ShortRef,
+) -> Value {
+    serde_json::json!({
+        "status": "error",
+        "op": op,
+        "archive_ref": archive_ref.to_string(),
+        "has_more": false,
+        "next_offset": 0,
+        "message": format!(
+            "Archive ref {archive_ref} is not available in this session. \
+             Use an @N handle from a prior tool Send in the transcript (only after that Send completes). \
+             If the ref is stale or mistyped, pick the correct @N from the latest tool results and retry."
+        ),
+        "error": {
+            "kind": "ArchiveRefNotFound",
+            "code": "archive_ref_not_found",
+            "disposition": "LlmCorrectable",
+        },
+    })
+}
+
 fn plan_send_tool_error_value(
     tool_name: &str,
     session_id: &ToolSessionId,
@@ -167,15 +193,16 @@ impl BamlRuntimeManager {
             op = op_name,
             "FSM step: global archive read"
         );
-        let entry = self
+        let entry = match self
             .resolve_archive_entry(scope.context_id(), archive_ref)
             .await
-            .map_err(|e| match e {
-                BamlRtError::InvalidArgument(msg) => {
-                    BamlRtError::InvalidArgument(format!("{op_name} step: {msg}"))
-                }
-                other => other,
-            })?;
+        {
+            Ok(e) => e,
+            Err(BamlRtError::InvalidArgument(_)) => {
+                return Ok(archive_ref_not_found_tool_result(op_name, archive_ref));
+            }
+            Err(other) => return Err(other),
+        };
         let archive_ref_str = archive_ref.to_string();
         let grep_raw = grep.as_ref().map(|g| g.pattern_text().to_string());
         let page = baml_rt_tools::archive_read::grep_paginate(
@@ -199,7 +226,7 @@ impl BamlRuntimeManager {
             "next_offset": page.next_offset,
         });
 
-        if let Some(emitter) = self.state.effect_emitter.as_ref() {
+        if let Some(emitter) = self.effect_emitter_for_tool_effects() {
             let op = match grep_raw.as_deref() {
                 Some(grep_str) => baml_rt_core::bus::SessionStepOp::SearchRead {
                     archive_ref: archive_ref_str.clone(),
@@ -359,7 +386,7 @@ impl BamlRuntimeManager {
                         "tool_name": tool_name_str
                     }));
                     // Emit session step so conversation_context reflects Open synchronously.
-                    if let Some(emitter) = self.state.effect_emitter.as_ref() {
+                    if let Some(emitter) = self.effect_emitter_for_tool_effects() {
                         let _ = emitter
                             .emit(baml_rt_core::bus::EffectEvent::ToolSessionStep {
                                 context_id: plan_scope.context_id().clone(),
@@ -430,7 +457,7 @@ impl BamlRuntimeManager {
                         match send_outcome {
                             Ok(ToolSessionSendBlockingOutcome::Completed(send_result)) => {
                                 last_output = Some(send_done_json(&send_result));
-                                if let Some(emitter) = self.state.effect_emitter.as_ref() {
+                                if let Some(emitter) = self.effect_emitter_for_tool_effects() {
                                     let _ = emitter
                                         .emit(baml_rt_core::bus::EffectEvent::ToolSessionStep {
                                             context_id: plan_scope.context_id().clone(),
@@ -520,15 +547,18 @@ impl BamlRuntimeManager {
                         reason = ?reason,
                         "FSM step: SearchRead (archive line filter)"
                     );
-                    let entry = self
+                    let entry = match self
                         .resolve_archive_entry(plan_scope.context_id(), archive_ref)
                         .await
-                        .map_err(|e| match e {
-                            BamlRtError::InvalidArgument(msg) => {
-                                BamlRtError::InvalidArgument(format!("SearchRead step: {msg}"))
-                            }
-                            other => other,
-                        })?;
+                    {
+                        Ok(e) => e,
+                        Err(BamlRtError::InvalidArgument(_)) => {
+                            last_output =
+                                Some(archive_ref_not_found_tool_result("SearchRead", archive_ref));
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    };
                     let page = baml_rt_tools::archive_read::grep_paginate(
                         &entry.content,
                         Some(&grep),
@@ -572,7 +602,7 @@ impl BamlRuntimeManager {
                     });
                     last_output = Some(read_output.clone());
 
-                    if let Some(emitter) = self.state.effect_emitter.as_ref() {
+                    if let Some(emitter) = self.effect_emitter_for_tool_effects() {
                         let grep_str = grep.pattern_text().to_string();
                         let read_args = serde_json::json!({
                             "op": "SearchRead",
@@ -637,15 +667,18 @@ impl BamlRuntimeManager {
                         reason = ?reason,
                         "FSM step: PageRead (archive paging)"
                     );
-                    let entry = self
+                    let entry = match self
                         .resolve_archive_entry(plan_scope.context_id(), archive_ref)
                         .await
-                        .map_err(|e| match e {
-                            BamlRtError::InvalidArgument(msg) => {
-                                BamlRtError::InvalidArgument(format!("PageRead step: {msg}"))
-                            }
-                            other => other,
-                        })?;
+                    {
+                        Ok(e) => e,
+                        Err(BamlRtError::InvalidArgument(_)) => {
+                            last_output =
+                                Some(archive_ref_not_found_tool_result("PageRead", archive_ref));
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    };
                     let page = baml_rt_tools::archive_read::grep_paginate(
                         &entry.content,
                         None,
@@ -689,7 +722,7 @@ impl BamlRuntimeManager {
                     });
                     last_output = Some(read_output.clone());
 
-                    if let Some(emitter) = self.state.effect_emitter.as_ref() {
+                    if let Some(emitter) = self.effect_emitter_for_tool_effects() {
                         let read_args = serde_json::json!({
                             "op": "PageRead",
                             "archive_ref": archive_ref.to_string(),

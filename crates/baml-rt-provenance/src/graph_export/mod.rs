@@ -328,13 +328,15 @@ impl GraphExporter {
             .await
             .map_err(map_surreal_error)?;
         let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
-        // The to_id is the Context entity node_id (e.g. "context:ctx-1234-0").
-        // Extract the raw context_id by stripping the "context:" prefix.
         let ctx_node_id = rows
             .first()
             .and_then(|r| r.get("to_id"))
             .and_then(Value::as_str);
-        Ok(ctx_node_id.and_then(|nid| nid.strip_prefix("context:").map(String::from)))
+        Ok(ctx_node_id.map(|nid| {
+            crate::metamodel::ContextNodeId::new(nid.to_string())
+                .to_context_id()
+                .into_string()
+        }))
     }
 }
 
