@@ -67,7 +67,6 @@ pub struct StreamableHttpConfig {
 }
 
 impl StreamableHttpConfig {
-    #[must_use]
     pub fn builder(url: impl Into<String>) -> StreamableHttpConfigBuilder {
         StreamableHttpConfigBuilder::new(url)
     }
@@ -85,7 +84,6 @@ pub struct StreamableHttpConfigBuilder {
 }
 
 impl StreamableHttpConfigBuilder {
-    #[must_use]
     pub fn new(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
@@ -97,7 +95,6 @@ impl StreamableHttpConfigBuilder {
         }
     }
 
-    #[must_use]
     pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.push(HttpHeader {
             name: name.into(),
@@ -106,49 +103,41 @@ impl StreamableHttpConfigBuilder {
         self
     }
 
-    #[must_use]
     pub fn headers(mut self, headers: Vec<HttpHeader>) -> Self {
         self.headers = headers;
         self
     }
 
-    #[must_use]
     pub fn auth(mut self, auth: HttpAuthConfig) -> Self {
         self.auth = Some(auth);
         self
     }
 
-    #[must_use]
     pub fn timeouts(mut self, timeouts: HttpTimeoutsConfig) -> Self {
         self.timeouts = timeouts;
         self
     }
 
-    #[must_use]
     pub fn pooling(mut self, pooling: HttpPoolingConfig) -> Self {
         self.pooling = pooling;
         self
     }
 
-    #[must_use]
     pub fn network_policy(mut self, policy: HttpNetworkPolicyConfig) -> Self {
         self.network_policy = policy;
         self
     }
 
-    #[must_use]
     pub fn allow_host(mut self, host: impl Into<String>) -> Self {
         self.network_policy.allow_hosts.push(host.into());
         self
     }
 
-    #[must_use]
     pub fn allow_private_ips(mut self, allow: bool) -> Self {
         self.network_policy.allow_private_ips = allow;
         self
     }
 
-    #[must_use]
     pub fn follow_redirects(mut self, follow: bool) -> Self {
         self.network_policy.follow_redirects = follow;
         self
