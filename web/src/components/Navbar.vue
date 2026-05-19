@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 <script setup lang="ts">
-type View = "dashboard" | "chat" | "settings";
+type View = "dashboard" | "chat" | "events" | "settings";
 
 defineProps<{
   view: View;
@@ -85,6 +85,27 @@ const emit = defineEmits<{
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
         </svg>
         Chat
+      </button>
+      <button
+        :class="['nav-tab', { active: view === 'events' }]"
+        role="tab"
+        :aria-selected="view === 'events'"
+        @click="emit('changeView', 'events')"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M4 4h16v6H4z" />
+          <path d="M4 14h10v6H4z" />
+          <path d="M18 14h2v6h-2z" />
+        </svg>
+        Event Console
       </button>
       <button
         :class="['nav-tab', { active: view === 'settings' }]"

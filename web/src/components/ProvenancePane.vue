@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { useTheme } from "../composables/useTheme";
 import { useMermaidRenderer } from "../composables/useMermaidRenderer";
 import { useProvenanceOps } from "../composables/useProvenanceOps";
@@ -291,12 +291,27 @@ watch(
   { immediate: true },
 );
 
+const TRACE_TAB_REFRESH_DEBOUNCE_MS = 300;
+let traceTabRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleRefreshForActiveTab(): void {
+  if (!props.contextId || isExploreTab.value) return;
+  if (traceTabRefreshTimer !== null) clearTimeout(traceTabRefreshTimer);
+  traceTabRefreshTimer = setTimeout(() => {
+    traceTabRefreshTimer = null;
+    void refreshForActiveTab();
+  }, TRACE_TAB_REFRESH_DEBOUNCE_MS);
+}
+
+onUnmounted(() => {
+  if (traceTabRefreshTimer !== null) clearTimeout(traceTabRefreshTimer);
+});
+
 watch(
   () => props.traceRefreshTick ?? 0,
   (tick, prev) => {
     if (tick === prev) return;
-    if (!props.contextId || isExploreTab.value) return;
-    void refreshForActiveTab();
+    scheduleRefreshForActiveTab();
   },
 );
 

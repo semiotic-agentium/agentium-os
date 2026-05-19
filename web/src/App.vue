@@ -16,6 +16,7 @@ import ErrorBoundary from "./components/ErrorBoundary.vue";
 import Navbar from "./components/Navbar.vue";
 import ProvenancePane from "./components/ProvenancePane.vue";
 import SettingsView from "./components/SettingsView.vue";
+import EventConsole from "./components/events/EventConsole.vue";
 import ToastContainer from "./components/ToastContainer.vue";
 import { useProvenanceOps } from "./composables/useProvenanceOps";
 import { useChatTabs } from "./composables/useChatTabs";
@@ -139,7 +140,7 @@ const { theme, toggle: toggleTheme } = useTheme();
 const { createQuery } = useProvenanceOps();
 
 // Active view — chat is the landing page; dashboard is a debug/metrics surface
-const view = ref<"dashboard" | "chat" | "settings">("chat");
+const view = ref<"dashboard" | "chat" | "events" | "settings">("chat");
 
 // Traces pane: hidden by default; persisted so power users keep it open across reloads
 const TRACES_STORAGE_KEY = "agentium:showTraces";
@@ -155,7 +156,7 @@ function toggleTraces() {
 const isApplyingRouteState = ref(false);
 let lastRouteKey = "";
 
-type ViewName = "dashboard" | "chat" | "settings";
+type ViewName = "dashboard" | "chat" | "events" | "settings";
 type UiRouteState = {
   view: ViewName;
   agentPackage: string | null;
@@ -164,7 +165,9 @@ type UiRouteState = {
 };
 
 function parseView(raw: string | null): ViewName {
-  if (raw === "chat" || raw === "settings" || raw === "dashboard") return raw;
+  if (raw === "chat" || raw === "events" || raw === "settings" || raw === "dashboard") {
+    return raw;
+  }
   return "chat";
 }
 
@@ -464,6 +467,10 @@ watch(
           />
         </div>
       </div>
+      </ErrorBoundary>
+
+      <ErrorBoundary v-else-if="view === 'events'">
+        <EventConsole />
       </ErrorBoundary>
 
       <ErrorBoundary v-else-if="view === 'settings'">

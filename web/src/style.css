@@ -2791,6 +2791,14 @@ body {
   min-height: 0;
 }
 
+.events-layout {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
 .chat-toolbar {
   display: flex;
   align-items: center;

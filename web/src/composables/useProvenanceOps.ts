@@ -99,6 +99,7 @@ function toSearchParams(params: ProvenanceQueryParams): URLSearchParams {
     ["contextId", params.contextId],
     ["taskId", params.taskId],
     ["agentId", params.agentId],
+    ["agentPackage", params.agentPackage],
     ["provider", params.provider],
     ["model", params.model],
     ["toolName", params.toolName],

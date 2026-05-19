@@ -28,6 +28,7 @@ import {
   withSessionStepDetailEvents,
 } from "../chat/toolNotificationEvents";
 import { isSyntheticInputRequiredPrompt } from "../chat/inputRequiredUi";
+import { fetchContextMermaidDiagram } from "../utils/mermaidDiagram";
 import { shouldSuppressAgentTranscriptText } from "../chat/workflowUiFilters";
 import type {
   AgentDiscoveryEntry,
@@ -875,21 +876,9 @@ export function useA2aClient() {
   async function fetchProvenanceDiagram(): Promise<void> {
     if (!_contextId.value) return;
     const seq = ++diagramFetchSeq;
-    try {
-      // Canonical API route is /contexts/{context_id}/mermaid.
-      // Keep a legacy fallback while old backends/links still exist.
-      let res = await fetch(`/contexts/${_contextId.value}/mermaid`);
-      if (!res.ok && res.status === 404) {
-        res = await fetch(`/mermaid/context/${_contextId.value}`);
-      }
-      if (res.ok) {
-        const text = await res.text();
-        if (seq !== diagramFetchSeq) return;
-        provenanceDiagram.value = text;
-      }
-    } catch {
-      // provenance endpoint not available; leave existing diagram
-    }
+    const text = await fetchContextMermaidDiagram(_contextId.value);
+    if (seq !== diagramFetchSeq) return;
+    provenanceDiagram.value = text;
   }
 
   async function fetchContextMetrics(): Promise<void> {

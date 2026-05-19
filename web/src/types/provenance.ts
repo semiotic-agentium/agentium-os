@@ -12,6 +12,7 @@ export interface ProvenanceQueryParams {
   contextId?: string;
   taskId?: string;
   agentId?: string;
+  agentPackage?: string;
   provider?: string;
   model?: string;
   toolName?: string;
