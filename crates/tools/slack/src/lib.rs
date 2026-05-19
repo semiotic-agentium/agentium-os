@@ -12,20 +12,31 @@
 //! - user resolution by ID
 //! - message search (user-token scope)
 
-mod normalize;
+pub mod channel;
+mod event_source_type;
+pub mod message_shapes;
+pub mod normalize;
+pub mod poll;
 mod producer;
 pub(crate) mod socket_mode;
 mod spans;
+pub mod timestamp;
+use tracing::Instrument;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::{BamlRtError, Result, retry_after::RetryAfter, semantics::ErrorDisposition};
 use baml_rt_tools::{ClassifiedToolError, baml_tool, bundles::Support, tools::BamlTool};
+pub use channel::{SlackChannelSelector, resolve_channel_name, resolve_selector_channel_id};
 use integrations_slack_read::{self as slack_read, SlackReadClient, SlackReadError};
 pub use normalize::{
     SlackNormalizedBatch, SlackNormalizedMessageRecord, SlackNormalizedRecord,
     SlackNormalizedSource, SlackTransportAuthorization, SlackTransportKind, SlackTransportMetadata,
+};
+pub use poll::{
+    SlackPollConfig, SlackPollError, SlackPollOutcome, SlackPollState, SlackPolledMessage,
+    poll_slack_channel, polled_messages_to_values, slack_history_row_value,
 };
 pub use producer::{
     RAW_SOURCE_ROUTING_KEY, RAW_SOURCE_SCHEMA_VERSION, SlackEventProducerConfig,
@@ -33,6 +44,7 @@ pub use producer::{
 };
 use serde::{Deserialize, Serialize};
 use tracing::Instrument;
+pub use timestamp::compact_ts_for_permalink;
 
 /// Slack API base URL.
 pub const BASE_URL: &str = "https://slack.com/api";

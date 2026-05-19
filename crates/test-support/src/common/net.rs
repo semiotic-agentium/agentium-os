@@ -46,6 +46,17 @@ pub async fn bind_ephemeral_tokio(
     Ok((listener, addr))
 }
 
+/// Fire-and-forget axum server on an ephemeral port (test harness).
+pub async fn serve_ephemeral_axum(app: axum::Router, api_suffix: &str) -> String {
+    let (listener, addr) = bind_ephemeral_tokio("127.0.0.1")
+        .await
+        .expect("bind ephemeral listener");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    format!("http://{addr}{api_suffix}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

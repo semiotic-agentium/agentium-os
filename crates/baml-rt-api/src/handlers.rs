@@ -19,11 +19,13 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
     },
 };
+use baml_rt_a2a::RegistryDispatchPort;
 use baml_rt_core::{
     A2aWireRequest, AgentDispatchRequest, AgentInstanceId, AgentPackageName, AgentRouteKey,
-    BamlRtError, DeploymentContentHash, DeploymentStatus,
+    BamlRtError, DeploymentContentHash, DeploymentStatus, ProducedEvent,
     ids::{AgentId, ContextId, TaskId},
     join_error_message,
+    publish_to_subscribers,
 };
 use baml_rt_provenance::{
     ProvenanceOpsFilters, ProvenanceOpsQueryRequest, ProvenanceOpsResource,
@@ -975,6 +977,7 @@ pub struct ProvenanceQueryParams {
     pub context_id: Option<ContextId>,
     pub task_id: Option<TaskId>,
     pub agent_id: Option<AgentId>,
+    pub agent_package: Option<String>,
     pub provider: Option<String>,
     pub model: Option<String>,
     pub tool_name: Option<String>,
@@ -1028,7 +1031,7 @@ fn to_ops_request(
             context_id: q.context_id,
             task_id: q.task_id,
             agent_id: q.agent_id,
-            agent_package: None,
+            agent_package: q.agent_package,
             provider: q.provider,
             model: q.model,
             tool_name: q.tool_name,
@@ -1357,6 +1360,44 @@ pub async fn post_dispatch(
     }
 }
 
+/// Publish one host event to all subscription-matched agents.
+#[utoipa::path(
+    post,
+    path = "/events/publish",
+    tag = "events",
+    summary = "Publish event to subscribed agents",
+    request_body = crate::openapi::ProducedEventDto,
+    responses(
+        (status = 200, description = "Delivery outcome", body = crate::openapi::EventPublishResponseDto),
+        (status = 400, description = "Bad request"),
+    )
+)]
+pub async fn post_events_publish(
+    State(state): State<Arc<ApiState>>,
+    Json(body): Json<crate::openapi::ProducedEventDto>,
+) -> impl IntoResponse {
+    let start = Instant::now();
+    let event: ProducedEvent = match body.try_into() {
+        Ok(event) => event,
+        Err(err) => {
+            metrics::record_request("post_events_publish", "bad_request", start.elapsed());
+            return (AxumStatus::BAD_REQUEST, err).into_response();
+        }
+    };
+    let entries = state.registry.list_agents();
+    let port = RegistryDispatchPort::new(state.registry.as_ref());
+    match publish_to_subscribers(&entries, event, &port).await {
+        Ok(outcome) => {
+            metrics::record_request("post_events_publish", "success", start.elapsed());
+            Json(crate::openapi::EventPublishResponseDto::from(outcome)).into_response()
+        }
+        Err(err) => {
+            metrics::record_request("post_events_publish", "error", start.elapsed());
+            (AxumStatus::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+        }
+    }
+}
+
 /// Get a one-shot episode snapshot for a completed or in-progress task.
 #[utoipa::path(
     get,
@@ -1586,6 +1627,7 @@ pub async fn get_context_index(
     params(
         ("context_id" = String, Path, description = "Provenance context ID"),
         ("taskId" = Option<String>, Query, description = "Optional task scope"),
+        ("agentPackage" = Option<String>, Query, description = "Optional agent package filter for transcript rows"),
         ("limit" = Option<u32>, Query, description = "Page size in range [1, 500], default 50"),
         ("cursor" = Option<String>, Query, description = "Opaque pagination cursor"),
         ("profile" = Option<String>, Query, description = "Payload profile: full or compact"),
@@ -1629,6 +1671,7 @@ pub async fn get_conversation_history(
     params(
         ("context_id" = String, Path, description = "Provenance context ID"),
         ("taskId" = Option<String>, Query, description = "Optional task scope"),
+        ("agentPackage" = Option<String>, Query, description = "Optional agent package filter for transcript rows"),
         ("limit" = Option<u32>, Query, description = "Page size in range [1, 500], default 50"),
         ("cursor" = Option<String>, Query, description = "Opaque pagination cursor"),
         ("profile" = Option<String>, Query, description = "Payload profile: full or compact"),
@@ -1739,6 +1782,7 @@ pub async fn get_conversation_history_stream(
             let delta_req = ConversationHistoryDeltaRequest {
                 context_id: request.context_id.clone(),
                 task_id: request.task_id.clone(),
+                agent_package: request.agent_package.clone(),
                 after_event_order: last_event_order,
                 limit,
                 profile: request.profile,

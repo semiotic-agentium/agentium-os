@@ -36,6 +36,7 @@ members = [
   "crates/tools/internal-dev",
   "crates/tools/security-eval",
   "crates/tools/clickup",
+  "crates/tools/github",
   "crates/tools/slack",
   "crates/tools/slack-notify",
   "crates/tools/grafana-alerts",

@@ -17,6 +17,7 @@ pub mod bundles;
 pub mod citations;
 pub mod config_resolver;
 pub mod event_producer;
+pub mod event_source_type;
 pub mod external_tools;
 pub mod host_registration;
 pub mod ingress_store;
@@ -58,6 +59,10 @@ pub use event_producer::{
     EventProducer, EventProducerBuildContext, EventProducerBuildFuture, EventProducerProvider,
     ProducerCheckpoint, ProducerPoll, ProducerRegistry, load_configured_event_producers,
     load_configured_event_producers_with_checkpoints,
+};
+pub use event_source_type::{
+    EventSourceTypeDescriptor, EventSourceTypeDescriptorProvider,
+    all_event_source_type_descriptors, find_event_source_type_descriptor,
 };
 pub use host_registration::{
     ExternalToolResolver, register_manifest_tools, register_manifest_tools_with_fallback,

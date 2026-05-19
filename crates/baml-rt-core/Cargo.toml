@@ -21,7 +21,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 async-channel = { workspace = true }

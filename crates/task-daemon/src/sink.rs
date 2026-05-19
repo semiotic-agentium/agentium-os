@@ -1493,6 +1493,9 @@ mod tests {
         let ack = AgentDispatchAck {
             accepted: false,
             detail: Some("not my route".to_string()),
+            context_id: None,
+            task_id: None,
+            message_id: None,
         };
 
         let err = validate_dispatch_ack(&ack).expect_err("expected protocol failure");
@@ -1506,6 +1509,9 @@ mod tests {
         let ack = AgentDispatchAck {
             accepted: true,
             detail: Some("accepted for processing".to_string()),
+            context_id: None,
+            task_id: None,
+            message_id: None,
         };
 
         let detail = validate_dispatch_ack(&ack).expect("expected successful protocol response");

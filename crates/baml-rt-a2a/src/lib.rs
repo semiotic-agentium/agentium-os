@@ -12,6 +12,7 @@ pub mod a2a_transport;
 pub mod a2a_types;
 pub mod agent_registry;
 pub mod auto_status;
+pub mod dispatch_port;
 pub mod error_classifier;
 pub mod error_mapping;
 pub mod event_dispatcher;
@@ -38,4 +39,5 @@ pub use a2a_transport::{
 };
 pub use agent_registry::AgentRegistry;
 pub use baml_rt_core::{A2aJsChatHost, A2aRequestHandler};
+pub use dispatch_port::RegistryDispatchPort;
 pub use event_dispatcher::EventDispatcher;

@@ -428,7 +428,12 @@ impl ConversationHistoryService for RealConversationHistory {
         use baml_rt_provenance::ProvenanceQueryApi;
         let rows = self
             .store
-            .query_conversation_context(&request.context_id, None, request.task_id.as_ref())
+            .query_conversation_context(
+                &request.context_id,
+                None,
+                request.task_id.as_ref(),
+                request.agent_package.as_deref(),
+            )
             .await
             .map_err(|e| ConversationHistoryError::Other(Box::new(e)))?;
         let mut page = baml_rt_api::paginate_items(rows, request)?;
@@ -454,6 +459,7 @@ impl ConversationHistoryService for RealConversationHistory {
                 request.after_event_order,
                 Some(request.limit),
                 request.task_id.as_ref(),
+                request.agent_package.as_deref(),
             )
             .await
             .map_err(|e| ConversationHistoryError::Other(Box::new(e)))?;
@@ -534,6 +540,7 @@ async fn conversation_history_retains_user_message_when_session_steps_follow() {
         context_id.as_str(),
         ConversationHistoryQueryParams {
             task_id: None,
+            agent_package: None,
             limit: Some(100),
             cursor: None,
             profile: None,
@@ -679,6 +686,7 @@ async fn conversation_history_retains_resume_user_turn_after_input_required() {
         context_id.as_str(),
         ConversationHistoryQueryParams {
             task_id: None,
+            agent_package: None,
             limit: Some(500),
             cursor: None,
             profile: None,
@@ -1288,7 +1296,7 @@ async fn get_agents_returns_declared_subscriptions_when_present() {
         "Workflow Subscriber",
         "0.1.0",
         vec![EventSubscription {
-            schema_versions: vec![schema_version("task-daemon.interpretation.v1")],
+            schema_versions: vec![schema_version("host.source-records.v1")],
             source_kinds: vec![source_kind("slack"), source_kind("clickup")],
             source_keys: vec![source_key("slack:C123")],
             source_key_prefixes: vec![source_key_prefix("clickup:list:")],
@@ -1619,6 +1627,9 @@ async fn post_dispatch_returns_buffered_ack() {
             .with_dispatch_ok(AgentDispatchAck {
                 accepted: true,
                 detail: Some("workflow intake accepted delivery".to_string()),
+                context_id: None,
+                task_id: None,
+                message_id: None,
             }),
     );
     let app = api_router(registry, None, None).await;
@@ -1631,9 +1642,9 @@ async fn post_dispatch_returns_buffered_ack() {
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     r#"{
-                        "routing_key":"slack:intake",
-                        "message_type":"task-daemon.interpretation.v1",
-                        "messages":[{"schema_version":"task-daemon.interpretation.v1"}]
+                        "routing_key":"event:intake",
+                        "message_type":"host.source-records.v1",
+                        "messages":[{"schema_version":"host.source-records.v1"}]
                     }"#,
                 ))
                 .unwrap(),
@@ -1714,6 +1725,9 @@ async fn post_dispatch_span_records_agent_identity_and_service_instance_fields()
             .with_dispatch_ok(AgentDispatchAck {
                 accepted: true,
                 detail: Some("workflow intake accepted delivery".to_string()),
+                context_id: None,
+                task_id: None,
+                message_id: None,
             }),
     );
     let app = api_router(registry, None, None).await;
@@ -1726,9 +1740,9 @@ async fn post_dispatch_span_records_agent_identity_and_service_instance_fields()
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     r#"{
-                        "routing_key":"slack:intake",
-                        "message_type":"task-daemon.interpretation.v1",
-                        "messages":[{"schema_version":"task-daemon.interpretation.v1"}]
+                        "routing_key":"event:intake",
+                        "message_type":"host.source-records.v1",
+                        "messages":[{"schema_version":"host.source-records.v1"}]
                     }"#,
                 ))
                 .unwrap(),
@@ -1850,9 +1864,9 @@ async fn post_dispatch_bad_package_does_not_leak_raw_into_identity_span() {
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     r#"{
-                        "routing_key":"slack:intake",
-                        "message_type":"task-daemon.interpretation.v1",
-                        "messages":[{"schema_version":"task-daemon.interpretation.v1"}]
+                        "routing_key":"event:intake",
+                        "message_type":"host.source-records.v1",
+                        "messages":[{"schema_version":"host.source-records.v1"}]
                     }"#,
                 ))
                 .unwrap(),
@@ -1894,9 +1908,9 @@ async fn post_dispatch_bad_instance_does_not_leak_raw_into_identity_span() {
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     r#"{
-                        "routing_key":"slack:intake",
-                        "message_type":"task-daemon.interpretation.v1",
-                        "messages":[{"schema_version":"task-daemon.interpretation.v1"}]
+                        "routing_key":"event:intake",
+                        "message_type":"host.source-records.v1",
+                        "messages":[{"schema_version":"host.source-records.v1"}]
                     }"#,
                 ))
                 .unwrap(),
@@ -1939,7 +1953,7 @@ async fn post_dispatch_rejects_empty_message_type() {
                     r#"{
                         "routing_key":"slack:intake",
                         "message_type":"   ",
-                        "messages":[{"schema_version":"task-daemon.interpretation.v1"}]
+                        "messages":[{"schema_version":"host.source-records.v1"}]
                     }"#,
                 ))
                 .unwrap(),
@@ -2998,6 +3012,90 @@ async fn deploy_in_flight_does_not_block_readyz() {
 
     let deploy_status = deploy_handle.await.expect("deploy task panicked");
     assert_eq!(deploy_status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn get_message_shapes_returns_registry() {
+    let registry: Arc<dyn AgentRegistry> =
+        Arc::new(MockRegistry::with_entries(vec![discovery_entry(
+            "pkg", "default", "pkg", "1.0.0",
+        )]));
+    let app = api_router(registry, None, None).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/message-shapes")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let parsed: Value = serde_json::from_slice(&body).expect("json");
+    let items = parsed
+        .get("items")
+        .and_then(Value::as_array)
+        .expect("items array");
+    assert_eq!(items.len(), 4);
+    let shape_ids: Vec<&str> = items
+        .iter()
+        .filter_map(|i| i.get("message_shape_id").and_then(Value::as_str))
+        .collect();
+    assert!(shape_ids.contains(&"slack-source-records"));
+    assert!(shape_ids.contains(&"clickup-source-records"));
+    assert!(shape_ids.contains(&"github-issues-source-records"));
+    assert!(
+        !shape_ids
+            .iter()
+            .any(|id| id.contains("derived-task-candidates"))
+    );
+    assert!(shape_ids.contains(&"system-callback-token"));
+    for item in items {
+        assert!(
+            item.get("origin")
+                .and_then(Value::as_str)
+                .is_some_and(|o| !o.is_empty()),
+            "each shape must declare origin: {item}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn post_event_dispatch_validate_rejects_unknown_agent() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let app = api_router(registry, None, None).await;
+
+    let body = serde_json::json!({
+        "agent_package": "missing",
+        "agent_instance_id": "default",
+        "routing_key": "clickup:intake",
+        "message_type": "host.source-records.v1",
+        "messages": [{ "event_id": "e1" }],
+        "scope": { "kind": "new_context" }
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/event-dispatch/validate")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let report: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(report.get("valid").and_then(Value::as_bool), Some(false));
 }
 
 /// Static guard: any deployment handler that reverts to `block_in_place`

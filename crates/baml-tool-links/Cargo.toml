@@ -14,6 +14,7 @@ baml-tools-calculator = { path = "../tools/calculator" }
 
 # Feature-gated (integration tools)
 baml-tools-clickup = { path = "../tools/clickup", optional = true }
+baml-tools-github = { path = "../tools/github", optional = true }
 baml-tools-memory = { path = "../tools/memory", optional = true }
 baml-tools-notion = { path = "../tools/notion", optional = true }
 baml-tools-security-eval = { path = "../tools/security-eval", optional = true }
@@ -27,6 +28,7 @@ baml-tools-internal-dev = { path = "../tools/internal-dev", optional = true }
 [features]
 default = []
 clickup = ["dep:baml-tools-clickup"]
+github = ["dep:baml-tools-github"]
 memory = ["dep:baml-tools-memory"]
 notion = ["dep:baml-tools-notion"]
 security-eval = ["dep:baml-tools-security-eval"]
@@ -34,5 +36,5 @@ slack = ["dep:baml-tools-slack"]
 slack-notify = ["dep:baml-tools-slack-notify"]
 grafana-alerts = ["dep:baml-tools-grafana-alerts"]
 internal-dev = ["dep:baml-tools-internal-dev"]
-http-tools = ["clickup", "notion", "slack", "slack-notify", "security-eval", "grafana-alerts"]
+http-tools = ["clickup", "github", "notion", "slack", "slack-notify", "security-eval", "grafana-alerts"]
 all-tools = ["http-tools", "memory"]

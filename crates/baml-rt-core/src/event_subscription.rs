@@ -49,7 +49,7 @@ where
         .collect()
 }
 
-/// Event schema name such as `task-daemon.interpretation.v1`.
+/// Event schema name such as `host.source-records.v1` or `system.callback.v1`.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct EventSchemaVersion(String);
@@ -386,12 +386,12 @@ mod tests {
     fn subscription_filter_requires_one_subscription_to_match_all_requested_fields() {
         let subscriptions = vec![
             EventSubscription {
-                schema_versions: vec![schema("task-daemon.interpretation.v1")],
+                schema_versions: vec![schema("host.source-records.v1")],
                 source_kinds: vec![kind("slack")],
                 ..EventSubscription::default()
             },
             EventSubscription {
-                schema_versions: vec![schema("task-daemon.interpretation.v1")],
+                schema_versions: vec![schema("host.source-records.v1")],
                 source_kinds: vec![kind("clickup")],
                 ..EventSubscription::default()
             },
@@ -400,7 +400,7 @@ mod tests {
         assert!(subscriptions_match_filter(
             &subscriptions,
             &EventSubscriptionFilter {
-                required_schema_versions: vec![schema("task-daemon.interpretation.v1")],
+                required_schema_versions: vec![schema("host.source-records.v1")],
                 required_source_kinds: vec![kind("clickup")],
             },
         ));
@@ -434,13 +434,13 @@ mod tests {
     fn published_event_matching_honors_schema_source_and_prefix_fields() {
         let subscriptions = vec![
             EventSubscription {
-                schema_versions: vec![schema("task-daemon.interpretation.v1")],
+                schema_versions: vec![schema("host.source-records.v1")],
                 source_kinds: vec![kind("ClickUp")],
                 source_key_prefixes: vec![key_prefix("clickup:list:")],
                 ..EventSubscription::default()
             },
             EventSubscription {
-                schema_versions: vec![schema("task-daemon.interpretation.v1")],
+                schema_versions: vec![schema("host.source-records.v1")],
                 source_kinds: vec![kind("slack")],
                 source_keys: vec![key("slack:C123")],
                 ..EventSubscription::default()
@@ -450,7 +450,7 @@ mod tests {
         assert!(subscriptions_match_published_event(
             &subscriptions,
             &PublishedEvent::try_new(
-                "task-daemon.interpretation.v1",
+                "host.source-records.v1",
                 "clickup",
                 "clickup:list:901325431486",
             )
@@ -458,12 +458,12 @@ mod tests {
         ));
         assert!(subscriptions_match_published_event(
             &subscriptions,
-            &PublishedEvent::try_new("task-daemon.interpretation.v1", "Slack", "slack:C123")
+            &PublishedEvent::try_new("host.source-records.v1", "Slack", "slack:C123")
                 .expect("valid published event"),
         ));
         assert!(!subscriptions_match_published_event(
             &subscriptions,
-            &PublishedEvent::try_new("task-daemon.interpretation.v1", "slack", "slack:C456")
+            &PublishedEvent::try_new("host.source-records.v1", "slack", "slack:C456")
                 .expect("valid published event"),
         ));
     }
@@ -476,12 +476,12 @@ mod tests {
             super::PublishedEventBuildError::EmptySchemaVersion
         );
         assert_eq!(
-            PublishedEvent::try_new("task-daemon.interpretation.v1", " ", "slack:C123")
+            PublishedEvent::try_new("host.source-records.v1", " ", "slack:C123")
                 .expect_err("empty source kind should fail"),
             super::PublishedEventBuildError::EmptySourceKind
         );
         assert_eq!(
-            PublishedEvent::try_new("task-daemon.interpretation.v1", "slack", "")
+            PublishedEvent::try_new("host.source-records.v1", "slack", "")
                 .expect_err("empty source key should fail"),
             super::PublishedEventBuildError::EmptySourceKey
         );
@@ -493,7 +493,7 @@ mod tests {
 
         assert!(!subscriptions_match_published_event(
             &subscriptions,
-            &PublishedEvent::try_new("task-daemon.interpretation.v1", "slack", "slack:C123")
+            &PublishedEvent::try_new("host.source-records.v1", "slack", "slack:C123")
                 .expect("valid published event"),
         ));
     }

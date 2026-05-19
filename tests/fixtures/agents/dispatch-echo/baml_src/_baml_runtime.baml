@@ -122,7 +122,7 @@ enum CallbackToolInputVariant1Continuation {
 
 class CallbackToolInputVariant1 {
   after_ms int @description("Delay before the callback event is emitted, in milliseconds.")
-  source_key string @description("Stable event source key for subscription matching, for example `workflow-intake:follow-up`.")
+  source_key string @description("Stable event source key for subscription matching, for example `coordinator-agent:follow-up`.")
   payload OpaqueJson @description("Opaque JSON payload delivered back through onDispatch.")
   dedupe_key string | null? @description("Optional idempotency key scoped to the sourceKey. A pending callback with the same sourceKey + dedupeKey is reused instead of creating another row.")
   continuation CallbackToolInputVariant1Continuation | null? @description("Optional continuation policy. Omit it for a detached callback. Use `resume_current_task` to re-enter the current task later in the same context after the current turn has quiesced.")

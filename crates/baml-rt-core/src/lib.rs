@@ -23,10 +23,12 @@ pub mod deployment;
 pub mod dispatch;
 pub mod effect_metrics;
 pub mod error;
+pub mod event_delivery;
 pub mod event_producer;
 pub mod event_subscription;
 pub mod function_id;
 pub mod history_text;
+pub mod host_wire;
 pub mod ids;
 pub mod ingress_store;
 pub mod json;
@@ -76,20 +78,28 @@ pub use deployment::{
 pub use dispatch::{
     AgentDispatchAck, AgentDispatchRequest, AgentDispatchRoutingKey,
     DISPATCH_METADATA_SCHEDULING_CONTEXT_ID, DISPATCH_METADATA_SCHEDULING_TASK_ID,
-    callback_scheduling_scopes_differ_from_dispatch, invocation_scope_for_agent_dispatch,
-    scheduling_scope_from_dispatch_metadata,
+    DispatchMetadata, callback_scheduling_scopes_differ_from_dispatch,
+    invocation_scope_for_agent_dispatch, scheduling_scope_from_dispatch_metadata,
 };
 pub use error::{
     BamlRtError, ClassifiedToolError, HeartbeatErrorKind, Result, SessionLifecycleError,
     baml_error_disposition, retryability_for_a2a,
 };
-pub use event_producer::{EventDeliveryOutcome, ProducedEvent};
+pub use event_delivery::{
+    AgentDispatchPort, DiscoveryPublishClient, HostPublishClient, SubscriberIndex,
+    deliver_to_subscribers, matching_subscriber_routes, publish_to_subscribers,
+};
+pub use event_producer::{EventDeliveryOutcome, ProducedEvent, SubscriberDeliveryFailure};
 pub use event_subscription::{
     EventSchemaVersion, EventSourceKind, EventSubscription, EventSubscriptionFilter,
     subscriptions_match_filter,
 };
 pub use function_id::{BamlFunctionId, BamlPromptName, VariantPhase};
 pub use history_text::is_history_infrastructure_notice;
+pub use host_wire::{
+    HostSourceDescriptor, HostSourceRecordsEnvelopeHeader, host_source_records_schema_version,
+    wire as host_wire_versions,
+};
 pub use ids::{
     ActivityAnchorId, AgentId, ArtifactId, ContextId, CorrelationId, ExecutionSessionId, IntentId,
     MessageId, PlanId, PlanStepId, TaskId,

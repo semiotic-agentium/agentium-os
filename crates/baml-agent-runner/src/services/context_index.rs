@@ -57,19 +57,24 @@ impl baml_rt_api::ContextIndexService for ContextIndexServiceImpl {
         request: &baml_rt_api::ContextIndexRequest,
     ) -> std::result::Result<baml_rt_api::ContextPickerPageDto, baml_rt_api::ContextIndexError>
     {
+        // Global Message ops with `for_agent_package` are O(all messages) on large
+        // graphs and exceed client timeouts. The picker lists recent contexts from a
+        // fast unscoped scan; `GET .../conversation-history?agentPackage=…` applies
+        // agent attribution when a context is opened.
+        if request.agent_package.is_some() {
+            tracing::debug!(
+                agent_package = request.agent_package.as_deref(),
+                "context picker: fast unscoped index (agent filter at transcript read)"
+            );
+        }
+        let scan_filters = ProvenanceOpsFilters::default();
+
         let mut cursor: Option<String> = None;
         let mut scanned_rows = 0usize;
         let max_rows = 5000usize;
         let mut grouped: HashMap<String, ContextAggregate> = HashMap::new();
 
         loop {
-            // The `agent_package` filter is pushed into the SurrealQL
-            // query as an edge traversal
-            // (Message ↔ MessageProcessing -> AgentRuntimeInstance ->
-            // AgentBoot -> AgentArchive), so the picker receives only
-            // matching rows. No per-row property filter on
-            // `props.a2a_agent_id` is needed (or supported — that
-            // property is not written on Message entities).
             let response = self
                 .store
                 .query_ops(ProvenanceOpsQueryRequest {
@@ -80,10 +85,7 @@ impl baml_rt_api::ContextIndexService for ContextIndexServiceImpl {
                     cursor: cursor.clone(),
                     outcome: Some(ProvenanceOutcomeSegment::Both),
                     response_profile: Some(ProvenanceResponseProfile::UiFull),
-                    filters: ProvenanceOpsFilters {
-                        agent_package: request.agent_package.clone(),
-                        ..Default::default()
-                    },
+                    filters: scan_filters.clone(),
                     ..Default::default()
                 })
                 .await

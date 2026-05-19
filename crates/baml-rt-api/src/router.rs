@@ -427,6 +427,7 @@ pub fn api_router_with_services_and_deploy(
     // conversation history, provenance. These handlers do not consume the
     // OTEL parent-context extension so they skip the middleware.
     let (other_public_router, other_openapi) = OpenApiRouter::new()
+        .routes(utoipa_axum::routes!(handlers::post_events_publish))
         .routes(utoipa_axum::routes!(handlers::list_agents))
         .routes(utoipa_axum::routes!(handlers::get_context_index))
         .routes(utoipa_axum::routes!(handlers::get_mermaid_context))
@@ -446,6 +447,12 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(handlers::get_conversation_history))
         .routes(utoipa_axum::routes!(
             handlers::get_conversation_history_stream
+        ))
+        .routes(utoipa_axum::routes!(
+            crate::event_console::handlers::get_message_shapes
+        ))
+        .routes(utoipa_axum::routes!(
+            crate::event_console::handlers::post_event_dispatch_validate
         ))
         .split_for_parts();
 

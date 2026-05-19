@@ -3,11 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use baml_rt_core::event_subscription::EventSourceKey;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::warn;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SlackTransportKind {
     Polling,
@@ -15,7 +16,7 @@ pub enum SlackTransportKind {
     SocketMode,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, JsonSchema)]
 pub struct SlackTransportAuthorization {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enterprise_id: Option<String>,
@@ -29,7 +30,7 @@ pub struct SlackTransportAuthorization {
     pub is_enterprise_install: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct SlackTransportMetadata {
     pub kind: SlackTransportKind,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -50,14 +51,15 @@ pub struct SlackTransportMetadata {
     pub authorizations: Vec<SlackTransportAuthorization>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct SlackNormalizedSource {
     pub source_kind: String,
+    #[schemars(with = "String")]
     pub source_key: EventSourceKey,
     pub source_label: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
 pub struct SlackNormalizedMessageRecord {
     pub channel_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -88,10 +90,11 @@ pub struct SlackNormalizedMessageRecord {
     pub source_ref: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permalink: Option<String>,
+    #[schemars(with = "serde_json::Value")]
     pub raw: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
 #[serde(tag = "record_kind")]
 pub enum SlackNormalizedRecord {
     #[serde(rename = "slack.message")]
@@ -129,7 +132,7 @@ impl SlackNormalizedRecord {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
 pub struct SlackNormalizedBatch {
     pub schema_version: String,
     pub emitted_at_unix: u64,

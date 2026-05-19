@@ -86,15 +86,22 @@ struct CursorStateV1 {
     offset: usize,
     context_id: String,
     task_id: Option<String>,
+    agent_package: Option<String>,
 }
 
 impl CursorToken {
-    pub fn encode_v1(offset: usize, context_id: &ContextId, task_id: Option<&TaskId>) -> Self {
+    pub fn encode_v1(
+        offset: usize,
+        context_id: &ContextId,
+        task_id: Option<&TaskId>,
+        agent_package: Option<&str>,
+    ) -> Self {
         let state = CursorStateV1 {
             v: 1,
             offset,
             context_id: context_id.as_str().to_string(),
             task_id: task_id.map(|id| id.as_str().to_string()),
+            agent_package: agent_package.map(str::to_string),
         };
         let bytes = serde_json::to_vec(&state).expect("cursor state v1 serializes");
         Self(format!("v1.{:x}", HexBytes(bytes)))
@@ -165,6 +172,7 @@ impl ConversationHistoryPageRequest {
 pub struct ConversationHistoryRequest {
     pub context_id: ContextId,
     pub task_id: Option<TaskId>,
+    pub agent_package: Option<String>,
     pub page: ConversationHistoryPageRequest,
     pub profile: ConversationHistoryProfile,
     pub format: ConversationHistoryFormat,
@@ -174,6 +182,7 @@ pub struct ConversationHistoryRequest {
 pub struct ConversationHistoryDeltaRequest {
     pub context_id: ContextId,
     pub task_id: Option<TaskId>,
+    pub agent_package: Option<String>,
     pub after_event_order: u64,
     pub limit: usize,
     pub profile: ConversationHistoryProfile,
@@ -184,6 +193,7 @@ pub struct ConversationHistoryDeltaRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationHistoryQueryParams {
     pub task_id: Option<String>,
+    pub agent_package: Option<String>,
     pub limit: Option<u32>,
     pub cursor: Option<String>,
     pub profile: Option<String>,
@@ -215,7 +225,7 @@ impl fmt::Display for ConversationHistoryRequestParseError {
             Self::CursorScopeMismatch => {
                 write!(
                     f,
-                    "cursor does not match contextId/taskId scope for this request"
+                    "cursor does not match contextId/taskId/agentPackage scope for this request"
                 )
             }
         }
@@ -251,6 +261,10 @@ impl ConversationHistoryRequest {
         let limit = raw_limit as usize;
         let profile = ConversationHistoryProfile::parse(params.profile.as_deref())?;
         let format = ConversationHistoryFormat::parse(params.format.as_deref())?;
+        let agent_package = params
+            .agent_package
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
 
         let page = match params.cursor.map(CursorToken) {
             None => ConversationHistoryPageRequest::First { limit },
@@ -258,6 +272,7 @@ impl ConversationHistoryRequest {
                 let state = cursor.decode_v1()?;
                 if state.context_id != context_id.as_str()
                     || state.task_id.as_deref() != task_id.as_ref().map(TaskId::as_str)
+                    || state.agent_package != agent_package
                 {
                     return Err(ConversationHistoryRequestParseError::CursorScopeMismatch);
                 }
@@ -268,6 +283,7 @@ impl ConversationHistoryRequest {
         Ok(Self {
             context_id,
             task_id,
+            agent_package,
             page,
             profile,
             format,
@@ -543,6 +559,7 @@ pub async fn merge_conversation_history_pages(
         req = ConversationHistoryRequest {
             context_id: request.context_id.clone(),
             task_id: request.task_id.clone(),
+            agent_package: request.agent_package.clone(),
             page: ConversationHistoryPageRequest::Next {
                 limit,
                 cursor: CursorToken(cursor),
@@ -621,9 +638,14 @@ pub fn paginate_items(
     let page_rows = rows[start..end].to_vec();
     let next_cursor = if end < rows.len() {
         Some(
-            CursorToken::encode_v1(end, &request.context_id, request.task_id.as_ref())
-                .0
-                .to_string(),
+            CursorToken::encode_v1(
+                end,
+                &request.context_id,
+                request.task_id.as_ref(),
+                request.agent_package.as_deref(),
+            )
+            .0
+            .to_string(),
         )
     } else {
         None
@@ -729,6 +751,7 @@ mod tests {
             "ctx-scope-test",
             ConversationHistoryQueryParams {
                 task_id: None,
+                agent_package: None,
                 limit: None,
                 cursor: None,
                 profile: None,

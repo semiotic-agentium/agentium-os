@@ -925,7 +925,9 @@ impl A2aAgent {
         let Some(value) = result else {
             return Err(BamlRtError::FunctionNotFound("onDispatch".into()));
         };
-        serde_json::from_value(value).map_err(BamlRtError::Json)
+        let mut ack: AgentDispatchAck = serde_json::from_value(value).map_err(BamlRtError::Json)?;
+        ack = ack.with_resolved_scope(invocation_scope.as_scope());
+        Ok(ack)
     }
 }
 

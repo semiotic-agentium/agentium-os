@@ -15,15 +15,14 @@
 use std::{sync::Arc, time::Instant};
 
 use baml_rt_core::{
-    AgentDiscoveryEntry, AgentInstanceId, AgentPackageName, AgentRouteKey, BamlRtError,
-    EventDeliveryOutcome, ProducedEvent, Result,
-    event_subscription::{PublishedEvent, subscriptions_match_published_event},
+    BamlRtError, EventDeliveryOutcome, ProducedEvent, Result, publish_to_subscribers,
 };
 use baml_rt_observability::metrics;
 use baml_rt_tools::{EventProducer, ProducerCheckpoint, ProducerRegistry};
+use baml_tools_system::callback_producer::CALLBACK_SOURCE_KIND;
 use tracing::{debug, warn};
 
-use crate::AgentRegistry;
+use crate::{AgentRegistry, RegistryDispatchPort};
 
 /// In-process event dispatcher: polls producers, matches subscribers, delivers
 /// via [`AgentRegistry`].
@@ -75,9 +74,9 @@ impl EventDispatcher {
     ) -> Result<EventDeliveryOutcome> {
         let published = event.as_published_event();
         let entries = self.registry.list_agents();
-        let targets = matching_subscribers(&entries, &published);
-
-        if targets.is_empty() {
+        let port = RegistryDispatchPort::new(self.registry.as_ref());
+        let outcome = publish_to_subscribers(&entries, event, &port).await?;
+        if outcome.subscribers_matched == 0 {
             warn!(
                 schema = %published.schema_version,
                 source_kind = %published.source_kind,
@@ -85,45 +84,15 @@ impl EventDispatcher {
                 "no subscribed agents matched produced event; advancing checkpoint"
             );
             metrics::record_event_dispatch_no_subscribers(producer_key.unwrap_or("unknown"));
-            return Ok(EventDeliveryOutcome {
-                subscribers_matched: 0,
-                subscribers_accepted: 0,
-                failures: Vec::new(),
-            });
+            return Ok(outcome);
         }
-
-        let request = event.into_dispatch_request();
-        let mut outcome = EventDeliveryOutcome {
-            subscribers_matched: targets.len(),
-            subscribers_accepted: 0,
-            failures: Vec::new(),
-        };
-
-        for target in &targets {
-            match self.registry.handle_dispatch(target, request.clone()).await {
-                Ok(ack) if ack.accepted => {
-                    outcome.subscribers_accepted += 1;
-                }
-                Ok(ack) => {
-                    let detail = ack.detail.unwrap_or_else(|| "rejected".into());
-                    warn!(
-                        agent_package = %target.agent_package,
-                        agent_instance = %target.agent_instance_id,
-                        detail = %detail,
-                        "subscriber rejected dispatch"
-                    );
-                    outcome.failures.push((target.clone(), detail));
-                }
-                Err(err) => {
-                    warn!(
-                        agent_package = %target.agent_package,
-                        agent_instance = %target.agent_instance_id,
-                        error = %err,
-                        "subscriber dispatch failed"
-                    );
-                    outcome.failures.push((target.clone(), err.to_string()));
-                }
-            }
+        for (target, failure) in &outcome.failures {
+            warn!(
+                agent_package = %target.agent_package,
+                agent_instance = %target.agent_instance_id,
+                detail = %failure.detail(),
+                "subscriber dispatch failed or rejected"
+            );
         }
 
         if let Some(pk) = producer_key {
@@ -216,7 +185,7 @@ impl EventDispatcher {
             // `CallbackEventProducer` checkpoint payload reconciles rows as delivered on the next
             // poll. Advancing after a zero-subscriber "delivery" would mark callbacks delivered
             // without `handle_dispatch` ever running.
-            const SYSTEM_CALLBACK_PRODUCER_KEY: &str = "system/callback";
+            let system_callback_producer_key = CALLBACK_SOURCE_KIND;
             let mut system_callback_blocked_on_zero_subscribers = false;
 
             let declared_kinds = producer.source_kinds();
@@ -244,7 +213,7 @@ impl EventDispatcher {
                     .await
                 {
                     Ok(outcome) => {
-                        if key == SYSTEM_CALLBACK_PRODUCER_KEY && outcome.subscribers_matched == 0 {
+                        if key == system_callback_producer_key && outcome.subscribers_matched == 0 {
                             system_callback_blocked_on_zero_subscribers = true;
                         }
                         aggregate.subscribers_matched += outcome.subscribers_matched;
@@ -303,30 +272,4 @@ impl EventDispatcher {
         metrics::record_event_poll_cycle(cycle_start.elapsed());
         results
     }
-}
-
-/// Find agents whose subscriptions match a published event.
-fn matching_subscribers(
-    entries: &[AgentDiscoveryEntry],
-    event: &PublishedEvent,
-) -> Vec<AgentRouteKey> {
-    entries
-        .iter()
-        .filter(|entry| subscriptions_match_published_event(&entry.agent_card.subscriptions, event))
-        .filter_map(|entry| {
-            let package = AgentPackageName::parse(&entry.agent_package);
-            let instance = AgentInstanceId::parse(&entry.agent_instance_id);
-            match (package, instance) {
-                (Some(p), Some(i)) => Some(AgentRouteKey::new(p, i)),
-                _ => {
-                    warn!(
-                        agent_package = %entry.agent_package,
-                        agent_instance_id = %entry.agent_instance_id,
-                        "matched subscriber has invalid route key and will be skipped"
-                    );
-                    None
-                }
-            }
-        })
-        .collect()
 }

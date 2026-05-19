@@ -117,9 +117,7 @@ fn dispatch_echo_discovery_entry() -> AgentDiscoveryEntry {
             capabilities: vec!["dispatch:echo".into()],
             tags: vec![],
             subscriptions: vec![EventSubscription {
-                schema_versions: vec![
-                    EventSchemaVersion::parse("task-daemon.interpretation.v1").unwrap(),
-                ],
+                schema_versions: vec![EventSchemaVersion::parse("host.source-records.v1").unwrap()],
                 source_kinds: vec![
                     EventSourceKind::parse("slack").unwrap(),
                     EventSourceKind::parse("clickup").unwrap(),
@@ -175,16 +173,14 @@ struct StubProducer {
 impl StubProducer {
     fn slack_event() -> ProducedEvent {
         ProducedEvent {
-            routing_key: AgentDispatchRoutingKey::parse("slack:intake").unwrap(),
-            schema_version: EventSchemaVersion::parse("task-daemon.interpretation.v1").unwrap(),
+            routing_key: AgentDispatchRoutingKey::parse("event:intake").unwrap(),
+            schema_version: EventSchemaVersion::parse("host.source-records.v1").unwrap(),
             source_kind: EventSourceKind::parse("slack").unwrap(),
-            source_key: EventSourceKey::parse("slack:#test").unwrap(),
+            source_key: EventSourceKey::parse("slack:C123").unwrap(),
             messages: vec![json!({
-                "schema_version": "task-daemon.interpretation.v1",
-                "event_id": "test-producer-1",
-                "source": { "source_key": "slack:#test", "source": "slack", "source_label": "#test" },
-                "messages_scanned": 1,
-                "derived_tasks": []
+                "schema_version": "host.source-records.v1",
+                "source": { "source_kind": "slack", "source_key": "slack:C123", "source_label": "#test" },
+                "records": []
             })],
             context_id: None,
             task_id: None,

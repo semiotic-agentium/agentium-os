@@ -43,6 +43,8 @@ pub use baml_tools_calculator;
 pub use baml_tools_clickup;
 #[cfg(feature = "grafana-alerts")]
 pub use baml_tools_grafana_alerts;
+#[cfg(feature = "github")]
+pub use baml_tools_github;
 // Test-only re-exports
 #[cfg(feature = "internal-dev")]
 pub use baml_tools_internal_dev;
@@ -83,6 +85,8 @@ macro_rules! force_link_all_tools {
         use $crate::baml_tools_clickup as _;
         #[cfg(feature = "grafana-alerts")]
         use $crate::baml_tools_grafana_alerts as _;
+        #[cfg(feature = "github")]
+        use $crate::baml_tools_github as _;
         // Test-only tools
         #[cfg(feature = "internal-dev")]
         use $crate::baml_tools_internal_dev as _;

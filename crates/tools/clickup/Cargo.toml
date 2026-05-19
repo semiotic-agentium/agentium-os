@@ -19,3 +19,5 @@ tracing = { workspace = true }
 reqwest = { workspace = true }
 thiserror = { workspace = true }
 inventory = { workspace = true }
+schemars = { workspace = true }
+anyhow = { workspace = true }

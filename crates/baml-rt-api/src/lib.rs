@@ -16,6 +16,7 @@ mod context_index;
 mod context_metrics;
 mod conversation_history;
 pub mod episode;
+pub mod event_console;
 mod handlers;
 mod mermaid;
 mod metrics;
