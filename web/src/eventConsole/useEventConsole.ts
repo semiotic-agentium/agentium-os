@@ -115,6 +115,13 @@ export function useEventConsole(args: UseEventConsoleArgs) {
     return previewJson(body);
   });
 
+  /** Operator-facing message when {@link previewText} is empty. */
+  const previewPlaceholder = computed<string | null>(() => {
+    if (!selectedSample.value) return "Pick a sample to preview the request.";
+    if (!parsedMessages.value.ok) return "Fix the JSON above to see the preview.";
+    return null;
+  });
+
   function canDispatch(): boolean {
     if (isDispatching.value) return false;
     if (!selectedAgent.value) return false;
@@ -126,7 +133,17 @@ export function useEventConsole(args: UseEventConsoleArgs) {
     return true;
   }
 
-  /** Replace editor JSON with the canonical sample payload. */
+  /**
+   * Change which sample's routing_key / message_type is active. Does not
+   * touch the editor body — operator edits are preserved so an incident
+   * payload can be re-routed under a different sample's wrapper. Use
+   * {@link loadSampleIntoEditor} to explicitly reset the editor.
+   */
+  function selectSample(id: string): void {
+    selectedSampleId.value = id;
+  }
+
+  /** Replace editor JSON with the canonical payload of the named (or current) sample. */
   function loadSampleIntoEditor(id?: string): void {
     const target = id ?? selectedSampleId.value;
     selectedSampleId.value = target;
@@ -150,6 +167,8 @@ export function useEventConsole(args: UseEventConsoleArgs) {
       routingKey: body.routing_key,
       messageType: body.message_type,
       contextId: body.context_id,
+      // Reserved: AgentDispatchAckDto does not yet carry task_id; mirrors the
+      // request shape so future ack extensions populate this without UI churn.
       taskId: body.task_id,
       messageId: body.message_id,
       finishedAt: Date.now(),
@@ -230,11 +249,13 @@ export function useEventConsole(args: UseEventConsoleArgs) {
     selectedSample,
     parsedMessages,
     previewText,
+    previewPlaceholder,
     canDispatch,
     agentKey,
 
     // Actions
     selectAgent,
+    selectSample,
     loadSampleIntoEditor,
     dispatch,
 

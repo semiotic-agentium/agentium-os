@@ -72,69 +72,75 @@ export const DISPATCH_ECHO_SMOKE: EventSample = {
 };
 
 /**
- * Ford-shaped IncidentRaised sample.
+ * Build the Ford-shaped IncidentRaised sample with timestamps relative to `now`.
  *
- * Carries the FireHydrant-style fields named in issues #519/#521:
- *   incident_id, source_event_id, source, title, severity, affected_service,
- *   environment, started_at / window, labels, annotations, dashboard/runbook links.
- *
- * This is exploratory testing input, not a real FireHydrant integration.
+ * Captured at module-load so the sample reads as a current-looking incident
+ * regardless of when the operator opens the Event Console. The operator can
+ * still edit the JSON before dispatch.
  */
-export const FORD_INCIDENT_RAISED: EventSample = {
-  id: "ford-incident-raised",
-  label: "Ford IncidentRaised (sample)",
-  summary:
-    "FireHydrant-shaped incident envelope for the Ford Grafana MCP triage path. Sample only.",
-  sourceKind: "firehydrant",
-  routingKey: "incident:raised",
-  messageType: "incident.raised.v1",
-  messages: [
-    {
-      incident_id: "INC-2026-05-19-001",
-      source_event_id: "fh-evt-7f0e5a-checkout-api-5xx",
-      source: "firehydrant",
-      source_type: "incident_management",
-      title: "checkout-api elevated 5xx rate",
-      severity: "sev2",
-      status: "active",
-      affected_service: "checkout-api",
-      affected_components: ["checkout-api", "orders-db"],
-      environment: "prod",
-      started_at: "2026-05-19T14:42:00Z",
-      window: {
-        start: "2026-05-19T14:30:00Z",
-        end: "2026-05-19T15:10:00Z",
+function fordIncidentRaised(now: number): EventSample {
+  const windowStart = new Date(now - 25 * 60 * 1000); // ~25 min ago
+  const startedAt = new Date(now - 13 * 60 * 1000); // ~13 min ago — alert fire
+  const windowEnd = new Date(now + 5 * 60 * 1000); // ~5 min ahead
+  const day = startedAt.toISOString().slice(0, 10);
+  return {
+    id: "ford-incident-raised",
+    label: "Ford IncidentRaised (sample)",
+    summary:
+      "FireHydrant-shaped incident envelope for the Ford Grafana MCP triage path. Sample only.",
+    sourceKind: "firehydrant",
+    routingKey: "incident:raised",
+    messageType: "incident.raised.v1",
+    messages: [
+      {
+        incident_id: `INC-${day}-001`,
+        source_event_id: "fh-evt-7f0e5a-checkout-api-5xx",
+        source: "firehydrant",
+        source_type: "incident_management",
+        title: "checkout-api elevated 5xx rate",
+        severity: "sev2",
+        status: "active",
+        affected_service: "checkout-api",
+        affected_components: ["checkout-api", "orders-db"],
+        environment: "prod",
+        started_at: startedAt.toISOString(),
+        window: {
+          start: windowStart.toISOString(),
+          end: windowEnd.toISOString(),
+        },
+        labels: {
+          team: "checkout",
+          region: "us-east-1",
+          cluster: "prod-east-1",
+          runbook_owner: "sre-checkout",
+        },
+        annotations: {
+          summary: "5xx rate on checkout-api crossed alert threshold for >5m",
+          description:
+            "Elevated 5xx originating from checkout-api -> orders-db. p99 latency rising. No recent deploy.",
+          impact: "Checkout success rate dropped from 99.4% to ~96%.",
+        },
+        links: {
+          dashboard: "https://grafana.example.test/d/checkout/checkout-overview",
+          runbook: "https://runbooks.example.test/checkout-5xx",
+          firehydrant: `https://app.firehydrant.io/incidents/INC-${day}-001`,
+        },
+        reporter: {
+          name: "FireHydrant Alerting",
+          kind: "automation",
+        },
       },
-      labels: {
-        team: "checkout",
-        region: "us-east-1",
-        cluster: "prod-east-1",
-        runbook_owner: "sre-checkout",
-      },
-      annotations: {
-        summary: "5xx rate on checkout-api crossed alert threshold for >5m",
-        description:
-          "Elevated 5xx originating from checkout-api -> orders-db. p99 latency rising. No recent deploy.",
-        impact: "Checkout success rate dropped from 99.4% to ~96%.",
-      },
-      links: {
-        dashboard: "https://grafana.example.test/d/checkout/checkout-overview",
-        runbook: "https://runbooks.example.test/checkout-5xx",
-        firehydrant: "https://app.firehydrant.io/incidents/INC-2026-05-19-001",
-      },
-      reporter: {
-        name: "FireHydrant Alerting",
-        kind: "automation",
-      },
+    ],
+    extraMetadata: {
+      sample: "ford-incident-raised",
+      note: "FireHydrant-shaped sample. Not a real integration.",
     },
-  ],
-  extraMetadata: {
-    sample: "ford-incident-raised",
-    note: "FireHydrant-shaped sample. Not a real integration.",
-  },
-  notes:
-    "FireHydrant-shaped incident sample (#519/#521). Replace the incident_id and time range to vary the input. This is sample input, not a real FireHydrant integration.",
-};
+    notes:
+      "FireHydrant-shaped incident sample (#519/#521). Timestamps are seeded relative to module load — edit incident_id, severity, time range to vary the input. Not a real FireHydrant integration.",
+  };
+}
+
+export const FORD_INCIDENT_RAISED: EventSample = fordIncidentRaised(Date.now());
 
 export const EVENT_SAMPLES: ReadonlyArray<EventSample> = Object.freeze([
   DISPATCH_ECHO_SMOKE,

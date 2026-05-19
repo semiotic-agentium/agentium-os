@@ -3,6 +3,10 @@ import { computed, watch, toRef } from "vue";
 import type { AgentDiscoveryEntry } from "../types/a2a";
 import { useEventConsole } from "../eventConsole/useEventConsole";
 import { summarizeSubscriptions } from "../eventConsole/agentFilter";
+import {
+  SCOPE_EXISTING_CONTEXT,
+  SCOPE_NEW_CONTEXT,
+} from "../eventConsole/dispatchRequest";
 import { EVENT_SAMPLES } from "../eventConsole/sampleCatalog";
 
 const props = defineProps<{
@@ -28,7 +32,7 @@ const dispatchDisabledReason = computed<string | null>(() => {
   if (!ec.selectedSample.value) return "Pick a sample event.";
   const parsed = ec.parsedMessages.value;
   if (!parsed.ok) return `Fix JSON: ${parsed.error}`;
-  if (ec.scope.kind === "existing_context" && !ec.continueContextId.value.trim()) {
+  if (ec.scope.kind === SCOPE_EXISTING_CONTEXT && !ec.continueContextId.value.trim()) {
     return "Provide a context id to continue, or switch to New context.";
   }
   return null;
@@ -124,7 +128,7 @@ function formatTimestamp(ms: number): string {
             <select
               class="ec-input"
               :value="ec.selectedSampleId.value"
-              @change="(e) => ec.loadSampleIntoEditor((e.target as HTMLSelectElement).value)"
+              @change="(e) => ec.selectSample((e.target as HTMLSelectElement).value)"
             >
               <option v-for="s in EVENT_SAMPLES" :key="s.id" :value="s.id">
                 {{ s.label }}
@@ -158,25 +162,25 @@ function formatTimestamp(ms: number): string {
               <label class="ec-radio">
                 <input
                   type="radio"
-                  value="new_context"
-                  :checked="ec.scope.kind === 'new_context'"
-                  @change="ec.scope.kind = 'new_context'"
+                  :value="SCOPE_NEW_CONTEXT"
+                  :checked="ec.scope.kind === SCOPE_NEW_CONTEXT"
+                  @change="ec.scope.kind = SCOPE_NEW_CONTEXT"
                 />
                 New context
               </label>
               <label class="ec-radio">
                 <input
                   type="radio"
-                  value="existing_context"
-                  :checked="ec.scope.kind === 'existing_context'"
-                  @change="ec.scope.kind = 'existing_context'"
+                  :value="SCOPE_EXISTING_CONTEXT"
+                  :checked="ec.scope.kind === SCOPE_EXISTING_CONTEXT"
+                  @change="ec.scope.kind = SCOPE_EXISTING_CONTEXT"
                 />
                 Continue context
               </label>
             </div>
           </label>
           <label
-            v-if="ec.scope.kind === 'existing_context'"
+            v-if="ec.scope.kind === SCOPE_EXISTING_CONTEXT"
             class="ec-field"
           >
             <span class="ec-label">Existing context id</span>
@@ -207,14 +211,27 @@ function formatTimestamp(ms: number): string {
               class="ec-input ec-textarea ec-input--mono"
               spellcheck="false"
               rows="14"
+              aria-describedby="ec-json-validation"
+              :aria-invalid="validationMessage !== null"
               :value="ec.messagesJsonText.value"
               @input="(e) => (ec.messagesJsonText.value = (e.target as HTMLTextAreaElement).value)"
             ></textarea>
           </label>
-          <p v-if="validationMessage" class="ec-validation ec-validation--error">
+          <p
+            v-if="validationMessage"
+            id="ec-json-validation"
+            class="ec-validation ec-validation--error"
+            role="alert"
+          >
             JSON error: {{ validationMessage }}
           </p>
-          <p v-else class="ec-validation ec-validation--ok">JSON parses.</p>
+          <p
+            v-else
+            id="ec-json-validation"
+            class="ec-validation ec-validation--ok"
+          >
+            JSON parses.
+          </p>
         </div>
       </div>
 
@@ -226,7 +243,7 @@ function formatTimestamp(ms: number): string {
             <span class="ec-hint">Exactly what will be POSTed.</span>
           </div>
           <pre v-if="ec.previewText.value" class="ec-preview"><code>{{ ec.previewText.value }}</code></pre>
-          <p v-else class="ec-empty-line">Pick a sample and a target agent to preview the request.</p>
+          <p v-else class="ec-empty-line">{{ ec.previewPlaceholder.value }}</p>
         </div>
 
         <div class="ec-card">
