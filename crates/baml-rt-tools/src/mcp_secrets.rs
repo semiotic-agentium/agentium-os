@@ -151,8 +151,7 @@ pub fn compute_secret_fingerprint(secrets: &[ResolvedSecret]) -> SecretFingerpri
     write_len_prefixed(&mut hasher, b"baml-rt-mcp-secret-fingerprint-v1");
     for secret in sorted {
         write_len_prefixed(&mut hasher, secret.spec.id.as_bytes());
-        let source_identity = secret.spec.source.identity();
-        write_len_prefixed(&mut hasher, source_identity.as_bytes());
+        write_secret_source_identity(&mut hasher, &secret.spec.source);
         write_len_prefixed(
             &mut hasher,
             secret.spec.version.as_deref().unwrap_or("").as_bytes(),
@@ -175,9 +174,24 @@ fn runtime_fingerprint_key() -> &'static [u8; 32] {
     })
 }
 
+fn write_secret_source_identity(hasher: &mut Hasher, source: &SecretSource) {
+    match source {
+        SecretSource::Env { name } => {
+            write_len_prefixed_parts(hasher, &[b"env:", name.as_bytes()]);
+        }
+    }
+}
+
 fn write_len_prefixed(hasher: &mut Hasher, bytes: &[u8]) {
-    hasher.update(&(bytes.len() as u64).to_be_bytes());
-    hasher.update(bytes);
+    write_len_prefixed_parts(hasher, &[bytes]);
+}
+
+fn write_len_prefixed_parts(hasher: &mut Hasher, parts: &[&[u8]]) {
+    let len = parts.iter().map(|part| part.len() as u64).sum::<u64>();
+    hasher.update(&len.to_be_bytes());
+    for part in parts {
+        hasher.update(part);
+    }
 }
 
 fn injection_fingerprint_parts(

@@ -4,7 +4,12 @@
 //! guarding, secret injection, and reqwest client construction all happen
 //! together — fail-closed before the first TCP connection.
 
-use baml_rt_tools::{mcp_config::SecretInjection, mcp_secrets::ResolvedSecret};
+use std::time::Duration;
+
+use baml_rt_tools::{
+    mcp_config::{HttpHeader, HttpNetworkPolicyConfig, SecretInjection},
+    mcp_secrets::ResolvedSecret,
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use reqwest::{
     Certificate, Client,
@@ -44,71 +49,162 @@ pub enum HttpTransportBuildError {
 }
 
 /// Build an rmcp Streamable HTTP transport from a launch config.
-///
-/// Order is deliberate: URL/network policy first (fail before any TCP),
-/// reserved-header guard next (fail before injecting secrets that would then
-/// land on a refused header), secret injection last (the only place the
-/// resolved value lives outside the resolver).
 pub fn build_rmcp_http_transport(
     server_id: &str,
     config: &HttpLaunchConfig,
 ) -> Result<RmcpHttpTransport, HttpTransportBuildError> {
-    let has_auth = config
-        .resolved_secrets
-        .iter()
-        .any(|s| !matches!(s.spec.inject, SecretInjection::Env { .. }));
-    let (url, policy) =
-        validate_http_target(server_id, &config.url, &config.network_policy, has_auth)?;
+    HttpTransportBuilder::from_launch(server_id, config).build()
+}
 
-    let mut headers = build_validated_static_headers(server_id, &config.static_headers)?;
-    for sec in &config.resolved_secrets {
-        inject_secret_header(&mut headers, sec)?;
+/// Builder for rmcp Streamable HTTP transport construction.
+///
+/// Order inside [`HttpTransportBuilder::build`] is deliberate: URL/network policy first
+/// (fail before any TCP), reserved-header guard next (fail before injecting secrets that
+/// would then land on a refused header), secret injection last (the only place the
+/// resolved value lives outside the resolver).
+pub struct HttpTransportBuilder {
+    server_id: String,
+    url: String,
+    static_headers: Vec<HttpHeader>,
+    resolved_secrets: Vec<ResolvedSecret>,
+    network_policy: HttpNetworkPolicyConfig,
+    connect_timeout: Duration,
+    request_timeout: Duration,
+    idle_stream_timeout: Duration,
+    max_idle_per_host: u64,
+    extra_ca_certs_pem: Vec<Vec<u8>>,
+}
+
+impl HttpTransportBuilder {
+    pub fn new(server_id: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            server_id: server_id.into(),
+            url: url.into(),
+            static_headers: Vec::new(),
+            resolved_secrets: Vec::new(),
+            network_policy: HttpNetworkPolicyConfig::default(),
+            connect_timeout: Duration::from_secs(5),
+            request_timeout: Duration::from_secs(60),
+            idle_stream_timeout: Duration::from_secs(30),
+            max_idle_per_host: 8,
+            extra_ca_certs_pem: Vec::new(),
+        }
     }
 
-    let redirect_policy = build_redirect_policy(
-        server_id.to_string(),
-        policy.follow_redirects,
-        baml_rt_tools::mcp_config::HttpNetworkPolicyConfig {
-            allow_hosts: policy.allow_hosts.clone(),
-            allow_private_ips: policy.allow_private_ips,
-            follow_redirects: policy.follow_redirects,
-        },
-        has_auth,
-    );
-
-    let mut client_builder = reqwest::Client::builder()
-        .connect_timeout(config.connect_timeout)
-        .timeout(config.request_timeout)
-        .pool_max_idle_per_host(config.max_idle_per_host as usize)
-        .pool_idle_timeout(Some(config.idle_stream_timeout))
-        .redirect(redirect_policy)
-        .no_proxy()
-        .min_tls_version(tls::Version::TLS_1_2)
-        .danger_accept_invalid_certs(false)
-        .https_only(matches!(url.scheme(), "https"))
-        .user_agent(concat!("baml-rt-mcp/", env!("CARGO_PKG_VERSION")));
-    for (index, pem) in config.extra_ca_certs_pem.iter().enumerate() {
-        let cert = Certificate::from_pem(pem).map_err(|err| {
-            HttpTransportBuildError::InvalidExtraCaCert {
-                index,
-                reason: err.to_string(),
-            }
-        })?;
-        client_builder = client_builder.add_root_certificate(cert);
+    pub fn from_launch(server_id: &str, config: &HttpLaunchConfig) -> Self {
+        Self::new(server_id, config.url.clone())
+            .with_headers(config.static_headers.clone())
+            .with_secrets(config.resolved_secrets.clone())
+            .with_policy(config.network_policy.clone())
+            .with_timeouts(
+                config.connect_timeout,
+                config.request_timeout,
+                config.idle_stream_timeout,
+            )
+            .with_pooling(config.max_idle_per_host)
+            .with_extra_ca_certs(config.extra_ca_certs_pem.clone())
     }
-    let client: Client = client_builder.build()?;
 
-    // rmcp expects `HashMap<HeaderName, HeaderValue>` for `custom_headers`.
-    let custom_headers: std::collections::HashMap<HeaderName, HeaderValue> = headers
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
+    pub fn with_headers(mut self, headers: Vec<HttpHeader>) -> Self {
+        self.static_headers = headers;
+        self
+    }
 
-    let cfg = StreamableHttpClientTransportConfig::with_uri(url.as_str().to_string())
-        .custom_headers(custom_headers)
-        .reinit_on_expired_session(false);
+    pub fn with_secrets(mut self, secrets: Vec<ResolvedSecret>) -> Self {
+        self.resolved_secrets = secrets;
+        self
+    }
 
-    Ok(StreamableHttpClientTransport::with_client(client, cfg))
+    pub fn with_policy(mut self, policy: HttpNetworkPolicyConfig) -> Self {
+        self.network_policy = policy;
+        self
+    }
+
+    pub fn with_timeouts(
+        mut self,
+        connect_timeout: Duration,
+        request_timeout: Duration,
+        idle_stream_timeout: Duration,
+    ) -> Self {
+        self.connect_timeout = connect_timeout;
+        self.request_timeout = request_timeout;
+        self.idle_stream_timeout = idle_stream_timeout;
+        self
+    }
+
+    pub fn with_pooling(mut self, max_idle_per_host: u64) -> Self {
+        self.max_idle_per_host = max_idle_per_host;
+        self
+    }
+
+    pub fn with_extra_ca(mut self, pem: Vec<u8>) -> Self {
+        self.extra_ca_certs_pem.push(pem);
+        self
+    }
+
+    pub fn with_extra_ca_certs(mut self, pems: Vec<Vec<u8>>) -> Self {
+        self.extra_ca_certs_pem = pems;
+        self
+    }
+
+    pub fn build(self) -> Result<RmcpHttpTransport, HttpTransportBuildError> {
+        let has_auth = self
+            .resolved_secrets
+            .iter()
+            .any(|s| !matches!(s.spec.inject, SecretInjection::Env { .. }));
+        let (url, policy) =
+            validate_http_target(&self.server_id, &self.url, &self.network_policy, has_auth)?;
+
+        let mut headers = build_validated_static_headers(&self.server_id, &self.static_headers)?;
+        for sec in &self.resolved_secrets {
+            inject_secret_header(&mut headers, sec)?;
+        }
+
+        let redirect_policy = build_redirect_policy(
+            self.server_id,
+            policy.follow_redirects,
+            HttpNetworkPolicyConfig {
+                allow_hosts: policy.allow_hosts.clone(),
+                allow_private_ips: policy.allow_private_ips,
+                follow_redirects: policy.follow_redirects,
+            },
+            has_auth,
+        );
+
+        let mut client_builder = reqwest::Client::builder()
+            .connect_timeout(self.connect_timeout)
+            .timeout(self.request_timeout)
+            .pool_max_idle_per_host(self.max_idle_per_host as usize)
+            .pool_idle_timeout(Some(self.idle_stream_timeout))
+            .redirect(redirect_policy)
+            .no_proxy()
+            .min_tls_version(tls::Version::TLS_1_2)
+            .danger_accept_invalid_certs(false)
+            .https_only(matches!(url.scheme(), "https"))
+            .user_agent(concat!("baml-rt-mcp/", env!("CARGO_PKG_VERSION")));
+        for (index, pem) in self.extra_ca_certs_pem.iter().enumerate() {
+            let cert = Certificate::from_pem(pem).map_err(|err| {
+                HttpTransportBuildError::InvalidExtraCaCert {
+                    index,
+                    reason: err.to_string(),
+                }
+            })?;
+            client_builder = client_builder.add_root_certificate(cert);
+        }
+        let client: Client = client_builder.build()?;
+
+        // rmcp expects `HashMap<HeaderName, HeaderValue>` for `custom_headers`.
+        let custom_headers: std::collections::HashMap<HeaderName, HeaderValue> = headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        let cfg = StreamableHttpClientTransportConfig::with_uri(url.as_str().to_string())
+            .custom_headers(custom_headers)
+            .reinit_on_expired_session(false);
+
+        Ok(StreamableHttpClientTransport::with_client(client, cfg))
+    }
 }
 
 fn build_redirect_policy(

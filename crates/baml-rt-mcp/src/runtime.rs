@@ -48,6 +48,7 @@ use thiserror::Error;
 use tokio::{
     io::AsyncReadExt,
     sync::{Mutex, OnceCell},
+    task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -204,12 +205,12 @@ pub struct StdioLaunch {
 
 #[derive(Debug, Clone)]
 pub enum EnvValue {
-    Plain(Arc<str>),
+    Plain(String),
     Secret(McpSecretValue),
 }
 
 impl EnvValue {
-    pub fn plain(value: impl Into<Arc<str>>) -> Self {
+    pub fn plain(value: impl Into<String>) -> Self {
         Self::Plain(value.into())
     }
 
@@ -219,7 +220,7 @@ impl EnvValue {
 
     fn expose_for_child(&self) -> &str {
         match self {
-            EnvValue::Plain(value) => value.as_ref(),
+            EnvValue::Plain(value) => value.as_str(),
             EnvValue::Secret(value) => value.expose_secret(),
         }
     }
@@ -476,6 +477,7 @@ pub struct McpConnection {
     drifted: Arc<AtomicBool>,
     service: OnceCell<Arc<RunningService<RoleClient, RuntimeClientHandler>>>,
     stderr_drain_token: CancellationToken,
+    stderr_drain_task: std::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 impl McpConnection {
@@ -485,6 +487,7 @@ impl McpConnection {
             drifted: Arc::new(AtomicBool::new(false)),
             service: OnceCell::new(),
             stderr_drain_token: CancellationToken::new(),
+            stderr_drain_task: std::sync::Mutex::new(None),
         }
     }
 
@@ -625,6 +628,7 @@ impl McpConnection {
             launch.startup_timeout
         };
         let stderr_drain_token = self.stderr_drain_token.child_token();
+        let stderr_drain_task = &self.stderr_drain_task;
         let handler = RuntimeClientHandler {
             server_id: Arc::<str>::from(launch.server_id.clone()),
             drifted: drifted.clone(),
@@ -648,7 +652,13 @@ impl McpConnection {
                             command: stdio.command.clone(),
                             source: err,
                         })?;
-                    spawn_stderr_drain(launch.server_id.clone(), stderr, stderr_drain_token);
+                    if let Some(task) =
+                        spawn_stderr_drain(launch.server_id.clone(), stderr, stderr_drain_token)
+                    {
+                        *stderr_drain_task
+                            .lock()
+                            .expect("stderr drain task mutex poisoned") = Some(task);
+                    }
                     handler
                         .serve(transport)
                         .await
@@ -685,6 +695,14 @@ impl Drop for McpConnection {
         //      in-flight call). `Arc::try_unwrap` then fails silently; log a
         //      warning so leaked children are at least observable.
         self.stderr_drain_token.cancel();
+        if let Some(task) = self
+            .stderr_drain_task
+            .lock()
+            .expect("stderr drain task mutex poisoned")
+            .take()
+        {
+            task.abort();
+        }
         let Some(service_arc) = self.service.take() else {
             return;
         };
@@ -916,13 +934,13 @@ fn spawn_stderr_drain(
     server_id: String,
     stderr: Option<tokio::process::ChildStderr>,
     cancellation_token: CancellationToken,
-) {
+) -> Option<JoinHandle<()>> {
     const MAX_CAPTURED_STDERR: usize = 64 * 1024;
 
     let Some(mut stderr) = stderr else {
-        return;
+        return None;
     };
-    tokio::spawn(async move {
+    Some(tokio::spawn(async move {
         let mut captured = Vec::new();
         let mut total = 0usize;
         let mut chunk = [0u8; 4096];
@@ -965,7 +983,7 @@ fn spawn_stderr_drain(
             stderr_truncated = total > captured.len(),
             "MCP stdio server stderr"
         );
-    });
+    }))
 }
 
 /// Signal the rmcp service to wind down without consuming it.

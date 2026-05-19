@@ -66,6 +66,94 @@ pub struct StreamableHttpConfig {
     pub network_policy: HttpNetworkPolicyConfig,
 }
 
+impl StreamableHttpConfig {
+    pub fn builder(url: impl Into<String>) -> StreamableHttpConfigBuilder {
+        StreamableHttpConfigBuilder::new(url)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamableHttpConfigBuilder {
+    url: String,
+    headers: Vec<HttpHeader>,
+    auth: Option<HttpAuthConfig>,
+    timeouts: HttpTimeoutsConfig,
+    pooling: HttpPoolingConfig,
+    network_policy: HttpNetworkPolicyConfig,
+}
+
+impl StreamableHttpConfigBuilder {
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            headers: Vec::new(),
+            auth: None,
+            timeouts: HttpTimeoutsConfig::default(),
+            pooling: HttpPoolingConfig::default(),
+            network_policy: HttpNetworkPolicyConfig::default(),
+        }
+    }
+
+    pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.push(HttpHeader {
+            name: name.into(),
+            value: value.into(),
+        });
+        self
+    }
+
+    pub fn headers(mut self, headers: Vec<HttpHeader>) -> Self {
+        self.headers = headers;
+        self
+    }
+
+    pub fn auth(mut self, auth: HttpAuthConfig) -> Self {
+        self.auth = Some(auth);
+        self
+    }
+
+    pub fn timeouts(mut self, timeouts: HttpTimeoutsConfig) -> Self {
+        self.timeouts = timeouts;
+        self
+    }
+
+    pub fn pooling(mut self, pooling: HttpPoolingConfig) -> Self {
+        self.pooling = pooling;
+        self
+    }
+
+    pub fn network_policy(mut self, policy: HttpNetworkPolicyConfig) -> Self {
+        self.network_policy = policy;
+        self
+    }
+
+    pub fn allow_host(mut self, host: impl Into<String>) -> Self {
+        self.network_policy.allow_hosts.push(host.into());
+        self
+    }
+
+    pub fn allow_private_ips(mut self, allow: bool) -> Self {
+        self.network_policy.allow_private_ips = allow;
+        self
+    }
+
+    pub fn follow_redirects(mut self, follow: bool) -> Self {
+        self.network_policy.follow_redirects = follow;
+        self
+    }
+
+    pub fn build(self) -> StreamableHttpConfig {
+        StreamableHttpConfig {
+            url: self.url,
+            headers: self.headers,
+            auth: self.auth,
+            timeouts: self.timeouts,
+            pooling: self.pooling,
+            network_policy: self.network_policy,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HttpHeader {
     pub name: String,
@@ -105,8 +193,19 @@ impl SecretSource {
     /// future sources so a future `vault:` source can't collide with an `env:`
     /// source that happens to share a name.
     pub fn identity(&self) -> String {
+        let mut out = String::new();
+        self.write_identity(&mut out)
+            .expect("writing to String cannot fail");
+        out
+    }
+
+    /// Write the stable identity token without forcing callers to allocate.
+    pub fn write_identity(&self, out: &mut impl std::fmt::Write) -> std::fmt::Result {
         match self {
-            SecretSource::Env { name } => format!("env:{name}"),
+            SecretSource::Env { name } => {
+                out.write_str("env:")?;
+                out.write_str(name)
+            }
         }
     }
 }
@@ -148,10 +247,15 @@ impl SecretSpec {
     /// change on credential rotation (new version) and on source rebind, but
     /// never depend on the resolved secret value.
     pub fn identity_token(&self) -> String {
-        match &self.version {
-            Some(v) => format!("{}@{v}", self.source.identity()),
-            None => self.source.identity(),
+        let mut out = String::new();
+        self.source
+            .write_identity(&mut out)
+            .expect("writing to String cannot fail");
+        if let Some(version) = &self.version {
+            out.push('@');
+            out.push_str(version);
         }
+        out
     }
 }
 

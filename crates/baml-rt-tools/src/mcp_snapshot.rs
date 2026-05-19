@@ -529,6 +529,93 @@ mod tests {
     }
 
     #[test]
+    fn normalized_http_url_ignores_query_fragment_and_default_port() {
+        assert_eq!(
+            normalized_http_url("https://Example.Invalid:443/mcp?token=secret#frag"),
+            json!({
+                "scheme": "https",
+                "host": "example.invalid",
+                "port": 443,
+                "path": "/mcp",
+            })
+        );
+        assert_eq!(
+            normalized_http_url("http://example.invalid:8080/root"),
+            json!({
+                "scheme": "http",
+                "host": "example.invalid",
+                "port": 8080,
+                "path": "/root",
+            })
+        );
+    }
+
+    #[test]
+    fn normalized_http_url_preserves_raw_invalid_url() {
+        assert_eq!(
+            normalized_http_url("not a url"),
+            json!({ "raw": "not a url" })
+        );
+    }
+
+    #[test]
+    fn auth_digest_shape_captures_injection_shape_and_secret_ref() {
+        let env_ref = crate::mcp_config::HttpSecretRef {
+            source: crate::mcp_config::SecretSource::Env {
+                name: "TOKEN".into(),
+            },
+        };
+        assert_eq!(auth_digest_shape(None), Value::Null);
+        assert_eq!(
+            auth_digest_shape(Some(&HttpAuthConfig::Bearer {
+                token_ref: env_ref.clone(),
+            })),
+            json!({
+                "kind": "bearer",
+                "inject": { "kind": "http_header", "name": "Authorization", "scheme": "Bearer" },
+                "secret_ref": env_ref,
+            })
+        );
+
+        let env_ref = crate::mcp_config::HttpSecretRef {
+            source: crate::mcp_config::SecretSource::Env {
+                name: "PASSWORD".into(),
+            },
+        };
+        assert_eq!(
+            auth_digest_shape(Some(&HttpAuthConfig::Basic {
+                username: "grafana".into(),
+                password_ref: env_ref.clone(),
+            })),
+            json!({
+                "kind": "basic",
+                "inject": { "kind": "http_basic", "username": "grafana" },
+                "secret_ref": env_ref,
+            })
+        );
+    }
+
+    #[test]
+    fn auth_digest_shape_distinguishes_custom_header_name() {
+        let env_ref = crate::mcp_config::HttpSecretRef {
+            source: crate::mcp_config::SecretSource::Env {
+                name: "API_KEY".into(),
+            },
+        };
+        assert_eq!(
+            auth_digest_shape(Some(&HttpAuthConfig::Header {
+                header: "X-API-Key".into(),
+                value_ref: env_ref.clone(),
+            })),
+            json!({
+                "kind": "header",
+                "inject": { "kind": "http_header", "name": "X-API-Key" },
+                "secret_ref": env_ref,
+            })
+        );
+    }
+
+    #[test]
     fn round_trip_minimal_approved_snapshot() {
         let snap = sample_snapshot(McpApprovalState::Approved);
         let json = serde_json::to_string(&snap).expect("serialize");

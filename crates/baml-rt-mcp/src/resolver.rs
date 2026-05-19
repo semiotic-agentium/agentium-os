@@ -37,10 +37,9 @@ const DEFAULT_STARTUP_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_CALL_TIMEOUT_SECS: u64 = 120;
 
 /// Wire transport discriminant carried on the pool key so a registry rewrite
-/// from stdio to Streamable HTTP (or vice versa) never silently reuses a
-/// stale connection.
+/// from stdio to Streamable HTTP (or vice versa) never reuses a connection.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub enum PoolTransport {
+pub(crate) enum PoolTransport {
     Stdio,
     StreamableHttp,
 }
@@ -54,7 +53,7 @@ pub enum PoolTransport {
 /// construction; isolation across agents falls out of that — different
 /// agents construct different resolvers, each with its own pool.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct PoolKey {
+pub(crate) struct PoolKey {
     agent_scope: Arc<str>,
     // Current endpoint scope. `server_config_digest` below carries the concrete
     // endpoint identity: stdio command/args or normalized HTTP scheme/host/port/path.
@@ -205,10 +204,13 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
                     PoolTransport::Stdio,
                 )
             }
-            Some(McpServerTransportConfig::StreamableHttp(http_cfg)) => {
-                let http_launch = build_http_launch(http_cfg, resolved_vec.clone());
-                (LaunchKind::Http(http_launch), PoolTransport::StreamableHttp)
-            }
+            Some(McpServerTransportConfig::StreamableHttp(http_cfg)) => (
+                LaunchKind::Http(HttpLaunchConfig::from(HttpLaunchInput {
+                    config: http_cfg,
+                    resolved_secrets: resolved_vec.clone(),
+                })),
+                PoolTransport::StreamableHttp,
+            ),
         };
 
         let launch = ServerLaunch {
@@ -338,20 +340,24 @@ fn pool_transport_label(transport: PoolTransport) -> &'static str {
     }
 }
 
-fn build_http_launch(
-    http: &StreamableHttpConfig,
+struct HttpLaunchInput<'a> {
+    config: &'a StreamableHttpConfig,
     resolved_secrets: Vec<ResolvedSecret>,
-) -> HttpLaunchConfig {
-    HttpLaunchConfig {
-        url: http.url.clone(),
-        static_headers: http.headers.clone(),
-        resolved_secrets,
-        network_policy: http.network_policy.clone(),
-        connect_timeout: Duration::from_millis(http.timeouts.connect_ms),
-        request_timeout: Duration::from_millis(http.timeouts.request_ms),
-        idle_stream_timeout: Duration::from_millis(http.timeouts.idle_stream_ms),
-        max_idle_per_host: http.pooling.max_idle_per_host,
-        extra_ca_certs_pem: Vec::new(),
+}
+
+impl From<HttpLaunchInput<'_>> for HttpLaunchConfig {
+    fn from(input: HttpLaunchInput<'_>) -> Self {
+        Self {
+            url: input.config.url.clone(),
+            static_headers: input.config.headers.clone(),
+            resolved_secrets: input.resolved_secrets,
+            network_policy: input.config.network_policy.clone(),
+            connect_timeout: Duration::from_millis(input.config.timeouts.connect_ms),
+            request_timeout: Duration::from_millis(input.config.timeouts.request_ms),
+            idle_stream_timeout: Duration::from_millis(input.config.timeouts.idle_stream_ms),
+            max_idle_per_host: input.config.pooling.max_idle_per_host,
+            extra_ca_certs_pem: Vec::new(),
+        }
     }
 }
 
