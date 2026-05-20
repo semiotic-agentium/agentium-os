@@ -12,10 +12,28 @@
   "tags": [
     "clickup",
     "project-management",
-    "tasks"
+    "tasks",
+    "ingress",
+    "event-driven"
   ],
   "discovery": {
-    "description": "Agent that interacts with ClickUp tasks and spaces",
-    "capabilities": ["clickup:list-tasks", "clickup:get-task", "clickup:list-spaces", "clickup:create-task", "project-management:create-task", "project-management:task-tracking", "project-management:sprint-status"]
+    "description": "ClickUp assistant for conversational task work and host.source-records.v1 lifecycle ingress.",
+    "capabilities": [
+      "clickup:list-tasks",
+      "clickup:get-task",
+      "clickup:list-spaces",
+      "clickup:create-task",
+      "clickup:intake",
+      "ingress:clickup-lifecycle",
+      "project-management:create-task",
+      "project-management:task-tracking",
+      "project-management:sprint-status"
+    ],
+    "subscriptions": [
+      {
+        "schema_versions": ["host.source-records.v1"],
+        "source_kinds": ["clickup"]
+      }
+    ]
   }
 }

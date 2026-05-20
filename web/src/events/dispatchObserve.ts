@@ -1,21 +1,24 @@
-/** Scope resolution and operator dispatch summary helpers for Event Console observation. */
+/** Scope resolution and operator publish summary helpers for Event Console observation. */
 
 import type { ChatMessage } from "../types/a2a";
 import type {
   AgentDeliverableMessageShape,
-  AgentDispatchAck,
   DerivedDispatchEnvelope,
   EventDispatchScope,
+  EventPublishResponse,
 } from "../types/events";
 
-export interface DispatchedScope {
+export interface PublishedScope {
   contextId: string;
   taskId?: string | null;
   messageId?: string | null;
-  /** Set when scope comes from a dispatch ack so observation does not follow another agent. */
+  /** Set when scope comes from a publish run so observation does not follow another agent. */
   agentPackage?: string | null;
   agentInstanceId?: string | null;
 }
+
+/** @deprecated Use PublishedScope */
+export type DispatchedScope = PublishedScope;
 
 export interface ObservationAgentRef {
   agentPackage: string;
@@ -24,7 +27,7 @@ export interface ObservationAgentRef {
 
 export function scopeFromRecord(
   req: Record<string, unknown> | undefined | null,
-): DispatchedScope | null {
+): PublishedScope | null {
   if (!req) return null;
   const contextId = typeof req.context_id === "string" ? req.context_id : null;
   if (!contextId) return null;
@@ -35,23 +38,12 @@ export function scopeFromRecord(
   };
 }
 
-export function scopeFromAck(ack: AgentDispatchAck | null | undefined): DispatchedScope | null {
-  if (!ack?.context_id) return null;
-  return {
-    contextId: ack.context_id,
-    taskId: ack.task_id ?? null,
-    messageId: ack.message_id ?? null,
-  };
-}
-
-export function scopeFromContextId(contextId: string | null | undefined): DispatchedScope | null {
+export function scopeFromContextId(contextId: string | null | undefined): PublishedScope | null {
   if (!contextId) return null;
   return { contextId, taskId: null, messageId: null };
 }
 
-export function scopeFromDraftScope(
-  scope: EventDispatchScope,
-): DispatchedScope | null {
+export function scopeFromDraftScope(scope: EventDispatchScope): PublishedScope | null {
   if (scope.kind === "new_context") {
     return null;
   }
@@ -61,8 +53,8 @@ export function scopeFromDraftScope(
   };
 }
 
-export function dispatchedScopeMatchesAgent(
-  scope: DispatchedScope | null | undefined,
+export function publishedScopeMatchesAgent(
+  scope: PublishedScope | null | undefined,
   agent: ObservationAgentRef | null | undefined,
 ): boolean {
   if (!scope) {
@@ -80,85 +72,89 @@ export function dispatchedScopeMatchesAgent(
   );
 }
 
+/** @deprecated Use publishedScopeMatchesAgent */
+export const dispatchedScopeMatchesAgent = publishedScopeMatchesAgent;
+
 /**
  * Resolve which provenance context to observe for the current Event Console session.
  *
  * In compose mode, toolbar context pickers update the draft scope but must not reuse a
- * prior dispatch scope from another agent. History mode may browse any listed context.
+ * prior publish scope from another agent. History mode may browse any listed context.
  */
 export function resolveObservationScope(input: {
-  lastDispatchedScope: DispatchedScope | null;
+  lastPublishedScope: PublishedScope | null;
   draftScope: EventDispatchScope;
   selectedContextId: string | null;
-  previewRequest: Record<string, unknown> | undefined | null;
+  previewProducedEvent: Record<string, unknown> | undefined | null;
   currentAgent: ObservationAgentRef | null;
   mode: "compose" | "history";
-}): DispatchedScope | null {
-  const fromDispatch = dispatchedScopeMatchesAgent(
-    input.lastDispatchedScope,
+}): PublishedScope | null {
+  const fromPublish = publishedScopeMatchesAgent(
+    input.lastPublishedScope,
     input.currentAgent,
   )
-    ? input.lastDispatchedScope
+    ? input.lastPublishedScope
     : null;
   const fromDraft = scopeFromDraftScope(input.draftScope);
-  const fromPreview = scopeFromRecord(input.previewRequest);
+  const fromPreview = scopeFromRecord(input.previewProducedEvent);
   const fromPicker =
-    input.mode === "history"
-      ? scopeFromContextId(input.selectedContextId)
-      : null;
+    input.mode === "history" ? scopeFromContextId(input.selectedContextId) : null;
 
-  // Explicit draft scope (continue context/task) wins over a prior dispatch ack so
-  // operators can inspect another context without clearing the last ack.
-  return fromDraft ?? fromDispatch ?? fromPreview ?? fromPicker;
+  return fromDraft ?? fromPublish ?? fromPreview ?? fromPicker;
 }
 
-export function buildOperatorDispatchTraceMessages(input: {
+export function buildOperatorPublishTraceMessages(input: {
   agentPackage: string;
   agentInstanceId: string;
   messageShape: AgentDeliverableMessageShape | undefined;
   envelope: DerivedDispatchEnvelope | null;
   sampleLabel?: string;
-  ack: AgentDispatchAck | null;
-  dispatchError: string | null;
+  outcome: EventPublishResponse | null;
+  publishError: string | null;
 }): ChatMessage[] {
   const now = new Date();
-  const shapeLabel = input.messageShape?.display_name ?? "Event dispatch";
+  const shapeLabel = input.messageShape?.display_name ?? "Event publish";
   const routing = input.envelope?.routingKey ?? "—";
   const messageType = input.envelope?.messageType ?? "—";
   const sample = input.sampleLabel ? `\nSample: ${input.sampleLabel}` : "";
   const outbound = [
-    `Operator dispatch`,
-    `Agent: ${input.agentPackage}/${input.agentInstanceId}`,
+    "Operator publish (host ingress)",
+    `Compose agent: ${input.agentPackage}/${input.agentInstanceId}`,
     `Message type: ${shapeLabel} (${messageType})`,
     `Routing: ${routing}${sample}`,
   ].join("\n");
 
   const rows: ChatMessage[] = [
     {
-      id: "operator-dispatch-trace-outbound",
+      id: "operator-publish-trace-outbound",
       role: "user",
       text: outbound,
       timestamp: now,
     },
   ];
 
-  if (input.dispatchError) {
+  if (input.publishError) {
     rows.push({
-      id: "operator-dispatch-trace-error",
+      id: "operator-publish-trace-error",
       role: "agent",
-      text: `Dispatch failed:\n${input.dispatchError}`,
+      text: `Publish failed:\n${input.publishError}`,
       timestamp: now,
     });
     return rows;
   }
 
-  if (input.ack) {
-    const status = input.ack.accepted ? "Accepted" : "Rejected";
-    const detail = input.ack.detail ? `\n${input.ack.detail}` : "";
+  if (input.outcome) {
+    const o = input.outcome;
+    const failureLines =
+      o.failures.length > 0
+        ? `\nFailures:\n${o.failures
+            .map((f) => `- ${f.agent_package}/${f.agent_instance_id}: ${f.detail}`)
+            .join("\n")}`
+        : "";
     rows.push({
-      id: "operator-dispatch-trace-ack",
+      id: "operator-publish-trace-outcome",
       role: "agent",
-      text: `${status}${detail}`.trim(),
+      text: `Published ${o.subscribers_accepted}/${o.subscribers_matched} subscriber(s)${failureLines}`.trim(),
       timestamp: now,
     });
   }
@@ -166,5 +162,22 @@ export function buildOperatorDispatchTraceMessages(input: {
   return rows;
 }
 
-/** @deprecated Use buildOperatorDispatchTraceMessages */
-export const buildConsoleTraceFallbackMessages = buildOperatorDispatchTraceMessages;
+/** @deprecated Use buildOperatorPublishTraceMessages */
+export const buildOperatorDispatchTraceMessages = buildOperatorPublishTraceMessages;
+
+/** @deprecated Use buildOperatorPublishTraceMessages */
+export const buildConsoleTraceFallbackMessages = buildOperatorPublishTraceMessages;
+
+/** True when transcript includes host-written ingress poll/unit user rows. */
+export function transcriptHasIngressUserRows(messages: ChatMessage[]): boolean {
+  return messages.some(
+    (m) =>
+      m.role === "user" &&
+      (m.speakerKind === "ingress" ||
+        m.id.includes("ingress-poll-user") ||
+        m.id.includes("ingress-unit-user")),
+  );
+}
+
+/** @deprecated Use transcriptHasIngressUserRows */
+export const transcriptHasHostIngress = transcriptHasIngressUserRows;

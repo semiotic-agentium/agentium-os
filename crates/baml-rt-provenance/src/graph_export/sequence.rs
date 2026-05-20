@@ -38,6 +38,9 @@ const SEQUENCE_ARGS_SUMMARY_LEN: usize = 40;
 /// Maximum character length for error message previews on failure arrows.
 const SEQUENCE_ERROR_PREVIEW_LEN: usize = 80;
 
+/// Sequence participant id for host ingress (poll / dispatch).
+const HOST_PARTICIPANT: &str = "Host";
+
 /// Mermaid arrow for failures: `--x` (dotted line with cross). Indicates a lost/destroyed
 /// or failed message. Used for LLM and tool call failures; label includes ✗ and error preview.
 const MERMAID_FAILURE_ARROW: &str = "--x";
@@ -149,6 +152,14 @@ pub fn render_sequence_diagram(graph: &ExportedGraph) -> String {
 
     if participants.has_user {
         let _ = writeln!(out, "    actor User");
+    }
+    if participants.has_host {
+        let _ = writeln!(
+            out,
+            "    participant {} as \"{}\"",
+            HOST_PARTICIPANT,
+            escape_sequence_text("Host")
+        );
     }
     for agent in &participants.agents {
         let _ = writeln!(
@@ -313,7 +324,9 @@ pub fn render_sequence_diagram(graph: &ExportedGraph) -> String {
         }
         // Emit node unless we already emitted it (initiating user message above rect).
         let already_emitted = should_open_rect && is_user_msg;
-        if !already_emitted
+        if !already_emitted && is_host_ingress_message(node) {
+            emit_host_ingress_sequence(&mut out, node);
+        } else if !already_emitted
             && let Some(agent) = agent_for_node.get(&node.id)
             && indices
                 .label_by_node
@@ -344,6 +357,79 @@ pub fn render_sequence_diagram(graph: &ExportedGraph) -> String {
     record_provenance_sequence_render(scope_str, duration, graph.nodes.len());
 
     out
+}
+
+/// True if this node is a host ingress transcript row (`role=host` or `host_ingress_kind`).
+fn is_host_ingress_message(node: &ExportedNode) -> bool {
+    normalize_role(
+        node.properties
+            .get(a2a::ROLE)
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
+    ) == "host"
+        || node.properties.contains_key(a2a::HOST_INGRESS_KIND)
+}
+
+/// Sanitized participant id for a host dispatch target (`package` + `instance`).
+fn host_ingress_target_participant_id(package: &str, instance: &str) -> String {
+    sanitize_participant(&format!("{package}_{instance}"))
+}
+
+/// Emit host poll / dispatch rows on the `Host` participant (no agent execution chain required).
+fn emit_host_ingress_sequence(out: &mut String, node: &ExportedNode) {
+    let kind = prop_str(node, a2a::HOST_INGRESS_KIND).unwrap_or_default();
+    let content = super::extract_content_preview(
+        node.properties.get(a2a::CONTENT),
+        SEQUENCE_CONTENT_PREVIEW_LEN,
+    );
+    match kind.as_str() {
+        "source_poll_recorded" => {
+            let source_kind = prop_str(node, a2a::HOST_INGRESS_SOURCE_KIND)
+                .unwrap_or_else(|| "source".to_string());
+            let record_count = node
+                .properties
+                .get(a2a::HOST_INGRESS_RECORD_COUNT)
+                .and_then(|v| v.as_u64())
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            let label = if content.is_empty() {
+                format!("source poll: {source_kind} ({record_count} records)")
+            } else {
+                content
+            };
+            let _ = writeln!(
+                out,
+                "    Note over {HOST_PARTICIPANT}: {}",
+                escape_note_content(&label)
+            );
+        }
+        "dispatch_accepted" => {
+            let routing_key = prop_str(node, a2a::HOST_INGRESS_ROUTING_KEY)
+                .unwrap_or_else(|| "dispatch".to_string());
+            let label = escape_sequence_text(&format!("dispatch accepted: {routing_key}"));
+            if let (Some(package), Some(instance)) = (
+                prop_str(node, a2a::HOST_INGRESS_TARGET_PACKAGE),
+                prop_str(node, a2a::HOST_INGRESS_TARGET_INSTANCE),
+            ) {
+                let target = host_ingress_target_participant_id(&package, &instance);
+                let _ = writeln!(out, "    {HOST_PARTICIPANT}->>{target}: {label}");
+            } else if !content.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "    Note over {HOST_PARTICIPANT}: {}",
+                    escape_note_content(&content)
+                );
+            }
+        }
+        _ if content.is_empty() => {}
+        _ => {
+            let _ = writeln!(
+                out,
+                "    Note over {HOST_PARTICIPANT}: {}",
+                escape_note_content(&content)
+            );
+        }
+    }
 }
 
 /// True if this node is a Message with role=user (inbound from user).
@@ -1367,6 +1453,8 @@ fn edge_relation_matches(edge_relation: &str, expected: &str) -> bool {
 /// Identified participants for the sequence diagram.
 struct Participants {
     has_user: bool,
+    /// Host ingress rows (`role=host`) appear on this participant.
+    has_host: bool,
     /// Agent display names from the graph: AgentRuntimeInstance → AgentBoot → AgentArchive (a2a:archive_path).
     agents: Vec<String>,
     /// LLM participants: "LLM {model}" per unique model.
@@ -1384,6 +1472,7 @@ fn extract_participants(
     activity_cache: &mut HashMap<String, Option<String>>,
 ) -> Participants {
     let mut has_user = false;
+    let mut has_host = false;
     let mut agents: Vec<String> = Vec::new();
     let mut seen_agents: HashSet<String> = HashSet::new();
     let mut agent_first_order: HashMap<String, u64> = HashMap::new();
@@ -1408,7 +1497,21 @@ fn extract_participants(
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 let normalized = normalize_role(role);
-                if matches!(normalized.as_str(), "user" | "assistant" | "agent") {
+                if normalized == "host" || node.properties.contains_key(a2a::HOST_INGRESS_KIND) {
+                    has_host = true;
+                    if prop_str(node, a2a::HOST_INGRESS_KIND).as_deref()
+                        == Some("dispatch_accepted")
+                        && let (Some(package), Some(instance)) = (
+                            prop_str(node, a2a::HOST_INGRESS_TARGET_PACKAGE),
+                            prop_str(node, a2a::HOST_INGRESS_TARGET_INSTANCE),
+                        )
+                    {
+                        let target_id = format!("{package}_{instance}");
+                        if seen_agents.insert(target_id.clone()) {
+                            agents.push(target_id);
+                        }
+                    }
+                } else if matches!(normalized.as_str(), "user" | "assistant" | "agent") {
                     has_user = true;
                 }
             }
@@ -1510,6 +1613,7 @@ fn extract_participants(
 
     Participants {
         has_user,
+        has_host,
         agents,
         llms,
         tools,
@@ -2015,6 +2119,31 @@ mod tests {
         }
     }
 
+    fn host_ingress_msg_node(
+        id: &str,
+        kind: &str,
+        order: Option<u64>,
+        extra: HashMap<String, serde_json::Value>,
+    ) -> ExportedNode {
+        let mut props = HashMap::new();
+        props.insert(
+            a2a::ROLE.to_string(),
+            serde_json::Value::String("host".to_string()),
+        );
+        props.insert(
+            a2a::HOST_INGRESS_KIND.to_string(),
+            serde_json::Value::String(kind.to_string()),
+        );
+        props.extend(extra);
+        ExportedNode {
+            id: id.to_string(),
+            label: "Message".to_string(),
+            display_name: format!("📡 Host {kind}"),
+            properties: props,
+            event_order: order,
+        }
+    }
+
     #[test]
     fn empty_graph_produces_valid_header() {
         let g = graph(vec![], vec![]);
@@ -2023,6 +2152,64 @@ mod tests {
         assert!(output.contains("autonumber"));
         // No fallbacks: empty graph has no agents, so no agent participant.
         assert!(!output.contains("participant Agent"));
+    }
+
+    #[test]
+    fn host_ingress_messages_render_on_host_participant() {
+        let mut poll_props = HashMap::new();
+        poll_props.insert(
+            a2a::HOST_INGRESS_SOURCE_KIND.to_string(),
+            serde_json::Value::String("slack".to_string()),
+        );
+        poll_props.insert(
+            a2a::HOST_INGRESS_RECORD_COUNT.to_string(),
+            serde_json::json!(2),
+        );
+        let mut dispatch_props = HashMap::new();
+        dispatch_props.insert(
+            a2a::HOST_INGRESS_ROUTING_KEY.to_string(),
+            serde_json::Value::String("event:intake".to_string()),
+        );
+        dispatch_props.insert(
+            a2a::HOST_INGRESS_TARGET_PACKAGE.to_string(),
+            serde_json::Value::String("dispatch-echo".to_string()),
+        );
+        dispatch_props.insert(
+            a2a::HOST_INGRESS_TARGET_INSTANCE.to_string(),
+            serde_json::Value::String("default".to_string()),
+        );
+        let g = graph(
+            vec![
+                host_ingress_msg_node("h1", "source_poll_recorded", Some(1), poll_props),
+                host_ingress_msg_node("h2", "dispatch_accepted", Some(2), dispatch_props),
+            ],
+            vec![],
+        );
+        let output = render_sequence_diagram(&g);
+        assert!(
+            output.contains("participant Host"),
+            "expected Host participant: {output}"
+        );
+        assert!(
+            output.contains("Note over Host: \"source poll: slack (2 records)\""),
+            "expected poll note: {output}"
+        );
+        assert!(
+            output.contains("Host->>dispatch_echo_default: dispatch accepted: event:intake"),
+            "expected dispatch arrow: {output}"
+        );
+        assert!(
+            output.contains("participant dispatch_echo_default"),
+            "expected dispatch target participant: {output}"
+        );
+        let poll_pos = output.find("Note over Host").expect("poll");
+        let dispatch_pos = output
+            .find("Host->>dispatch_echo_default")
+            .expect("dispatch");
+        assert!(
+            poll_pos < dispatch_pos,
+            "poll should precede dispatch: {output}"
+        );
     }
 
     #[test]

@@ -219,7 +219,7 @@ __chat_register({
     // NeedClarification must always use awaitInput so the host emits TASK_STATE_INPUT_REQUIRED — never
     // substitute a fake intent after N rounds (that completed the stream without suspending).
     while (true) {
-      const intentResult = await InferSlackIntent({ user_message: text });
+      const intentResult = await InferSlackIntent({});
 
       if (isSlackIntent(intentResult)) {
         validatedIntent = intentResult.intent;

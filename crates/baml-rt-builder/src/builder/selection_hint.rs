@@ -6,8 +6,8 @@ use baml_types::ir_type::TypeNonStreaming;
 use internal_baml_core::ir::ir_hasher::IRSignature;
 
 use crate::builder::return_shape::{
-    NestedTaggedUnionShape, ReturnShape, TaggedUnionShape, UntaggedUnionShape,
-    analyze_named_union_shape, analyze_return_shape,
+    NestedTaggedUnionShape, ReturnShape, SendEnumScalarHint, TaggedUnionShape, UntaggedUnionShape,
+    analyze_named_union_shape, analyze_return_shape, collect_send_enum_scalar_hints,
 };
 
 pub(crate) fn default_selection_hint() -> &'static str {
@@ -37,7 +37,8 @@ pub(crate) fn render_step_executor_selection_hint_for_named_union(
     legal_type_names: &[String],
     ir: &IRSignature,
 ) -> String {
-    render_step_executor_selection_hint(&analyze_named_union_shape(legal_type_names, ir))
+    let shape = analyze_named_union_shape(legal_type_names, ir);
+    render_step_executor_selection_hint(&shape, ir)
 }
 
 pub(crate) fn render_selection_hint(shape: &ReturnShape) -> String {
@@ -56,14 +57,14 @@ pub(crate) fn render_selection_hint(shape: &ReturnShape) -> String {
     }
 }
 
-fn render_step_executor_selection_hint(shape: &ReturnShape) -> String {
+fn render_step_executor_selection_hint(shape: &ReturnShape, ir: &IRSignature) -> String {
     match shape {
         ReturnShape::Scalar | ReturnShape::SingleObject(_) => {
             "Do not add text before or after the JSON object.\n".to_string()
         }
         ReturnShape::TaggedUnion(tagged) => format!(
             "{}Do not add text before or after the JSON object.\n",
-            render_compact_tagged_union_hint(tagged)
+            render_compact_tagged_union_hint(tagged, ir)
         ),
         ReturnShape::UntaggedUnion(union) => format!(
             "{}Do not add text before or after the JSON object.\n",
@@ -106,7 +107,7 @@ fn render_tagged_union_hint(tagged: &TaggedUnionShape) -> String {
     out
 }
 
-fn render_compact_tagged_union_hint(tagged: &TaggedUnionShape) -> String {
+fn render_compact_tagged_union_hint(tagged: &TaggedUnionShape, ir: &IRSignature) -> String {
     let mut values: Vec<String> = tagged
         .variants
         .iter()
@@ -119,24 +120,20 @@ fn render_compact_tagged_union_hint(tagged: &TaggedUnionShape) -> String {
         tagged.discriminator,
         values.join(" | ")
     );
-    // Step-executor hops use `op`-discriminated session rows. If the model nests an object
-    // where a string enum belongs (e.g. `operation`), jsonish stringifies it and substring enum
-    // matching can tie across variants ("Too many matches for MathOperation").
     if tagged.discriminator == "op" {
-        out.push_str(
-            "Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.\n",
-        );
-        let has_tool_send = tagged
-            .variants
-            .iter()
-            .any(|v| v.type_name.ends_with("SendStep"));
-        if has_tool_send {
-            out.push_str(
-                "Calculator Send: set input.expression.operation to exactly one JSON string token: \"+\", \"-\", \"*\", \"/\", or Add|Subtract|Multiply|Divide — never an object or sentence.\n",
-            );
+        for hint in collect_send_enum_scalar_hints(&tagged.variants, ir) {
+            push_send_enum_scalar_hint_line(&mut out, &hint);
         }
     }
     out
+}
+
+fn push_send_enum_scalar_hint_line(out: &mut String, hint: &SendEnumScalarHint) {
+    let values = hint.values.join(" | ");
+    out.push_str(&format!(
+        "{} Send: set `{}` to exactly one JSON string token: {values} — never an object or sentence.\n",
+        hint.send_step_type, hint.json_path
+    ));
 }
 
 fn render_untagged_union_hint(union: &UntaggedUnionShape) -> String {
@@ -287,10 +284,11 @@ mod tests {
         assert!(!contract.contains("Do not add text before or after the JSON object."));
     }
 
-    #[test]
-    fn compact_tagged_union_hint_is_discriminator_only() {
-        let hint =
-            render_step_executor_selection_hint(&ReturnShape::TaggedUnion(TaggedUnionShape {
+    #[tokio::test]
+    async fn compact_tagged_union_hint_is_discriminator_only() {
+        let ir = crate::builder::return_shape::build_minimal_test_ir().await;
+        let hint = render_step_executor_selection_hint(
+            &ReturnShape::TaggedUnion(TaggedUnionShape {
                 discriminator: "kind".to_string(),
                 variants: vec![
                     TaggedVariantShape {
@@ -302,31 +300,54 @@ mod tests {
                         literal_value: "clarify".to_string(),
                     },
                 ],
-            }));
+            }),
+            &ir,
+        );
         assert!(hint.contains("Use `kind` as the discriminator: \"clarify\" | \"ready\"."));
         assert!(!hint.contains("Select the object shape"));
         assert!(!hint.contains("Return exactly one JSON object."));
     }
 
-    #[test]
-    fn compact_op_discriminator_hint_warns_scalar_enum_for_send_steps() {
-        let hint =
-            render_step_executor_selection_hint(&ReturnShape::TaggedUnion(TaggedUnionShape {
+    #[tokio::test]
+    async fn compact_op_discriminator_hint_derives_send_enum_from_ir() {
+        let ir = crate::builder::return_shape::build_calculator_test_ir().await;
+        let hint = render_step_executor_selection_hint_for_named_union(
+            &[
+                "SupportCalculateSendStep".to_string(),
+                "SupportCalculateFinishStep".to_string(),
+            ],
+            &ir,
+        );
+        assert!(hint.contains("Use `op` as the discriminator:"));
+        assert!(hint.contains("SupportCalculateSendStep Send:"));
+        assert!(hint.contains("input.expression.operation"));
+        assert!(hint.contains("MathOperation") || hint.contains("\"Add\""));
+        assert!(!hint.contains("Scalar leaves:"));
+        assert!(!hint.contains("Calculator Send:"));
+    }
+
+    #[tokio::test]
+    async fn compact_op_discriminator_hint_omits_send_enum_when_ir_has_none() {
+        let ir = crate::builder::return_shape::build_minimal_test_ir().await;
+        let hint = render_step_executor_selection_hint(
+            &ReturnShape::TaggedUnion(TaggedUnionShape {
                 discriminator: "op".to_string(),
                 variants: vec![
                     TaggedVariantShape {
-                        type_name: "SupportCalculateSendStep".to_string(),
+                        type_name: "SupportClickupSendStep".to_string(),
                         literal_value: "Send".to_string(),
                     },
                     TaggedVariantShape {
-                        type_name: "SupportCalculateFinishStep".to_string(),
+                        type_name: "SupportClickupFinishStep".to_string(),
                         literal_value: "Finish".to_string(),
                     },
                 ],
-            }));
+            }),
+            &ir,
+        );
         assert!(hint.contains("Use `op` as the discriminator:"));
-        assert!(hint.contains("Scalar leaves:"));
-        assert!(hint.contains("Calculator Send:"));
-        assert!(hint.contains("input.expression.operation"));
+        assert!(!hint.contains("Scalar leaves:"));
+        assert!(!hint.contains("Calculator"));
+        assert!(!hint.contains("expression.operation"));
     }
 }

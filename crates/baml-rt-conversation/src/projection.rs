@@ -139,6 +139,7 @@ mod tests {
                 text: "hi".into(),
                 citations: vec![c],
             },
+            user_speaker_kind: None,
         };
         let p = provenance_item_to_projection_item(item).expect("proj");
         match p.content {

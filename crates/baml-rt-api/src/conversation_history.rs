@@ -348,6 +348,9 @@ pub struct ConversationHistoryItemDto {
     pub activity_anchor: String,
     pub role: String,
     pub content: ConversationHistoryContentDto,
+    /// Present only for `role == "user"` transcript rows (`human` | `relay` | `ingress`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_speaker_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -500,11 +503,13 @@ impl From<ConversationItemContent> for ConversationHistoryContentDto {
 
 impl From<ProvenanceConversationContextItem> for ConversationHistoryItemDto {
     fn from(value: ProvenanceConversationContextItem) -> Self {
+        let user_speaker_kind = value.user_speaker_kind.map(|k| k.as_wire_str().to_string());
         Self {
             timestamp_ms: value.timestamp_ms,
             activity_anchor: value.activity_anchor.as_str().to_string(),
             role: value.role,
             content: value.content.into(),
+            user_speaker_kind,
         }
     }
 }

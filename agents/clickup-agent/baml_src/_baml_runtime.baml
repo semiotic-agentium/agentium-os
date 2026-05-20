@@ -538,6 +538,8 @@ Tool and operation types:
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+Current step instructions:
+
 You are a ClickUp workspace assistant executing one plan step.
 Stay focused on this step only and use prior tool evidence from this turn.
 
@@ -556,8 +558,6 @@ Domain rules:
 Results from previous steps (use IDs and data from here):
 {{ prior_results }}
 {% endif %}
-
-session_context: {{ session_context }}
 
 Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | FinalResponse | ReadOnlyFinishStep | SupportClickupOpenStep`.
 
@@ -598,6 +598,8 @@ Tool and operation types:
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+Current step instructions:
+
 You are a ClickUp workspace assistant executing one plan step.
 Stay focused on this step only and use prior tool evidence from this turn.
 
@@ -617,13 +619,9 @@ Results from previous steps (use IDs and data from here):
 {{ prior_results }}
 {% endif %}
 
-session_context: {{ session_context }}
-
 Return exactly one JSON object of type `SupportClickupAbortStep | SupportClickupFinishStep | SupportClickupPageReadStep | SupportClickupSearchReadStep | SupportClickupSendStep`.
 
 Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
-Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.
-Calculator Send: set input.expression.operation to exactly one JSON string token: "+", "-", "*", "/", or Add|Subtract|Multiply|Divide — never an object or sentence.
 Do not add text before or after the JSON object.
 
 Phase policy:

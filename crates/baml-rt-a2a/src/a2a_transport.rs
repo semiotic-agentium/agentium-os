@@ -389,7 +389,9 @@ impl ProvenanceWriter for SurrealRuntimeStore {
 struct ProjectingConversationContextProvider {
     source: Arc<dyn ConversationContextSource>,
     tool_registry: Arc<ToolRegistry>,
-    /// Archive tables for re-deriving cat-n Read output in history.
+    /// Durable provenance store — authoritative ref registry; in-process tables are cache only.
+    provenance_store: Option<Arc<baml_rt_provenance::SurrealProvenanceStore>>,
+    /// In-process cache of hydrated ref tables (invalidated after provenance writes).
     archive_ref_tables: Option<Arc<baml_rt_tools::archive_refs::ContextRefTables>>,
 }
 
@@ -397,11 +399,13 @@ impl ProjectingConversationContextProvider {
     fn new(
         source: Arc<dyn ConversationContextSource>,
         tool_registry: Arc<ToolRegistry>,
+        provenance_store: Option<Arc<baml_rt_provenance::SurrealProvenanceStore>>,
         archive_ref_tables: Option<Arc<baml_rt_tools::archive_refs::ContextRefTables>>,
     ) -> Self {
         Self {
             source,
             tool_registry,
+            provenance_store,
             archive_ref_tables,
         }
     }
@@ -412,12 +416,14 @@ impl ProjectingConversationContextProvider {
         item_limit: Option<usize>,
     ) -> Result<Option<Value>> {
         let context_id = scope.context_id();
+        let task_id = scope.task_id_opt();
         let items = self
             .source
-            .conversation_context(context_id, item_limit)
+            .conversation_context_with_task(context_id, item_limit, task_id)
             .await?;
         tracing::debug!(
             context_id = %context_id,
+            task_id = ?task_id.map(|t| t.as_str()),
             item_count = items.len(),
             item_limit = ?item_limit,
             "project_conversation_to_json: context source returned items"
@@ -434,17 +440,34 @@ impl ProjectingConversationContextProvider {
             return Ok(None);
         }
 
-        // Build an archive reader closure if tables are available.
-        // Closure re-derives cat-n output from the archive deterministically.
         let context_id_str = context_id.as_str().to_string();
-        let tables = self.archive_ref_tables.clone();
-        let reader: Option<BoxedArchiveReader> = tables.map(|t| {
+
+        let ref_table_arc = if let Some(store) = self.provenance_store.as_ref() {
+            let prepared = baml_rt_provenance::prepare_ref_table_for_projection(
+                store,
+                context_id,
+                &projection_items,
+                self.tool_registry.as_ref(),
+            )
+            .await
+            .map_err(|e| baml_rt_core::BamlRtError::ProvenanceContextRead {
+                source: Box::new(e),
+            })?;
+            if let Some(tables) = self.archive_ref_tables.as_ref() {
+                tables.insert(context_id_str.clone(), Arc::clone(&prepared));
+            }
+            prepared
+        } else if let Some(tables) = self.archive_ref_tables.as_deref() {
+            baml_rt_tools::archive_refs::get_or_create_ref_table(tables, &context_id_str)
+        } else {
+            std::sync::Arc::new(baml_rt_tools::archive_refs::RefTable::new())
+        };
+
+        let reader: Option<BoxedArchiveReader> = self.archive_ref_tables.clone().map(|t| {
             let ctx = context_id_str.clone();
             let boxed: BoxedArchiveReader =
                 Box::new(move |archive_ref_str, grep_str, offset, limit| {
                     let ref_table = baml_rt_tools::archive_refs::get_ref_table(&t, &ctx)?;
-                    // CLI invocation without $ — role attribution is handled by the
-                    // separate history entry that carries this as content.
                     baml_rt_tools::archive_read::format_session_read_from_vtable(
                         &ref_table,
                         archive_ref_str,
@@ -455,14 +478,6 @@ impl ProjectingConversationContextProvider {
                 });
             boxed
         });
-
-        // Get or create the ref table for this context so #N refs can be allocated
-        // for messages and tool-call descriptions during projection.
-        let ref_table_arc = self
-            .archive_ref_tables
-            .as_deref()
-            .map(|t| baml_rt_tools::archive_refs::get_or_create_ref_table(t, &context_id_str))
-            .unwrap_or_else(|| std::sync::Arc::new(baml_rt_tools::archive_refs::RefTable::new()));
 
         Ok(Some(project_prompt_context(
             projection_items,
@@ -562,7 +577,8 @@ async fn wire_provenance_subsystems(
         )
     };
 
-    if let Some(store) = archive_store {
+    if let Some(store) = archive_store.clone() {
+        store.attach_ref_table_cache(archive_ref_tables.clone());
         let mut guard = runtime.write().await;
         guard.set_archive_ref_store(Some(store));
     }
@@ -575,6 +591,9 @@ async fn wire_provenance_subsystems(
         let registry_for_citations = tool_registry.clone();
         let registry_for_describer = tool_registry.clone();
         subscriber.set_tool_registry(registry_for_citations);
+        if let Some(store) = archive_store.clone() {
+            subscriber.set_provenance_store(store);
+        }
         subscriber.set_archive_ref_tables(archive_ref_tables.clone());
         subscriber.set_action_describer(Arc::new(
             move |tool_name: Option<&str>, content: &serde_json::Value| {
@@ -609,6 +628,7 @@ async fn wire_provenance_subsystems(
             ProjectingConversationContextProvider::new(
                 conversation_source,
                 tool_registry,
+                archive_store.clone(),
                 Some(archive_ref_tables),
             ),
         ));

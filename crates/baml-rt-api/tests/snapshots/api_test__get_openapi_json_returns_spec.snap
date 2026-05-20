@@ -2455,6 +2455,13 @@ expression: snapshot
               "type": "integer",
               "format": "int64",
               "minimum": 0
+            },
+            "userSpeakerKind": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Present only for `role == \"user\"` transcript rows (`human` | `relay` | `ingress`)."
             }
           }
         },
@@ -3235,6 +3242,12 @@ expression: snapshot
             "failures"
           ],
           "properties": {
+            "context_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "failures": {
               "type": "array",
               "items": {
@@ -3288,7 +3301,7 @@ expression: snapshot
             "matched_subscription": {
               "type": "boolean"
             },
-            "preview_request": {},
+            "preview_produced_event": {},
             "valid": {
               "type": "boolean"
             },

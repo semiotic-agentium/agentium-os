@@ -1,15 +1,15 @@
 <script setup lang="ts">
 import MessageBubble from "../MessageBubble.vue";
 import type { ChatMessage } from "../../types/a2a";
-import type { AgentDispatchAck, EventDispatchPhase } from "../../types/events";
+import type { EventDispatchPhase, EventPublishResponse } from "../../types/events";
 
 defineProps<{
   dispatchPhase: EventDispatchPhase;
   hydrateState: string;
   messages: ChatMessage[];
-  useDispatchSummary: boolean;
-  lastAck: AgentDispatchAck | null;
-  dispatchError: string | null;
+  usePublishSummary: boolean;
+  lastPublishOutcome: EventPublishResponse | null;
+  publishError: string | null;
   contextId: string | null;
   taskId: string | null;
   validationValid: boolean;
@@ -27,11 +27,11 @@ const emit = defineEmits<{
 const phaseLabels: Record<EventDispatchPhase, string> = {
   idle: "",
   validating: "Validating draft…",
-  dispatching: "Dispatching to agent…",
+  publishing: "Publishing to subscribers…",
   recording: "Fetching provenance transcript…",
   live: "Provenance transcript",
-  empty: "No A2A transcript — dispatch summary shown",
-  failed: "Dispatch failed",
+  empty: "No agent transcript yet — publish summary shown",
+  failed: "Publish failed",
 };
 </script>
 
@@ -62,10 +62,10 @@ const phaseLabels: Record<EventDispatchPhase, string> = {
     <p v-if="phaseLabels[dispatchPhase]" class="phase-label">{{ phaseLabels[dispatchPhase] }}</p>
 
     <div v-if="validationStale" class="banner banner--warn">
-      Draft changed — re-validate before dispatch.
+      Draft changed — re-validate before publish.
     </div>
     <div v-else-if="validationValid && dispatchPhase === 'idle'" class="banner banner--ok">
-      Validation current — ready to dispatch.
+      Validation current — ready to publish.
     </div>
 
     <div v-if="showScopeCard && contextId" class="scope-card">
@@ -81,28 +81,38 @@ const phaseLabels: Record<EventDispatchPhase, string> = {
       </div>
     </div>
 
-    <div v-if="lastAck || dispatchError" class="outcome-card">
-      <h4>Run outcome</h4>
-      <p v-if="dispatchError" class="detail-error">{{ dispatchError }}</p>
-      <template v-else-if="lastAck">
+    <div v-if="lastPublishOutcome || publishError" class="outcome-card">
+      <h4>Publish outcome</h4>
+      <p v-if="publishError" class="detail-error">{{ publishError }}</p>
+      <template v-else-if="lastPublishOutcome">
         <p>
-          <strong>{{ lastAck.accepted ? "Accepted" : "Rejected" }}</strong>
-          <span v-if="lastAck.detail"> — {{ lastAck.detail }}</span>
+          <strong>
+            {{ lastPublishOutcome.subscribers_accepted }}/{{
+              lastPublishOutcome.subscribers_matched
+            }}
+            subscriber(s) accepted
+          </strong>
         </p>
+        <ul v-if="lastPublishOutcome.failures.length > 0" class="failure-list">
+          <li v-for="(f, i) in lastPublishOutcome.failures" :key="i">
+            {{ f.agent_package }}/{{ f.agent_instance_id }}: {{ f.detail }}
+          </li>
+        </ul>
         <p
-          v-if="lastAck.accepted && hydrateState === 'empty'"
+          v-if="
+            lastPublishOutcome.subscribers_accepted > 0 && hydrateState === 'empty'
+          "
           class="field-hint outcome-hint"
         >
-          Host dispatch succeeded. This agent may not write chat-shaped provenance for noop or
-          routing-only events — use a sample with work items, or open Live provenance for graph
-          activity.
+          Subscribers accepted the event. Agent chat lines appear when the agent records A2A
+          messages; host ingress lines should appear above once provenance catches up.
         </p>
       </template>
     </div>
 
     <div class="transcript-section">
-      <p v-if="useDispatchSummary" class="field-hint operator-dispatch-trace-label">
-        Dispatch summary — full transcript may appear in provenance when the agent records messages.
+      <p v-if="usePublishSummary" class="field-hint operator-publish-trace-label">
+        Publish summary — host ingress and agent transcript load from provenance history.
       </p>
       <p v-if="hydrateState === 'loading'">Loading provenance transcript…</p>
       <p v-else-if="hydrateState === 'waiting'">Waiting for provenance-backed transcript…</p>
@@ -112,11 +122,11 @@ const phaseLabels: Record<EventDispatchPhase, string> = {
         :message="msg"
       />
       <p
-        v-if="hydrateState === 'idle' && messages.length === 0 && !useDispatchSummary"
+        v-if="hydrateState === 'idle' && messages.length === 0 && !usePublishSummary"
         class="field-hint"
       >
-        Validate to preview scope, dispatch to run, or pick a prior context from the
-        toolbar Context dropdown.
+        Validate to preview scope, publish to run, or pick a prior context from the toolbar
+        Context dropdown.
       </p>
     </div>
   </div>
@@ -219,7 +229,7 @@ const phaseLabels: Record<EventDispatchPhase, string> = {
   padding-right: 0.25rem;
 }
 
-.operator-dispatch-trace-label {
+.operator-publish-trace-label {
   font-style: italic;
   margin: 0 0 0.35rem;
 }
@@ -227,5 +237,15 @@ const phaseLabels: Record<EventDispatchPhase, string> = {
 .detail-error {
   color: var(--color-error);
   margin: 0;
+}
+
+.failure-list {
+  margin: 0.35rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.8125rem;
+}
+
+.outcome-hint {
+  margin-top: 0.35rem;
 }
 </style>

@@ -1,58 +1,42 @@
-// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
+//! Runs the poll and publish loop for task-daemon.
 
-//! Runs the poll, interpret, and deliver loop for task-daemon.
-
-use std::{collections::BTreeMap, time::Duration};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use baml_rt_core::clock_events;
+use baml_rt_core::ProducedEvent;
 use baml_rt_observability::metrics;
 use thiserror::Error;
 
 use crate::{
-    contract::{InterpretationRequestEvent, TaskDispatch},
-    extract::TaskExtractor,
-    model::{
-        InvestigationTask, ProjectContext, ProjectInterpretation, SlackMessage, TaskBatch,
-        TaskSourceKind,
-    },
+    model::{InvestigationTask, ProjectContext, SlackMessage, TaskSourceKind},
+    poll_lineage::mint_poll_lineage,
     sink::TaskSink,
+    source_records::poll_to_produced_event,
     state::StateStore,
 };
 
-const ERROR_ESCALATION_THRESHOLD: u32 = 3;
-
-#[derive(Debug, Clone)]
 /// Work collected from one source during one polling cycle.
+#[derive(Debug, Clone)]
 pub struct SourcePoll {
-    /// Stable key used to resume this source safely.
     pub source_key: String,
-    /// Human-readable source label (for example `#agentium-eng`).
     pub source_label: String,
-    /// Number of source items scanned during this poll cycle.
     pub source_items_scanned: usize,
-    /// Stable per-poll cursor/fingerprint used to root provenance and event ids.
     source_cursor: Option<String>,
     payload: SourcePollPayload,
 }
 
 #[derive(Debug, Clone)]
 enum SourcePollPayload {
-    // Slack messages that still need interpretation.
     Slack {
         messages: Vec<SlackMessage>,
     },
-    // ClickUp lifecycle events already represented as investigation tasks.
     Clickup {
         inferred_tasks: Vec<InvestigationTask>,
     },
 }
 
 impl SourcePoll {
-    /// Creates a source poll from Slack messages.
     pub fn slack(
         source_key: String,
         source_label: String,
@@ -68,7 +52,6 @@ impl SourcePoll {
         }
     }
 
-    /// Creates a source poll from ClickUp-derived tasks.
     pub fn clickup(
         source_key: String,
         source_label: String,
@@ -84,12 +67,10 @@ impl SourcePoll {
         }
     }
 
-    /// Returns the source kind for this poll result.
     pub fn source_kind(&self) -> TaskSourceKind {
         self.payload.source_kind()
     }
 
-    /// Returns Slack messages when the source is Slack; otherwise empty.
     pub fn messages(&self) -> &[SlackMessage] {
         match &self.payload {
             SourcePollPayload::Slack { messages } => messages,
@@ -97,7 +78,6 @@ impl SourcePoll {
         }
     }
 
-    /// Returns pre-derived tasks for sources that already provide them.
     pub fn inferred_tasks(&self) -> &[InvestigationTask] {
         match &self.payload {
             SourcePollPayload::Slack { .. } => &[],
@@ -107,6 +87,13 @@ impl SourcePoll {
 
     pub(crate) fn source_cursor(&self) -> Option<&str> {
         self.source_cursor.as_deref()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match &self.payload {
+            SourcePollPayload::Slack { messages } => messages.is_empty(),
+            SourcePollPayload::Clickup { inferred_tasks } => inferred_tasks.is_empty(),
+        }
     }
 
     fn into_parts(self) -> (String, String, usize, SourcePollPayload) {
@@ -131,9 +118,6 @@ impl SourcePollPayload {
 fn slack_source_cursor(messages: &[SlackMessage]) -> Option<String> {
     let first = messages.first()?;
     let last = messages.last()?;
-    // Keep both endpoints even when they are equal so a one-message poll is
-    // distinguishable from a wider window that happens to share the same first
-    // timestamp.
     Some(format!("slack:{}:{}:{}", first.ts, last.ts, messages.len()))
 }
 
@@ -141,16 +125,7 @@ fn clickup_source_cursor(inferred_tasks: &[InvestigationTask]) -> Option<String>
     if inferred_tasks.is_empty() {
         return None;
     }
-
     const CURSOR_KEY_SEPARATOR: &str = "\u{1f}";
-
-    // Sort stable task keys so the same external ClickUp change mints the same
-    // provenance root across retries. If a task key changes (for example a
-    // lifecycle revision suffix changes), that is treated as a new event. Use
-    // an unambiguous separator so unexpected punctuation inside a key does not
-    // collapse distinct task sets onto the same cursor. Deduplicate after
-    // sorting so repeated task keys in one poll window do not bloat the
-    // cursor or perturb retries.
     let mut task_keys = inferred_tasks
         .iter()
         .map(|task| task.key.as_str())
@@ -161,30 +136,23 @@ fn clickup_source_cursor(inferred_tasks: &[InvestigationTask]) -> Option<String>
 }
 
 #[async_trait]
-/// A work source that task-daemon can poll.
 pub trait TaskSource: Send {
-    /// Stable state key for this source instance.
     fn source_key(&self) -> String;
-    /// Source key that will be polled on the next [`Self::poll`] call.
     fn next_poll_source_key(&self) -> String {
         self.source_key()
     }
-    /// Number of polls required to cover one full source cycle.
     fn polls_per_cycle(&self) -> usize {
         1
     }
-    /// Poll new data using (and mutating) persisted daemon state.
     async fn poll(&mut self, state: &mut crate::state::TaskDaemonState) -> Result<SourcePoll>;
 }
 
-/// Round-robin multiplexer for polling multiple sources with one daemon loop.
 pub struct RoundRobinTaskSource {
     sources: Vec<Box<dyn TaskSource>>,
     next_index: usize,
 }
 
 #[derive(Debug, Error)]
-/// Typed round-robin source-construction failures.
 pub enum RoundRobinTaskSourceError {
     #[error("round-robin source requires at least one source")]
     EmptySources,
@@ -226,10 +194,9 @@ impl TaskSource for RoundRobinTaskSource {
     }
 }
 
-/// Coordinates source polling, interpretation, sink delivery, and state persistence.
+/// Coordinates source polling, source-record publish, sink delivery, and state persistence.
 pub struct TaskDaemon {
     source: Box<dyn TaskSource>,
-    extractor: TaskExtractor,
     sinks: Vec<Box<dyn TaskSink>>,
     state_store: StateStore,
     project_context: ProjectContext,
@@ -237,17 +204,14 @@ pub struct TaskDaemon {
 }
 
 impl TaskDaemon {
-    /// Builds a daemon from one source, one extractor, and one or more sinks.
     pub fn new(
         source: Box<dyn TaskSource>,
-        extractor: TaskExtractor,
         sinks: Vec<Box<dyn TaskSink>>,
         state_store: StateStore,
         project_context: ProjectContext,
     ) -> Self {
         Self {
             source,
-            extractor,
             sinks,
             state_store,
             project_context,
@@ -255,27 +219,20 @@ impl TaskDaemon {
         }
     }
 
-    /// When enabled, batches with no derived tasks are still delivered to sinks.
     pub fn set_emit_empty_batches(&mut self, emit_empty_batches: bool) {
         self.emit_empty_batches = emit_empty_batches;
     }
 
-    /// Returns how many source polls should be executed to cover one source cycle.
     pub fn polls_per_cycle(&self) -> usize {
         self.source.polls_per_cycle().max(1)
     }
 
-    /// Runs one poll/extract/deliver cycle.
-    ///
-    /// Delivery is best-effort at-least-once for successfully interpreted polls:
-    /// source cursor/task state is persisted only after sink delivery succeeds.
-    /// If sink delivery fails, source state is not committed so the poll window can be retried.
-    pub async fn run_once(&mut self) -> Result<TaskDispatch> {
+    pub async fn run_once(&mut self) -> Result<ProducedEvent> {
         let cycle_start = std::time::Instant::now();
         let result = self.run_once_impl().await;
         match &result {
-            Ok(d) => metrics::record_task_daemon_run_once(
-                d.batch.source.as_str(),
+            Ok(event) => metrics::record_task_daemon_run_once(
+                event.source_kind.as_str(),
                 "success",
                 cycle_start.elapsed(),
             ),
@@ -286,7 +243,7 @@ impl TaskDaemon {
         result
     }
 
-    async fn run_once_impl(&mut self) -> Result<TaskDispatch> {
+    async fn run_once_impl(&mut self) -> Result<ProducedEvent> {
         let mut state = self
             .state_store
             .load()
@@ -297,588 +254,112 @@ impl TaskDaemon {
             .poll(&mut state)
             .await
             .context("polling source")?;
-        let request_event =
-            InterpretationRequestEvent::from_source_poll(&poll, self.project_context.clone(), None);
+
+        let lineage = mint_poll_lineage(&poll)
+            .ok_or_else(|| anyhow::anyhow!("poll missing source_cursor; cannot mint lineage"))?;
+
         let (source_key, source_label, source_items_scanned, payload) = poll.into_parts();
         let source_kind = payload.source_kind();
 
-        let mut batch = match payload {
-            SourcePollPayload::Slack { messages } => self
-                .extractor
-                .extract_slack_runtime(&source_label, &self.project_context, &messages)
-                .await
-                .context("extracting Slack project interpretation")?,
-            SourcePollPayload::Clickup { inferred_tasks } => TaskBatch {
-                source: TaskSourceKind::Clickup,
-                source_label,
-                generated_at_unix: baml_rt_core::now_unix_secs(clock_events::TASK_DAEMON_BATCH),
-                messages_scanned: source_items_scanned,
-                project: self.project_context.clone(),
-                interpretation: clickup_interpretation_for_batch(
-                    source_items_scanned,
-                    inferred_tasks.len(),
-                ),
-                derived_tasks: inferred_tasks,
-            },
-        };
-        if matches!(source_kind, TaskSourceKind::Slack) {
-            batch.messages_scanned = source_items_scanned;
-        }
-
-        {
-            let source_state = state.source_state_mut(&source_key);
-            batch
-                .derived_tasks
-                .retain(|task| !source_state.has_seen_task(&task.key));
-        }
-
-        let dispatch = TaskDispatch::from_batch(request_event, batch);
-
-        if !dispatch.batch.derived_tasks.is_empty() || self.emit_empty_batches {
-            let mut delivered_to_compatible_sink = false;
-            for sink in &mut self.sinks {
-                if !sink.accepts_source(dispatch.batch.source) {
-                    tracing::debug!(
-                        source = ?dispatch.batch.source,
-                        source_label = %dispatch.batch.source_label,
-                        sink = sink.name(),
-                        "skipping incompatible sink for source batch"
+        let poll_for_event = match payload {
+            SourcePollPayload::Slack { messages } => {
+                if messages.is_empty() && !self.emit_empty_batches {
+                    self.state_store
+                        .save(&state)
+                        .await
+                        .context("saving daemon state")?;
+                    return poll_to_produced_event(
+                        &SourcePoll::slack(
+                            source_key.clone(),
+                            source_label.clone(),
+                            messages,
+                            source_items_scanned,
+                        ),
+                        &self.project_context,
+                        &lineage,
                     );
+                }
+                SourcePoll::slack(
+                    source_key.clone(),
+                    source_label,
+                    messages,
+                    source_items_scanned,
+                )
+            }
+            SourcePollPayload::Clickup { mut inferred_tasks } => {
+                {
+                    let source_state = state.source_state_mut(&source_key);
+                    inferred_tasks.retain(|task| !source_state.has_seen_task(&task.key));
+                }
+                if inferred_tasks.is_empty() && !self.emit_empty_batches {
+                    self.state_store
+                        .save(&state)
+                        .await
+                        .context("saving daemon state")?;
+                    return poll_to_produced_event(
+                        &SourcePoll::clickup(
+                            source_key.clone(),
+                            source_label.clone(),
+                            inferred_tasks,
+                            source_items_scanned,
+                        ),
+                        &self.project_context,
+                        &lineage,
+                    );
+                }
+                SourcePoll::clickup(
+                    source_key.clone(),
+                    source_label,
+                    inferred_tasks,
+                    source_items_scanned,
+                )
+            }
+        };
+
+        let event = poll_to_produced_event(&poll_for_event, &self.project_context, &lineage)
+            .context("building produced event")?;
+
+        let should_deliver = !poll_for_event.is_empty() || self.emit_empty_batches;
+        if should_deliver {
+            let mut delivered = false;
+            for sink in &mut self.sinks {
+                if !sink.accepts_source(source_kind) {
                     continue;
                 }
-                delivered_to_compatible_sink = true;
-                let sink_name = sink.name();
-                sink.deliver(&dispatch)
+                delivered = true;
+                sink.deliver(&event)
                     .await
-                    .with_context(|| format!("delivering batch to sink {sink_name}"))?;
+                    .with_context(|| format!("delivering to sink {}", sink.name()))?;
             }
-            if !delivered_to_compatible_sink && !dispatch.batch.derived_tasks.is_empty() {
+            if !delivered && !poll_for_event.is_empty() {
                 bail!(
-                    "no compatible sinks configured for source {:?}; cannot deliver {} derived task(s)",
-                    dispatch.batch.source,
-                    dispatch.batch.derived_tasks.len()
+                    "no compatible sinks configured for source {:?}",
+                    source_kind
                 );
             }
-        }
-
-        let seen_at = baml_rt_core::now_unix_secs(clock_events::TASK_DAEMON_SEEN_TASK);
-        {
-            let source_state = state.source_state_mut(&source_key);
-            for task in &dispatch.batch.derived_tasks {
-                source_state.mark_task_seen(task.key.clone(), seen_at);
+            if matches!(poll_for_event.source_kind(), TaskSourceKind::Clickup) {
+                let source_state = state.source_state_mut(&source_key);
+                let seen_at =
+                    baml_rt_core::now_unix_secs(baml_rt_core::clock_events::TASK_DAEMON_SEEN_TASK);
+                for task in poll_for_event.inferred_tasks() {
+                    source_state.mark_task_seen(task.key.clone(), seen_at);
+                }
             }
-            source_state.prune_seen_tasks(self.state_store.max_seen_tasks_per_source);
         }
 
         self.state_store
             .save(&state)
             .await
             .context("saving daemon state")?;
-        Ok(dispatch)
+        Ok(event)
     }
 
-    /// Runs [`Self::run_once`] forever with a fixed delay between iterations.
-    pub async fn run_loop(&mut self, poll_interval: Duration) -> Result<()> {
-        let mut consecutive_failures_by_source: BTreeMap<String, u32> = BTreeMap::new();
-        let polls_per_interval = self.polls_per_cycle();
-
+    pub async fn run_loop(&mut self, interval: Duration) -> Result<()> {
         loop {
-            for _ in 0..polls_per_interval {
-                let source_key = self.source.next_poll_source_key();
-                match self.run_once().await {
-                    Ok(dispatch) => {
-                        let consecutive_failures = consecutive_failures_by_source
-                            .remove(&source_key)
-                            .unwrap_or(0);
-                        if consecutive_failures > 0 {
-                            tracing::info!(
-                                consecutive_failures,
-                                source_key = %source_key,
-                                "task-daemon poll recovered after consecutive failures"
-                            );
-                        }
-                        tracing::info!(
-                            source_key = %source_key,
-                            source = %dispatch.batch.source_label,
-                            messages_scanned = dispatch.batch.messages_scanned,
-                            derived_tasks = dispatch.batch.derived_tasks.len(),
-                            "task-daemon poll completed"
-                        );
-                    }
-                    Err(err) => {
-                        let failures_for_source = consecutive_failures_by_source
-                            .entry(source_key.clone())
-                            .or_insert(0);
-                        let next_failures = failures_for_source.saturating_add(1);
-                        *failures_for_source = next_failures;
-                        if next_failures >= ERROR_ESCALATION_THRESHOLD {
-                            tracing::error!(
-                                error = %err,
-                                source_key = %source_key,
-                                consecutive_failures = next_failures,
-                                "task-daemon poll failed repeatedly"
-                            );
-                        } else {
-                            tracing::warn!(
-                                error = %err,
-                                source_key = %source_key,
-                                consecutive_failures = next_failures,
-                                "task-daemon poll failed"
-                            );
-                        }
-                    }
-                }
+            if let Err(err) = self.run_once().await {
+                tracing::error!(error = %err, "task-daemon cycle failed");
             }
-
-            tokio::time::sleep(poll_interval).await;
+            tokio::time::sleep(interval).await;
         }
-    }
-}
-
-fn clickup_interpretation_for_batch(
-    source_items_scanned: usize,
-    derived_task_count: usize,
-) -> ProjectInterpretation {
-    if derived_task_count == 0 {
-        return ProjectInterpretation {
-            executive_summary: format!(
-                "No new ClickUp task lifecycle events detected in {source_items_scanned} scanned task(s)."
-            ),
-            ..ProjectInterpretation::default()
-        };
-    }
-
-    ProjectInterpretation {
-        executive_summary: format!(
-            "Detected {derived_task_count} ClickUp task event(s) from {source_items_scanned} scanned task(s); preparing agent handoff."
-        ),
-        current_objectives: vec![
-            "Acknowledge newly created ClickUp tasks and trigger execution handoff.".to_string(),
-        ],
-        ..ProjectInterpretation::default()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::{Mutex, OnceLock};
-
-    use anyhow::{Result, anyhow};
-    use async_trait::async_trait;
-    use tempfile::tempdir;
-
-    use super::*;
-    use crate::{extract::ExtractionMode, model::SourceReference};
-
-    const SOURCE_KEY: &str = "slack:test";
-    const CURSOR_TS: &str = "1735689700.000000";
-
-    struct EnvVarGuard {
-        key: &'static str,
-        original: Option<String>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let original = std::env::var(key).ok();
-            // SAFETY: test-only mutation guarded by a process-wide mutex in each test.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, original }
-        }
-
-        fn unset(key: &'static str) -> Self {
-            let original = std::env::var(key).ok();
-            // SAFETY: test-only mutation guarded by a process-wide mutex in each test.
-            unsafe { std::env::remove_var(key) };
-            Self { key, original }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(value) = self.original.as_deref() {
-                // SAFETY: restoring test-only env state under the same mutex guard.
-                unsafe { std::env::set_var(self.key, value) };
-            } else {
-                // SAFETY: restoring test-only env state under the same mutex guard.
-                unsafe { std::env::remove_var(self.key) };
-            }
-        }
-    }
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    #[derive(Default)]
-    struct CursorOnlySource;
-
-    #[async_trait]
-    impl TaskSource for CursorOnlySource {
-        fn source_key(&self) -> String {
-            SOURCE_KEY.to_string()
-        }
-
-        async fn poll(&mut self, state: &mut crate::state::TaskDaemonState) -> Result<SourcePoll> {
-            state.source_state_mut(SOURCE_KEY).last_seen_ts = Some(CURSOR_TS.to_string());
-            Ok(SourcePoll::slack(
-                SOURCE_KEY.to_string(),
-                "#test".to_string(),
-                vec![SlackMessage {
-                    channel_name: "test".to_string(),
-                    channel_id: "C123".to_string(),
-                    ts: CURSOR_TS.to_string(),
-                    thread_ts: None,
-                    user_id: Some("U123".to_string()),
-                    user_name: Some("alice".to_string()),
-                    text: "TODO: update docs".to_string(),
-                    subtype: None,
-                    source: SourceReference {
-                        reference: "slack://channel/C123/p1735689700000000".to_string(),
-                        permalink: None,
-                        channel_id: Some("C123".to_string()),
-                        message_ts: Some(CURSOR_TS.to_string()),
-                        thread_ts: None,
-                    },
-                }],
-                1,
-            ))
-        }
-    }
-
-    #[derive(Clone)]
-    struct FixedKeySource {
-        key: &'static str,
-    }
-
-    #[async_trait]
-    impl TaskSource for FixedKeySource {
-        fn source_key(&self) -> String {
-            self.key.to_string()
-        }
-
-        async fn poll(&mut self, _state: &mut crate::state::TaskDaemonState) -> Result<SourcePoll> {
-            Ok(SourcePoll::slack(
-                self.source_key(),
-                format!("#{}", self.key),
-                Vec::new(),
-                0,
-            ))
-        }
-    }
-
-    #[derive(Default)]
-    struct ClickupStubSource;
-
-    #[async_trait]
-    impl TaskSource for ClickupStubSource {
-        fn source_key(&self) -> String {
-            "clickup:test-list".to_string()
-        }
-
-        async fn poll(&mut self, _state: &mut crate::state::TaskDaemonState) -> Result<SourcePoll> {
-            Ok(SourcePoll::clickup(
-                self.source_key(),
-                "clickup:list:test-list".to_string(),
-                vec![InvestigationTask {
-                    key: "clickup-created:task-1".to_string(),
-                    title: "Execute ClickUp task".to_string(),
-                    description: "handoff".to_string(),
-                    priority: crate::model::TaskConfidence::High,
-                    sources: Vec::new(),
-                }],
-                1,
-            ))
-        }
-    }
-
-    struct FailingSink;
-
-    #[async_trait]
-    impl TaskSink for FailingSink {
-        fn name(&self) -> &'static str {
-            "failing-sink"
-        }
-
-        async fn deliver(&mut self, _dispatch: &TaskDispatch) -> Result<()> {
-            Err(anyhow!("intentional sink failure"))
-        }
-    }
-
-    struct SlackCompatibleSink;
-
-    #[async_trait]
-    impl TaskSink for SlackCompatibleSink {
-        fn name(&self) -> &'static str {
-            "slack-only"
-        }
-
-        fn accepts_source(&self, source: TaskSourceKind) -> bool {
-            matches!(source, TaskSourceKind::Slack)
-        }
-
-        async fn deliver(&mut self, _dispatch: &TaskDispatch) -> Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn round_robin_reports_full_cycle_poll_count() {
-        let source =
-            RoundRobinTaskSource::new(vec![Box::new(CursorOnlySource), Box::new(CursorOnlySource)])
-                .expect("round-robin source");
-        assert_eq!(source.polls_per_cycle(), 2);
-    }
-
-    #[tokio::test]
-    async fn round_robin_next_poll_source_key_tracks_rotation() {
-        let mut source = RoundRobinTaskSource::new(vec![
-            Box::new(FixedKeySource { key: "source-a" }),
-            Box::new(FixedKeySource { key: "source-b" }),
-        ])
-        .expect("round-robin source");
-        assert_eq!(source.next_poll_source_key(), "source-a");
-
-        let mut state = crate::state::TaskDaemonState::default();
-        source.poll(&mut state).await.expect("first poll");
-        assert_eq!(source.next_poll_source_key(), "source-b");
-    }
-
-    #[test]
-    fn source_poll_slack_payload_has_messages_only() {
-        let poll = SourcePoll::slack(
-            "slack:test".to_string(),
-            "#test".to_string(),
-            vec![SlackMessage {
-                channel_name: "agentium-eng".to_string(),
-                channel_id: "C123".to_string(),
-                ts: CURSOR_TS.to_string(),
-                thread_ts: None,
-                user_id: None,
-                user_name: None,
-                text: "message".to_string(),
-                subtype: None,
-                source: SourceReference {
-                    reference: "slack://channel/C123/p1735689700000000".to_string(),
-                    permalink: None,
-                    channel_id: Some("C123".to_string()),
-                    message_ts: Some(CURSOR_TS.to_string()),
-                    thread_ts: None,
-                },
-            }],
-            1,
-        );
-
-        assert_eq!(poll.source_kind(), TaskSourceKind::Slack);
-        assert_eq!(poll.messages().len(), 1);
-        assert!(poll.inferred_tasks().is_empty());
-    }
-
-    #[test]
-    fn source_poll_clickup_payload_has_inferred_tasks_only() {
-        let poll = SourcePoll::clickup(
-            "clickup:L1".to_string(),
-            "clickup:list:L1".to_string(),
-            vec![InvestigationTask {
-                key: "k".to_string(),
-                title: "t".to_string(),
-                description: "d".to_string(),
-                priority: crate::model::TaskConfidence::Medium,
-                sources: Vec::new(),
-            }],
-            1,
-        );
-
-        assert_eq!(poll.source_kind(), TaskSourceKind::Clickup);
-        assert_eq!(poll.inferred_tasks().len(), 1);
-        assert!(poll.messages().is_empty());
-    }
-
-    #[test]
-    fn clickup_source_cursor_uses_unambiguous_separator() {
-        let first_poll = SourcePoll::clickup(
-            "clickup:L1".to_string(),
-            "clickup:list:L1".to_string(),
-            vec![
-                InvestigationTask {
-                    key: "a,b".to_string(),
-                    title: "first".to_string(),
-                    description: "first".to_string(),
-                    priority: crate::model::TaskConfidence::Medium,
-                    sources: Vec::new(),
-                },
-                InvestigationTask {
-                    key: "c".to_string(),
-                    title: "second".to_string(),
-                    description: "second".to_string(),
-                    priority: crate::model::TaskConfidence::Medium,
-                    sources: Vec::new(),
-                },
-            ],
-            2,
-        );
-        let second_poll = SourcePoll::clickup(
-            "clickup:L1".to_string(),
-            "clickup:list:L1".to_string(),
-            vec![
-                InvestigationTask {
-                    key: "a".to_string(),
-                    title: "first".to_string(),
-                    description: "first".to_string(),
-                    priority: crate::model::TaskConfidence::Medium,
-                    sources: Vec::new(),
-                },
-                InvestigationTask {
-                    key: "b,c".to_string(),
-                    title: "second".to_string(),
-                    description: "second".to_string(),
-                    priority: crate::model::TaskConfidence::Medium,
-                    sources: Vec::new(),
-                },
-            ],
-            2,
-        );
-
-        assert_eq!(first_poll.source_cursor(), Some("clickup:a,b\u{1f}c"));
-        assert_eq!(second_poll.source_cursor(), Some("clickup:a\u{1f}b,c"));
-        assert_ne!(first_poll.source_cursor(), second_poll.source_cursor());
-    }
-
-    #[test]
-    fn clickup_source_cursor_deduplicates_repeated_task_keys() {
-        let poll = SourcePoll::clickup(
-            "clickup:L1".to_string(),
-            "clickup:list:L1".to_string(),
-            vec![
-                InvestigationTask {
-                    key: "dup".to_string(),
-                    title: "first".to_string(),
-                    description: "first".to_string(),
-                    priority: crate::model::TaskConfidence::Medium,
-                    sources: Vec::new(),
-                },
-                InvestigationTask {
-                    key: "dup".to_string(),
-                    title: "second".to_string(),
-                    description: "second".to_string(),
-                    priority: crate::model::TaskConfidence::Medium,
-                    sources: Vec::new(),
-                },
-            ],
-            2,
-        );
-
-        assert_eq!(poll.source_cursor(), Some("clickup:dup"));
-    }
-
-    #[tokio::test]
-    async fn does_not_persist_cursor_when_sink_delivery_fails() {
-        let temp = tempdir().expect("create temp directory");
-        let state_path = temp.path().join("task-daemon-state.json");
-        let store_for_daemon = StateStore::new(state_path.clone(), 100);
-
-        let mut daemon = TaskDaemon::new(
-            Box::new(CursorOnlySource),
-            TaskExtractor::with_mode(20, ExtractionMode::Heuristic).expect("extractor"),
-            vec![Box::new(FailingSink)],
-            store_for_daemon,
-            ProjectContext {
-                project_key: "test-project".to_string(),
-                repo_available: false,
-                repo_path: None,
-            },
-        );
-
-        let result = daemon.run_once().await;
-        assert!(result.is_err());
-
-        let persisted_state = StateStore::new(state_path, 100)
-            .load()
-            .await
-            .expect("load persisted state");
-        assert!(
-            persisted_state.source_state(SOURCE_KEY).is_none(),
-            "cursor state must not be persisted when sink delivery fails"
-        );
-    }
-
-    #[tokio::test]
-    #[expect(
-        clippy::await_holding_lock,
-        reason = "env-var mutex intentionally serialises test-only env mutation across the await"
-    )]
-    async fn does_not_persist_cursor_when_extraction_fails() {
-        let _env = env_lock().lock().expect("lock env mutation");
-        let _base = EnvVarGuard::set("TASK_DAEMON_LLM_BASE_URL", "http://127.0.0.1:9");
-        let _fallback_base = EnvVarGuard::unset("TASK_DAEMON_LLM_FALLBACK_BASE_URL");
-        let _fallback_key = EnvVarGuard::unset("TASK_DAEMON_LLM_FALLBACK_API_KEY");
-        let _fallback_model = EnvVarGuard::unset("TASK_DAEMON_LLM_FALLBACK_MODEL");
-
-        let temp = tempdir().expect("create temp directory");
-        let state_path = temp.path().join("task-daemon-state.json");
-        let store_for_daemon = StateStore::new(state_path.clone(), 100);
-
-        let mut daemon = TaskDaemon::new(
-            Box::new(CursorOnlySource),
-            TaskExtractor::with_mode(20, ExtractionMode::Llm).expect("llm extractor"),
-            Vec::new(),
-            store_for_daemon,
-            ProjectContext {
-                project_key: "test-project".to_string(),
-                repo_available: false,
-                repo_path: None,
-            },
-        );
-
-        let result = daemon.run_once().await;
-        assert!(result.is_err(), "expected extraction to fail");
-
-        let persisted_state = StateStore::new(state_path, 100)
-            .load()
-            .await
-            .expect("load persisted state");
-        assert!(
-            persisted_state.source_state(SOURCE_KEY).is_none(),
-            "cursor state must not be persisted when extraction fails"
-        );
-    }
-
-    #[tokio::test]
-    async fn does_not_persist_state_when_no_compatible_sink_for_source() {
-        let temp = tempdir().expect("create temp directory");
-        let state_path = temp.path().join("task-daemon-state.json");
-        let store_for_daemon = StateStore::new(state_path.clone(), 100);
-
-        let mut daemon = TaskDaemon::new(
-            Box::new(ClickupStubSource),
-            TaskExtractor::with_mode(20, ExtractionMode::Heuristic).expect("extractor"),
-            vec![Box::new(SlackCompatibleSink)],
-            store_for_daemon,
-            ProjectContext {
-                project_key: "test-project".to_string(),
-                repo_available: false,
-                repo_path: None,
-            },
-        );
-
-        let err = daemon
-            .run_once()
-            .await
-            .expect_err("expected incompatible sink configuration error");
-        assert!(
-            err.to_string()
-                .contains("no compatible sinks configured for source Clickup"),
-            "unexpected error: {err:#}"
-        );
-
-        let persisted_state = StateStore::new(state_path, 100)
-            .load()
-            .await
-            .expect("load persisted state");
-        assert!(
-            persisted_state.source_state("clickup:test-list").is_none(),
-            "state must not be persisted when no compatible sink exists"
-        );
     }
 }

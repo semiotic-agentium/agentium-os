@@ -778,6 +778,21 @@ pub async fn start_http_server(
     ))
 }
 
+/// QuickJS config with host ingress recorder for dispatch `withTask` natives in integration tests.
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+pub fn quickjs_config_with_host_ingress(
+    store: Arc<SurrealProvenanceStore>,
+) -> baml_rt::QuickJSConfig {
+    baml_rt::QuickJSConfig::new().with_host_ingress_recorder(Some(Arc::new(
+        baml_rt_provenance::HostIngressRecorderImpl::new(store),
+    )))
+}
+
 #[cfg(any(
     feature = "clickup",
     feature = "notion",

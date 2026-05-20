@@ -1386,10 +1386,20 @@ pub async fn post_events_publish(
     };
     let entries = state.registry.list_agents();
     let port = RegistryDispatchPort::new(state.registry.as_ref());
+    if let Some(recorder) = state.host_ingress_recorder.as_ref()
+        && let Err(err) = recorder.record_source_poll(&event).await
+    {
+        metrics::record_request("post_events_publish", "error", start.elapsed());
+        return (AxumStatus::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+    }
+    let context_id = event.context_id.as_ref().map(|c| c.to_string());
     match publish_to_subscribers(&entries, event, &port).await {
         Ok(outcome) => {
             metrics::record_request("post_events_publish", "success", start.elapsed());
-            Json(crate::openapi::EventPublishResponseDto::from(outcome)).into_response()
+            Json(crate::openapi::EventPublishResponseDto::from_outcome(
+                outcome, context_id,
+            ))
+            .into_response()
         }
         Err(err) => {
             metrics::record_request("post_events_publish", "error", start.elapsed());

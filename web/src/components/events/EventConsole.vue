@@ -5,7 +5,14 @@ import ConversationHistorySelector from "../ConversationHistorySelector.vue";
 import EventBatchEditor from "./EventBatchEditor.vue";
 import EventHistoryPanel from "./EventHistoryPanel.vue";
 import EventRunObservePanel from "./EventRunObservePanel.vue";
-import { buildOperatorDispatchTraceMessages } from "../../events/dispatchObserve";
+import {
+  buildOperatorPublishTraceMessages,
+  transcriptHasHostIngress,
+} from "../../events/dispatchObserve";
+import {
+  isEventDispatchInFlight,
+  isEventDispatchProvenanceStreaming,
+} from "../../events/dispatchPhases";
 import { messageShapesForAgent } from "../../events/messageShapes";
 import { useEventConsole } from "../../composables/useEventConsole";
 import {
@@ -26,9 +33,10 @@ const {
   validation,
   validationStale,
   validationFocusPath,
-  lastAck,
+  lastPublishOutcome,
+  fleetAcceptsCurrentShape,
   dispatchPhase,
-  dispatchError,
+  publishError,
   historyItems,
   filteredHistoryItems,
   selectedContextId,
@@ -59,7 +67,7 @@ const {
   removeMessage,
   setScope,
   validateDraft,
-  dispatchEvent,
+  publishEvent,
   fetchHistory,
   useContextAsDraftScope,
   observeContextFromDraftOrFlow,
@@ -67,20 +75,20 @@ const {
 
 const observation = useEventObservation();
 const provenancePaneOpen = ref(false);
-const useOperatorDispatchSummary = ref(false);
+const useOperatorPublishSummary = ref(false);
 const provenanceExternalFocus = ref<{ nonce: number; tab: "live" } | undefined>();
 
-const canDispatch = computed(
+const canPublish = computed(
   () =>
-    agentAcceptsHostDispatch.value &&
+    fleetAcceptsCurrentShape.value &&
     Boolean(selectedAgent.value) &&
     Boolean(selectedMessageShape.value) &&
     draft.value.messages.length > 0 &&
     !busy.value,
 );
 
-const canDispatchNow = computed(
-  () => canDispatch.value && Boolean(validation.value?.valid) && !validationStale.value,
+const canPublishNow = computed(
+  () => canPublish.value && Boolean(validation.value?.valid) && !validationStale.value,
 );
 
 const observeIds = computed(() => observeContextFromDraftOrFlow());
@@ -97,23 +105,23 @@ const provenancePaneDiagrams = computed(() => {
   return [];
 });
 
-const dispatchPreview = computed(() => {
-  const preview = validation.value?.preview_request;
+const publishPreview = computed(() => {
+  const preview = validation.value?.preview_produced_event;
   return preview ? JSON.stringify(preview, null, 2) : null;
 });
 
 const showScopeCard = computed(
   () =>
     Boolean(observeIds.value.contextId) &&
-    (Boolean(validation.value?.valid) || Boolean(lastAck.value)),
+    (Boolean(validation.value?.valid) || Boolean(lastPublishOutcome.value)),
 );
 
 const displayMessages = computed((): ChatMessage[] => {
   if (observation.messages.value.length > 0) {
     return observation.messages.value;
   }
-  if (useOperatorDispatchSummary.value) {
-    return buildOperatorDispatchTraceMessages({
+  if (useOperatorPublishSummary.value) {
+    return buildOperatorPublishTraceMessages({
       agentPackage: draft.value.agent_package,
       agentInstanceId: draft.value.agent_instance_id,
       messageShape: selectedMessageShape.value,
@@ -121,8 +129,8 @@ const displayMessages = computed((): ChatMessage[] => {
       sampleLabel: selectedMessageShape.value?.samples.find(
         (s) => s.sample_id === selection.value.sampleId,
       )?.label,
-      ack: lastAck.value,
-      dispatchError: dispatchError.value,
+      outcome: lastPublishOutcome.value,
+      publishError: publishError.value,
     });
   }
   return [];
@@ -132,12 +140,16 @@ const sessionStatusClass = computed(() => {
   const phase = dispatchPhase.value;
   if (phase === "failed") return "session-status--failed";
   if (phase === "live") return "session-status--live";
-  if (phase === "recording" || phase === "dispatching" || phase === "validating") {
+  if (isEventDispatchInFlight(phase)) {
     return "session-status--active";
   }
   if (validation.value?.valid && !validationStale.value) return "session-status--ready";
   return "";
 });
+
+const provenancePaneStreaming = computed(() =>
+  isEventDispatchProvenanceStreaming(dispatchPhase.value),
+);
 
 function copyObserveContextId(): void {
   const id = observeIds.value.contextId;
@@ -157,12 +169,14 @@ function updateDispatchPhaseFromObservation(): void {
   }
   if (state === "ready") {
     dispatchPhase.value = "live";
-    useOperatorDispatchSummary.value = false;
+    useOperatorPublishSummary.value = false;
     return;
   }
-  if (state === "empty" && lastAck.value) {
-    dispatchPhase.value = "empty";
-    useOperatorDispatchSummary.value = true;
+  if (state === "empty" && lastPublishOutcome.value) {
+    dispatchPhase.value = transcriptHasHostIngress(observation.messages.value)
+      ? "live"
+      : "empty";
+    useOperatorPublishSummary.value = !transcriptHasHostIngress(observation.messages.value);
     provenanceExternalFocus.value = { nonce: Date.now(), tab: "live" };
     return;
   }
@@ -230,7 +244,7 @@ async function refreshObservation(): Promise<void> {
     updateDispatchPhaseFromObservation();
   } else {
     observation.clear();
-    useOperatorDispatchSummary.value = false;
+    useOperatorPublishSummary.value = false;
   }
 }
 
@@ -239,27 +253,30 @@ function openLiveProvenance(): void {
   provenanceExternalFocus.value = { nonce: Date.now(), tab: "live" };
 }
 
-async function onDispatch(): Promise<void> {
-  await dispatchEvent();
-  if (dispatchError.value) {
-    toast.error("Dispatch failed");
-    useOperatorDispatchSummary.value = true;
+async function onPublish(): Promise<void> {
+  await publishEvent();
+  if (publishError.value) {
+    toast.error("Publish failed");
+    useOperatorPublishSummary.value = true;
     dispatchPhase.value = "failed";
     provenancePaneOpen.value = true;
     return;
   }
-  if (!lastAck.value) {
-    toast.error("Dispatch did not run — select a message type and fix validation errors.");
+  if (!lastPublishOutcome.value) {
+    toast.error("Publish did not run — select a message type and fix validation errors.");
     return;
   }
-  const label = lastAck.value.accepted ? "Dispatch accepted" : "Dispatch rejected";
-  if (lastAck.value.accepted) {
+  const o = lastPublishOutcome.value;
+  const label = `Published ${o.subscribers_accepted}/${o.subscribers_matched}`;
+  if (o.failures.length > 0) {
+    toast.show(`${label} (${o.failures.length} failed)`, "info");
+  } else if (o.subscribers_accepted > 0) {
     toast.success(label);
   } else {
-    toast.show(label, "info");
+    toast.show("No subscribers accepted the event", "info");
   }
-  useOperatorDispatchSummary.value = true;
-  dispatchPhase.value = lastAck.value.accepted ? "empty" : "failed";
+  useOperatorPublishSummary.value = true;
+  dispatchPhase.value = "recording";
   provenancePaneOpen.value = true;
   const { contextId, taskId } = observeIds.value;
   if (contextId) {
@@ -273,8 +290,8 @@ async function onDispatch(): Promise<void> {
   }
 }
 
-function viewHistoryAfterDispatch(): void {
-  if (!lastAck.value) return;
+function viewHistoryAfterPublish(): void {
+  if (!lastPublishOutcome.value) return;
   mode.value = "history";
   void fetchHistory();
 }
@@ -308,7 +325,7 @@ watch(
     observeIds.value.contextId,
     observeIds.value.taskId,
     draft.value.agent_package,
-    lastAck.value,
+    lastPublishOutcome.value,
   ],
   () => {
     void refreshObservation();
@@ -322,8 +339,8 @@ watch(
   },
 );
 
-watch(lastAck, () => {
-  if (lastAck.value && observeIds.value.contextId) {
+watch(lastPublishOutcome, () => {
+  if (lastPublishOutcome.value && observeIds.value.contextId) {
     provenancePaneOpen.value = true;
   }
 });
@@ -394,17 +411,17 @@ function openSelectedAgentInChat(): void {
         />
       <div v-if="mode === 'compose'" class="events-toolbar-actions">
         <button
-          v-if="lastAck"
+          v-if="lastPublishOutcome"
           type="button"
           class="btn btn--sm"
-          @click="viewHistoryAfterDispatch"
+          @click="viewHistoryAfterPublish"
         >
           View history
         </button>
         <button
           type="button"
           class="btn btn--sm"
-          :disabled="!canDispatch"
+          :disabled="!canPublish"
           @click="validateDraft()"
         >
           Validate
@@ -412,10 +429,10 @@ function openSelectedAgentInChat(): void {
         <button
           type="button"
           class="btn btn--primary btn--sm"
-          :disabled="!canDispatchNow"
-          @click="onDispatch()"
+          :disabled="!canPublishNow"
+          @click="onPublish()"
         >
-          Dispatch
+          Publish
         </button>
         </div>
       </div>
@@ -647,9 +664,9 @@ function openSelectedAgentInChat(): void {
                 <code>{{ w.code }}</code> {{ w.message }}
               </li>
             </ul>
-            <details v-if="dispatchPreview" class="preview-details">
-              <summary>Preview request JSON</summary>
-              <pre class="preview-pre">{{ dispatchPreview }}</pre>
+            <details v-if="publishPreview" class="preview-details">
+              <summary>Produced event preview (JSON)</summary>
+              <pre class="preview-pre">{{ publishPreview }}</pre>
             </details>
           </div>
         </template>
@@ -673,9 +690,9 @@ function openSelectedAgentInChat(): void {
           :dispatch-phase="dispatchPhase"
           :hydrate-state="observation.hydrateState.value"
           :messages="displayMessages"
-          :use-dispatch-summary="useOperatorDispatchSummary"
-          :last-ack="lastAck"
-          :dispatch-error="dispatchError"
+          :use-publish-summary="useOperatorPublishSummary"
+          :last-publish-outcome="lastPublishOutcome"
+          :publish-error="publishError"
           :context-id="observeIds.contextId"
           :task-id="observeIds.taskId"
           :validation-valid="Boolean(validation?.valid)"
@@ -693,7 +710,7 @@ function openSelectedAgentInChat(): void {
         :context-id="observeIds.contextId ?? undefined"
         :task-id="observeIds.taskId ?? undefined"
         :observe-agent-package="draft.agent_package || undefined"
-        :is-streaming="dispatchPhase === 'recording' || dispatchPhase === 'dispatching'"
+        :is-streaming="provenancePaneStreaming"
         :diagrams="provenancePaneDiagrams"
         :trace-refresh-tick="observation.traceRefreshGeneration.value"
         :external-tab-focus="provenanceExternalFocus"

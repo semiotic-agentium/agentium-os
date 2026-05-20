@@ -10,7 +10,8 @@ use async_trait::async_trait;
 use baml_rt_conversation::view::{
     ConversationItemContent, ProvenanceContextMessage, ProvenanceConversationContextItem,
     SessionStepContent, SessionStepOp, ToolCallContent, ToolOutcome, ToolResultContent,
-    ToolSessionPhase, conversation_history_role_for_message,
+    ToolSessionPhase, UserSpeakerKind, classify_user_speaker_kind,
+    conversation_history_role_for_message,
 };
 use baml_rt_core::{
     Citation,
@@ -53,6 +54,25 @@ fn is_session_bookkeeping_result(phase: &ToolSessionPhase, value: &Value) -> boo
         ),
         _ => false,
     }
+}
+
+fn resolve_user_speaker_kind_for_message(
+    context_id: &ContextId,
+    props: &Value,
+    activity_anchor: &str,
+    history_role: &str,
+    graph_role: &str,
+) -> Option<UserSpeakerKind> {
+    if history_role != "user" {
+        return None;
+    }
+    if let Some(raw) = props.get("a2a_user_speaker_kind").and_then(Value::as_str)
+        && let Some(kind) = UserSpeakerKind::from_wire_str(raw)
+    {
+        return Some(kind);
+    }
+    let anchor = ActivityAnchorId::from(activity_anchor);
+    classify_user_speaker_kind(context_id, &anchor, None, graph_role)
 }
 
 #[async_trait]
@@ -424,14 +444,23 @@ impl SurrealProvenanceStore {
                         .get(node_id)
                         .cloned()
                         .unwrap_or_default();
+                    let history_role = conversation_history_role_for_message(role);
+                    let user_speaker_kind = resolve_user_speaker_kind_for_message(
+                        context_id,
+                        props,
+                        event_id,
+                        history_role.as_str(),
+                        role,
+                    );
                     items.push(ProvenanceConversationContextItem {
                         timestamp_ms: props
                             .get("a2a_event_order")
                             .and_then(Value::as_u64)
                             .unwrap_or(0),
                         activity_anchor: ActivityAnchorId::from(event_id),
-                        role: conversation_history_role_for_message(role),
+                        role: history_role,
                         content: ConversationItemContent::Message { text, citations },
+                        user_speaker_kind,
                     });
                 }
                 "ToolCall" => {
@@ -559,6 +588,7 @@ impl SurrealProvenanceStore {
                                 args,
                                 fsm_phase: phase.clone(),
                             }),
+                            user_speaker_kind: None,
                         });
 
                         let outcome = if let Some(error) = error {
@@ -579,6 +609,7 @@ impl SurrealProvenanceStore {
                                 fsm_phase: phase,
                                 outcome,
                             }),
+                            user_speaker_kind: None,
                         });
                     }
                 }
@@ -752,6 +783,7 @@ impl SurrealProvenanceStore {
                             send_done_replay_payload: None,
                             read_replay_lines: None,
                         }),
+                        user_speaker_kind: None,
                     });
                 }
                 _ => {

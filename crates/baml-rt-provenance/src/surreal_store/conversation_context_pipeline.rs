@@ -180,6 +180,7 @@ mod tests {
                     args: json!({}),
                     fsm_phase: ToolSessionPhase::Send,
                 }),
+                user_speaker_kind: None,
             },
             ProvenanceConversationContextItem {
                 timestamp_ms: 2,
@@ -190,6 +191,7 @@ mod tests {
                     fsm_phase: ToolSessionPhase::Send,
                     outcome: ToolOutcome::Result(json!("body")),
                 }),
+                user_speaker_kind: None,
             },
             ProvenanceConversationContextItem {
                 timestamp_ms: 3,
@@ -205,6 +207,7 @@ mod tests {
                     send_done_replay_payload: None,
                     read_replay_lines: None,
                 }),
+                user_speaker_kind: None,
             },
         ];
         let out = super::ConversationContextBatch::from_items_hydrated_for_test(items)
@@ -226,6 +229,7 @@ mod tests {
                     args: json!({}),
                     fsm_phase: ToolSessionPhase::Execute,
                 }),
+                user_speaker_kind: None,
             },
             ProvenanceConversationContextItem {
                 timestamp_ms: 2,
@@ -236,6 +240,7 @@ mod tests {
                     fsm_phase: ToolSessionPhase::Execute,
                     outcome: ToolOutcome::Result(json!(5)),
                 }),
+                user_speaker_kind: None,
             },
         ];
         let out = super::ConversationContextBatch::from_items_hydrated_for_test(items)

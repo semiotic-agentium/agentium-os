@@ -653,6 +653,12 @@ fn derive_display_name(label: &str, props: &HashMap<String, serde_json::Value>) 
         }
         Some(GraphNodeLabel::Message) => {
             let role = normalize_role(&prop_str(a2a::ROLE).unwrap_or_default());
+            if role == "host" {
+                let kind = prop_str(a2a::HOST_INGRESS_KIND).unwrap_or_default();
+                let content =
+                    extract_content_preview(props.get(a2a::CONTENT), DEFAULT_CONTENT_PREVIEW_LEN);
+                return format!("📡 Host {kind}: {content}");
+            }
             let direction = prop_str(a2a::DIRECTION).unwrap_or_default();
             let icon = if direction == message_directions::SENT {
                 "📤"

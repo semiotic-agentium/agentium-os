@@ -70,15 +70,17 @@ mod builder;
 mod context_reader;
 mod conversation_context_pipeline;
 mod helpers;
+mod history_ref;
 mod ops_query;
 mod payload;
 mod planning_query;
+mod ref_table_hydrator;
 mod schema;
 mod task_graph_reader_impl;
 mod writer;
 
 use std::{
-    sync::Arc,
+    sync::{Arc, RwLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -86,6 +88,7 @@ use baml_rt_core::{backoff::backoff_delay, ids::ContextId};
 pub use builder::{RemoteConfig, RemoteCredentials, SurrealBackend, SurrealStoreBuilder};
 use dashmap::DashMap;
 pub(crate) use helpers::{check_and_take_zero, map_surreal_error};
+pub use ref_table_hydrator::{hydrate_ref_table, prepare_ref_table_for_projection};
 use serde_json::Value;
 use surrealdb::{Surreal, engine::any::Any};
 
@@ -172,9 +175,21 @@ pub struct SurrealProvenanceStore {
     archive_local_serializers: DashMap<String, Arc<tokio::sync::Mutex<()>>>,
     /// One in-flight allocate per `(context_id, activity_anchor)`; pairs with unique DB index.
     archive_anchor_serializers: DashMap<String, Arc<tokio::sync::Mutex<()>>>,
+    /// Optional in-process ref-table cache (invalidated after each context-scoped write).
+    ref_table_cache: RwLock<Option<Arc<baml_rt_tools::archive_refs::ContextRefTables>>>,
 }
 
 impl SurrealProvenanceStore {
+    /// Attach the shared in-process ref-table cache (same map as QuickJS / A2A).
+    pub fn attach_ref_table_cache(
+        &self,
+        tables: Arc<baml_rt_tools::archive_refs::ContextRefTables>,
+    ) {
+        if let Ok(mut g) = self.ref_table_cache.write() {
+            *g = Some(tables);
+        }
+    }
+
     /// Access the underlying SurrealDB connection for direct queries (graph export, tool index).
     pub fn db(&self) -> &Surreal<Any> {
         &self.db

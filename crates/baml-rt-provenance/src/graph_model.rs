@@ -145,9 +145,11 @@ pub enum EventGraphKind {
     ToolSessionStep,
     ExternalToolLifecycle,
     CallbackDispatchContextsLinked,
+    HostSourcePollRecorded,
+    HostDispatchAccepted,
 }
 
-pub const ALL_EVENT_KINDS: [EventGraphKind; 20] = [
+pub const ALL_EVENT_KINDS: [EventGraphKind; 22] = [
     EventGraphKind::IntentResolved,
     EventGraphKind::PlanGenerated,
     EventGraphKind::PlanStepStatusChanged,
@@ -168,6 +170,8 @@ pub const ALL_EVENT_KINDS: [EventGraphKind; 20] = [
     EventGraphKind::ToolSessionStep,
     EventGraphKind::ExternalToolLifecycle,
     EventGraphKind::CallbackDispatchContextsLinked,
+    EventGraphKind::HostSourcePollRecorded,
+    EventGraphKind::HostDispatchAccepted,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -388,6 +392,33 @@ const MAPPING_CALLBACK_DISPATCH_CONTEXTS_LINKED: EventGraphMapping = EventGraphM
     required_properties: &[a2a::TASK_ID, a2a::CONTEXT_ID],
 };
 
+const MAPPING_HOST_SOURCE_POLL_RECORDED: EventGraphMapping = EventGraphMapping {
+    kind: EventGraphKind::HostSourcePollRecorded,
+    primary_node: GraphNodeLabel::Message,
+    expected_edges: &[],
+    required_properties: &[
+        a2a::CONTEXT_ID,
+        a2a::ROLE,
+        a2a::HOST_INGRESS_KIND,
+        a2a::HOST_INGRESS_SOURCE_KIND,
+        a2a::HOST_INGRESS_SOURCE_KEY,
+    ],
+};
+
+const MAPPING_HOST_DISPATCH_ACCEPTED: EventGraphMapping = EventGraphMapping {
+    kind: EventGraphKind::HostDispatchAccepted,
+    primary_node: GraphNodeLabel::Message,
+    expected_edges: &[],
+    required_properties: &[
+        a2a::CONTEXT_ID,
+        a2a::ROLE,
+        a2a::HOST_INGRESS_KIND,
+        a2a::HOST_INGRESS_TARGET_PACKAGE,
+        a2a::HOST_INGRESS_TARGET_INSTANCE,
+        a2a::HOST_INGRESS_ROUTING_KEY,
+    ],
+};
+
 pub fn event_kind_from_data(data: &ProvEventData) -> EventGraphKind {
     match data {
         ProvEventData::IntentResolved { .. } => EventGraphKind::IntentResolved,
@@ -412,6 +443,8 @@ pub fn event_kind_from_data(data: &ProvEventData) -> EventGraphKind {
         ProvEventData::CallbackDispatchContextsLinked { .. } => {
             EventGraphKind::CallbackDispatchContextsLinked
         }
+        ProvEventData::HostSourcePollRecorded { .. } => EventGraphKind::HostSourcePollRecorded,
+        ProvEventData::HostDispatchAccepted { .. } => EventGraphKind::HostDispatchAccepted,
     }
 }
 
@@ -439,6 +472,8 @@ pub fn mapping_for_event_kind(kind: EventGraphKind) -> &'static EventGraphMappin
         EventGraphKind::CallbackDispatchContextsLinked => {
             &MAPPING_CALLBACK_DISPATCH_CONTEXTS_LINKED
         }
+        EventGraphKind::HostSourcePollRecorded => &MAPPING_HOST_SOURCE_POLL_RECORDED,
+        EventGraphKind::HostDispatchAccepted => &MAPPING_HOST_DISPATCH_ACCEPTED,
     }
 }
 

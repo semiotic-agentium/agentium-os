@@ -77,21 +77,26 @@ export interface EventValidationReport {
   matched_subscription: boolean;
   errors: EventValidationIssue[];
   warnings: EventValidationIssue[];
-  preview_request?: unknown;
+  preview_produced_event?: unknown;
 }
 
-export interface AgentDispatchAck {
-  accepted: boolean;
-  detail?: string;
+export interface EventPublishFailure {
+  agent_package: string;
+  agent_instance_id: string;
+  detail: string;
+}
+
+export interface EventPublishResponse {
+  subscribers_matched: number;
+  subscribers_accepted: number;
+  failures: EventPublishFailure[];
   context_id?: string;
-  task_id?: string;
-  message_id?: string;
 }
 
 export type EventDispatchPhase =
   | "idle"
   | "validating"
-  | "dispatching"
+  | "publishing"
   | "recording"
   | "live"
   | "empty"

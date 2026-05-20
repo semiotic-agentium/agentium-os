@@ -764,10 +764,9 @@ pub struct ProvenanceEffectSubscriber {
     action_describer: Option<Arc<ActionDescriber>>,
     /// Same registry as the runtime — used to rebuild [`RefTable`] for citation resolution.
     tool_registry: Option<Arc<ToolRegistry>>,
-    /// Live per-context archive ref tables, shared with the QuickJS/A2A layer.
-    /// When set, `@N` citations resolve to their actual tool-result content during
-    /// drift scoring. Without this the ref table is empty for archive refs, causing
-    /// `@N` citations to silently drop from the scored set.
+    /// Durable store for graph-backed ref hydration (authoritative `#N` / `@N`).
+    provenance_store: Option<Arc<crate::surreal_store::SurrealProvenanceStore>>,
+    /// In-process cache invalidated after provenance writes; not authoritative.
     archive_ref_tables: Option<Arc<baml_rt_tools::archive_refs::ContextRefTables>>,
     /// Bound concurrent ONNX inference jobs dispatched via `spawn_blocking`.
     inference_slots: Semaphore,
@@ -788,6 +787,7 @@ impl ProvenanceEffectSubscriber {
             plan_trackers: DashMap::new(),
             action_describer: None,
             tool_registry: None,
+            provenance_store: None,
             archive_ref_tables: None,
             inference_slots: Semaphore::new(DEFAULT_INFERENCE_CONCURRENCY),
         }
@@ -851,14 +851,27 @@ impl ProvenanceEffectSubscriber {
         self.tool_registry = Some(registry);
     }
 
-    /// Wire the live per-context archive ref tables so `@N` citations resolve to
-    /// real tool-result content during drift scoring. Must be called before the
-    /// subscriber is handed to the effect bus.
+    /// Wire the durable provenance store for graph-backed ref hydration.
+    pub fn set_provenance_store(
+        &mut self,
+        store: Arc<crate::surreal_store::SurrealProvenanceStore>,
+    ) {
+        self.provenance_store = Some(store);
+    }
+
+    /// In-process ref-table cache (invalidated on writes). Optional when
+    /// [`Self::set_provenance_store`] is set; used to mirror hydrated tables for tools.
     pub fn set_archive_ref_tables(
         &mut self,
         tables: Arc<baml_rt_tools::archive_refs::ContextRefTables>,
     ) {
         self.archive_ref_tables = Some(tables);
+    }
+
+    fn invalidate_context_ref_cache(&self, context_id: &ContextId) {
+        if let Some(tables) = &self.archive_ref_tables {
+            baml_rt_tools::archive_refs::invalidate_ref_table(tables, context_id.as_str());
+        }
     }
 
     async fn drift_provider(&self) -> Option<Arc<dyn EmbeddingProvider>> {
@@ -1240,23 +1253,23 @@ impl ProvenanceEffectSubscriber {
             .cloned()
             .filter_map(provenance_item_to_projection_item)
             .collect();
-        // Use the live per-context ref table so `@N` / `#N` in the model's citation
-        // strings match the same ref numbers as the last `conversation_history` build.
-        //
-        // `project_prompt_context` calls `insert_history` for each line; history refs
-        // are idempotent per `(activity_anchor, source)` (see
-        // `baml_rt_tools::archive_refs::RefTable::insert_history`), so this pass does
-        // not advance `#N` for already-seen activities; new rows still allocate the
-        // next index.
-        let ref_table: Arc<RefTable> = self
-            .archive_ref_tables
-            .as_ref()
-            .and_then(|tables| {
-                baml_rt_tools::archive_refs::get_ref_table(tables, context_id.as_str())
-            })
-            .unwrap_or_else(|| Arc::new(RefTable::new()));
-        // Populates `ref_table` with `#N` and (via prior tool completions) archive `@N`
-        // so `ResolvedCitation::resolve` can look up each parsed citation.
+        let ref_table: Arc<RefTable> = if let Some(store) = self.provenance_store.as_ref() {
+            crate::surreal_store::prepare_ref_table_for_projection(
+                store,
+                context_id,
+                &projection_items,
+                registry.as_ref(),
+            )
+            .await
+            .ok()?
+        } else {
+            self.archive_ref_tables
+                .as_ref()
+                .and_then(|tables| {
+                    baml_rt_tools::archive_refs::get_ref_table(tables, context_id.as_str())
+                })
+                .unwrap_or_else(|| Arc::new(RefTable::new()))
+        };
         let _history =
             project_prompt_context(projection_items, registry.as_ref(), &ref_table, None);
         // Parse each raw string and keep it paired so we can store it with the result.
@@ -2132,6 +2145,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 self.writer
                     .add_event_with_logging(completed_event, "effect subscriber")
                     .await;
+                self.invalidate_context_ref_cache(context_id);
                 if !bool::from(*outcome) && rejection_reason.as_deref().is_some() {
                     let reason = rejection_reason.clone().unwrap_or_default();
                     tracing::warn!(
@@ -2162,6 +2176,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                     self.writer
                         .add_event_with_logging(rejected_event, "effect subscriber")
                         .await;
+                    self.invalidate_context_ref_cache(context_id);
                 }
                 return Ok(());
             }
@@ -2290,9 +2305,13 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
             }
         };
 
+        let ctx_for_cache = prov_event.context_id_opt().cloned();
         self.writer
             .add_event_with_logging(prov_event, "effect subscriber")
             .await;
+        if let Some(ctx) = ctx_for_cache.as_ref() {
+            self.invalidate_context_ref_cache(ctx);
+        }
         Ok(())
     }
 }

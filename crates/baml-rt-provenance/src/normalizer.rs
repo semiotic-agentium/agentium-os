@@ -7,6 +7,7 @@ use std::{
     fmt,
 };
 
+use baml_rt_conversation::view::classify_user_speaker_kind;
 use baml_rt_core::{
     BamlFunctionId,
     bus::PlanningSupersessionKind,
@@ -2041,6 +2042,21 @@ fn normalize_event_with_registry(
                 Value::String(direction.to_string()),
             );
 
+            if direction == message_directions::RECEIVED
+                && let ProvEventData::MessageReceived { role, metadata, .. } = event.data()
+                && let Some(kind) = classify_user_speaker_kind(
+                    event.context_id(),
+                    event.id(),
+                    metadata.as_ref(),
+                    role,
+                )
+            {
+                message_attrs.insert(
+                    a2a::USER_SPEAKER_KIND.to_string(),
+                    Value::String(kind.as_wire_str().to_string()),
+                );
+            }
+
             // Agent ownership of a Message is modelled as an EDGE
             // traversal, not as a denormalised property on the Message
             // row. The owning agent is reachable in two hops via the
@@ -2339,6 +2355,10 @@ fn normalize_event_with_registry(
                 attributes: edge_attrs,
             });
         }
+        ProvEventData::HostSourcePollRecorded { .. }
+        | ProvEventData::HostDispatchAccepted { .. } => {
+            // Event-level lineage only; actionable poll/unit bodies are normal `user` messages.
+        }
     }
 
     Ok(NormalizedProv {
@@ -2429,6 +2449,15 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
             });
         }
         ProvEventData::CallbackDispatchContextsLinked { .. } => {}
+        ProvEventData::HostSourcePollRecorded { .. }
+        | ProvEventData::HostDispatchAccepted { .. } => {
+            if event.context_id_opt().is_none() {
+                return Err(ProvenanceError::InvalidEvent {
+                    activity_anchor: event.id().as_str().to_string(),
+                    reason: "host ingress events must carry context_id".to_string(),
+                });
+            }
+        }
         _ => {}
     }
     Ok(())

@@ -446,7 +446,7 @@ Current built-in schema surfaces include:
 
 - `host.source-records.v1` for raw host-managed source ingress
 - `system.callback.v1` for durable host-native callback delivery
-- `task-daemon.interpretation.v1` as the compatibility bridge contract
+- `host.source-records.v1` from task-daemon via `POST /events/publish`
 
 ---
 

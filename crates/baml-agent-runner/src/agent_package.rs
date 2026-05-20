@@ -330,7 +330,12 @@ impl AgentPackage {
         }
 
         let runtime_manager_arc = Arc::new(tokio::sync::RwLock::new(runtime_manager));
-        let quickjs_config = QuickJSConfig::new().with_stream_collector_idle_secs(stream_idle_secs);
+        let store = provenance_config.store().clone();
+        let host_ingress_recorder =
+            Arc::new(crate::services::HostIngressRecorderImpl::new(store.clone()));
+        let quickjs_config = QuickJSConfig::new()
+            .with_stream_collector_idle_secs(stream_idle_secs)
+            .with_host_ingress_recorder(Some(host_ingress_recorder));
         let agent_package = AgentPackageName::parse(&self.manifest.name).ok_or_else(|| {
             BamlRtError::InvalidArgument(format!(
                 "manifest agent name '{name}' is not a valid agent_package identifier",
@@ -343,7 +348,7 @@ impl AgentPackage {
             .with_quickjs_config(quickjs_config)
             .with_baml_helpers(true)
             .with_agent_identity(agent_package, agent_instance_id)
-            .with_surreal_store(provenance_config.store().clone());
+            .with_surreal_store(store);
         if let Some(tx) = conversation_history_notify.clone() {
             agent_builder = agent_builder.with_conversation_history_notify(tx);
         }

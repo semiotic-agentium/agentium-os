@@ -6,10 +6,10 @@ use std::{collections::BTreeMap, fmt, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use baml_task_daemon::{
-    ClickUpSink, ClickupSourceConfig, ClickupTaskSource, DispatchSink, ExtractionMode,
-    GithubIssueSink, JsonlFileSink, ProjectContext, RoundRobinTaskSource, SinkDeliveryMode,
-    SlackChannelSelector, SlackSourceConfig, SlackTaskSource, SourceFilteredSink, StateStore,
-    StdoutSink, TaskDaemon, TaskExtractor, TaskSink, TaskSource, TaskSourceKind,
+    ClickUpSink, ClickupSourceConfig, ClickupTaskSource, GithubIssueSink, JsonlFileSink,
+    ProjectContext, PublishSink, RoundRobinTaskSource, SinkDeliveryMode, SlackChannelSelector,
+    SlackSourceConfig, SlackTaskSource, SourceFilteredSink, StateStore, StdoutSink, TaskDaemon,
+    TaskSink, TaskSource, TaskSourceKind,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use integrations_clickup_client::ClickUpClient;
@@ -32,21 +32,6 @@ impl From<SlackAuthMode> for SlackAuthPreference {
             SlackAuthMode::Auto => SlackAuthPreference::Auto,
             SlackAuthMode::Bot => SlackAuthPreference::Bot,
             SlackAuthMode::User => SlackAuthPreference::User,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum ExtractorMode {
-    Heuristic,
-    Llm,
-}
-
-impl From<ExtractorMode> for ExtractionMode {
-    fn from(value: ExtractorMode) -> Self {
-        match value {
-            ExtractorMode::Heuristic => ExtractionMode::Heuristic,
-            ExtractorMode::Llm => ExtractionMode::Llm,
         }
     }
 }
@@ -79,7 +64,7 @@ enum SinkKindArg {
     Jsonl,
     Clickup,
     Github,
-    Dispatch,
+    Publish,
 }
 
 impl SinkKindArg {
@@ -89,7 +74,7 @@ impl SinkKindArg {
             Self::Jsonl => "jsonl",
             Self::Clickup => "clickup",
             Self::Github => "github",
-            Self::Dispatch => "dispatch",
+            Self::Publish => "publish",
         }
     }
 }
@@ -201,14 +186,6 @@ struct RunArgs {
     /// Optional JSONL output path for downstream tooling.
     #[arg(long)]
     jsonl_out: Option<PathBuf>,
-
-    /// Max investigation prompts/tasks emitted per poll cycle.
-    #[arg(long, default_value_t = 20)]
-    max_candidates: usize,
-
-    /// Extraction backend (`llm` default, `heuristic` explicit fallback).
-    #[arg(long, value_enum, default_value_t = ExtractorMode::Llm)]
-    extractor: ExtractorMode,
 
     /// Slack auth preference.
     #[arg(long, value_enum, default_value_t = SlackAuthMode::Auto)]
@@ -435,34 +412,16 @@ async fn run(args: RunArgs) -> Result<()> {
     }
 
     if let Some(url) = args.dispatch_base_url.clone() {
-        let dispatch_sink: Box<dyn TaskSink> = match (
-            &args.dispatch_agent_package,
-            &args.dispatch_agent_instance_id,
-        ) {
-            (Some(agent_package), Some(agent_instance_id)) => Box::new(DispatchSink::for_agent(
-                url,
-                agent_package.clone(),
-                agent_instance_id.clone(),
-                SinkDeliveryMode::from_live_flag(args.dispatch_live),
-            )?),
-            (None, None) => {
-                tracing::warn!(
-                    "Agent delivery is using subscriber discovery mode. \
-                         If you need the pre-pubsub single-target behavior, pass \
-                         --dispatch-agent-package and --dispatch-agent-instance-id explicitly."
-                );
-                Box::new(DispatchSink::new(
-                    url,
-                    SinkDeliveryMode::from_live_flag(args.dispatch_live),
-                )?)
-            }
-            _ => {
-                return Err(anyhow!(
-                    "--dispatch-agent-package and --dispatch-agent-instance-id must be provided together"
-                ));
-            }
-        };
-        configured_sinks.push(ConfiguredSink::new(SinkKindArg::Dispatch, dispatch_sink));
+        if args.dispatch_agent_package.is_some() || args.dispatch_agent_instance_id.is_some() {
+            tracing::warn!(
+                "explicit dispatch agent target is ignored; publish uses subscription matching on the runner"
+            );
+        }
+        let publish_sink = Box::new(PublishSink::new(
+            url,
+            SinkDeliveryMode::from_live_flag(args.dispatch_live),
+        )?);
+        configured_sinks.push(ConfiguredSink::new(SinkKindArg::Publish, publish_sink));
     }
 
     if configured_sinks.is_empty() {
@@ -483,18 +442,16 @@ async fn run(args: RunArgs) -> Result<()> {
     }
 
     let state_store = StateStore::new(args.state_file, args.max_seen_tasks_per_source);
-    let extractor = TaskExtractor::with_mode(args.max_candidates, args.extractor.into())?;
-    let mut daemon = TaskDaemon::new(source, extractor, sinks, state_store, project_context);
+    let mut daemon = TaskDaemon::new(source, sinks, state_store, project_context);
     daemon.set_emit_empty_batches(args.emit_empty);
 
     if args.once {
         for _ in 0..daemon.polls_per_cycle() {
-            let dispatch = daemon.run_once().await?;
+            let event = daemon.run_once().await?;
             tracing::info!(
-                source = %dispatch.batch.source_label,
-                derived_tasks = dispatch.batch.derived_tasks.len(),
-                messages_scanned = dispatch.batch.messages_scanned,
-                project_key = %dispatch.batch.project.project_key,
+                source_key = %event.source_key,
+                schema = %event.schema_version,
+                context_id = ?event.context_id,
                 "task-daemon run-once completed"
             );
         }
@@ -736,7 +693,8 @@ fn parse_source_sink_route(raw: &str) -> std::result::Result<SourceSinkRouteArg,
 mod tests {
     use anyhow::Result;
     use async_trait::async_trait;
-    use baml_task_daemon::{TaskDispatch, TaskSink, TaskSourceKind};
+    use baml_rt_core::ProducedEvent;
+    use baml_task_daemon::{TaskSink, TaskSourceKind};
 
     use super::{
         ConfiguredSink, SinkKindArg, SourceKindArg, SourceSinkRouteArg, normalize_selected_routes,
@@ -781,7 +739,7 @@ mod tests {
                 },
                 SourceSinkRouteArg {
                     source: SourceKindArg::Clickup,
-                    sink: SinkKindArg::Dispatch,
+                    sink: SinkKindArg::Publish,
                 },
                 SourceSinkRouteArg {
                     source: SourceKindArg::Slack,
@@ -795,7 +753,7 @@ mod tests {
                 },
                 SourceSinkRouteArg {
                     source: SourceKindArg::Clickup,
-                    sink: SinkKindArg::Dispatch,
+                    sink: SinkKindArg::Publish,
                 },
             ]
         );
@@ -806,7 +764,7 @@ mod tests {
         let sinks = route_configured_sinks(
             vec![
                 ConfiguredSink::new(SinkKindArg::Stdout, Box::new(AcceptsAllSink)),
-                ConfiguredSink::new(SinkKindArg::Dispatch, Box::new(AcceptsAllSink)),
+                ConfiguredSink::new(SinkKindArg::Publish, Box::new(AcceptsAllSink)),
             ],
             &[SourceKindArg::Slack, SourceKindArg::Clickup],
             &[
@@ -816,7 +774,7 @@ mod tests {
                 },
                 SourceSinkRouteArg {
                     source: SourceKindArg::Clickup,
-                    sink: SinkKindArg::Dispatch,
+                    sink: SinkKindArg::Publish,
                 },
             ],
         )
@@ -839,7 +797,7 @@ mod tests {
             &[SourceKindArg::Slack],
             &[SourceSinkRouteArg {
                 source: SourceKindArg::Slack,
-                sink: SinkKindArg::Dispatch,
+                sink: SinkKindArg::Publish,
             }],
         )
         .err()
@@ -847,7 +805,7 @@ mod tests {
 
         assert!(
             err.to_string()
-                .contains("references sink dispatch but that sink is not configured")
+                .contains("references sink publish but that sink is not configured")
         );
     }
 
@@ -881,7 +839,7 @@ mod tests {
             "accepts-all"
         }
 
-        async fn deliver(&mut self, _dispatch: &TaskDispatch) -> Result<()> {
+        async fn deliver(&mut self, _event: &ProducedEvent) -> Result<()> {
             Ok(())
         }
     }
@@ -898,7 +856,7 @@ mod tests {
             !matches!(source, TaskSourceKind::Clickup)
         }
 
-        async fn deliver(&mut self, _dispatch: &TaskDispatch) -> Result<()> {
+        async fn deliver(&mut self, _event: &ProducedEvent) -> Result<()> {
             Ok(())
         }
     }

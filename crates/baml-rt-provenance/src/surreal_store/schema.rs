@@ -11,7 +11,7 @@ use crate::{
     error::Result,
     surreal_tables::{
         TBL_ARCHIVE_BODY, TBL_ARCHIVE_LOCAL_COUNTER, TBL_ARCHIVE_PREFIX_REGISTRY, TBL_EDGE,
-        TBL_NODE, TBL_PAYLOAD, TBL_PAYLOAD_BLOB,
+        TBL_HISTORY_REF_REGISTRY, TBL_NODE, TBL_PAYLOAD, TBL_PAYLOAD_BLOB, TBL_SESSION_REF_COUNTER,
     },
 };
 
@@ -77,6 +77,17 @@ pub(super) async fn init_schema(db: &Surreal<Any>) -> Result<()> {
         format!("DEFINE TABLE IF NOT EXISTS {TBL_ARCHIVE_BODY}"),
         format!("DEFINE INDEX IF NOT EXISTS idx_archive_body_lookup ON {TBL_ARCHIVE_BODY} FIELDS context_id, archive_prefix, archive_local UNIQUE"),
         format!("DEFINE INDEX IF NOT EXISTS idx_archive_body_anchor ON {TBL_ARCHIVE_BODY} FIELDS context_id, activity_anchor UNIQUE"),
+        format!("DEFINE TABLE IF NOT EXISTS {TBL_HISTORY_REF_REGISTRY}"),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_history_ref_ctx_anchor_source ON {TBL_HISTORY_REF_REGISTRY} FIELDS context_id, activity_anchor, source UNIQUE"
+        ),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_history_ref_ctx_n ON {TBL_HISTORY_REF_REGISTRY} FIELDS context_id, history_n"
+        ),
+        format!("DEFINE TABLE IF NOT EXISTS {TBL_SESSION_REF_COUNTER}"),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_session_ref_counter_ctx ON {TBL_SESSION_REF_COUNTER} FIELDS context_id UNIQUE"
+        ),
         // Full-text search on denormalized search_text (blob-backed bodies are not indexed in-table)
         "DEFINE ANALYZER IF NOT EXISTS payload_analyzer TOKENIZERS blank, class FILTERS snowball(english)".to_string(),
         format!("DEFINE INDEX IF NOT EXISTS idx_payload_search_fts ON {TBL_PAYLOAD} FIELDS search_text FULLTEXT ANALYZER payload_analyzer BM25"),

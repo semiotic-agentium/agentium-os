@@ -25,10 +25,9 @@
 //! ## No-stale-read invariant (ProvenanceContextReader only)
 //!
 //! - **Property:** ∀ write W completed before read R via [ProvenanceContextReader]: R reflects W.
-//! - **Enforcement:** Implementations use a single serialized worker for writes and reads so that
-//!   any read that starts after a write completes sees that write. Callers must await
-//!   [ProvenanceWriter::add_event] (or [ProvenanceWriter::add_events]) before calling the reader
-//!   methods if they need to see those events.
+//! - **Enforcement:** Implementations must ensure any read that starts after a completed write
+//!   sees that write (SurrealDB MVCC + awaiting [ProvenanceWriter::add_event]). Callers must await
+//!   writes before reader methods when they need those events visible.
 //!
 //! ## Graph-first design constraint
 //!

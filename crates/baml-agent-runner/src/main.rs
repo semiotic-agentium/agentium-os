@@ -561,6 +561,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             webhook_intake_count = webhook_intakes.len(),
             "configured webhook intakes loaded for HTTP API"
         );
+        let host_ingress_recorder = runner.host_ingress_recorder();
         let api_config = baml_rt_api::ApiServerConfig {
             mermaid,
             context_metrics,
@@ -579,6 +580,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             cluster,
             web_dir,
             webhook_intakes,
+            host_ingress_recorder: Some(host_ingress_recorder),
             ..baml_rt_api::ApiServerConfig::empty(
                 tool_catalog,
                 config_service,

@@ -93,18 +93,18 @@ SLACK_DEMO_THREAD_URL="https://<workspace>.slack.com/archives/C123.../p173568960
 
 `support/slack` now participates in two different but complementary flows:
 
-1. **Producer flow**: the host polls configured channels and emits raw `host.source-records.v1` batches.
-2. **Invoke flow**: `slack-agent` source ingress can call `support/slack` directly to enrich a candidate conversation with `GetConversationHistory` or `GetThreadReplies`.
+1. **Producer flow**: the host polls configured channels and emits raw `host.source-records.v1` batches (one actionable `user` history line per poll at publish).
+2. **Agent flow**: `slack-agent` `onDispatch` groups records, uses `withTask` per conversation unit, and runs BAML plus `support/slack` tool sessions **inside** the unit handler when the plan needs `GetConversationHistory` or `GetThreadReplies`.
 
 The intended steady-state flow for Slack-as-work is:
 
-- poll configured channels with `conversations.history`
-- group new records into conversation units
-- fetch full thread context with `conversations.replies` when the raw batch is incomplete
-- interpret the conversation into work intent
-- route that intent downstream
+- poll configured channels with `conversations.history` (host producer only)
+- agent groups poll records into conversation units and passes each slice to `withTask`
+- host writes unit `#1` from that slice; agent interprets via `InferSlackIntent` / planning against `conversation_transcript`
+- agent invokes `support/slack` through normal tool-session steps when more context is required
+- route downstream work only after agent BAML/tool steps decide it is actionable
 
-This keeps Slack polling in the host/runtime layer and Slack meaning in `slack-agent` source ingress.
+The host never LLM-interprets or pre-fetches Slack context for agents.
 
 ## Known Limitations (MVP)
 

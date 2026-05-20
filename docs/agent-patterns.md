@@ -79,7 +79,7 @@ When an agent subscribes to raw host-delivered events, keep the boundary explici
 - The source-family agent (e.g. `slack-agent` for Slack) owns source meaning and first downstream policy.
 - Keep source-specific ingress logic in the agent for that source; conversational and dispatch entrypoints can share one package.
 
-For Slack specifically, the right work unit is a conversation, not an arbitrary poll batch. Group raw records into conversation units, enrich with thread replies when needed, then derive downstream work items.
+For Slack specifically, the right work unit is a conversation, not an arbitrary poll batch. Group raw records into conversation units, call `withTask({ unitKey, records })` with that slice, then use BAML and `support/slack` tool sessions inside the unit handler when the model needs thread replies or search — not host-side enrichment before history is written.
 
 **Checklist**
 Before shipping an agent:

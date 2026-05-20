@@ -3098,6 +3098,82 @@ async fn post_event_dispatch_validate_rejects_unknown_agent() {
     assert_eq!(report.get("valid").and_then(Value::as_bool), Some(false));
 }
 
+#[tokio::test]
+async fn conversation_history_includes_ingress_poll_user_message_rows() {
+    let store = Arc::new(
+        SurrealStoreBuilder::in_memory_isolated()
+            .build()
+            .await
+            .expect("store"),
+    );
+    let context_id = ContextId::new(88, 99);
+    let message_id = MessageId::from("batch-msg-1");
+    store
+        .add_event(ProvEvent::Global(baml_rt_provenance::events::GlobalEvent {
+            id: ActivityAnchorId::from(format!(
+                "ingress-poll-user:{}:{}",
+                context_id.as_str(),
+                message_id.as_str()
+            )),
+            context_id: context_id.clone(),
+            timestamp_ms: 1,
+            data: baml_rt_provenance::events::ProvEventData::MessageReceived {
+                id: message_id.clone(),
+                role: "user".to_string(),
+                content: vec!["1. Investigate publish ingress (priority: normal)".to_string()],
+                metadata: None,
+                agent_id: AgentId::from_uuid(
+                    UuidId::parse_str("00000000-0000-0000-0000-000000000000").expect("nil uuid"),
+                ),
+                citations: Vec::new(),
+            },
+        }))
+        .await
+        .expect("poll user message");
+
+    let svc = RealConversationHistory {
+        store: Arc::clone(&store),
+    };
+    let request = ConversationHistoryRequest::from_parts(
+        context_id.as_str(),
+        ConversationHistoryQueryParams {
+            task_id: None,
+            agent_package: None,
+            limit: Some(50),
+            cursor: None,
+            profile: None,
+            format: None,
+        },
+    )
+    .expect("history request");
+    let page = svc.page(&request).await.expect("page");
+    let user_lines: Vec<&str> = page
+        .items
+        .iter()
+        .filter(|i| i.role == "user")
+        .filter_map(|i| match &i.content {
+            ConversationHistoryContentDto::Message { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(user_lines.len(), 1, "items={:?}", page.items);
+    assert!(user_lines[0].contains("Investigate publish ingress"));
+    assert!(
+        page.items.iter().all(|i| i.role != "host"),
+        "lineage-only ingress must not surface host-role rows"
+    );
+    let user_item = page
+        .items
+        .iter()
+        .find(|i| i.role == "user")
+        .expect("user row");
+    assert_eq!(
+        user_item.user_speaker_kind.as_deref(),
+        Some("ingress"),
+        "user_item={user_item:?}"
+    );
+}
+
 /// Static guard: any deployment handler that reverts to `block_in_place`
 /// would re-introduce the probe-starvation bug. Only the `deploy_in_flight_*`
 /// integration test currently exercises the `/deploy` path; this check covers

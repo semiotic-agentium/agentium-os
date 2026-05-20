@@ -126,7 +126,7 @@ mod discover_stub {
     }
 }
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use baml_rt_conversation::view::SessionStepOp;
 use baml_rt_core::{
@@ -135,6 +135,7 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{
     CallScope, ProvEvent, ProvenanceContextReader, ProvenanceWriter, SurrealStoreBuilder,
+    prepare_ref_table_for_projection,
 };
 use baml_rt_tools::{
     archive_read::{ShortRef, format_session_read_from_vtable, render_to_lines},
@@ -237,18 +238,24 @@ async fn conversation_history_renders_like_ctx_tags() {
     };
     let session_id = "session-abc123".to_string();
 
-    let tables: ContextRefTables = ContextRefTables::new();
-    let ref_table = get_or_create_ref_table(&tables, &ctx_key);
     let lines_content = render_to_lines(&result_payload);
     let entry = ArchiveEntry::new(
         lines_content,
         tool_name.clone(),
         Some("found 2 agents".into()),
-        String::new(),
+        tool_send_anchor.as_str().to_string(),
         "tool_result".to_string(),
     );
-    let short_at1 = ShortRef::new(1);
-    ref_table.insert_virtual_archive(1, entry.clone());
+    let short_at1 = store
+        .archive_allocate_and_put(
+            &context_id,
+            &agent_id,
+            tool_send_anchor.as_str(),
+            entry.clone(),
+        )
+        .await
+        .expect("durable archive body");
+    let tables: ContextRefTables = ContextRefTables::new();
     let archive_ref = short_at1.to_string();
     let header = entry.display_header(short_at1);
 
@@ -324,6 +331,11 @@ async fn conversation_history_renders_like_ctx_tags() {
         .collect();
 
     let registry = discover_stub::registry();
+    let ref_table =
+        prepare_ref_table_for_projection(&store, &context_id, &projection_items, &registry)
+            .await
+            .expect("graph-backed ref table");
+    tables.insert(ctx_key.clone(), Arc::clone(&ref_table));
     let reader = make_archive_reader(tables, ctx_key);
     let history = project_prompt_context(projection_items, &registry, &ref_table, Some(&reader));
 

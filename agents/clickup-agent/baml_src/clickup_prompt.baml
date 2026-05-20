@@ -21,7 +21,7 @@ class ClickUpIntent {
   operation_kind "read" | "write" | "delete" @description("Broad category: read (list/get), write (create/update), delete.")
 }
 
-function InferClickUpIntent(user_message: string) -> NeedClarification | NotRelevant | ClickUpIntent {
+function InferClickUpIntent() -> NeedClarification | NotRelevant | ClickUpIntent {
   client DefaultClient
   prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
@@ -35,6 +35,8 @@ Tool and operation types:
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+Current step instructions:
+
 Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
@@ -61,6 +63,9 @@ You are the intent classifier for a ClickUp workspace assistant.
     - "list tasks assigned to me" → list tasks assigned to me, operation_kind "read"
     - "create a task called Deploy v2 in the backend list" → create that task, operation_kind "write"
     - "delete the task fix login bug" → delete that task, operation_kind "delete"
+    - Host lifecycle ingress batches (clickup-created / clickup-terminal / clickup-removed record keys) →
+      reconcile via read or write tool passes; prefer "read" to verify new or terminal tasks, "write" only when
+      an explicit update is required; NEVER not_relevant when the message describes ClickUp lifecycle records.
     - "do the thing" → ask which task or workspace they mean
     - "send an email to my boss" → not relevant to ClickUp tasks or workspaces
     - "what is the weather?" → not relevant to ClickUp tasks or workspaces
@@ -73,8 +78,7 @@ You are the intent classifier for a ClickUp workspace assistant.
     "fetch the data", "use tool calls to finish"), carry forward the SAME intent and
     operation_kind as the prior turn — do NOT ask again.
 
-    {{ _.role('user') }}
-    {{ user_message }}
+    Classify from Session history above (host ingress poll and per-unit task lines).
 
 {{ ctx.output_format }}
 
@@ -104,6 +108,8 @@ Tool and operation types:
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+Current step instructions:
+
 Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
@@ -175,8 +181,6 @@ function ChooseClickUpAction(
     Results from previous steps (use IDs and data from here):
     {{ prior_results }}
     {% endif %}
-
-    session_context: {{ session_context }}
   "#
 }
 

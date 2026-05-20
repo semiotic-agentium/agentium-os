@@ -8,13 +8,13 @@ import {
   writeEventConsoleRoute,
 } from "../composables/useEventConsole";
 import {
-  buildOperatorDispatchTraceMessages,
-  dispatchedScopeMatchesAgent,
+  buildOperatorPublishTraceMessages,
+  publishedScopeMatchesAgent,
   resolveObservationScope,
-  scopeFromAck,
   scopeFromContextId,
   scopeFromDraftScope,
   scopeFromRecord,
+  transcriptHasHostIngress,
 } from "./dispatchObserve";
 import { deriveDispatchEnvelope } from "./messageShapes";
 
@@ -134,7 +134,7 @@ const coordinatorAgent = {
 describe("resolveObservationScope", () => {
   it("prefers draft continue-context over last dispatched scope for the same agent", () => {
     const resolved = resolveObservationScope({
-      lastDispatchedScope: {
+      lastPublishedScope: {
         contextId: "ctx-dispatch",
         agentPackage: "coordinator-agent",
         agentInstanceId: "default",
@@ -144,7 +144,7 @@ describe("resolveObservationScope", () => {
         context_id: "ctx-draft",
       },
       selectedContextId: "ctx-history",
-      previewRequest: { context_id: "ctx-preview" },
+      previewProducedEvent: { context_id: "ctx-preview" },
       currentAgent: coordinatorAgent,
       mode: "compose",
     });
@@ -153,7 +153,7 @@ describe("resolveObservationScope", () => {
 
   it("ignores last dispatched scope from another agent and uses draft scope", () => {
     const resolved = resolveObservationScope({
-      lastDispatchedScope: {
+      lastPublishedScope: {
         contextId: "ctx-notion",
         agentPackage: "support",
         agentInstanceId: "notion",
@@ -163,7 +163,7 @@ describe("resolveObservationScope", () => {
         context_id: "ctx-coordinator",
       },
       selectedContextId: "ctx-notion",
-      previewRequest: null,
+      previewProducedEvent: null,
       currentAgent: coordinatorAgent,
       mode: "compose",
     });
@@ -175,28 +175,22 @@ describe("resolveObservationScope", () => {
       scopeFromRecord({ context_id: "ctx-1", message_id: "msg-1" })?.contextId,
     ).toBe("ctx-1");
     const resolved = resolveObservationScope({
-      lastDispatchedScope: null,
+      lastPublishedScope: null,
       draftScope: { kind: "new_context" },
       selectedContextId: "ctx-history",
-      previewRequest: { context_id: "ctx-preview" },
+      previewProducedEvent: { context_id: "ctx-preview" },
       currentAgent: coordinatorAgent,
       mode: "compose",
     });
     expect(resolved?.contextId).toBe("ctx-preview");
   });
 
-  it("merges ack context_id", () => {
-    expect(
-      scopeFromAck({ accepted: true, context_id: "ctx-ack" })?.contextId,
-    ).toBe("ctx-ack");
-  });
-
   it("does not use toolbar selected context in compose mode", () => {
     const resolved = resolveObservationScope({
-      lastDispatchedScope: null,
+      lastPublishedScope: null,
       draftScope: { kind: "new_context" },
       selectedContextId: "ctx-stale-picker",
-      previewRequest: null,
+      previewProducedEvent: null,
       currentAgent: coordinatorAgent,
       mode: "compose",
     });
@@ -220,16 +214,16 @@ describe("scopeFromDraftScope", () => {
   });
 });
 
-describe("dispatchedScopeMatchesAgent", () => {
+describe("publishedScopeMatchesAgent", () => {
   it("matches when agent fields are absent (legacy)", () => {
     expect(
-      dispatchedScopeMatchesAgent({ contextId: "ctx-1" }, coordinatorAgent),
+      publishedScopeMatchesAgent({ contextId: "ctx-1" }, coordinatorAgent),
     ).toBe(true);
   });
 
   it("rejects scope tagged for a different agent", () => {
     expect(
-      dispatchedScopeMatchesAgent(
+      publishedScopeMatchesAgent(
         {
           contextId: "ctx-1",
           agentPackage: "support",
@@ -244,10 +238,10 @@ describe("dispatchedScopeMatchesAgent", () => {
 describe("resolveObservationScope history", () => {
   it("uses selected context when no dispatch scope", () => {
     const resolved = resolveObservationScope({
-      lastDispatchedScope: null,
+      lastPublishedScope: null,
       draftScope: { kind: "new_context" },
       selectedContextId: "ctx-history",
-      previewRequest: null,
+      previewProducedEvent: null,
       currentAgent: coordinatorAgent,
       mode: "history",
     });
@@ -256,25 +250,49 @@ describe("resolveObservationScope history", () => {
   });
 });
 
-describe("buildOperatorDispatchTraceMessages", () => {
-  it("includes operator dispatch and agent ack", () => {
-    const rows = buildOperatorDispatchTraceMessages({
+describe("buildOperatorPublishTraceMessages", () => {
+  it("includes operator publish and outcome summary", () => {
+    const rows = buildOperatorPublishTraceMessages({
       agentPackage: "pkg",
       agentInstanceId: "default",
       messageShape: undefined,
       envelope: {
-        routingKey: "clickup:intake",
+        routingKey: "event:intake",
         messageType: "host.source-records.v1",
         sourceKind: "clickup",
         sourceKey: "clickup:list-1",
       },
-      ack: { accepted: true, detail: "noop" },
-      dispatchError: null,
+      outcome: {
+        subscribers_matched: 2,
+        subscribers_accepted: 2,
+        failures: [],
+      },
+      publishError: null,
     });
     expect(rows).toHaveLength(2);
     expect(rows[0]?.role).toBe("user");
     expect(rows[1]?.role).toBe("agent");
-    expect(rows[1]?.text).toContain("Accepted");
+    expect(rows[1]?.text).toContain("Published 2/2");
+  });
+});
+
+describe("transcriptHasIngressUserRows", () => {
+  it("detects ingress poll/unit user row ids", () => {
+    expect(
+      transcriptHasHostIngress([
+        {
+          id: "prov-user-ingress-poll-user:ctx:msg",
+          role: "user",
+          text: "1. Investigate publish ingress",
+          timestamp: new Date(),
+        },
+      ]),
+    ).toBe(true);
+    expect(
+      transcriptHasHostIngress([
+        { id: "x", role: "user", text: "hello", timestamp: new Date() },
+      ]),
+    ).toBe(false);
   });
 });
 

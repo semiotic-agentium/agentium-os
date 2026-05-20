@@ -38,6 +38,8 @@ pub mod a2a {
     pub const ROLE: &str = "a2a:role";
     pub const CONTENT: &str = "a2a:content";
     pub const DIRECTION: &str = "a2a:direction";
+    /// Who spoke on a user transcript row (`human` | `relay` | `ingress`). See `user_speaker_kinds`.
+    pub const USER_SPEAKER_KIND: &str = "a2a:user_speaker_kind";
     pub const METADATA: &str = "a2a:metadata";
     pub const PHASE: &str = "a2a:phase";
     pub const RESULT: &str = "a2a:result";
@@ -94,6 +96,17 @@ pub mod a2a {
     pub const TIMESTAMP_MS: &str = "a2a:timestamp_ms";
     /// Monotonic event counter parsed from the activity anchor at write time.
     pub const EVENT_ORDER: &str = "a2a:event_order";
+    /// Host ingress transcript discriminator (`source_poll_recorded` | `dispatch_accepted`).
+    pub const HOST_INGRESS_KIND: &str = "a2a:host_ingress_kind";
+    /// Host dispatch target (`HostDispatchAccepted`).
+    pub const HOST_INGRESS_TARGET_PACKAGE: &str = "a2a:host_ingress_target_package";
+    pub const HOST_INGRESS_TARGET_INSTANCE: &str = "a2a:host_ingress_target_instance";
+    /// Host source poll identity (`HostSourcePollRecorded`).
+    pub const HOST_INGRESS_SOURCE_KIND: &str = "a2a:host_ingress_source_kind";
+    pub const HOST_INGRESS_SOURCE_KEY: &str = "a2a:host_ingress_source_key";
+    pub const HOST_INGRESS_RECORD_COUNT: &str = "a2a:host_ingress_record_count";
+    /// Routing key on host dispatch (`HostDispatchAccepted`).
+    pub const HOST_INGRESS_ROUTING_KEY: &str = "a2a:host_ingress_routing_key";
     pub const DELEGATION_TARGET: &str = "a2a:delegation_target";
     pub const FAILURE_CLASS: &str = "a2a:failure_class";
     pub const FAILURE_EVIDENCE: &str = "a2a:failure_evidence";
@@ -262,6 +275,13 @@ pub mod agent_types {
 pub mod message_directions {
     pub const RECEIVED: &str = "received";
     pub const SENT: &str = "sent";
+}
+
+/// Wire values for [`a2a::USER_SPEAKER_KIND`](a2a::USER_SPEAKER_KIND) on user transcript rows.
+pub mod user_speaker_kinds {
+    pub const HUMAN: &str = "human";
+    pub const RELAY: &str = "relay";
+    pub const INGRESS: &str = "ingress";
 }
 
 pub mod a2a_relations {

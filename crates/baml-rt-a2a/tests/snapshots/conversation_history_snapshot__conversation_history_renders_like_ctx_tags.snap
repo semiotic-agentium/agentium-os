@@ -5,11 +5,11 @@ expression: history
 [
   {
     "role": "user",
-    "content": "#2 what can you do"
+    "content": "#1 what can you do"
   },
   {
     "role": "tool",
-    "content": "#3 discover_agents query=\"all\""
+    "content": "#2 discover_agents query=\"all\""
   },
   {
     "role": "tool",

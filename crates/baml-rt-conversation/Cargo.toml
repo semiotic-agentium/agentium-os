@@ -11,6 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 baml-rt-core = { path = "../baml-rt-core" }
+baml-rt-vocabulary = { path = "../baml-rt-vocabulary" }
 baml-rt-embedding = { path = "../baml-rt-embedding" }
 baml-rt-tools = { path = "../baml-rt-tools" }
 serde = { workspace = true }

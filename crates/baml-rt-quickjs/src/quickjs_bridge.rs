@@ -17,7 +17,8 @@ use std::{
 };
 
 use baml_rt_core::{
-    BamlRtError, Result, bus::EffectLiveness, context::InvocationScope, correlation,
+    BamlRtError, HostIngressRecorder, Result, bus::EffectLiveness, context::InvocationScope,
+    correlation,
 };
 use dashmap::DashMap;
 use quickjs_runtime::{
@@ -30,6 +31,7 @@ use tokio::sync::{Mutex, RwLock, Semaphore, mpsc};
 use crate::baml::BamlRuntimeManager;
 
 mod baml_registration;
+mod dispatch_ingress;
 pub(crate) use baml_registration::ExecutionSession;
 mod eval;
 mod invocation;
@@ -104,6 +106,10 @@ pub struct QuickJSBridge {
     /// so the probe's lifetime tracks the bridge that hosts the thread it
     /// observes; dropped automatically on undeploy.
     progress_probe: Option<Arc<crate::JsEventLoopProbe>>,
+    /// Poll/unit provenance writes for `withTask` preludes (runner-provided).
+    host_ingress_recorder: Option<Arc<dyn HostIngressRecorder>>,
+    /// Stack of invocation context ids pushed by `__dispatch_enter_unit_task`.
+    dispatch_unit_frames: Arc<std::sync::Mutex<Vec<InvocationContextId>>>,
 }
 
 impl QuickJSBridge {
@@ -194,6 +200,8 @@ impl QuickJSBridge {
             next_stream_session_id: AtomicU64::new(1),
             execution_sessions: Arc::new(DashMap::new()),
             progress_probe: None,
+            host_ingress_recorder: config.host_ingress_recorder.clone(),
+            dispatch_unit_frames: Arc::new(std::sync::Mutex::new(Vec::new())),
         };
 
         // Initialize sandbox - remove dangerous globals and implement safe console
@@ -272,6 +280,12 @@ impl QuickJSBridge {
     /// Arc to the in-flight counter (for registration closures). Use `in_flight_invoke_count()` for the current count.
     pub(crate) fn in_flight_invoke_count_arc(&self) -> &InFlightCounter {
         &self.in_flight_invoke_count
+    }
+    pub(crate) fn host_ingress_recorder(&self) -> &Option<Arc<dyn HostIngressRecorder>> {
+        &self.host_ingress_recorder
+    }
+    pub(crate) fn dispatch_unit_frames(&self) -> &Arc<std::sync::Mutex<Vec<InvocationContextId>>> {
+        &self.dispatch_unit_frames
     }
     pub(crate) fn stream_sessions(&self) -> &StreamSessionMap {
         &self.stream_sessions
@@ -371,6 +385,7 @@ impl QuickJSBridge {
         self.register_await_helper().await?;
         self.register_step_executor_runtime_helpers().await?;
         self.register_execution_session_helper().await?;
+        dispatch_ingress::register_dispatch_ingress_helpers(self).await?;
 
         // Session-aware natives for stream paths (resolve scope from session map).
         self.register_baml_invoke_session_helper().await?;

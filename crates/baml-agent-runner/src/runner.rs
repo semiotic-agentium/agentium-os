@@ -118,12 +118,14 @@ pub(crate) struct AgentRunner {
     pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
     /// When set, wrapped provenance writes notify the operator `/conversation-history` stream after commit.
     pub(crate) conversation_history_notify: Option<broadcast::Sender<ConversationHistoryUpdate>>,
+    pub(crate) host_ingress_recorder: Arc<dyn baml_rt_core::HostIngressRecorder>,
 }
 
 impl AgentRunner {
     pub(crate) fn new(config: AgentRunnerConfig) -> baml_rt_core::Result<Self> {
         let routed_agents = std::sync::RwLock::new(HashMap::new());
         let internal_a2a_router = Arc::new(InternalA2aRouter::new());
+        let provenance_store = config.provenance_config.store().clone();
         Ok(Self {
             agents: RwLock::new(HashMap::new()),
             provenance_config: config.provenance_config,
@@ -142,7 +144,14 @@ impl AgentRunner {
             sandbox_bind_roots: config.sandbox_bind_roots,
             runtime_progress: config.runtime_progress,
             conversation_history_notify: config.conversation_history_notify,
+            host_ingress_recorder: Arc::new(crate::services::HostIngressRecorderImpl::new(
+                provenance_store,
+            )),
         })
+    }
+
+    pub(crate) fn host_ingress_recorder(&self) -> Arc<dyn baml_rt_core::HostIngressRecorder> {
+        self.host_ingress_recorder.clone()
     }
 
     pub(crate) fn external_tools_dirs(&self) -> &[std::path::PathBuf] {
@@ -627,14 +636,28 @@ impl AgentRunner {
             })?
         };
         let link_event = callback_dispatch_context_link_event(&request, routed_agent.agent_id());
+        let agent_package = key.agent_package.as_str().to_string();
+        let agent_instance = key.agent_instance_id.as_str().to_string();
+        let dispatch_snapshot = request.clone();
         let ack = routed_agent.handle_dispatch(request).await?;
-        if ack.accepted
-            && let Some(event) = link_event
-        {
-            routed_agent
-                .provenance_writer()
-                .add_event_with_logging(event, "runner callback dispatch context link")
-                .await;
+        if ack.accepted {
+            if let Err(err) = self
+                .host_ingress_recorder
+                .record_dispatch_accepted(
+                    &dispatch_snapshot,
+                    agent_package.as_str(),
+                    agent_instance.as_str(),
+                )
+                .await
+            {
+                tracing::warn!(error = %err, "host dispatch accepted provenance write failed");
+            }
+            if let Some(event) = link_event {
+                routed_agent
+                    .provenance_writer()
+                    .add_event_with_logging(event, "runner callback dispatch context link")
+                    .await;
+            }
         }
         Ok(ack)
     }

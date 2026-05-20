@@ -2296,6 +2296,14 @@ body {
   border-left: 3px solid color-mix(in srgb, var(--text-muted) 70%, var(--primary));
 }
 
+.message-row--ingress .bubble.user {
+  border-left: 3px solid color-mix(in srgb, var(--text-muted) 55%, var(--warning, #c9a227));
+}
+
+.speaker-kind-badge--ingress {
+  color: color-mix(in srgb, var(--text-secondary) 90%, var(--warning, #c9a227));
+}
+
 .speaker-kind-badge {
   display: inline-block;
   margin-bottom: 6px;

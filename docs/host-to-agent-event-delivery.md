@@ -35,7 +35,7 @@ Agents declare subscriptions in `manifest.json` under `discovery.subscriptions`:
   "discovery": {
     "subscriptions": [
       {
-        "schema_versions": ["task-daemon.interpretation.v1"],
+        "schema_versions": ["host.source-records.v1"],
         "source_kinds": ["slack", "clickup"]
       }
     ]
@@ -61,7 +61,7 @@ The host delivers events to agents via `AgentDispatchRequest`:
 ```rust
 pub struct AgentDispatchRequest {
     pub routing_key: AgentDispatchRoutingKey,  // e.g. "slack:intake"
-    pub message_type: EventSchemaVersion,       // e.g. "task-daemon.interpretation.v1"
+    pub message_type: EventSchemaVersion,       // e.g. "host.source-records.v1"
     pub messages: Vec<Value>,                   // opaque event payloads
     pub context_id: Option<ContextId>,          // continue existing context
     pub task_id: Option<TaskId>,                // continue existing task
@@ -72,9 +72,15 @@ pub struct AgentDispatchRequest {
 
 The agent responds with `AgentDispatchAck { accepted: bool, detail: Option<String> }`.
 
-**HTTP endpoint**: `POST /agents/{pkg}/{inst}/dispatch`
+**HTTP endpoint**: `POST /agents/{pkg}/{inst}/dispatch` (single-agent delivery; programmatic and callback paths).
 
-See `crates/baml-rt-core/src/dispatch.rs` for types and `crates/baml-rt-api/src/handlers.rs` for the HTTP handler.
+**Publish ingress**: `POST /events/publish` accepts a `ProducedEvent`, records `HostSourcePollRecorded` in provenance, matches all deployed agent subscriptions, and fans out dispatch to each subscriber (recording `HostDispatchAccepted` per accept). This is the same path **task-daemon** and the **Event Console** use.
+
+See `crates/baml-rt-core/src/dispatch.rs` for types and `crates/baml-rt-api/src/handlers.rs` for the HTTP handlers.
+
+## Event Console (operator simulate)
+
+The web **Event Console** validates drafts via `POST /event-dispatch/validate` (returns `preview_produced_event`) and publishes via `POST /events/publish` — not direct per-agent dispatch. Operator evidence is the **conversation-history transcript** at the pinned `context_id`: graph-backed `Message` rows with role `host` for poll and dispatch-accept lines (`Host source poll: …`, `Host dispatch accepted: …`), then agent A2A rows as they arrive.
 
 ## Agent Handler
 
@@ -94,14 +100,16 @@ __chat_register({
 
 The runtime wires `onDispatch` onto `globalThis`. When a dispatch request arrives, the runtime calls the agent's `onDispatch` handler directly, bypassing the A2A conversational path.
 
-### Reference Fixtures
+### Reference Fixtures and Product Agents
 
 - **`dispatch-echo`** (`tests/fixtures/agents/dispatch-echo/`): Minimal dispatch handler that echoes routing key and message count.
+- **`slack-agent`** (`agents/slack-agent/`): Subscribes to `host.source-records.v1` / `slack`; semantic ingress may delegate PM work via `system/internal_a2a`.
+- **`clickup-agent`** (`agents/clickup-agent/`): Subscribes to `host.source-records.v1` / `clickup`; `onDispatch` parses `ClickupSourceRecordsBatch` lifecycle rows and reuses the same BAML rail as chat (`InferClickUpIntent` → `PlanClickUpWork` → `ChooseClickUpAction`).
 - **`task-lifecycle-demo`** (`tests/fixtures/agents/task-lifecycle-demo/`): Full conversational lifecycle with both `run` and `onDispatch`.
 
 ## Provenance
 
-Dispatch requests carry optional `context_id`, `task_id`, and `message_id` for provenance threading. The A2A transport layer creates scope from these fields via `scope_from_dispatch_request` in `crates/baml-rt-a2a/src/a2a_transport.rs`.
+`HostSourcePollRecorded` and `HostDispatchAccepted` are **event-level** lineage only (ops/Mermaid), not duplicate transcript rows. Actionable poll text is a normal `user` `Message` at `POST /events/publish` (`record_ingress_poll_user_message`). Each `withTask` prelude writes a task-scoped `user` line for the unit’s `records` slice. Dispatch requests carry optional `context_id`, `task_id`, and `message_id`; scope is built via `invocation_scope_for_agent_dispatch` in `crates/baml-rt-core/src/dispatch.rs`.
 
 For **`system/callback`** detached continuation, the host mints a **child** dispatch `context_id` / `task_id` on the emitted event while storing the **scheduling** A2A scope separately. Callback delivery deferral uses **only** the scheduling scope (with `requesting_agent_id`), not the minted dispatch ids. When dispatch is accepted, the runner may record a provenance link from the dispatch task to the scheduling task (`WAS_SCHEDULED_FROM`); see `crates/baml-rt-provenance/PROV_MAPPING.md`.
 
@@ -114,7 +122,7 @@ Two system tools surface event-related metadata:
 
 ## Current State
 
-The **task-daemon** is the first event producer. It polls external sources (Slack, ClickUp, GitHub) and produces `task-daemon.interpretation.v1` events, dispatching them to subscribed agents.
+The **task-daemon** polls external sources (Slack, ClickUp, GitHub) and publishes `host.source-records.v1` via `POST /events/publish`. The runner records provenance and dispatches to agents subscribed on `event:intake`. **`clickup-agent`** is the production subscriber for `source_kinds: ["clickup"]` and processes lifecycle batches in `onDispatch` without requiring a separate ingress-only package.
 
 Production tools can now declare `event_sources` in their metadata and register host-managed producers through inventory. `support/slack` is the first production tool wired through the generic producer path, while `internal-dev/get_weather` remains the minimal metadata/discovery example.
 
@@ -122,12 +130,12 @@ Production tools can now declare `event_sources` in their metadata and register 
 
 Slack is a good example of the boundary this system is trying to enforce:
 
-1. The host-managed `support/slack` producer polls configured channels and emits raw `host.source-records.v1`.
-2. Semantic ingress receives those raw records and groups them into conversation units, typically by `thread_ts` or root message timestamp.
-3. When a conversation looks work-like but the raw batch is incomplete, `slack-agent` source ingress can call `support/slack` as a normal host tool to fetch thread replies before deriving work.
-4. Only after that interpretation step should downstream work be created or delegated.
+1. The host-managed `support/slack` producer polls configured channels and emits raw `host.source-records.v1` (plus one poll `user` history line for the batch).
+2. `slack-agent` `onDispatch` groups raw records into conversation units and calls `withTask({ unitKey, records })` per unit — **no host enrichment** of those records.
+3. Inside each unit handler, the agent runs BAML (`InferSlackIntent`, planning) against `conversation_transcript` and may open `support/slack` tool sessions when the model needs thread replies or history.
+4. Downstream PM delegation happens only after agent BAML/tool steps, not from host-side pre-interpretation.
 
-That means the raw poll batch is not itself the work unit. The work unit is the interpreted conversation.
+The raw poll batch is often not the work unit; the work unit is one conversation slice per `withTask`, with meaning produced by the agent’s LLM and tools.
 
 The coordinator is still downstream of this flow. It is not the universal raw-event sink.
 

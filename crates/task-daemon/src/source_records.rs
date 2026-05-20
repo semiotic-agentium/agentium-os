@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use baml_rt_core::{
-    DispatchMetadata, EventSourceKind, ProducedEvent, clock_events,
+    DispatchMetadata, EventSourceKind, HostPollLineage, ProducedEvent, clock_events,
     event_subscription::EventSourceKey, host_wire::wire,
 };
 use baml_tools_clickup::{
@@ -12,10 +12,9 @@ use baml_tools_github::{
     GithubIssueRecordInput, GithubIssuesProjectContext, batch_from_issue_records,
 };
 use baml_tools_slack::{normalize::normalize_polling_batch, slack_history_row_value};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::{
-    contract::ContractProvenance,
     daemon::SourcePoll,
     model::{InvestigationTask, ProjectContext, SlackMessage, TaskSourceKind},
 };
@@ -126,7 +125,7 @@ fn github_issue_inputs(tasks: &[InvestigationTask]) -> Result<Vec<GithubIssueRec
 pub fn poll_to_produced_event(
     poll: &SourcePoll,
     project: &ProjectContext,
-    provenance: Option<ContractProvenance>,
+    lineage: &HostPollLineage,
 ) -> Result<ProducedEvent> {
     let emitted_at_unix = baml_rt_core::now_unix_secs(clock_events::TASK_DAEMON_BATCH);
     let source_key = EventSourceKey::parse(&poll.source_key)
@@ -172,32 +171,25 @@ pub fn poll_to_produced_event(
         }
     };
 
-    let (context_id, task_id, message_id) = provenance_ids(provenance.as_ref());
-    let message_id = message_id.or_else(|| Some(format!("task-daemon-{}", uuid::Uuid::new_v4())));
-    let metadata =
-        Some(DispatchMetadata::task_daemon_publish(wire::HOST_SOURCE_RECORDS_V1).into_value());
+    let mut metadata =
+        DispatchMetadata::task_daemon_publish(wire::HOST_SOURCE_RECORDS_V1).into_value();
+    if let Some(obj) = metadata.as_object_mut() {
+        if let Some(cursor) = &lineage.source_cursor {
+            obj.insert("source_cursor".into(), json!(cursor));
+        }
+        if !lineage.source_message_ts.is_empty() {
+            obj.insert("source_message_ts".into(), json!(lineage.source_message_ts));
+        }
+    }
 
-    let mut event =
-        ProducedEvent::host_source_records(source_kind, source_key, payload, message_id, metadata)
-            .context("building host.source-records produced event")?;
-    event.context_id = context_id;
-    event.task_id = task_id;
-    Ok(event)
-}
-
-fn provenance_ids(
-    provenance: Option<&ContractProvenance>,
-) -> (
-    Option<baml_rt_core::ContextId>,
-    Option<baml_rt_core::TaskId>,
-    Option<String>,
-) {
-    let Some(value) = provenance else {
-        return (None, None, None);
-    };
-    (
-        value.context_id.clone(),
-        value.task_id.clone(),
-        value.correlation_id.as_ref().map(|id| id.to_string()),
+    let mut event = ProducedEvent::host_source_records(
+        source_kind,
+        source_key,
+        payload,
+        Some(lineage.poll_batch_id.clone()),
+        Some(metadata),
     )
+    .context("building host.source-records produced event")?;
+    event.context_id = Some(lineage.context_id.clone());
+    Ok(event)
 }

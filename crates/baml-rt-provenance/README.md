@@ -18,6 +18,7 @@
   - `in_memory_shared()` for shared in-memory execution
 - **Write path**: events are persisted through SurrealQL queries with parameterized bindings.
 - **Read path**: context/tool queries use SurrealQL and return typed runtime structures.
+- **Ref registry**: `history_ref_registry` and `session_ref_counter` persist stable `#N` indices; `archive_body` persists `@N` bodies. In-process `RefTable` / `ContextRefTables` and `TaskUpdateBroadcaster` are **caches or live fan-out only** — rebuild via `hydrate_ref_table` / `prepare_ref_table_for_projection` after restart or on cache miss.
 
 ## Runtime interfaces
 
@@ -28,9 +29,9 @@ The store is consumed through narrow traits:
   - `context_messages(...)`
   - `conversation_context(...)`
 - `ProvenanceQueryApi`: API-facing query surface with the same payload shapes
-- `A2aGraphStore` (re-exported from `baml-rt-vocabulary`): task-subgraph operations used by A2A task/message/update persistence flows. **This is the boundary:** callers pass [TaskSubgraphNode], string ids, and JSON payloads; no wire types.
+- `TaskGraphReader`: graph-only A2A task/message/status surface (no relational shadow tables)
 
-`ProvenanceContextReader` is the strict context path for agent/runtime reads; `ProvenanceQueryApi` is the API query surface.
+`ProvenanceContextReader` is the strict context path for agent/runtime reads; `ProvenanceQueryApi` is the API query surface. SurrealDB uses MVCC — callers await completed writes before agent-context reads; no separate in-process write worker is required.
 
 ## Graph export and rendering
 

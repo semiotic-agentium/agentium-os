@@ -128,7 +128,9 @@ pub fn validate_draft(
 
     let published = build_published_event(body);
     let route_key = AgentRouteKey::new(package.clone(), instance.clone());
-    let matched_subscription = registry
+    let fleet_matches = count_matching_subscribers(registry, &published);
+    let matched_subscription = fleet_matches > 0;
+    let selected_matches = registry
         .list_agents()
         .into_iter()
         .find(|e| {
@@ -143,24 +145,35 @@ pub fn validate_draft(
                 .any(|sub| subscription_matches_event(sub, &published))
         });
 
+    let label = find_message_shape_by_wire(body.message_type.as_str(), body.source_kind.as_deref())
+        .map(|s| s.display_name)
+        .unwrap_or_else(|| body.message_type.clone());
+
     if !matched_subscription {
-        let label =
-            find_message_shape_by_wire(body.message_type.as_str(), body.source_kind.as_deref())
-                .map(|s| s.display_name)
-                .unwrap_or_else(|| body.message_type.clone());
         errors.push(issue(
-            "no_matching_subscription",
+            "no_matching_subscribers",
             format!(
-                "agent has no subscription matching {label} (message_type={}, source_kind={})",
+                "no deployed agent subscribes to {label} (message_type={}, source_kind={})",
                 body.message_type,
                 body.source_kind.as_deref().unwrap_or("—")
             ),
             None,
         ));
+    } else if !selected_matches {
+        warnings.push(issue(
+            "selected_agent_not_matched",
+            format!(
+                "selected agent {}/{} does not subscribe to {label}; publish will fan out to {fleet_matches} subscriber(s)",
+                route_key.agent_package.as_str(),
+                route_key.agent_instance_id.as_str(),
+                fleet_matches = fleet_matches
+            ),
+            None,
+        ));
     }
 
-    let preview_request = if errors.is_empty() {
-        Some(build_dispatch_request_json(body, routing_key, message_type))
+    let preview_produced_event = if errors.is_empty() {
+        Some(build_produced_event_json(body, routing_key, message_type))
     } else {
         None
     };
@@ -171,8 +184,22 @@ pub fn validate_draft(
         matched_subscription,
         errors,
         warnings,
-        preview_request,
+        preview_produced_event,
     )
+}
+
+fn count_matching_subscribers(registry: &dyn AgentRegistry, published: &PublishedEvent) -> usize {
+    registry
+        .list_agents()
+        .iter()
+        .filter(|entry| {
+            entry
+                .agent_card
+                .subscriptions
+                .iter()
+                .any(|sub| subscription_matches_event(sub, published))
+        })
+        .count()
 }
 
 fn subscription_matches_event(sub: &EventSubscription, published: &PublishedEvent) -> bool {
@@ -320,21 +347,33 @@ fn resolve_dispatch_scope(
     }
 }
 
-fn build_dispatch_request_json(
+fn build_produced_event_json(
     body: &EventDispatchValidateRequestDto,
     routing_key: AgentDispatchRoutingKey,
-    message_type: EventSchemaVersion,
+    schema_version: EventSchemaVersion,
 ) -> Value {
     let (context_id, task_id, message_id) = resolve_dispatch_scope(&body.scope, &body.message_id)
         .unwrap_or((None, None, String::new()));
+    let source_kind = body
+        .source_kind
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("unknown");
+    let source_key = body
+        .source_key
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("unknown:unknown");
     json!({
         "routing_key": routing_key.as_str(),
-        "message_type": message_type.as_str(),
+        "schema_version": schema_version.as_str(),
+        "source_kind": source_kind,
+        "source_key": source_key,
         "messages": body.messages,
         "context_id": context_id.map(|c| c.to_string()),
         "task_id": task_id.map(|t| t.to_string()),
         "message_id": message_id,
-        "metadata": body.metadata.clone().unwrap_or_else(|| json!({ "origin": "operator-eval-console" })),
+        "metadata": body.metadata.clone().unwrap_or_else(|| json!({ "origin": "operator-event-console" })),
     })
 }
 
@@ -355,14 +394,14 @@ fn report(
     matched_subscription: bool,
     errors: Vec<EventValidationIssueDto>,
     warnings: Vec<EventValidationIssueDto>,
-    preview_request: Option<Value>,
+    preview_produced_event: Option<Value>,
 ) -> EventValidationReportDto {
     EventValidationReportDto {
         valid,
         matched_subscription,
         errors,
         warnings,
-        preview_request,
+        preview_produced_event,
     }
 }
 
@@ -458,9 +497,9 @@ mod tests {
         assert!(report.valid, "errors={:?}", report.errors);
         assert!(report.matched_subscription);
         let preview = report
-            .preview_request
+            .preview_produced_event
             .as_ref()
-            .expect("valid draft should include preview_request");
+            .expect("valid draft should include preview_produced_event");
         assert!(
             preview.get("context_id").and_then(Value::as_str).is_some(),
             "new_context preview must mint context_id: {preview}"
@@ -468,6 +507,14 @@ mod tests {
         assert!(
             preview.get("message_id").and_then(Value::as_str).is_some(),
             "preview must include message_id: {preview}"
+        );
+        assert_eq!(
+            preview.get("schema_version").and_then(Value::as_str),
+            Some("host.source-records.v1")
+        );
+        assert!(
+            preview.get("routing_key").and_then(Value::as_str).is_some(),
+            "preview must include routing_key: {preview}"
         );
     }
 }

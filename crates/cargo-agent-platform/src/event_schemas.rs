@@ -27,23 +27,19 @@ pub const KNOWN_EVENT_SCHEMAS: &[KnownEventSchema] = &[
         version: "system.callback.v1",
         description: "Durable host-native callback event emitted by system/callback",
     },
-    KnownEventSchema {
-        version: "task-daemon.interpretation.v1",
-        description: "Task daemon interpretation event for compatibility and migration",
-    },
 ];
 
 pub const KNOWN_COMPATIBILITY_SOURCE_KINDS: &[KnownCompatibilitySourceKind] = &[
     KnownCompatibilitySourceKind {
         kind: "slack",
-        description: "Task-daemon compatibility source kind for interpreted Slack events",
+        description: "Slack source records polled by task-daemon",
     },
     KnownCompatibilitySourceKind {
         kind: "clickup",
-        description: "Task-daemon compatibility source kind for interpreted ClickUp events",
+        description: "ClickUp lifecycle source records polled by task-daemon",
     },
     KnownCompatibilitySourceKind {
         kind: "github_issues",
-        description: "Task-daemon compatibility source kind for interpreted GitHub Issues events",
+        description: "GitHub issue source records polled by task-daemon",
     },
 ];

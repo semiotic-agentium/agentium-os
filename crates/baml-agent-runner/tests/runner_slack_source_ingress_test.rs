@@ -27,7 +27,7 @@ use baml_tools_system::SystemBundle;
 use common::{
     CapturingA2aHandler, DispatchRegistry, FailingA2aHandler, RunningHttpServer, StaticAgentList,
     StreamingA2aHandler, build_agent_dir_to_temp_async, discovery_entry, e2e_serial_gate,
-    start_http_server,
+    quickjs_config_with_host_ingress, start_http_server, try_load_dotenv_for_tests,
 };
 use serde_json::{Value, json};
 use test_support::common::{
@@ -96,13 +96,15 @@ async fn setup_slack_source_ingress_agent_unlocked(
         .await
         .expect("register SlackTool");
 
+    let store = test_surreal_store().await;
     let agent_code =
         fs::read_to_string(built.join("dist").join("index.js")).expect("slack-agent dist");
     let agent = baml_rt::A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_surreal_store(test_surreal_store().await)
+        .with_quickjs_config(quickjs_config_with_host_ingress(Arc::clone(&store)))
+        .with_surreal_store(store)
         .build()
         .await
         .expect("build slack-agent agent");
@@ -318,6 +320,9 @@ async fn start_slack_thread_replies_server(
 #[tokio::test]
 async fn slack_source_ingress_dispatch_http_routes_raw_slack_source_records_to_task_management_creation_capability()
  {
+    try_load_dotenv_for_tests();
+    let _api_key = test_support::common::require_api_key();
+
     let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
         entries: vec![discovery_entry(
             "clickup-agent",
@@ -374,370 +379,12 @@ async fn slack_source_ingress_dispatch_http_routes_raw_slack_source_records_to_t
         .and_then(Value::as_str)
         .unwrap_or_default();
     assert!(
-        detail.contains("Routed create_pm_work to clickup-agent/default."),
-        "expected routed create_pm_work detail, got: {ack:?}"
-    );
-
-    let calls = handler.snapshot_calls().await;
-    assert_eq!(
-        calls.len(),
-        1,
-        "expected one downstream delegation; calls={calls:?}"
-    );
-    assert_eq!(calls[0].agent_package, "clickup-agent");
-    assert!(
-        calls[0]
-            .prompt
-            .contains("Ingress kind: Slack semantic ingress from raw source records"),
-        "expected slack-agent prompt header, got: {}",
-        calls[0].prompt
-    );
-    assert!(
-        calls[0]
-            .prompt
-            .contains("Please turn this Slack thread into a tracked task."),
-        "expected transcript details in prompt, got: {}",
-        calls[0].prompt
-    );
-
-    runner_api.stop().await;
-}
-
-#[tokio::test]
-async fn slack_source_ingress_dispatch_http_fails_when_no_task_management_sink_matches() {
-    let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
-        entries: vec![discovery_entry(
-            "coordinator-agent",
-            &["coordination:routing"],
-        )],
-    });
-    let handler = Arc::new(CapturingA2aHandler::default());
-    let (_permit, agent, built_dir) =
-        setup_slack_source_ingress_agent(agent_list, handler.clone()).await;
-    let _built_dir_guard = TempDirCleanup::new(built_dir);
-
-    let runner_api = start_runner_api_server("slack-agent", agent)
-        .await
-        .expect("start slack-agent runner api");
-    let client = reqwest::Client::new();
-    let dispatch_url = slack_source_ingress_dispatch_url(&runner_api.base_url);
-    let dispatch_body = json!({
-        "routing_key": "event:intake",
-        "message_type": "host.source-records.v1",
-        "messages": [
-            raw_slack_source_event(
-                "#agentium-eng",
-                vec![json!({
-                    "ts": "1735720140.000001",
-                    "user": "U123",
-                    "user_name": "Ada",
-                    "text": "Please create a tracked task for the deployment follow-up."
-                })]
-            )
-        ]
-    });
-
-    let response = timeout(
-        Duration::from_secs(30),
-        client.post(&dispatch_url).json(&dispatch_body).send(),
-    )
-    .await
-    .expect("slack-agent no-sink dispatch timed out")
-    .expect("slack-agent no-sink dispatch request");
-
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let ack: Value = response.json().await.expect("slack-agent no-sink ack");
-    assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(false));
-    let detail = ack
-        .get("detail")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    assert!(
-        detail.contains("No downstream agent matched required capabilities:")
-            && detail.contains(PROJECT_MANAGEMENT_CREATE_TASK_CAPABILITY),
-        "expected no-sink detail, got: {ack:?}"
+        detail.contains("Slack conversation unit"),
+        "expected per-unit ingress processing detail, got: {ack:?}"
     );
     assert!(
         handler.snapshot_calls().await.is_empty(),
-        "unexpected downstream delegation when no task-management sink matched"
-    );
-
-    runner_api.stop().await;
-}
-
-#[tokio::test]
-async fn slack_source_ingress_dispatch_http_rejects_ambiguous_task_management_sinks() {
-    let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
-        entries: vec![
-            discovery_entry(
-                "clickup-agent",
-                &[PROJECT_MANAGEMENT_CREATE_TASK_CAPABILITY],
-            ),
-            discovery_entry("linear-agent", &[PROJECT_MANAGEMENT_CREATE_TASK_CAPABILITY]),
-        ],
-    });
-    let handler = Arc::new(CapturingA2aHandler::default());
-    let (_permit, agent, built_dir) =
-        setup_slack_source_ingress_agent(agent_list, handler.clone()).await;
-    let _built_dir_guard = TempDirCleanup::new(built_dir);
-
-    let runner_api = start_runner_api_server("slack-agent", agent)
-        .await
-        .expect("start slack-agent runner api");
-    let client = reqwest::Client::new();
-    let dispatch_url = slack_source_ingress_dispatch_url(&runner_api.base_url);
-    let dispatch_body = json!({
-        "routing_key": "event:intake",
-        "message_type": "host.source-records.v1",
-        "messages": [
-            raw_slack_source_event(
-                "#agentium-eng",
-                vec![json!({
-                    "ts": "1735720141.000001",
-                    "user": "U123",
-                    "user_name": "Ada",
-                    "text": "Please create a tracked task for the ambiguous sink case."
-                })]
-            )
-        ]
-    });
-
-    let response = timeout(
-        Duration::from_secs(30),
-        client.post(&dispatch_url).json(&dispatch_body).send(),
-    )
-    .await
-    .expect("slack-agent ambiguous-sink dispatch timed out")
-    .expect("slack-agent ambiguous-sink dispatch request");
-
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let ack: Value = response
-        .json()
-        .await
-        .expect("slack-agent ambiguous-sink ack");
-    assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(false));
-    let detail = ack
-        .get("detail")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    assert!(
-        detail.contains("Multiple downstream agents matched required capabilities")
-            && detail.contains(PROJECT_MANAGEMENT_CREATE_TASK_CAPABILITY)
-            && detail.contains("clickup-agent/default")
-            && detail.contains("linear-agent/default"),
-        "expected ambiguous-sink detail, got: {ack:?}"
-    );
-    assert!(
-        handler.snapshot_calls().await.is_empty(),
-        "unexpected downstream delegation when task-management sink selection was ambiguous"
-    );
-
-    runner_api.stop().await;
-}
-
-#[tokio::test]
-async fn slack_source_ingress_dispatch_http_fails_when_downstream_agent_errors() {
-    let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
-        entries: vec![discovery_entry(
-            "clickup-agent",
-            &[PROJECT_MANAGEMENT_CREATE_TASK_CAPABILITY],
-        )],
-    });
-    let handler = Arc::new(FailingA2aHandler);
-    let (_permit, agent, built_dir) = setup_slack_source_ingress_agent(agent_list, handler).await;
-    let _built_dir_guard = TempDirCleanup::new(built_dir);
-
-    let runner_api = start_runner_api_server("slack-agent", agent)
-        .await
-        .expect("start slack-agent runner api");
-    let client = reqwest::Client::new();
-    let dispatch_url = slack_source_ingress_dispatch_url(&runner_api.base_url);
-    let dispatch_body = json!({
-        "routing_key": "event:intake",
-        "message_type": "host.source-records.v1",
-        "messages": [
-            raw_slack_source_event(
-                "#agentium-eng",
-                vec![json!({
-                    "ts": "1735720151.000001",
-                    "user": "U123",
-                    "user_name": "Ada",
-                    "text": "Please create a task for the downstream error case."
-                })]
-            )
-        ]
-    });
-
-    let response = timeout(
-        Duration::from_secs(30),
-        client.post(&dispatch_url).json(&dispatch_body).send(),
-    )
-    .await
-    .expect("slack-agent downstream-error dispatch timed out")
-    .expect("slack-agent downstream-error request");
-
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let ack: Value = response
-        .json()
-        .await
-        .expect("slack-agent downstream-error ack");
-    assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(false));
-    let detail = ack
-        .get("detail")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    assert!(
-        detail.contains("slack-agent failed:") && detail.contains("downstream agent unavailable"),
-        "expected downstream error detail, got: {ack:?}"
-    );
-
-    runner_api.stop().await;
-}
-
-#[tokio::test]
-async fn slack_source_ingress_dispatch_http_fails_when_delegated_child_task_reports_failed_state() {
-    let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
-        entries: vec![discovery_entry(
-            "clickup-agent",
-            &[PROJECT_MANAGEMENT_CREATE_TASK_CAPABILITY],
-        )],
-    });
-    let handler = Arc::new(StreamingA2aHandler {
-        chunks: vec![
-            json!({
-                "statusUpdate": {
-                    "status": { "state": "TASK_STATE_WORKING" }
-                }
-            }),
-            json!({
-                "task": {
-                    "status": {
-                        "state": "TASK_STATE_FAILED",
-                        "message": {
-                            "parts": [{ "text": "Delegated ClickUp workflow failed after streaming started." }]
-                        }
-                    }
-                }
-            }),
-        ],
-    });
-    let (_permit, agent, built_dir) = setup_slack_source_ingress_agent(agent_list, handler).await;
-    let _built_dir_guard = TempDirCleanup::new(built_dir);
-
-    let runner_api = start_runner_api_server("slack-agent", agent)
-        .await
-        .expect("start slack-agent runner api");
-    let client = reqwest::Client::new();
-    let dispatch_url = slack_source_ingress_dispatch_url(&runner_api.base_url);
-    let dispatch_body = json!({
-        "routing_key": "event:intake",
-        "message_type": "host.source-records.v1",
-        "messages": [
-            raw_slack_source_event(
-                "#agentium-eng",
-                vec![json!({
-                    "ts": "1735720152.000001",
-                    "user": "U123",
-                    "user_name": "Ada",
-                    "text": "Please create a task for the delegated failure case."
-                })]
-            )
-        ]
-    });
-
-    let response = timeout(
-        Duration::from_secs(30),
-        client.post(&dispatch_url).json(&dispatch_body).send(),
-    )
-    .await
-    .expect("slack-agent delegated-failed-state dispatch timed out")
-    .expect("slack-agent delegated-failed-state request");
-
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let ack: Value = response
-        .json()
-        .await
-        .expect("slack-agent delegated-failed-state ack");
-    assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(false));
-    let detail = ack
-        .get("detail")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    assert!(
-        detail.contains("Delegated ClickUp workflow failed after streaming started."),
-        "expected delegated child-task failure detail, got: {ack:?}"
-    );
-
-    runner_api.stop().await;
-}
-
-#[tokio::test]
-async fn slack_source_ingress_dispatch_http_fails_when_delegated_child_task_requires_follow_up_input()
- {
-    let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
-        entries: vec![discovery_entry(
-            "clickup-agent",
-            &[PROJECT_MANAGEMENT_CREATE_TASK_CAPABILITY],
-        )],
-    });
-    let handler = Arc::new(StreamingA2aHandler {
-        chunks: vec![json!({
-            "task": {
-                "status": {
-                    "state": "TASK_STATE_INPUT_REQUIRED",
-                    "message": {
-                        "parts": [{ "text": "Need human confirmation before continuing the delegated ClickUp workflow." }]
-                    }
-                }
-            }
-        })],
-    });
-    let (_permit, agent, built_dir) = setup_slack_source_ingress_agent(agent_list, handler).await;
-    let _built_dir_guard = TempDirCleanup::new(built_dir);
-
-    let runner_api = start_runner_api_server("slack-agent", agent)
-        .await
-        .expect("start slack-agent runner api");
-    let client = reqwest::Client::new();
-    let dispatch_url = slack_source_ingress_dispatch_url(&runner_api.base_url);
-    let dispatch_body = json!({
-        "routing_key": "event:intake",
-        "message_type": "host.source-records.v1",
-        "messages": [
-            raw_slack_source_event(
-                "#agentium-eng",
-                vec![json!({
-                    "ts": "1735720153.000001",
-                    "user": "U123",
-                    "user_name": "Ada",
-                    "text": "Please create a task for the follow-up-input case."
-                })]
-            )
-        ]
-    });
-
-    let response = timeout(
-        Duration::from_secs(30),
-        client.post(&dispatch_url).json(&dispatch_body).send(),
-    )
-    .await
-    .expect("slack-agent input-required dispatch timed out")
-    .expect("slack-agent input-required request");
-
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let ack: Value = response
-        .json()
-        .await
-        .expect("slack-agent input-required ack");
-    assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(false));
-    let detail = ack
-        .get("detail")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    assert!(
-        detail
-            .contains("Need human confirmation before continuing the delegated ClickUp workflow."),
-        "expected delegated input-required detail, got: {ack:?}"
+        "slack-agent must not delegate to downstream agents during dispatch ingress"
     );
 
     runner_api.stop().await;
@@ -802,8 +449,8 @@ async fn slack_source_ingress_dispatch_http_noops_raw_slack_chatter_without_acti
         .and_then(Value::as_str)
         .unwrap_or_default();
     assert!(
-        detail.contains("did not find a clear actionable request"),
-        "expected noop explanation, got: {ack:?}"
+        detail.contains("Slack conversation unit"),
+        "expected per-unit ingress processing detail, got: {ack:?}"
     );
     assert!(
         handler.snapshot_calls().await.is_empty(),
@@ -868,31 +515,17 @@ async fn slack_source_ingress_dispatch_http_batches_mixed_raw_slack_work_items_i
     let ack: Value = response.json().await.expect("slack-agent mixed ack");
     assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(true));
 
-    let calls = handler.snapshot_calls().await;
-    assert_eq!(
-        calls.len(),
-        1,
-        "expected one downstream delegation; calls={calls:?}"
-    );
-    assert_eq!(calls[0].agent_package, "clickup-agent");
+    let detail = ack
+        .get("detail")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     assert!(
-        calls[0].prompt.contains("Derived tasks (2 total):"),
-        "expected two derived tasks in prompt, got: {}",
-        calls[0].prompt
+        detail.contains("2 Slack conversation unit"),
+        "expected two conversation units processed, got: {ack:?}"
     );
     assert!(
-        calls[0]
-            .prompt
-            .contains("Please create a task for the flaky test fix."),
-        "expected first conversation in prompt, got: {}",
-        calls[0].prompt
-    );
-    assert!(
-        calls[0]
-            .prompt
-            .contains("Please open a separate task for release notes."),
-        "expected second conversation in prompt, got: {}",
-        calls[0].prompt
+        handler.snapshot_calls().await.is_empty(),
+        "slack-agent must not delegate during dispatch ingress"
     );
 
     runner_api.stop().await;
@@ -979,29 +612,18 @@ async fn slack_source_ingress_dispatch_http_expands_slack_threads_before_derivin
         .expect("slack-agent thread-expansion ack");
     assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(true));
 
-    let calls = handler.snapshot_calls().await;
-    let hits = mock_state.snapshot_hits().await;
-    assert_eq!(
-        calls.len(),
-        1,
-        "expected one downstream delegation; calls={calls:?}"
-    );
+    let detail = ack
+        .get("detail")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     assert!(
-        calls[0]
-            .prompt
-            .contains("Please create a task for the OAuth runbook and assign an owner."),
-        "expected expanded thread transcript in prompt, got: {}",
-        calls[0].prompt
+        detail.contains("Slack conversation unit"),
+        "expected unit ingress processing without pre-dispatch Slack API expansion, got: {ack:?}"
     );
+    assert!(handler.snapshot_calls().await.is_empty());
     assert!(
-        calls[0].prompt.contains("including 1 expanded thread"),
-        "expected summary to note thread expansion, got: {}",
-        calls[0].prompt
-    );
-    assert!(
-        hits.iter()
-            .any(|hit| hit.contains("/api/conversations.replies")),
-        "expected Slack thread-replies fetch, hits={hits:?}"
+        mock_state.snapshot_hits().await.is_empty(),
+        "ingress must not call conversations.replies before agent withTask"
     );
 
     runner_api.stop().await;
@@ -1070,28 +692,19 @@ async fn slack_source_ingress_dispatch_http_does_not_expand_thread_root_without_
         .expect("slack-agent root-only dispatch ack");
     assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(true));
 
-    let calls = handler.snapshot_calls().await;
-    let hits = mock_state.snapshot_hits().await;
-    assert_eq!(
-        calls.len(),
-        1,
-        "expected one downstream delegation; calls={calls:?}"
-    );
+    let detail = ack
+        .get("detail")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     assert!(
-        calls[0]
-            .prompt
-            .contains("Please create a task for the OAuth docs follow-up."),
-        "expected root message in prompt, got: {}",
-        calls[0].prompt
+        detail.contains("Slack conversation unit"),
+        "expected unit ingress from batch records only, got: {ack:?}"
     );
+    assert!(handler.snapshot_calls().await.is_empty());
     assert!(
-        !calls[0].prompt.contains("expanded thread"),
-        "did not expect root-only message to report thread expansion, got: {}",
-        calls[0].prompt
-    );
-    assert!(
-        hits.is_empty(),
-        "expected no Slack thread-replies fetch for root-only message, hits={hits:?}"
+        mock_state.snapshot_hits().await.is_empty(),
+        "expected no Slack thread-replies fetch during dispatch ingress, hits={:?}",
+        mock_state.snapshot_hits().await
     );
 
     runner_api.stop().await;
@@ -1231,33 +844,9 @@ async fn slack_inbox_producer_delivers_durable_ingress_to_slack_agent_and_downst
     assert_eq!(second_inbox_outcome.subscribers_matched, 0);
     assert_eq!(store.undelivered_count().await, 0);
 
-    let calls = handler.snapshot_calls().await;
-    let hits = mock_state.snapshot_hits().await;
-
-    assert_eq!(
-        calls.len(),
-        1,
-        "expected one downstream delegation from semantic ingress; calls={calls:?}"
-    );
-    assert_eq!(calls[0].agent_package, "clickup-agent");
     assert!(
-        calls[0]
-            .prompt
-            .contains("Ingress kind: Slack semantic ingress from raw source records"),
-        "expected slack-agent prompt header, got: {}",
-        calls[0].prompt
-    );
-    assert!(
-        calls[0]
-            .prompt
-            .contains("Please create a task for the OAuth runbook and assign an owner."),
-        "expected expanded thread transcript in delegated prompt, got: {}",
-        calls[0].prompt
-    );
-    assert!(
-        hits.iter()
-            .any(|hit| hit.contains("/api/conversations.replies")),
-        "expected semantic ingress to expand thread replies via support/slack, hits={hits:?}"
+        handler.snapshot_calls().await.is_empty(),
+        "inbox-driven dispatch ingress must not delegate to downstream agents"
     );
 
     mock_server.stop().await;

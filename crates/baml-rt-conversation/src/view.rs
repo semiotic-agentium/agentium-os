@@ -5,9 +5,11 @@
 //! Typed rows for **agent-visible** conversation: messages, tool call/result, and session FSM
 //! steps. Producers (graph readers) construct these; projection renders them for BAML/HTTP/episode.
 
+use std::collections::HashMap;
+
 use baml_rt_core::{
     Citation,
-    ids::{ActivityAnchorId, MessageId},
+    ids::{ActivityAnchorId, ContextId, MessageId},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -98,6 +100,64 @@ impl ConversationItemContent {
     }
 }
 
+/// Who spoke on a **user** transcript row (trust / UI styling). Symmetric with HTTP `user_speaker_kind`
+/// and client `userSpeakerKind` / `ChatMessage.speakerKind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserSpeakerKind {
+    Human,
+    Relay,
+    Ingress,
+}
+
+impl UserSpeakerKind {
+    #[must_use]
+    pub const fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::Human => baml_rt_vocabulary::vocabulary::user_speaker_kinds::HUMAN,
+            Self::Relay => baml_rt_vocabulary::vocabulary::user_speaker_kinds::RELAY,
+            Self::Ingress => baml_rt_vocabulary::vocabulary::user_speaker_kinds::INGRESS,
+        }
+    }
+
+    pub fn from_wire_str(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            baml_rt_vocabulary::vocabulary::user_speaker_kinds::HUMAN => Some(Self::Human),
+            baml_rt_vocabulary::vocabulary::user_speaker_kinds::RELAY => Some(Self::Relay),
+            baml_rt_vocabulary::vocabulary::user_speaker_kinds::INGRESS => Some(Self::Ingress),
+            _ => None,
+        }
+    }
+}
+
+/// Classify a user transcript row. Returns `None` when `role` is not a user turn.
+#[must_use]
+pub fn classify_user_speaker_kind(
+    context_id: &ContextId,
+    activity_anchor: &ActivityAnchorId,
+    metadata: Option<&HashMap<String, String>>,
+    role: &str,
+) -> Option<UserSpeakerKind> {
+    let r = role.trim();
+    if !(r.eq_ignore_ascii_case("ROLE_USER") || r.eq_ignore_ascii_case("user")) {
+        return None;
+    }
+    let anchor = activity_anchor.as_str();
+    if anchor.starts_with("ingress-poll-user:") || anchor.starts_with("ingress-unit-user:") {
+        return Some(UserSpeakerKind::Ingress);
+    }
+    if metadata
+        .and_then(|m| m.get("kind"))
+        .is_some_and(|k| k == "agent-to-agent")
+    {
+        return Some(UserSpeakerKind::Relay);
+    }
+    if context_id.as_str().starts_with("a2a:") {
+        return Some(UserSpeakerKind::Relay);
+    }
+    Some(UserSpeakerKind::Human)
+}
+
 /// Maps a graph Message `a2a_role` into the `role` field on projected history rows (rendered into `conversation_transcript`).
 ///
 /// Canonical chat labels: **`user`**, **`assistant`**. (Graph may store `ROLE_USER` / `ROLE_AGENT`.)
@@ -117,6 +177,9 @@ pub fn conversation_history_role_for_message(a2a_role: &str) -> String {
     {
         return "assistant".to_string();
     }
+    if r.eq_ignore_ascii_case("ROLE_HOST") || r.eq_ignore_ascii_case("host") {
+        return "host".to_string();
+    }
     a2a_role.to_string()
 }
 
@@ -128,6 +191,9 @@ pub struct ProvenanceConversationContextItem {
     /// `user` / `assistant` for chat turns; `tool` for host tool calls and session FSM steps; `read` for inlined read bodies.
     pub role: String,
     pub content: ConversationItemContent,
+    /// Present only for `role == "user"` transcript rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_speaker_kind: Option<UserSpeakerKind>,
 }
 
 impl ProvenanceConversationContextItem {
@@ -199,5 +265,65 @@ impl ToolSessionPhase {
             Self::Abort => "abort".to_string(),
             Self::Unknown(value) => value.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use baml_rt_core::ids::{ContextId, TaskId, UuidId};
+    use uuid::Uuid;
+
+    use super::*;
+
+    #[test]
+    fn classify_ingress_poll_anchor() {
+        let ctx = ContextId::new(1, 2);
+        let anchor = ActivityAnchorId::from("ingress-poll-user:ctx-1-2:msg-1");
+        let kind = classify_user_speaker_kind(&ctx, &anchor, None, "user").expect("user");
+        assert_eq!(kind, UserSpeakerKind::Ingress);
+    }
+
+    #[test]
+    fn classify_ingress_unit_anchor() {
+        let ctx = ContextId::new(1, 2);
+        let anchor = ActivityAnchorId::from("ingress-unit-user:ctx-1-2:unit-a");
+        let kind = classify_user_speaker_kind(&ctx, &anchor, None, "user").expect("user");
+        assert_eq!(kind, UserSpeakerKind::Ingress);
+    }
+
+    #[test]
+    fn classify_relay_from_metadata() {
+        let ctx = ContextId::new(1, 2);
+        let anchor = ActivityAnchorId::from_counter(99);
+        let mut meta = HashMap::new();
+        meta.insert("kind".to_string(), "agent-to-agent".to_string());
+        let kind =
+            classify_user_speaker_kind(&ctx, &anchor, Some(&meta), "ROLE_USER").expect("user");
+        assert_eq!(kind, UserSpeakerKind::Relay);
+    }
+
+    #[test]
+    fn classify_relay_from_a2a_child_context() {
+        let caller = ContextId::new(1, 2);
+        let child_task = TaskId::for_delegated_child(UuidId::new(Uuid::nil()));
+        let ctx = ContextId::for_a2a_child(&caller, "pkg", "default", &child_task);
+        let anchor = ActivityAnchorId::from_counter(100);
+        let kind = classify_user_speaker_kind(&ctx, &anchor, None, "user").expect("user");
+        assert_eq!(kind, UserSpeakerKind::Relay);
+    }
+
+    #[test]
+    fn classify_human_default() {
+        let ctx = ContextId::new(1, 2);
+        let anchor = ActivityAnchorId::from_counter(101);
+        let kind = classify_user_speaker_kind(&ctx, &anchor, None, "user").expect("user");
+        assert_eq!(kind, UserSpeakerKind::Human);
+    }
+
+    #[test]
+    fn classify_non_user_returns_none() {
+        let ctx = ContextId::new(1, 2);
+        let anchor = ActivityAnchorId::from_counter(102);
+        assert!(classify_user_speaker_kind(&ctx, &anchor, None, "assistant").is_none());
     }
 }

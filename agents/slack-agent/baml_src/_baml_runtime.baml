@@ -628,6 +628,8 @@ Tool and operation types:
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+Current step instructions:
+
 You execute ONE retrieve step of a read-only Slack plan (support/slack session FSM).
 Overall goal: {{ goal }}
 This step: {{ step_description }}
@@ -681,6 +683,8 @@ Tool and operation types:
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+Current step instructions:
+
 You execute ONE retrieve step of a read-only Slack plan (support/slack session FSM).
 Overall goal: {{ goal }}
 This step: {{ step_description }}
@@ -700,8 +704,12 @@ When this retrieve step is complete without further tool work, return ReadOnlyRe
 Return exactly one JSON object of type `SupportSlackAbortStep | SupportSlackFinishStep | SupportSlackPageReadStep | SupportSlackSearchReadStep | SupportSlackSendStep`.
 
 Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
-Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.
-Calculator Send: set input.expression.operation to exactly one JSON string token: "+", "-", "*", "/", or Add|Subtract|Multiply|Divide — never an object or sentence.
+SupportSlackSendStep Send: set `input.auth` to exactly one JSON string token: "Auto" | "Bot" | "User" — never an object or sentence.
+SupportSlackSendStep Send: set `input.direction` to exactly one JSON string token: "Asc" | "Desc" — never an object or sentence.
+SupportSlackSendStep Send: set `input.kinds` to exactly one JSON string token: "Im" | "Mpim" | "PrivateChannel" | "PublicChannel" — never an object or sentence.
+SupportSlackSendStep Send: set `input.order` to exactly one JSON string token: "LatestFirst" | "OldestFirst" — never an object or sentence.
+SupportSlackSendStep Send: set `input.resolve_users` to exactly one JSON string token: "None" | "ResolveUsers" — never an object or sentence.
+SupportSlackSendStep Send: set `input.sort` to exactly one JSON string token: "Score" | "Timestamp" — never an object or sentence.
 Do not add text before or after the JSON object.
 
 Phase policy:

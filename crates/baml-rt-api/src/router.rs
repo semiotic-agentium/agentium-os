@@ -128,6 +128,8 @@ pub struct ApiState {
     /// Continuously observable signal of tokio-runtime progress; surfaced by `GET /diagnose`.
     /// Distinct from [`ApiState::ready`], which is a one-shot boot latch.
     pub runtime_progress: Arc<RuntimeProgressMeter>,
+    /// DB-first host ingress provenance (publish + dispatch accept).
+    pub host_ingress_recorder: Option<Arc<dyn baml_rt_core::HostIngressRecorder>>,
 }
 
 async fn serve_openapi_json(
@@ -310,6 +312,7 @@ pub struct ApiServerConfig {
     /// each at its declared `mount_path`; operator-tier intakes inherit the
     /// runner-token auth layer applied to the operator route group.
     pub webhook_intakes: Vec<Arc<dyn baml_rt_tools::WebhookIntake>>,
+    pub host_ingress_recorder: Option<Arc<dyn baml_rt_core::HostIngressRecorder>>,
 }
 
 impl ApiServerConfig {
@@ -344,6 +347,7 @@ impl ApiServerConfig {
             runtime_progress,
             web_dir: None,
             webhook_intakes: Vec::new(),
+            host_ingress_recorder: None,
         }
     }
 }
@@ -408,6 +412,7 @@ pub fn api_router_with_services_and_deploy(
         runtime_progress,
         web_dir,
         webhook_intakes,
+        host_ingress_recorder,
     } = config;
 
     let http_trace_layer =
@@ -609,6 +614,7 @@ pub fn api_router_with_services_and_deploy(
         runner_token,
         cluster,
         runtime_progress,
+        host_ingress_recorder: config.host_ingress_recorder,
     });
 
     let mut router = api_router

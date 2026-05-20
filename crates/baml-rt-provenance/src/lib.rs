@@ -48,6 +48,7 @@ pub mod error;
 pub mod events;
 pub mod graph_export;
 pub mod graph_model;
+pub mod host_ingress_recorder_impl;
 pub mod id_semantics;
 pub mod interceptors;
 pub mod mermaid_cache;
@@ -103,6 +104,7 @@ pub use graph_model::{
     EventGraphKind, EventGraphMapping, GraphNodeLabel, TOOL_CALL_ARGS_EDGE, event_kind_from_data,
     mapping_for_event_data, mapping_for_event_kind,
 };
+pub use host_ingress_recorder_impl::HostIngressRecorderImpl;
 pub use interceptors::ProvenanceInterceptor;
 pub use mermaid_cache::MermaidCache;
 pub use normalizer::{
@@ -120,6 +122,7 @@ pub use store::{
 pub use surreal_config::SurrealStoreConfig;
 pub use surreal_store::{
     RemoteConfig, RemoteCredentials, SurrealBackend, SurrealProvenanceStore, SurrealStoreBuilder,
+    hydrate_ref_table, prepare_ref_table_for_projection,
 };
 pub use task_graph_reader::{
     ArtifactRef, HydratedTask, MessageRef, ReplayError, TaskGraphReader, TaskReplayCursor,

@@ -1,139 +1,20 @@
-# Task Daemon Event Format (Interpretation v1)
+# Task-daemon event contract (source-records)
 
-This document describes the event format used when `baml-task-daemon` publishes
-source material and interpretation results as structured events.
+Task-daemon polls external sources and publishes **`host.source-records.v1`** to the runner via `POST /events/publish`. The runner records provenance (`HostSourcePollRecorded`, `HostDispatchAccepted`) and fans out to subscribed agents on routing key **`event:intake`**.
 
-The goal is to make integrations predictable: consumers should know what data
-to expect, where it came from, and how to link a result back to the poll window
-that produced it.
+## Wire envelope
 
-For the intended host/agent boundary around these events, see:
-- [task-daemon.md](./task-daemon.md)
+- `schema_version`: `host.source-records.v1`
+- `routing_key`: `event:intake`
+- `source_kind` / `source_key`: subscription matching (e.g. `slack`, `slack:C123`)
+- `context_id`: stable per poll window (minted from `source_kind`, `source_key`, `source_cursor`)
+- `message_id`: stable poll batch id (`td-poll-batch-*`)
+- `messages[]`: one JSON batch per poll (Slack history rows, ClickUp lifecycle records, etc.)
 
-This `interpretation.v1` event format currently covers Slack-message input. For
-ClickUp source behavior (`--source clickup`), see:
-- [task-daemon-clickup-source-contract.md](./task-daemon-clickup-source-contract.md)
+## Provenance
 
-## Event Version
+Lineage is stored in Surreal provenance, not in a parallel interpretation JSON contract. Agents perform semantic work in `onDispatch` against the source-records batch.
 
-- `schema_version`: `task-daemon.interpretation.v1`
+## Removed
 
-## Request Event
-
-`InterpretationRequestEvent` is the event sent for one poll window before interpretation happens.
-
-Key fields:
-- `event_id`: stable id for this request
-- `source`: stable source identity (`source_key`, `source`, `source_label`)
-- `project`: project context (`project_key`, repo availability/path)
-- `messages`: normalized Slack messages
-- `provenance`: optional runtime links (`context_id`, `task_id`, `correlation_id`, cursor, message timestamps)
-
-Example:
-
-```json
-{
-  "schema_version": "task-daemon.interpretation.v1",
-  "event_id": "td-interpret-request-9782a72fddf4b5a5",
-  "emitted_at_unix": 1772556104,
-  "source": {
-    "source_key": "slack:C123",
-    "source": "slack",
-    "source_label": "#agentium-eng"
-  },
-  "project": {
-    "project_key": "agent-platform",
-    "repo_available": true,
-    "repo_path": "/Users/joseph/git/semiotic-agentium/agent-platform"
-  },
-  "provenance": {
-    "context_id": "ctx-3cbbf",
-    "correlation_id": "corr-20260303-001",
-    "source_cursor": "1735689700.000000",
-    "source_message_ts": [
-      "1735689600.000000",
-      "1735689700.000000"
-    ]
-  },
-  "messages": [
-    {
-      "channel_name": "agentium-eng",
-      "channel_id": "C123",
-      "ts": "1735689600.000000",
-      "text": "We should verify cursor semantics under sink failure",
-      "source": {
-        "reference": "slack://channel/C123/p1735689600000000",
-        "channel_id": "C123",
-        "message_ts": "1735689600.000000"
-      }
-    }
-  ]
-}
-```
-
-## Result Event
-
-`InterpretationResultEvent` is the event produced after interpretation.
-
-When a host delivers task-daemon events to another agent, this structured
-result object can appear in `message.parts[].data`.
-
-Key fields:
-- `request_event_id`: links back to the request event
-- `interpretation`: project-aware meaning of the discussion
-- `derived_tasks`: executable tasks generated from interpretation
-- `provenance.parent_activity_anchor`: causality link to request `event_id`
-
-Example:
-
-```json
-{
-  "schema_version": "task-daemon.interpretation.v1",
-  "event_id": "td-interpret-result-40e6d6c7d88bb18f",
-  "request_event_id": "td-interpret-request-9782a72fddf4b5a5",
-  "emitted_at_unix": 1772556105,
-  "source": {
-    "source_key": "slack:C123",
-    "source": "slack",
-    "source_label": "#agentium-eng"
-  },
-  "project": {
-    "project_key": "agent-platform",
-    "repo_available": true,
-    "repo_path": "/Users/joseph/git/semiotic-agentium/agent-platform"
-  },
-  "messages_scanned": 1,
-  "interpretation": {
-    "executive_summary": "Team is deciding delivery guarantees and needs code-level validation.",
-    "current_objectives": [
-      "Validate cursor/save ordering against sink error paths"
-    ],
-    "workflow_seed": {
-      "goal": "Confirm failure semantics and document expected behavior",
-      "investigation_nodes": [],
-      "clarification_nodes": [],
-      "follow_up_nodes": []
-    }
-  },
-  "provenance": {
-    "context_id": "ctx-3cbbf",
-    "correlation_id": "corr-20260303-001",
-    "parent_activity_anchor": "td-interpret-request-9782a72fddf4b5a5",
-    "source_cursor": "1735689700.000000",
-    "source_message_ts": [
-      "1735689600.000000",
-      "1735689700.000000"
-    ]
-  }
-}
-```
-
-## Rust Types
-
-Defined in [crates/task-daemon/src/contract.rs](/Users/joseph/git/semiotic-agentium/agent-platform/crates/task-daemon/src/contract.rs):
-- `ContractSource`
-- `ContractProvenance`
-- `InterpretationRequestEvent`
-- `InterpretationResultEvent`
-
-These are also re-exported from `baml_task_daemon`.
+`task-daemon.interpretation.v1`, `InterpretationRequestEvent`, `InterpretationResultEvent`, and in-daemon LLM extraction are removed.

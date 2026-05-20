@@ -707,6 +707,25 @@ pub enum ProvEventData {
         dispatch_task_id: TaskId,
         agent_id: AgentId,
     },
+    /// Host recorded one task-daemon / producer poll window (`host.source-records.v1`).
+    HostSourcePollRecorded {
+        source_kind: String,
+        source_key: String,
+        source_cursor: String,
+        schema_version: String,
+        record_count: usize,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        source_message_ts: Vec<String>,
+    },
+    /// Host delivered a source-records batch to an agent instance.
+    HostDispatchAccepted {
+        routing_key: String,
+        schema_version: String,
+        target_package: String,
+        target_instance: String,
+        source_kind: String,
+        source_key: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1804,6 +1823,54 @@ impl ProvEvent {
                 dispatch_context_id,
                 dispatch_task_id,
                 agent_id,
+            },
+        })
+    }
+
+    pub fn host_source_poll_recorded(
+        context_id: ContextId,
+        source_kind: String,
+        source_key: String,
+        source_cursor: String,
+        schema_version: String,
+        record_count: usize,
+        source_message_ts: Vec<String>,
+    ) -> Self {
+        ProvEvent::Global(GlobalEvent {
+            id: next_activity_anchor_id(),
+            context_id: context_id.clone(),
+            timestamp_ms: now_millis(),
+            data: ProvEventData::HostSourcePollRecorded {
+                source_kind,
+                source_key,
+                source_cursor,
+                schema_version,
+                record_count,
+                source_message_ts,
+            },
+        })
+    }
+
+    pub fn host_dispatch_accepted(
+        context_id: ContextId,
+        routing_key: String,
+        schema_version: String,
+        target_package: String,
+        target_instance: String,
+        source_kind: String,
+        source_key: String,
+    ) -> Self {
+        ProvEvent::Global(GlobalEvent {
+            id: next_activity_anchor_id(),
+            context_id,
+            timestamp_ms: now_millis(),
+            data: ProvEventData::HostDispatchAccepted {
+                routing_key,
+                schema_version,
+                target_package,
+                target_instance,
+                source_kind,
+                source_key,
             },
         })
     }

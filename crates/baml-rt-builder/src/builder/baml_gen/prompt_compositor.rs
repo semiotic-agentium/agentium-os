@@ -153,8 +153,14 @@ fn push_stable_prefix(out: &mut String, _spec: StablePrefixSpec) {
     push_tool_schema_prelude_if_block(out);
 }
 
+const CURRENT_STEP_INSTRUCTIONS_HEADER: &str = "Current step instructions:";
+
 fn push_task_body(out: &mut String, trimmed_body: &str) {
     if !trimmed_body.is_empty() {
+        if !trimmed_body.starts_with(CURRENT_STEP_INSTRUCTIONS_HEADER) {
+            out.push_str(CURRENT_STEP_INSTRUCTIONS_HEADER);
+            out.push_str("\n\n");
+        }
         out.push_str(trimmed_body);
         if !trimmed_body.ends_with('\n') {
             out.push('\n');
@@ -269,6 +275,7 @@ mod tests {
             "Return exactly one JSON object of type `XOpenStep | ArchiveSearchReadStep`."
         ));
         assert!(s.contains("Phase policy:"));
+        assert!(s.contains("Current step instructions:"));
         let hist_pos = s.find("Session history:").expect("history");
         let task_pos = s.find("IR body.").expect("task");
         let contract_pos = s

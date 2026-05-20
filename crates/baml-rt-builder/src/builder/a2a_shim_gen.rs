@@ -416,7 +416,11 @@ pub fn render_a2a_shim() -> Result<String> {
       globalThis.onChatMessage = agent.onChatMessage;
     }
     if (agent.onDispatch != null && typeof agent.onDispatch === 'function') {
-      globalThis.onDispatch = agent.onDispatch;
+      globalThis.onDispatch = function(request) {
+        return dispatch(request).run(function(ctx) {
+          return agent.onDispatch(ctx);
+        });
+      };
     }
     if (agent.tools != null && typeof agent.tools === 'object') {
       globalThis.__js_tools = globalThis.__js_tools || {};
@@ -428,6 +432,60 @@ pub fn render_a2a_shim() -> Result<String> {
     }
   }
   globalThis.__chat_register = __chat_register;
+
+  function parseHostSourceRecordsBatch(request) {
+    var msgs = extractDispatchMessages(request);
+    if (!msgs || msgs.length === 0) return null;
+    var batch = msgs[0];
+    if (batch == null || typeof batch !== 'object') return null;
+    var version = batch.schema_version != null ? String(batch.schema_version) : '';
+    if (version !== 'host.source-records.v1') return null;
+    if (!Array.isArray(batch.records)) return null;
+    return batch;
+  }
+
+  function buildDispatchRunContext(request, batch) {
+    return {
+      request: request,
+      contextId: request.context_id != null ? String(request.context_id) : undefined,
+      taskId: request.task_id != null ? String(request.task_id) : undefined,
+      messageId: request.message_id != null ? String(request.message_id) : undefined,
+      batch: batch || { schema_version: 'host.source-records.v1', records: [] },
+      pollHistoryRef: '#1',
+      withTask: function(unit, fn) {
+        if (unit == null || typeof unit !== 'object') {
+          return Promise.reject(new Error('withTask requires { unitKey, records }'));
+        }
+        var unitKey = unit.unitKey != null ? String(unit.unitKey).trim() : '';
+        if (!unitKey) {
+          return Promise.reject(new Error('withTask unitKey must be non-empty'));
+        }
+        var records = unit.records;
+        if (!Array.isArray(records) || records.length === 0) {
+          return Promise.reject(new Error('withTask records must be a non-empty array'));
+        }
+        return globalThis.__dispatch_enter_unit_task(unitKey, JSON.stringify(records))
+          .then(function(unitCtxRaw) {
+            var unitCtx = typeof unitCtxRaw === 'string' ? JSON.parse(unitCtxRaw) : unitCtxRaw;
+            return Promise.resolve(fn(unitCtx)).finally(function() {
+              return globalThis.__dispatch_exit_unit_task();
+            });
+          });
+      }
+    };
+  }
+
+  function dispatch(request) {
+    return {
+      run: function(fn) {
+        var batch = parseHostSourceRecordsBatch(request);
+        var ctx = buildDispatchRunContext(request, batch);
+        return Promise.resolve(fn(ctx));
+      }
+    };
+  }
+  globalThis.dispatch = dispatch;
+  globalThis.parseHostSourceRecordsBatch = parseHostSourceRecordsBatch;
 
   // extractDispatchMessages: return the messages array from a HostDispatchRequest.
   // Declared in baml-runtime.d.ts; implemented here as a QuickJS global.

@@ -106,6 +106,12 @@ impl ProvenanceWriter for SurrealProvenanceStore {
         if let (Some(cache), Some(ctx)) = (&self.mermaid_cache, context_id_opt.as_deref()) {
             cache.invalidate(ctx);
         }
+        if let Some(ctx) = context_id_opt.as_deref()
+            && let Ok(guard) = self.ref_table_cache.read()
+            && let Some(tables) = guard.as_ref()
+        {
+            baml_rt_tools::archive_refs::invalidate_ref_table(tables, ctx);
+        }
         Ok(())
     }
 }

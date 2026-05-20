@@ -12,6 +12,7 @@ import type {
   ChatMessage,
   ConversationHistoryItem,
   ConversationHistoryPage,
+  UserSpeakerKind,
 } from "../types/a2a";
 import { normalizeEpochMs } from "./chatTime";
 import { appendExecutionErrorCard } from "./executionErrorCard";
@@ -28,18 +29,8 @@ import { stripLegacyStructuredPlaceholderLines } from "./legacyStructuredPlaceho
 import { isSyntheticInputRequiredPrompt } from "./inputRequiredUi";
 import { isWorkflowStatusText, shouldSuppressAgentTranscriptText } from "./workflowUiFilters";
 
-/** Best-effort: relay / delegation user rows often carry distinctive activity anchors. */
-export function inferUserSpeakerKind(item: ConversationHistoryItem): "relay" | "human" {
-  const a = item.activityAnchor.toLowerCase();
-  if (
-    a.includes("relay") ||
-    a.includes("delegat") ||
-    a.includes("sub_agent") ||
-    a.includes("subagent")
-  ) {
-    return "relay";
-  }
-  return "human";
+function speakerKindFromHistoryItem(item: ConversationHistoryItem): UserSpeakerKind {
+  return item.userSpeakerKind ?? "human";
 }
 
 /** Non-user message entries with `type: message` and visible text (assistant output in provenance). */
@@ -224,13 +215,12 @@ export function applyConversationHistoryPage(
       activeAgentMsg = null;
       sendDonePayloadSignaturesByTool = new Map<string, Set<string>>();
       const text = content.type === "message" ? content.text : "";
-      const sk = inferUserSpeakerKind(item);
       rebuilt.push({
         id: `prov-user-${item.activityAnchor}`,
         role: "user",
         text,
         timestamp: ts,
-        ...(sk === "relay" ? { speakerKind: "relay" as const } : {}),
+        speakerKind: speakerKindFromHistoryItem(item),
       });
       continue;
     }
@@ -362,13 +352,12 @@ export function applyConversationHistoryDelta(
           continue;
         }
         const text = content.type === "message" ? content.text : "";
-        const sk = inferUserSpeakerKind(item);
         messages.value.push({
           id: `prov-user-${item.activityAnchor}`,
           role: "user",
           text,
           timestamp: ts,
-          ...(sk === "relay" ? { speakerKind: "relay" as const } : {}),
+          speakerKind: speakerKindFromHistoryItem(item),
         });
         continue;
       }

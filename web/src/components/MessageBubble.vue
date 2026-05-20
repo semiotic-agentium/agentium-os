@@ -124,10 +124,20 @@ const showStreamWorkingHint = computed(
 const isRelayUser = computed(
   () => props.message.role === "user" && props.message.speakerKind === "relay",
 );
+
+const isIngressUser = computed(
+  () => props.message.role === "user" && props.message.speakerKind === "ingress",
+);
 </script>
 
 <template>
-  <div :class="['message-row', message.role, { 'message-row--relay': isRelayUser }]">
+  <div
+    :class="[
+      'message-row',
+      message.role,
+      { 'message-row--relay': isRelayUser, 'message-row--ingress': isIngressUser },
+    ]"
+  >
     <!-- Agent avatar -->
     <div v-if="message.role === 'agent'" class="message-avatar">
       <div class="avatar-icon">
@@ -150,6 +160,9 @@ const isRelayUser = computed(
     </div>
     <div class="message-content">
       <div v-if="isRelayUser" class="speaker-kind-badge" role="note">A2A relay</div>
+      <div v-else-if="isIngressUser" class="speaker-kind-badge speaker-kind-badge--ingress" role="note">
+        Host ingress
+      </div>
       <!-- Block-based content (agent with tool notifications) -->
       <template v-if="message.role === 'agent' && message.contentBlocks?.length">
         <template v-for="(block, idx) in message.contentBlocks" :key="idx">

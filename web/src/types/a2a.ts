@@ -106,11 +106,16 @@ export interface ConversationHistoryPage {
   inputRequiredPrompt?: string | null;
 }
 
+/** API `user_speaker_kind` on user transcript rows (symmetric with backend). */
+export type UserSpeakerKind = "human" | "relay" | "ingress";
+
 export interface ConversationHistoryItem {
   timestampMs: number;
   activityAnchor: string;
   role: string;
   content: ConversationHistoryContent;
+  /** Present only for `role === "user"` rows from GET /conversation-history. */
+  userSpeakerKind?: UserSpeakerKind;
 }
 
 /** Transcript restore from GET /conversation-history (Primary pane empty states). */
@@ -291,7 +296,7 @@ export interface ToolNotificationBlock {
 }
 
 /** Who speaks in the transcript (trust / styling). Defaults implied from `role`. */
-export type ChatSpeakerKind = "human" | "agent" | "relay" | "system";
+export type ChatSpeakerKind = "human" | "agent" | "relay" | "system" | "ingress";
 
 /** Internal chat message for the UI */
 export interface ChatMessage {

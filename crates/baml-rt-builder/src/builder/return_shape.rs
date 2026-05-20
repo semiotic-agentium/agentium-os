@@ -40,6 +40,15 @@ pub(crate) struct TaggedVariantShape {
     pub literal_value: String,
 }
 
+/// Enum scalar field on a `*SendStep` `input` type tree, for compact step-executor selection hints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SendEnumScalarHint {
+    pub send_step_type: String,
+    pub json_path: String,
+    pub enum_type: String,
+    pub values: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UntaggedUnionShape {
     pub variants: Vec<ObjectVariantShape>,
@@ -464,43 +473,206 @@ fn literal_string(ty: &TypeNonStreaming) -> Option<String> {
     }
 }
 
+/// Collect per-`SendStep` enum scalar reminders from the phase return union and compiled IR.
+pub(crate) fn collect_send_enum_scalar_hints(
+    variants: &[TaggedVariantShape],
+    ir: &IRSignature,
+) -> Vec<SendEnumScalarHint> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::<(String, String)>::new();
+    for variant in variants {
+        if !variant.type_name.ends_with("SendStep") {
+            continue;
+        }
+        collect_send_enum_hints_for_send_step(&variant.type_name, ir, &mut out, &mut seen);
+    }
+    out.sort_by(|a, b| {
+        a.send_step_type
+            .cmp(&b.send_step_type)
+            .then_with(|| a.json_path.cmp(&b.json_path))
+    });
+    out
+}
+
+fn collect_send_enum_hints_for_send_step(
+    send_step_type: &str,
+    ir: &IRSignature,
+    out: &mut Vec<SendEnumScalarHint>,
+    seen: &mut HashSet<(String, String)>,
+) {
+    let Some((_, class_details)) = ir.classes.get(send_step_type) else {
+        return;
+    };
+    let Some(input_ty) = class_details
+        .fields
+        .iter()
+        .find(|(name, _)| name == "input")
+        .map(|(_, ty)| ty.as_ref())
+    else {
+        return;
+    };
+    let mut seen_classes = HashSet::new();
+    let mut seen_aliases = HashSet::new();
+    let mut ctx = SendEnumWalkCtx {
+        ir,
+        send_step_type,
+        path: "input".to_string(),
+        seen_classes: &mut seen_classes,
+        seen_aliases: &mut seen_aliases,
+        out,
+        seen,
+    };
+    collect_enum_scalar_hints_for_type(input_ty, &mut ctx);
+}
+
+struct SendEnumWalkCtx<'a> {
+    ir: &'a IRSignature,
+    send_step_type: &'a str,
+    path: String,
+    seen_classes: &'a mut HashSet<String>,
+    seen_aliases: &'a mut HashSet<String>,
+    out: &'a mut Vec<SendEnumScalarHint>,
+    seen: &'a mut HashSet<(String, String)>,
+}
+
+fn collect_enum_scalar_hints_for_type(ty: &TypeNonStreaming, ctx: &mut SendEnumWalkCtx<'_>) {
+    match ty {
+        TypeNonStreaming::Enum { name, .. } => {
+            let Some((_, enum_details)) = ctx.ir.enums.get(name) else {
+                return;
+            };
+            let mut values: Vec<String> = enum_details
+                .values
+                .iter()
+                .map(|value| format!("{value:?}"))
+                .collect();
+            values.sort();
+            values.dedup();
+            if values.is_empty() {
+                return;
+            }
+            let key = (ctx.send_step_type.to_string(), ctx.path.to_string());
+            if ctx.seen.insert(key) {
+                ctx.out.push(SendEnumScalarHint {
+                    send_step_type: ctx.send_step_type.to_string(),
+                    json_path: ctx.path.to_string(),
+                    enum_type: name.clone(),
+                    values,
+                });
+            }
+        }
+        TypeNonStreaming::Class { name, .. } => {
+            if !ctx.seen_classes.insert(name.clone()) {
+                return;
+            }
+            if let Some((_, class_details)) = ctx.ir.classes.get(name) {
+                for (field_name, field_ty) in class_details.fields.iter() {
+                    let field_path = join_path(&ctx.path, field_name);
+                    let prev_path = std::mem::replace(&mut ctx.path, field_path);
+                    collect_enum_scalar_hints_for_type(field_ty.as_ref(), ctx);
+                    ctx.path = prev_path;
+                }
+            }
+            ctx.seen_classes.remove(name);
+        }
+        TypeNonStreaming::RecursiveTypeAlias { name, .. } => {
+            if !ctx.seen_aliases.insert(name.clone()) {
+                return;
+            }
+            if let Some(alias) = ctx.ir.type_aliases.get(name) {
+                collect_enum_scalar_hints_for_type(alias.field_type.as_ref(), ctx);
+            }
+            ctx.seen_aliases.remove(name);
+        }
+        TypeNonStreaming::Union(union, _) => {
+            let variant_types: Vec<&TypeNonStreaming> = match union.view() {
+                UnionTypeViewGeneric::Null => return,
+                UnionTypeViewGeneric::Optional(inner) => vec![inner],
+                UnionTypeViewGeneric::OneOf(variants)
+                | UnionTypeViewGeneric::OneOfOptional(variants) => variants.to_vec(),
+            };
+            for inner in variant_types {
+                collect_enum_scalar_hints_for_type(inner, ctx);
+            }
+        }
+        TypeNonStreaming::List(inner, _) => {
+            collect_enum_scalar_hints_for_type(inner, ctx);
+        }
+        TypeNonStreaming::Map(_, value, _) => {
+            collect_enum_scalar_hints_for_type(value, ctx);
+        }
+        TypeNonStreaming::Primitive(..)
+        | TypeNonStreaming::Literal(..)
+        | TypeNonStreaming::Tuple(..)
+        | TypeNonStreaming::Arrow(..)
+        | TypeNonStreaming::Top(..) => {}
+    }
+}
+
 #[cfg(test)]
-mod tests {
+async fn shape_test_build_agent(prompt_body: &str) -> IRSignature {
     use std::fs;
 
     use tempfile::TempDir;
-
-    use super::*;
-
-    async fn build_agent(prompt_body: &str) -> IRSignature {
-        let root = TempDir::new().expect("tempdir");
-        let baml_src = root.path().join("baml_src");
-        fs::create_dir_all(&baml_src).expect("mkdir baml_src");
-        let prompt_path = baml_src.join("shape_agent_prompt.baml");
-        let source = format!(
-            "class Ready {{\n  kind \"ready\"\n  inferred_intent string\n}}\n\
+    let root = TempDir::new().expect("tempdir");
+    let baml_src = root.path().join("baml_src");
+    fs::create_dir_all(&baml_src).expect("mkdir baml_src");
+    let prompt_path = baml_src.join("shape_agent_prompt.baml");
+    let source = format!(
+        "class Ready {{\n  kind \"ready\"\n  inferred_intent string\n}}\n\
              class Clarify {{\n  kind \"clarify\"\n  question string\n}}\n\
              class Meta {{\n  kind \"meta\"\n  reason string\n}}\n\
              enum ReplyMediaType {{\n  IMAGE\n}}\n\
              class TextPart {{\n  type \"text\"\n  text string\n}}\n\
              class DataPart {{\n  type \"data\"\n  raw string\n  media_type ReplyMediaType\n}}\n\
              class StructuredReply {{\n  parts (TextPart | DataPart)[]\n  citations string[]?\n}}\n\
+             class Expression {{\n  left int\n  operation MathOperation\n  right int\n}}\n\
+             enum MathOperation {{\n  Add @alias(\"+\")\n  Subtract @alias(\"-\")\n  Multiply @alias(\"*\")\n  Divide @alias(\"/\")\n}}\n\
+             class CalculatorInput {{\n  expression Expression\n}}\n\
+             class SupportCalculateSendStep {{\n  op \"Send\"\n  input CalculatorInput\n  citations string[]\n}}\n\
+             class SupportCalculateFinishStep {{\n  op \"Finish\"\n}}\n\
              {prompt_body}\n\
              client DefaultClient {{\n  provider openai-generic\n  options {{\n    model \"gpt-4o-mini\"\n    base_url \"https://api.openai.com/v1\"\n    api_key env.OPENAI_API_KEY\n  }}\n}}\n"
-        );
-        fs::write(&prompt_path, source).expect("write prompt");
-        let runtime = baml_runtime::BamlRuntime::from_directory(
-            &baml_src,
-            std::collections::HashMap::<String, String>::new(),
-            internal_baml_core::feature_flags::FeatureFlags::default(),
-        )
-        .expect("runtime");
-        IRSignature::new_from_ir(runtime.ir.as_ref()).expect("signature")
-    }
+    );
+    fs::write(&prompt_path, source).expect("write prompt");
+    let runtime = baml_runtime::BamlRuntime::from_directory(
+        &baml_src,
+        std::collections::HashMap::<String, String>::new(),
+        internal_baml_core::feature_flags::FeatureFlags::default(),
+    )
+    .expect("runtime");
+    IRSignature::new_from_ir(runtime.ir.as_ref()).expect("signature")
+}
+
+#[cfg(test)]
+pub(crate) async fn build_minimal_test_ir() -> IRSignature {
+    shape_test_build_agent(
+        r##"function F(x: string) -> string {
+  client DefaultClient
+  prompt #"x"#
+}"##,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn build_calculator_test_ir() -> IRSignature {
+    shape_test_build_agent(
+        r##"function CalcStep(input: string) -> SupportCalculateSendStep | SupportCalculateFinishStep {
+  client DefaultClient
+  prompt #"Step."#
+}"##,
+    )
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 
     #[tokio::test]
     async fn detects_root_tagged_union() {
-        let ir = build_agent(
+        let ir = shape_test_build_agent(
             r##"function ShapeAgent(input: string) -> Ready | Clarify | Meta {
   client DefaultClient
   prompt #"Classify."#
@@ -518,8 +690,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn collect_send_enum_scalar_hints_finds_math_operation_path() {
+        let ir = build_calculator_test_ir().await;
+        let hints = collect_send_enum_scalar_hints(
+            &[
+                TaggedVariantShape {
+                    type_name: "SupportCalculateSendStep".to_string(),
+                    literal_value: "Send".to_string(),
+                },
+                TaggedVariantShape {
+                    type_name: "SupportCalculateFinishStep".to_string(),
+                    literal_value: "Finish".to_string(),
+                },
+            ],
+            &ir,
+        );
+        assert_eq!(hints.len(), 1, "hints: {hints:?}");
+        assert_eq!(hints[0].send_step_type, "SupportCalculateSendStep");
+        assert_eq!(hints[0].json_path, "input.expression.operation");
+        assert_eq!(hints[0].enum_type, "MathOperation");
+        assert!(hints[0].values.iter().any(|v| v.contains("Add")));
+    }
+
+    #[tokio::test]
     async fn detects_nested_tagged_union_inside_single_object() {
-        let ir = build_agent(
+        let ir = shape_test_build_agent(
             r##"function ShapeAgent(input: string) -> StructuredReply {
   client DefaultClient
   prompt #"Reply."#

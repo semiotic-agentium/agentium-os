@@ -22,7 +22,7 @@ use crate::{a2a_stream::BridgeHandle, baml::BamlRuntimeManager, quickjs_bridge::
 /// These options map to `quickjs_runtime::builder::QuickJsRuntimeBuilder`. See the
 /// crate README section "QuickJS optimization settings" for tuning guidance (GC,
 /// memory, stack).
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct QuickJSConfig {
     /// Maximum memory limit in bytes (None = no limit)
     pub memory_limit: Option<u64>,
@@ -50,6 +50,9 @@ pub struct QuickJSConfig {
     /// Maximum number of stream invocations that may be active at once.
     /// `None` uses available parallelism.
     pub stream_concurrency: Option<usize>,
+
+    /// Host ingress recorder for dispatch `withTask` unit history (runner-provided).
+    pub host_ingress_recorder: Option<Arc<dyn baml_rt_core::HostIngressRecorder>>,
 }
 
 impl QuickJSConfig {
@@ -111,6 +114,14 @@ impl QuickJSConfig {
     /// Defaults to available parallelism when unset.
     pub fn with_stream_concurrency(mut self, stream_concurrency: Option<usize>) -> Self {
         self.stream_concurrency = stream_concurrency;
+        self
+    }
+
+    pub fn with_host_ingress_recorder(
+        mut self,
+        recorder: Option<Arc<dyn baml_rt_core::HostIngressRecorder>>,
+    ) -> Self {
+        self.host_ingress_recorder = recorder;
         self
     }
 }

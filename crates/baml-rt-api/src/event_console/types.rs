@@ -107,5 +107,5 @@ pub struct EventValidationReportDto {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<EventValidationIssueDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preview_request: Option<Value>,
+    pub preview_produced_event: Option<Value>,
 }

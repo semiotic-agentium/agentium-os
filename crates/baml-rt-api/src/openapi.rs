@@ -307,10 +307,15 @@ pub struct EventPublishResponseDto {
     pub subscribers_matched: usize,
     pub subscribers_accepted: usize,
     pub failures: Vec<EventDeliveryFailureDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
 }
 
-impl From<baml_rt_core::EventDeliveryOutcome> for EventPublishResponseDto {
-    fn from(value: baml_rt_core::EventDeliveryOutcome) -> Self {
+impl EventPublishResponseDto {
+    pub fn from_outcome(
+        value: baml_rt_core::EventDeliveryOutcome,
+        context_id: Option<String>,
+    ) -> Self {
         Self {
             subscribers_matched: value.subscribers_matched,
             subscribers_accepted: value.subscribers_accepted,
@@ -323,6 +328,7 @@ impl From<baml_rt_core::EventDeliveryOutcome> for EventPublishResponseDto {
                     detail: failure.detail(),
                 })
                 .collect(),
+            context_id,
         }
     }
 }

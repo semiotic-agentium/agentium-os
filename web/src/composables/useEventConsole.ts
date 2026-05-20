@@ -2,20 +2,19 @@ import { computed, ref, watch } from "vue";
 import type { AgentDiscoveryEntry, ContextPickerPage, ConversationHistoryOption } from "../types/a2a";
 import type {
   AgentDeliverableMessageShape,
-  AgentDispatchAck,
   DerivedDispatchEnvelope,
   EventConsoleSelection,
   EventDispatchPhase,
   EventDispatchScope,
   EventPayloadDraft,
+  EventPublishResponse,
   EventValidationReport,
   MessageShapeSample,
 } from "../types/events";
 import {
   resolveObservationScope,
-  scopeFromAck,
   scopeFromRecord,
-  type DispatchedScope,
+  type PublishedScope,
 } from "../events/dispatchObserve";
 import {
   autofillPayload,
@@ -26,10 +25,11 @@ import {
   messageShapesForAgent,
   messageShapesForSubscription,
   payloadFromShapeSelection,
+  subscriptionMatchesShape,
 } from "../events/messageShapes";
 import { defaultPayloadFromSchema } from "../events/schemaForm";
 
-const OPERATOR_ORIGIN = "operator-eval-console";
+const OPERATOR_ORIGIN = "operator-event-console";
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -247,8 +247,8 @@ export function useEventConsole() {
   const activeMessageIndex = ref(0);
   const validation = ref<EventValidationReport | null>(null);
   const validatedFingerprint = ref<string | null>(null);
-  const lastAck = ref<AgentDispatchAck | null>(null);
-  const dispatchError = ref<string | null>(null);
+  const lastPublishOutcome = ref<EventPublishResponse | null>(null);
+  const publishError = ref<string | null>(null);
   const historyItems = ref<ConversationHistoryOption[]>([]);
   const selectedContextId = ref<string | null>(null);
   const historyLoading = ref(false);
@@ -256,7 +256,7 @@ export function useEventConsole() {
   let historyFetchAbort: AbortController | null = null;
   const busy = ref(false);
   const historyFilterPreview = ref("");
-  const lastDispatchedScope = ref<DispatchedScope | null>(null);
+  const lastPublishedScope = ref<PublishedScope | null>(null);
   const dispatchPhase = ref<EventDispatchPhase>("idle");
 
   const subscribedAgents = computed(() =>
@@ -274,6 +274,16 @@ export function useEventConsole() {
   const agentAcceptsHostDispatch = computed(
     () => (selectedAgent.value?.agent_card.subscriptions?.length ?? 0) > 0,
   );
+
+  const fleetAcceptsCurrentShape = computed(() => {
+    const shape = selectedMessageShape.value;
+    if (!shape) return false;
+    return subscribedAgents.value.some((agent) =>
+      (agent.agent_card.subscriptions ?? []).some((sub) =>
+        subscriptionMatchesShape(sub, shape),
+      ),
+    );
+  });
 
   const agentSubscriptions = computed(
     () => selectedAgent.value?.agent_card.subscriptions ?? [],
@@ -332,10 +342,12 @@ export function useEventConsole() {
     const agent = selectedAgent.value;
     const shape = selectedMessageShape.value;
     const scope = resolveObservationScope({
-      lastDispatchedScope: lastDispatchedScope.value,
+      lastPublishedScope: lastPublishedScope.value,
       draftScope: draft.value.scope,
       selectedContextId: selectedContextId.value,
-      previewRequest: validation.value?.preview_request as Record<string, unknown> | undefined,
+      previewProducedEvent: validation.value?.preview_produced_event as
+        | Record<string, unknown>
+        | undefined,
       currentAgent: agent
         ? {
             agentPackage: agent.agent_package,
@@ -345,9 +357,13 @@ export function useEventConsole() {
       mode: mode.value,
     });
     let statusLabel = "";
-    if (dispatchError.value) statusLabel = "Failed";
-    else if (lastAck.value) {
-      statusLabel = lastAck.value.accepted ? "Accepted" : "Rejected";
+    if (publishError.value) statusLabel = "Failed";
+    else if (lastPublishOutcome.value) {
+      const o = lastPublishOutcome.value;
+      statusLabel = `Published ${o.subscribers_accepted}/${o.subscribers_matched}`;
+      if (o.failures.length > 0) {
+        statusLabel = `${statusLabel} (${o.failures.length} failed)`;
+      }
     } else if (validation.value?.valid && !validationStale.value) {
       statusLabel = "Validated";
     }
@@ -431,10 +447,10 @@ export function useEventConsole() {
       validation.value = null;
       validatedFingerprint.value = null;
     }
-    lastAck.value = null;
-    lastDispatchedScope.value = null;
+    lastPublishOutcome.value = null;
+    lastPublishedScope.value = null;
     selectedContextId.value = null;
-    dispatchError.value = null;
+    publishError.value = null;
     if (options?.syncRoute !== false) {
       syncEventConsoleRoute();
     }
@@ -564,10 +580,12 @@ export function useEventConsole() {
   });
 
   function syncScopeFromPreview(): void {
-    const preview = validation.value?.preview_request as Record<string, unknown> | undefined;
+    const preview = validation.value?.preview_produced_event as
+      | Record<string, unknown>
+      | undefined;
     const scope = scopeFromRecord(preview);
     if (scope) {
-      lastDispatchedScope.value = scope;
+      lastPublishedScope.value = scope;
     }
   }
 
@@ -604,7 +622,7 @@ export function useEventConsole() {
         matched_subscription: Boolean(raw.matched_subscription),
         errors: raw.errors ?? [],
         warnings: raw.warnings ?? [],
-        preview_request: raw.preview_request,
+        preview_produced_event: raw.preview_produced_event,
       };
       validation.value = report;
       if (report.valid) {
@@ -621,55 +639,56 @@ export function useEventConsole() {
     }
   }
 
-  async function dispatchEvent(): Promise<void> {
-    let preview = validation.value?.preview_request as Record<string, unknown> | undefined;
+  async function publishEvent(): Promise<void> {
+    let preview = validation.value?.preview_produced_event as
+      | Record<string, unknown>
+      | undefined;
     if (validationStale.value || !validation.value?.valid || !preview) {
       const report = await validateDraft();
-      if (!report.valid || !report.preview_request) {
+      if (!report.valid || !report.preview_produced_event) {
         const first = report.errors[0];
-        dispatchError.value =
-          first?.message ?? "Validation failed — fix the draft before dispatching.";
+        publishError.value =
+          first?.message ?? "Validation failed — fix the draft before publishing.";
         dispatchPhase.value = "failed";
         return;
       }
-      preview = report.preview_request as Record<string, unknown>;
+      preview = report.preview_produced_event as Record<string, unknown>;
     }
 
     busy.value = true;
-    dispatchError.value = null;
-    lastAck.value = null;
-    dispatchPhase.value = "dispatching";
+    publishError.value = null;
+    lastPublishOutcome.value = null;
+    dispatchPhase.value = "publishing";
     try {
       syncScopeFromPreview();
-      const url = `/agents/${draft.value.agent_package}/${draft.value.agent_instance_id}/dispatch`;
-      const res = await fetch(url, {
+      const res = await fetch("/events/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(preview),
       });
       if (!res.ok) {
-        dispatchError.value = await res.text();
+        publishError.value = await res.text();
         dispatchPhase.value = "failed";
         return;
       }
-      const ack = (await res.json()) as AgentDispatchAck;
-      lastAck.value = ack;
-      const ackScope = scopeFromAck(ack);
-      if (ackScope) {
-        lastDispatchedScope.value = {
-          ...ackScope,
+      const outcome = (await res.json()) as EventPublishResponse;
+      lastPublishOutcome.value = outcome;
+      const scope =
+        scopeFromRecord(preview) ??
+        (outcome.context_id ? scopeFromRecord({ context_id: outcome.context_id }) : null);
+      if (scope) {
+        lastPublishedScope.value = {
+          ...scope,
           agentPackage: draft.value.agent_package,
           agentInstanceId: draft.value.agent_instance_id,
         };
-        selectedContextId.value = ackScope.contextId;
-        const preview =
-          selectedMessageShape.value?.display_name ??
-          ack.detail ??
-          "Operator dispatch";
+        selectedContextId.value = scope.contextId;
+        const label =
+          selectedMessageShape.value?.display_name ?? "Operator publish";
         rememberRecentDispatchContext(
           draft.value.agent_package,
-          ackScope.contextId,
-          preview,
+          scope.contextId,
+          label,
         );
         syncEventConsoleRoute();
       }
@@ -768,8 +787,8 @@ export function useEventConsole() {
     mode.value = "compose";
     validation.value = null;
     validatedFingerprint.value = null;
-    lastAck.value = null;
-    dispatchError.value = null;
+    lastPublishOutcome.value = null;
+    publishError.value = null;
   }
 
   watch(shapesForSelectedSubscription, (shapes) => {
@@ -789,12 +808,14 @@ export function useEventConsole() {
     contextId: string | null;
     taskId: string | null;
   } {
-    const preview = validation.value?.preview_request as Record<string, unknown> | undefined;
+    const preview = validation.value?.preview_produced_event as
+      | Record<string, unknown>
+      | undefined;
     const resolved = resolveObservationScope({
-      lastDispatchedScope: lastDispatchedScope.value,
+      lastPublishedScope: lastPublishedScope.value,
       draftScope: draft.value.scope,
       selectedContextId: selectedContextId.value,
-      previewRequest: preview,
+      previewProducedEvent: preview,
       currentAgent:
         draft.value.agent_package && draft.value.agent_instance_id
           ? {
@@ -823,10 +844,11 @@ export function useEventConsole() {
     validation,
     validationStale,
     validationFocusPath,
-    lastAck,
-    lastDispatchedScope,
+    lastPublishOutcome,
+    lastPublishedScope,
+    fleetAcceptsCurrentShape,
     dispatchPhase,
-    dispatchError,
+    publishError,
     historyItems,
     filteredHistoryItems,
     selectedContextId,
@@ -856,7 +878,7 @@ export function useEventConsole() {
     removeMessage,
     setScope,
     validateDraft,
-    dispatchEvent,
+    publishEvent,
     fetchHistory,
     selectHistoryContext,
     selectContextFromPicker,

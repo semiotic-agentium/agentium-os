@@ -13,6 +13,10 @@ pub(crate) const TBL_BLOB: &str = TBL_PAYLOAD_BLOB;
 pub(crate) const TBL_ARCHIVE_PREFIX_REGISTRY: &str = "archive_prefix_registry";
 pub(crate) const TBL_ARCHIVE_LOCAL_COUNTER: &str = "archive_local_counter";
 pub(crate) const TBL_ARCHIVE_BODY: &str = "archive_body";
+/// Stable `#N` index per `(context_id, activity_anchor, source)`; idempotent insert.
+pub(crate) const TBL_HISTORY_REF_REGISTRY: &str = "history_ref_registry";
+/// Monotonic per-context ref counter shared by `#N` and flat `@N` (`prefix = 1`) slots.
+pub(crate) const TBL_SESSION_REF_COUNTER: &str = "session_ref_counter";
 
 /// Column list for `PayloadRecord` round-trip SELECTs (must match serde fields).
 pub(crate) const PAYLOAD_ROW_SELECT: &str = "payload_id, activity_anchor_id, activity_id, payload_kind, payload_json, content_hash, storage_kind, file_key, search_text";
