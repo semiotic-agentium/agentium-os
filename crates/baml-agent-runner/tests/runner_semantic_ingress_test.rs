@@ -12,8 +12,10 @@ use async_trait::async_trait;
 use baml_rt::{A2aRequestHandler, baml::BamlRuntimeManager};
 use baml_rt_a2a::{AgentRegistry, EventDispatcher};
 use baml_rt_core::{
-    AgentLister, EventSchemaVersion, EventSourceKind, bus::BusWithEffects,
-    event_subscription::EventSubscription,
+    AgentLister, EventSchemaVersion, EventSourceKind,
+    bus::BusWithEffects,
+    event_subscription::{EventSourceKey, EventSubscription},
+    ingress_store::{IngressId, IngressItem, IngressStore},
 };
 use baml_rt_tools::{
     BundleName, ConfigResolver, InventoryCatalog,
@@ -121,6 +123,35 @@ async fn setup_semantic_ingress_agent(
     let permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
     let (agent, built) = setup_semantic_ingress_agent_unlocked(agent_list, a2a_handler).await;
     (permit, agent, built)
+}
+
+async fn enqueue_slack_inbox_source_records(
+    store: &baml_tools_slack::test_support::MemoryIngressStore,
+    channel_id: &str,
+    records: Vec<Value>,
+    ingress_id: &str,
+) {
+    let source_key =
+        EventSourceKey::parse(format!("slack:{channel_id}")).expect("valid slack source key");
+    let payload = json!({
+        "schema_version": "host.source-records.v1",
+        "emitted_at_unix": 1_735_720_511u64,
+        "source": {
+            "source_kind": "slack",
+            "source_key": source_key.as_str(),
+            "source_label": channel_id
+        },
+        "records": records
+    });
+    store
+        .enqueue(&IngressItem {
+            ingress_id: IngressId::parse(ingress_id).expect("valid ingress id"),
+            source_key,
+            payload_json: serde_json::to_string(&payload).expect("serialize inbox payload"),
+            enqueued_at_unix_ms: 1_735_720_511_000,
+        })
+        .await
+        .expect("enqueue durable slack ingress item");
 }
 
 fn raw_slack_source_event(source_label: &str, records: Vec<Value>) -> Value {
@@ -1071,152 +1102,12 @@ async fn semantic_ingress_dispatch_http_does_not_expand_thread_root_without_repl
     mock_server.stop().await;
 }
 
-#[tokio::test]
-async fn slack_producer_poll_and_deliver_reaches_semantic_ingress_and_downstream_delegation() {
-    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
-
-    let (mock_server, mock_state) = start_slack_producer_server(
-        vec![json!({
-            "type": "message",
-            "user": "U123",
-            "text": "Can we track the OAuth docs follow-up?",
-            "ts": "1735720511.000001",
-            "thread_ts": "1735720511.000001",
-            "reply_count": 1,
-            "latest_reply": "1735720512.000001"
-        })],
-        vec![
-            json!({
-                "type": "message",
-                "user": "U123",
-                "text": "Can we track the OAuth docs follow-up?",
-                "ts": "1735720511.000001",
-                "thread_ts": "1735720511.000001"
-            }),
-            json!({
-                "type": "message",
-                "user": "U456",
-                "text": "Please create a task for the OAuth runbook and assign an owner.",
-                "ts": "1735720512.000001",
-                "thread_ts": "1735720511.000001"
-            }),
-        ],
-    )
-    .await
-    .expect("start slack producer fixture");
-    let _env_slack_token = TempEnvVar::set("SLACK_BOT_TOKEN", "xoxb_test_slack_fixture");
-    let _env_slack_base = TempEnvVar::set(
-        "SLACK_API_BASE_URL",
-        &mock_api_base_url(&mock_server.base_url),
-    );
-    let _env_slack_user = TempEnvVar::remove("SLACK_USER_TOKEN");
-
-    let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
-        entries: vec![discovery_entry(
-            "clickup-agent",
-            &[PROJECT_MANAGEMENT_CREATE_TASK_CAPABILITY],
-        )],
-    });
-    let handler = Arc::new(CapturingA2aHandler::default());
-    let (agent, built_dir) =
-        setup_semantic_ingress_agent_unlocked(agent_list, handler.clone()).await;
-    let _built_dir_guard = TempDirCleanup::new(built_dir);
-
-    let registry = Arc::new(
-        DispatchRegistry::new(
-            "semantic-ingress-agent",
-            "default",
-            "semantic-ingress-agent",
-            "1.0.0",
-            agent,
-        )
-        .with_subscriptions(vec![EventSubscription {
-            schema_versions: vec![EventSchemaVersion::parse("host.source-records.v1").unwrap()],
-            source_kinds: vec![EventSourceKind::parse("slack").unwrap()],
-            ..EventSubscription::default()
-        }]),
-    ) as Arc<dyn AgentRegistry>;
-
-    let config_resolver = Arc::new(StaticConfigResolver {
-        configs: HashMap::from([(
-            SLACK_BUNDLE_NAME.to_string(),
-            json!({ "channels": ["C123ABC456"] }),
-        )]),
-    }) as Arc<dyn ConfigResolver>;
-
-    let producers = load_configured_event_producers_with_checkpoints(
-        &InventoryCatalog::new(),
-        Some(config_resolver),
-        HashMap::new(),
-    )
-    .await
-    .expect("load configured event producers");
-    assert!(
-        !producers.is_empty(),
-        "expected at least one configured event producer; bundle {SLACK_BUNDLE_NAME} may no longer match the Slack provider registration"
-    );
-
-    let mut dispatcher = EventDispatcher::new(registry);
-    for producer in producers {
-        dispatcher
-            .register_producer(producer)
-            .expect("register producer");
-    }
-
-    let results = dispatcher.poll_and_deliver().await;
-    let calls = handler.snapshot_calls().await;
-    let hits = mock_state.snapshot_hits().await;
-
-    assert_eq!(results.len(), 1, "expected one producer result");
-    let (producer_key, outcome) = &results[0];
-    assert_eq!(producer_key, "support/slack:id:C123ABC456");
-    let outcome = outcome
-        .as_ref()
-        .expect("slack producer delivery should succeed");
-    assert_eq!(outcome.subscribers_matched, 1);
-    assert_eq!(outcome.subscribers_accepted, 1);
-    assert!(
-        outcome.failures.is_empty(),
-        "expected no semantic-ingress delivery failures: {outcome:?}"
-    );
-
-    assert_eq!(
-        calls.len(),
-        1,
-        "expected one downstream delegation from semantic ingress; calls={calls:?}"
-    );
-    assert_eq!(calls[0].agent_package, "clickup-agent");
-    assert!(
-        calls[0]
-            .prompt
-            .contains("Ingress kind: Slack semantic ingress from raw source records"),
-        "expected semantic-ingress prompt header, got: {}",
-        calls[0].prompt
-    );
-    assert!(
-        calls[0]
-            .prompt
-            .contains("Please create a task for the OAuth runbook and assign an owner."),
-        "expected expanded thread transcript in delegated prompt, got: {}",
-        calls[0].prompt
-    );
-    assert!(
-        hits.iter()
-            .any(|hit| hit.contains("/api/conversations.history")),
-        "expected producer poll to hit conversations.history, hits={hits:?}"
-    );
-    assert!(
-        hits.iter()
-            .any(|hit| hit.contains("/api/conversations.replies")),
-        "expected semantic ingress to expand thread replies, hits={hits:?}"
-    );
-
-    mock_server.stop().await;
-}
+// REST channel polling E2E lives in task-daemon (`daemon_coordinator_integration` and friends).
+// Runner registers only the durable inbox drain (`support/slack:inbox`).
 
 #[tokio::test]
-async fn slack_inbox_producer_poll_and_deliver_reaches_semantic_ingress_and_downstream_delegation()
-{
+async fn slack_inbox_producer_delivers_durable_ingress_to_semantic_ingress_and_downstream_delegation()
+ {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
     let (_store_guard, store) = install_memory_ingress_store();
 
@@ -1289,6 +1180,23 @@ async fn slack_inbox_producer_poll_and_deliver_reaches_semantic_ingress_and_down
         )]),
     }) as Arc<dyn ConfigResolver>;
 
+    enqueue_slack_inbox_source_records(
+        &store,
+        "C123ABC456",
+        vec![json!({
+            "type": "message",
+            "user": "U123",
+            "text": "Can we track the OAuth docs follow-up?",
+            "ts": "1735720511.000001",
+            "thread_ts": "1735720511.000001",
+            "reply_count": 1,
+            "latest_reply": "1735720512.000001"
+        })],
+        "support/slack:inbox:semantic-ingress-e2e",
+    )
+    .await;
+    assert_eq!(store.undelivered_count().await, 1);
+
     let producers = load_configured_event_producers_with_checkpoints(
         &InventoryCatalog::new(),
         Some(config_resolver),
@@ -1296,6 +1204,12 @@ async fn slack_inbox_producer_poll_and_deliver_reaches_semantic_ingress_and_down
     )
     .await
     .expect("load configured event producers");
+    assert_eq!(
+        producers.len(),
+        1,
+        "runner should register only the Slack inbox drain when ingress store is installed"
+    );
+    assert_eq!(producers[0].producer_key(), "support/slack:inbox");
 
     let mut dispatcher = EventDispatcher::new(registry);
     for producer in producers {
@@ -1305,33 +1219,9 @@ async fn slack_inbox_producer_poll_and_deliver_reaches_semantic_ingress_and_down
     }
 
     let first_results = dispatcher.poll_and_deliver().await;
-    assert_eq!(
-        store.undelivered_count().await,
-        1,
-        "poll receiver should enqueue one durable Slack ingress item"
-    );
-    assert_eq!(
-        first_results.len(),
-        2,
-        "expected one polling receiver and one inbox producer"
-    );
-    let first_result_by_key = first_results
-        .iter()
-        .map(|(producer_key, outcome)| (producer_key.as_str(), outcome))
-        .collect::<HashMap<_, _>>();
-    let polling_outcome = first_result_by_key
-        .get("support/slack:id:C123ABC456")
-        .expect("polling receiver result");
-    assert!(
-        polling_outcome
-            .as_ref()
-            .expect("polling receiver should succeed")
-            .failures
-            .is_empty()
-    );
-    let inbox_outcome = first_result_by_key
-        .get("support/slack:inbox")
-        .expect("inbox producer result");
+    assert_eq!(first_results.len(), 1, "expected one inbox producer result");
+    let (producer_key, inbox_outcome) = &first_results[0];
+    assert_eq!(producer_key, "support/slack:inbox");
     let inbox_outcome = inbox_outcome
         .as_ref()
         .expect("inbox producer delivery should succeed");
@@ -1377,13 +1267,8 @@ async fn slack_inbox_producer_poll_and_deliver_reaches_semantic_ingress_and_down
     );
     assert!(
         hits.iter()
-            .any(|hit| hit.contains("/api/conversations.history")),
-        "expected polling receiver to hit conversations.history, hits={hits:?}"
-    );
-    assert!(
-        hits.iter()
             .any(|hit| hit.contains("/api/conversations.replies")),
-        "expected semantic ingress to expand thread replies, hits={hits:?}"
+        "expected semantic ingress to expand thread replies via support/slack, hits={hits:?}"
     );
 
     mock_server.stop().await;
