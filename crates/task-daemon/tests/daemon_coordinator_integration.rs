@@ -137,7 +137,7 @@ async fn dispatch_sink_sends_typed_handoff_to_explicit_target_agent_endpoint() {
     let state = DispatchMockState::default();
     let app = Router::new()
         .route(
-            "/agents/workflow-intake-agent/default/dispatch",
+            "/agents/coordinator-agent/default/dispatch",
             post(dispatch_handler),
         )
         .with_state(state.clone());
@@ -147,7 +147,7 @@ async fn dispatch_sink_sends_typed_handoff_to_explicit_target_agent_endpoint() {
 
     let mut sink = DispatchSink::for_agent(
         server.base_url.clone(),
-        "workflow-intake-agent".to_string(),
+        "coordinator-agent".to_string(),
         "default".to_string(),
         SinkDeliveryMode::Live,
     )
@@ -159,7 +159,7 @@ async fn dispatch_sink_sends_typed_handoff_to_explicit_target_agent_endpoint() {
     let hits = state.snapshot_hits().await;
     assert!(
         hits.iter()
-            .any(|hit| hit.contains("/agents/workflow-intake-agent/default/dispatch")),
+            .any(|hit| hit.contains("/agents/coordinator-agent/default/dispatch")),
         "expected /dispatch endpoint to be called, got {hits:?}"
     );
 
@@ -204,14 +204,14 @@ async fn dispatch_sink_discovers_matching_subscribers_and_delivers_to_them() {
         state.push_hit("GET /agents".to_string()).await;
         Json(json!([
             {
-                "agent_package": "semantic-ingress-agent",
+                "agent_package": "slack-agent",
                 "agent_instance_id": "default",
-                "name": "semantic-ingress-agent",
+                "name": "slack-agent",
                 "version": "1.0.0",
                 "agent_card": {
-                    "name": "semantic-ingress-agent",
+                    "name": "slack-agent",
                     "version": "1.0.0",
-                    "agent_package": "semantic-ingress-agent",
+                    "agent_package": "slack-agent",
                     "agent_instance_id": "default",
                     "tools": ["system/internal_a2a"],
                     "baml_functions": [],
@@ -264,7 +264,7 @@ async fn dispatch_sink_discovers_matching_subscribers_and_delivers_to_them() {
     let app = Router::new()
         .route("/agents", get(list_agents_handler))
         .route(
-            "/agents/semantic-ingress-agent/default/dispatch",
+            "/agents/slack-agent/default/dispatch",
             post(dispatch_handler),
         )
         .with_state(state.clone());
@@ -280,7 +280,7 @@ async fn dispatch_sink_discovers_matching_subscribers_and_delivers_to_them() {
     assert!(hits.iter().any(|hit| hit == "GET /agents"));
     assert!(
         hits.iter()
-            .any(|hit| hit.contains("/agents/semantic-ingress-agent/default/dispatch"))
+            .any(|hit| hit.contains("/agents/slack-agent/default/dispatch"))
     );
     assert!(
         !hits
@@ -361,14 +361,14 @@ async fn dispatch_sink_reports_partial_subscriber_delivery_failures_with_success
         state.push_hit("GET /agents".to_string()).await;
         Json(json!([
             {
-                "agent_package": "semantic-ingress-agent",
+                "agent_package": "slack-agent",
                 "agent_instance_id": "default",
-                "name": "semantic-ingress-agent",
+                "name": "slack-agent",
                 "version": "1.0.0",
                 "agent_card": {
-                    "name": "semantic-ingress-agent",
+                    "name": "slack-agent",
                     "version": "1.0.0",
-                    "agent_package": "semantic-ingress-agent",
+                    "agent_package": "slack-agent",
                     "agent_instance_id": "default",
                     "tools": ["system/internal_a2a"],
                     "baml_functions": [],
@@ -430,10 +430,7 @@ async fn dispatch_sink_reports_partial_subscriber_delivery_failures_with_success
     let state = DispatchMockState::default();
     let app = Router::new()
         .route("/agents", get(list_agents_handler))
-        .route(
-            "/agents/semantic-ingress-agent/default/dispatch",
-            post(ok_handler),
-        )
+        .route("/agents/slack-agent/default/dispatch", post(ok_handler))
         .route("/agents/audit-agent/default/dispatch", post(bad_handler))
         .with_state(state.clone());
     let server = start_http_server(app).await.expect("start mock host");
@@ -447,7 +444,7 @@ async fn dispatch_sink_reports_partial_subscriber_delivery_failures_with_success
 
     let msg = format!("{err:#}");
     assert!(msg.contains("delivered to 1 of 2 subscribed agents"));
-    assert!(msg.contains("semantic-ingress-agent/default"));
+    assert!(msg.contains("slack-agent/default"));
     assert!(msg.contains("audit-agent/default"));
     assert!(msg.contains("downstream failure"));
 

@@ -13,7 +13,7 @@
 //! Coordinator agents handle orchestration via conversational A2A, not raw event
 //! ingress. They do not implement `onDispatch` and should not declare event
 //! subscriptions. For event-driven ingress, use the simple or planner template
-//! with an `onDispatch` handler (see `semantic-ingress-agent` as a reference).
+//! with an `onDispatch` handler (see `slack-agent` source ingress as a reference).
 
 use baml_rt_core::{AgentManifest, package::ManifestDiscovery};
 

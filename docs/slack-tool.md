@@ -94,7 +94,7 @@ SLACK_DEMO_THREAD_URL="https://<workspace>.slack.com/archives/C123.../p173568960
 `support/slack` now participates in two different but complementary flows:
 
 1. **Producer flow**: the host polls configured channels and emits raw `host.source-records.v1` batches.
-2. **Invoke flow**: a semantic-ingress agent can call `support/slack` directly to enrich a candidate conversation with `GetConversationHistory` or `GetThreadReplies`.
+2. **Invoke flow**: `slack-agent` source ingress can call `support/slack` directly to enrich a candidate conversation with `GetConversationHistory` or `GetThreadReplies`.
 
 The intended steady-state flow for Slack-as-work is:
 
@@ -104,7 +104,7 @@ The intended steady-state flow for Slack-as-work is:
 - interpret the conversation into work intent
 - route that intent downstream
 
-This keeps Slack polling in the host/runtime layer and Slack meaning in semantic ingress.
+This keeps Slack polling in the host/runtime layer and Slack meaning in `slack-agent` source ingress.
 
 ## Known Limitations (MVP)
 

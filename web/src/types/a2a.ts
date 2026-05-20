@@ -1,8 +1,7 @@
-<<<<<<< HEAD
 // SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
 //
 // SPDX-License-Identifier: Apache-2.0
-=======
+
 /** Manifest event subscription (GET /agents agent_card.subscriptions). */
 export interface EventSubscriptionInfo {
   schema_versions?: string[];
@@ -10,7 +9,6 @@ export interface EventSubscriptionInfo {
   source_keys?: string[];
   source_key_prefixes?: string[];
 }
->>>>>>> c1ef91e1 (feat(web): Event Console UI with SSE provenance and Mermaid hardening)
 
 /** Agent card nested in discovery response */
 export interface AgentCardInfo {

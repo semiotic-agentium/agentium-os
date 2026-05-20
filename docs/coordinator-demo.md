@@ -51,7 +51,7 @@ COORDINATOR_DEMO_INCLUDE_NOTION=0 just coordinator-demo
 
 This command:
 
-1. Packages `agents/coordinator-agent`, `agents/workflow-intake-agent`, and `agents/notion-agent` when enabled
+1. Packages `agents/coordinator-agent` and `agents/notion-agent` when enabled
 2. Starts `baml-agent-runner` in HTTP mode
 3. Loads the packaged agents into one host
 4. Sends one `message.sendStream` request to `/agents/coordinator-agent/default/a2a/sse`

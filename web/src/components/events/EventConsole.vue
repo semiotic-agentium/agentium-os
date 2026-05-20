@@ -506,7 +506,7 @@ function openSelectedAgentInChat(): void {
           </select>
           <p v-if="subscribedAgents.length === 0" class="field-hint field-hint--warn">
             No deployed agents declare event subscriptions. Publish an agent with
-            <code>discovery.subscriptions</code> (e.g. semantic-ingress-agent, coordinator-agent, dispatch-echo).
+            <code>discovery.subscriptions</code> (e.g. slack-agent, coordinator-agent, dispatch-echo).
           </p>
 
           <template v-if="selectedAgent">

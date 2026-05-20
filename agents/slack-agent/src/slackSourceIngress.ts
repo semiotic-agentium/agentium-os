@@ -1,10 +1,7 @@
 /// <reference path="./baml-runtime.d.ts" />
-import type {
-  HostDispatchAck,
-  HostDispatchRequest,
-  RunContext,
-  SessionResult,
-} from "./baml-runtime";
+import type { HostDispatchAck, HostDispatchRequest } from "./baml-runtime";
+
+const AGENT_NAME = "slack-agent";
 
 type ToolSessionHandle = {
   send(args: Record<string, unknown>): Promise<unknown>;
@@ -406,7 +403,7 @@ async function runSingleSendSession(
         ? `${toolName} did not finish within ${maxSteps} continue steps.`
         : null) ||
       (terminal?.status === "suspended"
-        ? `${toolName} suspended and cannot be resumed from this semantic-ingress turn.`
+        ? `${toolName} suspended and cannot be resumed from this slack source ingress turn.`
         : null) ||
       (terminal?.status === "error"
         ? terminal.errorMessage || `${toolName} returned error status.`
@@ -483,7 +480,7 @@ async function discoverAgentsByCapabilities(
   const normalizedCapabilities = normalizeCapabilities(requiredCapabilities);
   const drained = await runSingleSendSession(
     DISCOVER_AGENTS_TOOL_NAME,
-    { reason: "Find the downstream agent for this Slack semantic-ingress event." },
+    { reason: "Find the downstream agent for this Slack source ingress event." },
     { requiredCapabilities: normalizedCapabilities, limit: 100, offset: 0 },
     MAX_SINGLE_SEND_CONTINUE_STEPS,
   );
@@ -542,7 +539,7 @@ async function delegateToAgent(target: RouteTarget, prompt: string): Promise<str
   }
   if (terminal?.status === "suspended") {
     throw new Error(
-      "Delegated task requires follow-up input or authentication and cannot be completed from this semantic-ingress turn.",
+      "Delegated task requires follow-up input or authentication and cannot be completed from this slack source ingress turn.",
     );
   }
 
@@ -769,7 +766,7 @@ async function fetchSlackConversationHistory(
   const channelId = preferredSlackChannelId(sourceKey, group.records);
   if (!channelId) {
     console.warn(
-      `[semantic-ingress-agent] Slack thread expansion skipped for ${sourceKey}/${group.conversationKey}: missing channel id; falling back to original records.`,
+      `[slack-agent] Slack thread expansion skipped for ${sourceKey}/${group.conversationKey}: missing channel id; falling back to original records.`,
     );
     return { records: group.records, usedThreadExpansion: false };
   }
@@ -790,7 +787,7 @@ async function fetchSlackConversationHistory(
 
     if (drained.hitStepLimit) {
       console.warn(
-        `[semantic-ingress-agent] Slack thread expansion hit step limit for ${sourceKey}/${group.conversationKey}; falling back to original records.`,
+        `[slack-agent] Slack thread expansion hit step limit for ${sourceKey}/${group.conversationKey}; falling back to original records.`,
       );
       return { records: group.records, usedThreadExpansion: false };
     }
@@ -798,7 +795,7 @@ async function fetchSlackConversationHistory(
     const terminal = drained.steps[drained.steps.length - 1] || null;
     if (terminal?.status === "error" || terminal?.status === "suspended") {
       console.warn(
-        `[semantic-ingress-agent] Slack thread expansion returned status "${terminal.status}" for ${sourceKey}/${group.conversationKey}; falling back to original records.`,
+        `[slack-agent] Slack thread expansion returned status "${terminal.status}" for ${sourceKey}/${group.conversationKey}; falling back to original records.`,
       );
       return { records: group.records, usedThreadExpansion: false };
     }
@@ -806,7 +803,7 @@ async function fetchSlackConversationHistory(
     const records = parseSlackToolOutputRecords(lastMeaningfulStepOutput(drained.steps));
     if (records.length === 0) {
       console.warn(
-        `[semantic-ingress-agent] Slack thread expansion returned no readable records for ${sourceKey}/${group.conversationKey}; falling back to original records.`,
+        `[slack-agent] Slack thread expansion returned no readable records for ${sourceKey}/${group.conversationKey}; falling back to original records.`,
       );
       return { records: group.records, usedThreadExpansion: false };
     }
@@ -814,7 +811,7 @@ async function fetchSlackConversationHistory(
     return { records, usedThreadExpansion: true };
   } catch (err) {
     console.warn(
-      `[semantic-ingress-agent] Slack thread expansion failed for ${sourceKey}/${group.conversationKey}: ${err instanceof Error ? err.message : String(err)}`,
+      `[slack-agent] Slack thread expansion failed for ${sourceKey}/${group.conversationKey}: ${err instanceof Error ? err.message : String(err)}`,
     );
     return { records: group.records, usedThreadExpansion: false };
   }
@@ -1013,7 +1010,7 @@ function renderDownstreamPrompt(
   decision: IntakeDecision,
 ): string {
   const lines: string[] = [];
-  lines.push("Create project-management work items from this semantic-ingress event.");
+  lines.push("Create project-management work items from this slack source ingress event.");
   lines.push("");
   lines.push("Ingress kind: Slack semantic ingress from raw source records");
   lines.push(`Schema version: ${event.schema_version}`);
@@ -1096,63 +1093,55 @@ async function handleSlackSemanticIngressEvent(
   };
 }
 
-__chat_register({
-  run: async (_ctx: RunContext): Promise<SessionResult> => {
+export async function onSlackSourceDispatch(
+  request: HostDispatchRequest,
+): Promise<HostDispatchAck> {
+  const messageType = normalizeOptionalString(request.message_type);
+  if (messageType !== RAW_SOURCE_SCHEMA_VERSION) {
     return {
-      error:
-        "semantic-ingress-agent processes Slack host.source-records.v1 dispatch events. " +
-        "It does not handle direct A2A messages.",
+      accepted: false,
+      detail:
+        `${AGENT_NAME} expected message_type ${RAW_SOURCE_SCHEMA_VERSION}, ` +
+        `got ${messageType ?? "missing"}.`,
     };
-  },
+  }
 
-  onDispatch: async (request: HostDispatchRequest): Promise<HostDispatchAck> => {
-    const messageType = normalizeOptionalString(request.message_type);
-    if (messageType !== RAW_SOURCE_SCHEMA_VERSION) {
-      return {
-        accepted: false,
-        detail:
-          `semantic-ingress-agent expected message_type ${RAW_SOURCE_SCHEMA_VERSION}, ` +
-          `got ${messageType ?? "missing"}.`,
-      };
-    }
+  const routingKey = normalizeOptionalString(request.routing_key);
+  if (routingKey !== RAW_SOURCE_ROUTING_KEY) {
+    return {
+      accepted: false,
+      detail:
+        `${AGENT_NAME} expected routing_key ${RAW_SOURCE_ROUTING_KEY}, ` +
+        `got ${routingKey ?? "missing"}.`,
+    };
+  }
 
-    const routingKey = normalizeOptionalString(request.routing_key);
-    if (routingKey !== RAW_SOURCE_ROUTING_KEY) {
-      return {
-        accepted: false,
-        detail:
-          `semantic-ingress-agent expected routing_key ${RAW_SOURCE_ROUTING_KEY}, ` +
-          `got ${routingKey ?? "missing"}.`,
-      };
-    }
+  if (request.messages.length !== 1) {
+    return {
+      accepted: false,
+      detail:
+        `${AGENT_NAME} expected exactly one dispatch message, ` +
+        `got ${request.messages.length}.`,
+    };
+  }
 
-    if (request.messages.length !== 1) {
-      return {
-        accepted: false,
-        detail:
-          `semantic-ingress-agent expected exactly one dispatch message, ` +
-          `got ${request.messages.length}.`,
-      };
-    }
+  const event = parseSlackRawSourceEventValue(request.messages[0]);
+  if (!event) {
+    return {
+      accepted: false,
+      detail:
+        `${AGENT_NAME} expected ${RAW_SOURCE_SCHEMA_VERSION} payload ` +
+        `in dispatch.messages[], got none.`,
+    };
+  }
 
-    const event = parseSlackRawSourceEventValue(request.messages[0]);
-    if (!event) {
-      return {
-        accepted: false,
-        detail:
-          `semantic-ingress-agent expected ${RAW_SOURCE_SCHEMA_VERSION} payload ` +
-          `in dispatch.messages[], got none.`,
-      };
-    }
-
-    try {
-      return await handleSlackSemanticIngressEvent(event);
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      return {
-        accepted: false,
-        detail: `semantic-ingress-agent failed: ${reason}`,
-      };
-    }
-  },
-});
+  try {
+    return await handleSlackSemanticIngressEvent(event);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return {
+      accepted: false,
+      detail: `${AGENT_NAME} failed: ${reason}`,
+    };
+  }
+}

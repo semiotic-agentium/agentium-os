@@ -747,7 +747,7 @@ async fn discover_agents_natural_language_query_miss_falls_back_to_first_page() 
 #[tokio::test]
 async fn discover_agents_subscription_filter_is_not_overridden_by_query_fallback() {
     let entries = vec![entry_with_subscriptions(
-        "semantic-ingress-agent",
+        "slack-agent",
         "Semantic Ingress",
         "1.0.0",
         Some("Consumes host source-record events"),
@@ -1019,7 +1019,7 @@ async fn discover_agents_session_returns_declared_subscriptions() {
 async fn discover_agents_session_filters_by_event_subscription() {
     let entries = vec![
         entry_with_subscriptions(
-            "semantic-ingress-agent",
+            "slack-agent",
             "Semantic Ingress",
             "1.0.0",
             Some("Consumes host source-record events"),

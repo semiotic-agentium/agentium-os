@@ -8,6 +8,7 @@ import type {
   SlackStructuredPlan,
   StructuredReply,
 } from "./baml-runtime";
+import { onSlackSourceDispatch } from "./slackSourceIngress";
 
 const MAX_REACT_STEPS = 10;
 const PKG_RETRIEVE = "slack-retrieve";
@@ -259,4 +260,6 @@ __chat_register({
 
     return runSlackStructuredPlan(ctx, text, structured, validatedIntent, stepsOrErr);
   },
+
+  onDispatch: onSlackSourceDispatch,
 });

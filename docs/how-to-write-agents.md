@@ -57,7 +57,7 @@ Agents can also register `onDispatch(request)` for host-delivered events. This i
 - optionally call a host tool for enrichment
 - route only after the meaning is clear
 
-For example, a Slack semantic-ingress agent can receive `host.source-records.v1`, group records into conversations, call `support/slack` to expand a thread, and only then hand off tracked work to ClickUp or a coordinator.
+For example, `slack-agent` receives `host.source-records.v1` via `onDispatch`, groups records into conversations, calls `support/slack` to expand a thread when needed, and only then hands off tracked work to ClickUp or a coordinator.
 
 ---
 

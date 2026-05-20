@@ -124,7 +124,7 @@ Slack is a good example of the boundary this system is trying to enforce:
 
 1. The host-managed `support/slack` producer polls configured channels and emits raw `host.source-records.v1`.
 2. Semantic ingress receives those raw records and groups them into conversation units, typically by `thread_ts` or root message timestamp.
-3. When a conversation looks work-like but the raw batch is incomplete, semantic ingress can call `support/slack` as a normal host tool to fetch thread replies before deriving work.
+3. When a conversation looks work-like but the raw batch is incomplete, `slack-agent` source ingress can call `support/slack` as a normal host tool to fetch thread replies before deriving work.
 4. Only after that interpretation step should downstream work be created or delegated.
 
 That means the raw poll batch is not itself the work unit. The work unit is the interpreted conversation.

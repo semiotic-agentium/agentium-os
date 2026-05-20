@@ -814,6 +814,15 @@ expression: snapshot
               }
             },
             {
+              "name": "agentPackage",
+              "in": "query",
+              "description": "Optional agent package filter for transcript rows",
+              "required": false,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
               "name": "limit",
               "in": "query",
               "description": "Page size in range [1, 500], default 50",
@@ -897,6 +906,15 @@ expression: snapshot
               "name": "taskId",
               "in": "query",
               "description": "Optional task scope",
+              "required": false,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "agentPackage",
+              "in": "query",
+              "description": "Optional agent package filter for transcript rows",
               "required": false,
               "schema": {
                 "type": "string"
@@ -1221,6 +1239,92 @@ expression: snapshot
               "RunnerToken": []
             }
           ]
+        }
+      },
+      "/event-dispatch/validate": {
+        "post": {
+          "tags": [
+            "events"
+          ],
+          "summary": "Validate an event dispatch draft without invoking the agent.",
+          "operationId": "post_event_dispatch_validate",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventDispatchValidateRequestDto"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Validation report",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/EventValidationReportDto"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/events/publish": {
+        "post": {
+          "tags": [
+            "events"
+          ],
+          "summary": "Publish event to subscribed agents",
+          "operationId": "post_events_publish",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProducedEventDto"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Delivery outcome",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/EventPublishResponseDto"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "Bad request"
+            }
+          }
+        }
+      },
+      "/message-shapes": {
+        "get": {
+          "tags": [
+            "events"
+          ],
+          "summary": "Agent-deliverable message shapes for the operator Event Console.",
+          "operationId": "get_message_shapes",
+          "responses": {
+            "200": {
+              "description": "Message shape registry",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/MessageShapeRegistryResponse"
+                  }
+                }
+              }
+            }
+          }
         }
       },
       "/provenance/aggregates": {
@@ -1601,6 +1705,68 @@ expression: snapshot
             }
           }
         },
+        "AgentDeliverableMessageShape": {
+          "type": "object",
+          "description": "Agent-deliverable message shape: one JSON body operators can put in `messages[]`.",
+          "required": [
+            "message_shape_id",
+            "display_name",
+            "description",
+            "origin",
+            "payload_name",
+            "wire_schema_version",
+            "source_kind",
+            "payload_schema",
+            "samples",
+            "delivery_defaults"
+          ],
+          "properties": {
+            "delivery_defaults": {
+              "$ref": "#/components/schemas/MessageShapeDeliveryDefaults"
+            },
+            "description": {
+              "type": "string"
+            },
+            "display_name": {
+              "type": "string"
+            },
+            "message_shape_id": {
+              "type": "string"
+            },
+            "origin": {
+              "type": "string",
+              "description": "Required origin identity (tool path or daemon name) for traceability."
+            },
+            "payload_name": {
+              "type": "string"
+            },
+            "payload_schema": {},
+            "samples": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/MessageShapeSample"
+              }
+            },
+            "source_kind": {
+              "type": "string",
+              "description": "Default `source_kind` for delivery envelope derivation."
+            },
+            "ui_hints": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/MessageShapeUiHints"
+                }
+              ]
+            },
+            "wire_schema_version": {
+              "type": "string",
+              "description": "Wire-level schema version (`AgentDispatchRequest.message_type`)."
+            }
+          }
+        },
         "AgentDiscoveryEntryDto": {
           "type": "object",
           "description": "Discovery entry for one running agent (GET /agents response item).",
@@ -1639,7 +1805,25 @@ expression: snapshot
             "accepted": {
               "type": "boolean"
             },
+            "context_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "message_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "task_id": {
               "type": [
                 "string",
                 "null"
@@ -2914,6 +3098,208 @@ expression: snapshot
             }
           }
         },
+        "EventDeliveryFailureDto": {
+          "type": "object",
+          "required": [
+            "agent_package",
+            "agent_instance_id",
+            "detail"
+          ],
+          "properties": {
+            "agent_instance_id": {
+              "type": "string"
+            },
+            "agent_package": {
+              "type": "string"
+            },
+            "detail": {
+              "type": "string"
+            }
+          }
+        },
+        "EventDispatchScopeDto": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "new_context"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "context_id",
+                "kind"
+              ],
+              "properties": {
+                "context_id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "existing_context"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "context_id",
+                "task_id",
+                "kind"
+              ],
+              "properties": {
+                "context_id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "existing_task"
+                  ]
+                },
+                "task_id": {
+                  "type": "string"
+                }
+              }
+            }
+          ]
+        },
+        "EventDispatchValidateRequestDto": {
+          "type": "object",
+          "required": [
+            "agent_package",
+            "agent_instance_id",
+            "routing_key",
+            "message_type",
+            "messages",
+            "scope"
+          ],
+          "properties": {
+            "agent_instance_id": {
+              "type": "string"
+            },
+            "agent_package": {
+              "type": "string"
+            },
+            "message_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "message_type": {
+              "type": "string",
+              "description": "Wire-level message type (`AgentDispatchRequest.message_type`)."
+            },
+            "messages": {
+              "type": "array",
+              "items": {}
+            },
+            "metadata": {},
+            "routing_key": {
+              "type": "string"
+            },
+            "scope": {
+              "$ref": "#/components/schemas/EventDispatchScopeDto"
+            },
+            "source_key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source_kind": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "EventPublishResponseDto": {
+          "type": "object",
+          "required": [
+            "subscribers_matched",
+            "subscribers_accepted",
+            "failures"
+          ],
+          "properties": {
+            "failures": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/EventDeliveryFailureDto"
+              }
+            },
+            "subscribers_accepted": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "subscribers_matched": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "EventValidationIssueDto": {
+          "type": "object",
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "json_pointer": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "message": {
+              "type": "string"
+            }
+          }
+        },
+        "EventValidationReportDto": {
+          "type": "object",
+          "required": [
+            "valid",
+            "matched_subscription"
+          ],
+          "properties": {
+            "errors": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/EventValidationIssueDto"
+              }
+            },
+            "matched_subscription": {
+              "type": "boolean"
+            },
+            "preview_request": {},
+            "valid": {
+              "type": "boolean"
+            },
+            "warnings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/EventValidationIssueDto"
+              }
+            }
+          }
+        },
         "IntentRevisionDto": {
           "type": "object",
           "description": "Intent revision for UI display.",
@@ -2982,6 +3368,107 @@ expression: snapshot
               "format": "int64",
               "description": "Unicode scalar count of chat message text in the request.",
               "minimum": 0
+            }
+          }
+        },
+        "MessageShapeDeliveryDefaults": {
+          "type": "object",
+          "required": [
+            "routing_key"
+          ],
+          "properties": {
+            "routing_key": {
+              "type": "string"
+            }
+          }
+        },
+        "MessageShapeFieldGroup": {
+          "type": "object",
+          "required": [
+            "title",
+            "json_pointers"
+          ],
+          "properties": {
+            "json_pointers": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "title": {
+              "type": "string"
+            }
+          }
+        },
+        "MessageShapeRegistryResponse": {
+          "type": "object",
+          "required": [
+            "items"
+          ],
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/AgentDeliverableMessageShape"
+              }
+            }
+          }
+        },
+        "MessageShapeSample": {
+          "type": "object",
+          "required": [
+            "sample_id",
+            "label",
+            "payload"
+          ],
+          "properties": {
+            "label": {
+              "type": "string"
+            },
+            "payload": {},
+            "sample_id": {
+              "type": "string"
+            },
+            "source_key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "MessageShapeUiHints": {
+          "type": "object",
+          "properties": {
+            "field_descriptions": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "propertyNames": {
+                "type": "string"
+              }
+            },
+            "field_groups": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/MessageShapeFieldGroup"
+              }
+            },
+            "field_labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "propertyNames": {
+                "type": "string"
+              }
+            },
+            "primary_record_array_pointer": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         },
@@ -3083,6 +3570,57 @@ expression: snapshot
               "type": "string"
             },
             "timestamp_ms": "[timestamp_ms]"
+          }
+        },
+        "ProducedEventDto": {
+          "type": "object",
+          "description": "Host publish ingress body (`POST /events/publish`).",
+          "required": [
+            "routing_key",
+            "schema_version",
+            "source_kind",
+            "source_key"
+          ],
+          "properties": {
+            "context_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "message_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "messages": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "metadata": {
+              "type": "object"
+            },
+            "routing_key": {
+              "type": "string"
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "source_key": {
+              "type": "string"
+            },
+            "source_kind": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         },
         "ProvisionSecretDto": {

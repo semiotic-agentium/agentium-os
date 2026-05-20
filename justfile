@@ -468,7 +468,6 @@ dev-all-agents: web-build build-release
     {{builder_bin}} publish --agent-dir agents/extrospection-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     {{builder_bin}} publish --agent-dir agents/slack-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-    {{builder_bin}} publish --agent-dir agents/workflow-intake-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     wait "$runner_pid"
 
 # Rebuilds coordinator-agent + claude-session + extrospection + clickup + security-eval and runs them with provenance (HTTP only, no stdio).

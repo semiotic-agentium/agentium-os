@@ -76,8 +76,8 @@ plan. This makes the path deterministic and avoids LLM indecision.
 **5) Source-Family Semantic Ingress**
 When an agent subscribes to raw host-delivered events, keep the boundary explicit:
 - The host owns polling, checkpoints, provenance, and dispatch.
-- The semantic-ingress agent owns source meaning and first downstream policy.
-- A bridge agent may temporarily host multiple ingress families during migration, but source-specific logic should stay isolated enough to move into a dedicated source-family agent later.
+- The source-family agent (e.g. `slack-agent` for Slack) owns source meaning and first downstream policy.
+- Keep source-specific ingress logic in the agent for that source; conversational and dispatch entrypoints can share one package.
 
 For Slack specifically, the right work unit is a conversation, not an arbitrary poll batch. Group raw records into conversation units, enrich with thread replies when needed, then derive downstream work items.
 

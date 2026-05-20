@@ -53,25 +53,23 @@ impl ConfigResolver for StaticConfigResolver {
     }
 }
 
-async fn build_workspace_semantic_ingress_agent() -> PathBuf {
-    let agent_dir = workspace_root()
-        .join("agents")
-        .join("semantic-ingress-agent");
-    build_agent_dir_to_temp_async(agent_dir, "semantic-ingress-agent").await
+async fn build_workspace_slack_source_ingress_agent() -> PathBuf {
+    let agent_dir = workspace_root().join("agents").join("slack-agent");
+    build_agent_dir_to_temp_async(agent_dir, "slack-agent").await
 }
 
-async fn setup_semantic_ingress_agent_unlocked(
+async fn setup_slack_source_ingress_agent_unlocked(
     agent_list: Arc<dyn AgentLister>,
     a2a_handler: Arc<dyn A2aRequestHandler>,
 ) -> (baml_rt::A2aAgent, PathBuf) {
-    let built = build_workspace_semantic_ingress_agent().await;
+    let built = build_workspace_slack_source_ingress_agent().await;
     let mut manager = BamlRuntimeManager::builder()
         .with_fnox_llm_resolver(workspace_fnox_path())
         .build()
         .expect("create manager");
     manager
-        .load_schema(built.to_str().expect("semantic-ingress built path utf8"))
-        .expect("load semantic-ingress schema");
+        .load_schema(built.to_str().expect("slack-agent built path utf8"))
+        .expect("load slack-agent schema");
 
     let allowlist = [
         "support/slack",
@@ -99,7 +97,7 @@ async fn setup_semantic_ingress_agent_unlocked(
         .expect("register SlackTool");
 
     let agent_code =
-        fs::read_to_string(built.join("dist").join("index.js")).expect("semantic-ingress dist");
+        fs::read_to_string(built.join("dist").join("index.js")).expect("slack-agent dist");
     let agent = baml_rt::A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
@@ -107,12 +105,12 @@ async fn setup_semantic_ingress_agent_unlocked(
         .with_surreal_store(test_surreal_store().await)
         .build()
         .await
-        .expect("build semantic-ingress agent");
+        .expect("build slack-agent agent");
 
     (agent, built)
 }
 
-async fn setup_semantic_ingress_agent(
+async fn setup_slack_source_ingress_agent(
     agent_list: Arc<dyn AgentLister>,
     a2a_handler: Arc<dyn A2aRequestHandler>,
 ) -> (
@@ -121,7 +119,7 @@ async fn setup_semantic_ingress_agent(
     PathBuf,
 ) {
     let permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
-    let (agent, built) = setup_semantic_ingress_agent_unlocked(agent_list, a2a_handler).await;
+    let (agent, built) = setup_slack_source_ingress_agent_unlocked(agent_list, a2a_handler).await;
     (permit, agent, built)
 }
 
@@ -172,9 +170,9 @@ fn raw_slack_source_event(source_label: &str, records: Vec<Value>) -> Value {
     })
 }
 
-fn semantic_ingress_dispatch_url(base_url: &str) -> String {
+fn slack_source_ingress_dispatch_url(base_url: &str) -> String {
     format!(
-        "{base}/agents/semantic-ingress-agent/default/dispatch",
+        "{base}/agents/slack-agent/default/dispatch",
         base = base_url
     )
 }
@@ -318,7 +316,7 @@ async fn start_slack_thread_replies_server(
 }
 
 #[tokio::test]
-async fn semantic_ingress_dispatch_http_routes_raw_slack_source_records_to_task_management_creation_capability()
+async fn slack_source_ingress_dispatch_http_routes_raw_slack_source_records_to_task_management_creation_capability()
  {
     let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
         entries: vec![discovery_entry(
@@ -328,14 +326,14 @@ async fn semantic_ingress_dispatch_http_routes_raw_slack_source_records_to_task_
     });
     let handler = Arc::new(CapturingA2aHandler::default());
     let (_permit, agent, built_dir) =
-        setup_semantic_ingress_agent(agent_list, handler.clone()).await;
+        setup_slack_source_ingress_agent(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
-    let runner_api = start_runner_api_server("semantic-ingress-agent", agent)
+    let runner_api = start_runner_api_server("slack-agent", agent)
         .await
-        .expect("start semantic-ingress runner api");
+        .expect("start slack-agent runner api");
     let client = reqwest::Client::new();
-    let dispatch_url = semantic_ingress_dispatch_url(&runner_api.base_url);
+    let dispatch_url = slack_source_ingress_dispatch_url(&runner_api.base_url);
     let dispatch_body = json!({
         "routing_key": "event:intake",
         "message_type": "host.source-records.v1",
@@ -365,14 +363,11 @@ async fn semantic_ingress_dispatch_http_routes_raw_slack_source_records_to_task_
         client.post(&dispatch_url).json(&dispatch_body).send(),
     )
     .await
-    .expect("semantic-ingress dispatch timed out")
-    .expect("semantic-ingress dispatch request");
+    .expect("slack-agent dispatch timed out")
+    .expect("slack-agent dispatch request");
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let ack: Value = response
-        .json()
-        .await
-        .expect("semantic-ingress dispatch ack");
+    let ack: Value = response.json().await.expect("slack-agent dispatch ack");
     assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(true));
     let detail = ack
         .get("detail")
@@ -394,7 +389,7 @@ async fn semantic_ingress_dispatch_http_routes_raw_slack_source_records_to_task_
         calls[0]
             .prompt
             .contains("Ingress kind: Slack semantic ingress from raw source records"),
-        "expected semantic-ingress prompt header, got: {}",
+        "expected slack-agent prompt header, got: {}",
         calls[0].prompt
     );
     assert!(
@@ -409,7 +404,7 @@ async fn semantic_ingress_dispatch_http_routes_raw_slack_source_records_to_task_
 }
 
 #[tokio::test]
-async fn semantic_ingress_dispatch_http_fails_when_no_task_management_sink_matches() {
+async fn slack_source_ingress_dispatch_http_fails_when_no_task_management_sink_matches() {
     let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
         entries: vec![discovery_entry(
             "coordinator-agent",
@@ -418,14 +413,14 @@ async fn semantic_ingress_dispatch_http_fails_when_no_task_management_sink_match
     });
     let handler = Arc::new(CapturingA2aHandler::default());
     let (_permit, agent, built_dir) =
-        setup_semantic_ingress_agent(agent_list, handler.clone()).await;
+        setup_slack_source_ingress_agent(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
-    let runner_api = start_runner_api_server("semantic-ingress-agent", agent)
+    let runner_api = start_runner_api_server("slack-agent", agent)
         .await
-        .expect("start semantic-ingress runner api");
+        .expect("start slack-agent runner api");
     let client = reqwest::Client::new();
-    let dispatch_url = semantic_ingress_dispatch_url(&runner_api.base_url);
+    let dispatch_url = slack_source_ingress_dispatch_url(&runner_api.base_url);
     let dispatch_body = json!({
         "routing_key": "event:intake",
         "message_type": "host.source-records.v1",
@@ -447,11 +442,11 @@ async fn semantic_ingress_dispatch_http_fails_when_no_task_management_sink_match
         client.post(&dispatch_url).json(&dispatch_body).send(),
     )
     .await
-    .expect("semantic-ingress no-sink dispatch timed out")
-    .expect("semantic-ingress no-sink dispatch request");
+    .expect("slack-agent no-sink dispatch timed out")
+    .expect("slack-agent no-sink dispatch request");
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let ack: Value = response.json().await.expect("semantic-ingress no-sink ack");
+    let ack: Value = response.json().await.expect("slack-agent no-sink ack");
     assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(false));
     let detail = ack
         .get("detail")
@@ -471,7 +466,7 @@ async fn semantic_ingress_dispatch_http_fails_when_no_task_management_sink_match
 }
 
 #[tokio::test]
-async fn semantic_ingress_dispatch_http_rejects_ambiguous_task_management_sinks() {
+async fn slack_source_ingress_dispatch_http_rejects_ambiguous_task_management_sinks() {
     let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
         entries: vec![
             discovery_entry(
@@ -483,14 +478,14 @@ async fn semantic_ingress_dispatch_http_rejects_ambiguous_task_management_sinks(
     });
     let handler = Arc::new(CapturingA2aHandler::default());
     let (_permit, agent, built_dir) =
-        setup_semantic_ingress_agent(agent_list, handler.clone()).await;
+        setup_slack_source_ingress_agent(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
-    let runner_api = start_runner_api_server("semantic-ingress-agent", agent)
+    let runner_api = start_runner_api_server("slack-agent", agent)
         .await
-        .expect("start semantic-ingress runner api");
+        .expect("start slack-agent runner api");
     let client = reqwest::Client::new();
-    let dispatch_url = semantic_ingress_dispatch_url(&runner_api.base_url);
+    let dispatch_url = slack_source_ingress_dispatch_url(&runner_api.base_url);
     let dispatch_body = json!({
         "routing_key": "event:intake",
         "message_type": "host.source-records.v1",
@@ -512,14 +507,14 @@ async fn semantic_ingress_dispatch_http_rejects_ambiguous_task_management_sinks(
         client.post(&dispatch_url).json(&dispatch_body).send(),
     )
     .await
-    .expect("semantic-ingress ambiguous-sink dispatch timed out")
-    .expect("semantic-ingress ambiguous-sink dispatch request");
+    .expect("slack-agent ambiguous-sink dispatch timed out")
+    .expect("slack-agent ambiguous-sink dispatch request");
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
     let ack: Value = response
         .json()
         .await
-        .expect("semantic-ingress ambiguous-sink ack");
+        .expect("slack-agent ambiguous-sink ack");
     assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(false));
     let detail = ack
         .get("detail")
@@ -541,7 +536,7 @@ async fn semantic_ingress_dispatch_http_rejects_ambiguous_task_management_sinks(
 }
 
 #[tokio::test]
-async fn semantic_ingress_dispatch_http_fails_when_downstream_agent_errors() {
+async fn slack_source_ingress_dispatch_http_fails_when_downstream_agent_errors() {
     let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
         entries: vec![discovery_entry(
             "clickup-agent",
@@ -549,14 +544,14 @@ async fn semantic_ingress_dispatch_http_fails_when_downstream_agent_errors() {
         )],
     });
     let handler = Arc::new(FailingA2aHandler);
-    let (_permit, agent, built_dir) = setup_semantic_ingress_agent(agent_list, handler).await;
+    let (_permit, agent, built_dir) = setup_slack_source_ingress_agent(agent_list, handler).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
-    let runner_api = start_runner_api_server("semantic-ingress-agent", agent)
+    let runner_api = start_runner_api_server("slack-agent", agent)
         .await
-        .expect("start semantic-ingress runner api");
+        .expect("start slack-agent runner api");
     let client = reqwest::Client::new();
-    let dispatch_url = semantic_ingress_dispatch_url(&runner_api.base_url);
+    let dispatch_url = slack_source_ingress_dispatch_url(&runner_api.base_url);
     let dispatch_body = json!({
         "routing_key": "event:intake",
         "message_type": "host.source-records.v1",
@@ -578,22 +573,21 @@ async fn semantic_ingress_dispatch_http_fails_when_downstream_agent_errors() {
         client.post(&dispatch_url).json(&dispatch_body).send(),
     )
     .await
-    .expect("semantic-ingress downstream-error dispatch timed out")
-    .expect("semantic-ingress downstream-error request");
+    .expect("slack-agent downstream-error dispatch timed out")
+    .expect("slack-agent downstream-error request");
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
     let ack: Value = response
         .json()
         .await
-        .expect("semantic-ingress downstream-error ack");
+        .expect("slack-agent downstream-error ack");
     assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(false));
     let detail = ack
         .get("detail")
         .and_then(Value::as_str)
         .unwrap_or_default();
     assert!(
-        detail.contains("semantic-ingress-agent failed:")
-            && detail.contains("downstream agent unavailable"),
+        detail.contains("slack-agent failed:") && detail.contains("downstream agent unavailable"),
         "expected downstream error detail, got: {ack:?}"
     );
 
@@ -601,7 +595,7 @@ async fn semantic_ingress_dispatch_http_fails_when_downstream_agent_errors() {
 }
 
 #[tokio::test]
-async fn semantic_ingress_dispatch_http_fails_when_delegated_child_task_reports_failed_state() {
+async fn slack_source_ingress_dispatch_http_fails_when_delegated_child_task_reports_failed_state() {
     let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
         entries: vec![discovery_entry(
             "clickup-agent",
@@ -627,14 +621,14 @@ async fn semantic_ingress_dispatch_http_fails_when_delegated_child_task_reports_
             }),
         ],
     });
-    let (_permit, agent, built_dir) = setup_semantic_ingress_agent(agent_list, handler).await;
+    let (_permit, agent, built_dir) = setup_slack_source_ingress_agent(agent_list, handler).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
-    let runner_api = start_runner_api_server("semantic-ingress-agent", agent)
+    let runner_api = start_runner_api_server("slack-agent", agent)
         .await
-        .expect("start semantic-ingress runner api");
+        .expect("start slack-agent runner api");
     let client = reqwest::Client::new();
-    let dispatch_url = semantic_ingress_dispatch_url(&runner_api.base_url);
+    let dispatch_url = slack_source_ingress_dispatch_url(&runner_api.base_url);
     let dispatch_body = json!({
         "routing_key": "event:intake",
         "message_type": "host.source-records.v1",
@@ -656,14 +650,14 @@ async fn semantic_ingress_dispatch_http_fails_when_delegated_child_task_reports_
         client.post(&dispatch_url).json(&dispatch_body).send(),
     )
     .await
-    .expect("semantic-ingress delegated-failed-state dispatch timed out")
-    .expect("semantic-ingress delegated-failed-state request");
+    .expect("slack-agent delegated-failed-state dispatch timed out")
+    .expect("slack-agent delegated-failed-state request");
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
     let ack: Value = response
         .json()
         .await
-        .expect("semantic-ingress delegated-failed-state ack");
+        .expect("slack-agent delegated-failed-state ack");
     assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(false));
     let detail = ack
         .get("detail")
@@ -678,7 +672,8 @@ async fn semantic_ingress_dispatch_http_fails_when_delegated_child_task_reports_
 }
 
 #[tokio::test]
-async fn semantic_ingress_dispatch_http_fails_when_delegated_child_task_requires_follow_up_input() {
+async fn slack_source_ingress_dispatch_http_fails_when_delegated_child_task_requires_follow_up_input()
+ {
     let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
         entries: vec![discovery_entry(
             "clickup-agent",
@@ -697,14 +692,14 @@ async fn semantic_ingress_dispatch_http_fails_when_delegated_child_task_requires
             }
         })],
     });
-    let (_permit, agent, built_dir) = setup_semantic_ingress_agent(agent_list, handler).await;
+    let (_permit, agent, built_dir) = setup_slack_source_ingress_agent(agent_list, handler).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
-    let runner_api = start_runner_api_server("semantic-ingress-agent", agent)
+    let runner_api = start_runner_api_server("slack-agent", agent)
         .await
-        .expect("start semantic-ingress runner api");
+        .expect("start slack-agent runner api");
     let client = reqwest::Client::new();
-    let dispatch_url = semantic_ingress_dispatch_url(&runner_api.base_url);
+    let dispatch_url = slack_source_ingress_dispatch_url(&runner_api.base_url);
     let dispatch_body = json!({
         "routing_key": "event:intake",
         "message_type": "host.source-records.v1",
@@ -726,14 +721,14 @@ async fn semantic_ingress_dispatch_http_fails_when_delegated_child_task_requires
         client.post(&dispatch_url).json(&dispatch_body).send(),
     )
     .await
-    .expect("semantic-ingress input-required dispatch timed out")
-    .expect("semantic-ingress input-required request");
+    .expect("slack-agent input-required dispatch timed out")
+    .expect("slack-agent input-required request");
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
     let ack: Value = response
         .json()
         .await
-        .expect("semantic-ingress input-required ack");
+        .expect("slack-agent input-required ack");
     assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(false));
     let detail = ack
         .get("detail")
@@ -749,7 +744,7 @@ async fn semantic_ingress_dispatch_http_fails_when_delegated_child_task_requires
 }
 
 #[tokio::test]
-async fn semantic_ingress_dispatch_http_noops_raw_slack_chatter_without_action_cues() {
+async fn slack_source_ingress_dispatch_http_noops_raw_slack_chatter_without_action_cues() {
     let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
         entries: vec![discovery_entry(
             "clickup-agent",
@@ -758,14 +753,14 @@ async fn semantic_ingress_dispatch_http_noops_raw_slack_chatter_without_action_c
     });
     let handler = Arc::new(CapturingA2aHandler::default());
     let (_permit, agent, built_dir) =
-        setup_semantic_ingress_agent(agent_list, handler.clone()).await;
+        setup_slack_source_ingress_agent(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
-    let runner_api = start_runner_api_server("semantic-ingress-agent", agent)
+    let runner_api = start_runner_api_server("slack-agent", agent)
         .await
-        .expect("start semantic-ingress runner api");
+        .expect("start slack-agent runner api");
     let client = reqwest::Client::new();
-    let dispatch_url = semantic_ingress_dispatch_url(&runner_api.base_url);
+    let dispatch_url = slack_source_ingress_dispatch_url(&runner_api.base_url);
     let dispatch_body = json!({
         "routing_key": "event:intake",
         "message_type": "host.source-records.v1",
@@ -796,11 +791,11 @@ async fn semantic_ingress_dispatch_http_noops_raw_slack_chatter_without_action_c
         client.post(&dispatch_url).json(&dispatch_body).send(),
     )
     .await
-    .expect("semantic-ingress noop dispatch timed out")
-    .expect("semantic-ingress noop dispatch request");
+    .expect("slack-agent noop dispatch timed out")
+    .expect("slack-agent noop dispatch request");
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let ack: Value = response.json().await.expect("semantic-ingress noop ack");
+    let ack: Value = response.json().await.expect("slack-agent noop ack");
     assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(true));
     let detail = ack
         .get("detail")
@@ -819,7 +814,8 @@ async fn semantic_ingress_dispatch_http_noops_raw_slack_chatter_without_action_c
 }
 
 #[tokio::test]
-async fn semantic_ingress_dispatch_http_batches_mixed_raw_slack_work_items_into_one_delegation() {
+async fn slack_source_ingress_dispatch_http_batches_mixed_raw_slack_work_items_into_one_delegation()
+{
     let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
         entries: vec![discovery_entry(
             "clickup-agent",
@@ -828,14 +824,14 @@ async fn semantic_ingress_dispatch_http_batches_mixed_raw_slack_work_items_into_
     });
     let handler = Arc::new(CapturingA2aHandler::default());
     let (_permit, agent, built_dir) =
-        setup_semantic_ingress_agent(agent_list, handler.clone()).await;
+        setup_slack_source_ingress_agent(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
-    let runner_api = start_runner_api_server("semantic-ingress-agent", agent)
+    let runner_api = start_runner_api_server("slack-agent", agent)
         .await
-        .expect("start semantic-ingress runner api");
+        .expect("start slack-agent runner api");
     let client = reqwest::Client::new();
-    let dispatch_url = semantic_ingress_dispatch_url(&runner_api.base_url);
+    let dispatch_url = slack_source_ingress_dispatch_url(&runner_api.base_url);
     let dispatch_body = json!({
         "routing_key": "event:intake",
         "message_type": "host.source-records.v1",
@@ -865,11 +861,11 @@ async fn semantic_ingress_dispatch_http_batches_mixed_raw_slack_work_items_into_
         client.post(&dispatch_url).json(&dispatch_body).send(),
     )
     .await
-    .expect("semantic-ingress mixed dispatch timed out")
-    .expect("semantic-ingress mixed dispatch request");
+    .expect("slack-agent mixed dispatch timed out")
+    .expect("slack-agent mixed dispatch request");
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let ack: Value = response.json().await.expect("semantic-ingress mixed ack");
+    let ack: Value = response.json().await.expect("slack-agent mixed ack");
     assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(true));
 
     let calls = handler.snapshot_calls().await;
@@ -903,7 +899,7 @@ async fn semantic_ingress_dispatch_http_batches_mixed_raw_slack_work_items_into_
 }
 
 #[tokio::test]
-async fn semantic_ingress_dispatch_http_expands_slack_threads_before_deriving_work() {
+async fn slack_source_ingress_dispatch_http_expands_slack_threads_before_deriving_work() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
 
     let (mock_server, mock_state) = start_slack_thread_replies_server(vec![
@@ -941,14 +937,14 @@ async fn semantic_ingress_dispatch_http_expands_slack_threads_before_deriving_wo
     });
     let handler = Arc::new(CapturingA2aHandler::default());
     let (agent, built_dir) =
-        setup_semantic_ingress_agent_unlocked(agent_list, handler.clone()).await;
+        setup_slack_source_ingress_agent_unlocked(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
-    let runner_api = start_runner_api_server("semantic-ingress-agent", agent)
+    let runner_api = start_runner_api_server("slack-agent", agent)
         .await
-        .expect("start semantic-ingress runner api");
+        .expect("start slack-agent runner api");
     let client = reqwest::Client::new();
-    let dispatch_url = semantic_ingress_dispatch_url(&runner_api.base_url);
+    let dispatch_url = slack_source_ingress_dispatch_url(&runner_api.base_url);
     let dispatch_body = json!({
         "routing_key": "event:intake",
         "message_type": "host.source-records.v1",
@@ -973,14 +969,14 @@ async fn semantic_ingress_dispatch_http_expands_slack_threads_before_deriving_wo
         client.post(&dispatch_url).json(&dispatch_body).send(),
     )
     .await
-    .expect("semantic-ingress thread-expansion dispatch timed out")
-    .expect("semantic-ingress thread-expansion dispatch request");
+    .expect("slack-agent thread-expansion dispatch timed out")
+    .expect("slack-agent thread-expansion dispatch request");
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
     let ack: Value = response
         .json()
         .await
-        .expect("semantic-ingress thread-expansion ack");
+        .expect("slack-agent thread-expansion ack");
     assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(true));
 
     let calls = handler.snapshot_calls().await;
@@ -1013,7 +1009,7 @@ async fn semantic_ingress_dispatch_http_expands_slack_threads_before_deriving_wo
 }
 
 #[tokio::test]
-async fn semantic_ingress_dispatch_http_does_not_expand_thread_root_without_replies() {
+async fn slack_source_ingress_dispatch_http_does_not_expand_thread_root_without_replies() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
 
     let (mock_server, mock_state) = start_slack_thread_replies_server(Vec::new())
@@ -1034,14 +1030,14 @@ async fn semantic_ingress_dispatch_http_does_not_expand_thread_root_without_repl
     });
     let handler = Arc::new(CapturingA2aHandler::default());
     let (agent, built_dir) =
-        setup_semantic_ingress_agent_unlocked(agent_list, handler.clone()).await;
+        setup_slack_source_ingress_agent_unlocked(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
-    let runner_api = start_runner_api_server("semantic-ingress-agent", agent)
+    let runner_api = start_runner_api_server("slack-agent", agent)
         .await
-        .expect("start semantic-ingress runner api");
+        .expect("start slack-agent runner api");
     let client = reqwest::Client::new();
-    let dispatch_url = semantic_ingress_dispatch_url(&runner_api.base_url);
+    let dispatch_url = slack_source_ingress_dispatch_url(&runner_api.base_url);
     let dispatch_body = json!({
         "routing_key": "event:intake",
         "message_type": "host.source-records.v1",
@@ -1064,14 +1060,14 @@ async fn semantic_ingress_dispatch_http_does_not_expand_thread_root_without_repl
         client.post(&dispatch_url).json(&dispatch_body).send(),
     )
     .await
-    .expect("semantic-ingress root-only dispatch timed out")
-    .expect("semantic-ingress root-only dispatch request");
+    .expect("slack-agent root-only dispatch timed out")
+    .expect("slack-agent root-only dispatch request");
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
     let ack: Value = response
         .json()
         .await
-        .expect("semantic-ingress root-only dispatch ack");
+        .expect("slack-agent root-only dispatch ack");
     assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(true));
 
     let calls = handler.snapshot_calls().await;
@@ -1106,8 +1102,7 @@ async fn semantic_ingress_dispatch_http_does_not_expand_thread_root_without_repl
 // Runner registers only the durable inbox drain (`support/slack:inbox`).
 
 #[tokio::test]
-async fn slack_inbox_producer_delivers_durable_ingress_to_semantic_ingress_and_downstream_delegation()
- {
+async fn slack_inbox_producer_delivers_durable_ingress_to_slack_agent_and_downstream_delegation() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
     let (_store_guard, store) = install_memory_ingress_store();
 
@@ -1155,22 +1150,16 @@ async fn slack_inbox_producer_delivers_durable_ingress_to_semantic_ingress_and_d
     });
     let handler = Arc::new(CapturingA2aHandler::default());
     let (agent, built_dir) =
-        setup_semantic_ingress_agent_unlocked(agent_list, handler.clone()).await;
+        setup_slack_source_ingress_agent_unlocked(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
     let registry = Arc::new(
-        DispatchRegistry::new(
-            "semantic-ingress-agent",
-            "default",
-            "semantic-ingress-agent",
-            "1.0.0",
-            agent,
-        )
-        .with_subscriptions(vec![EventSubscription {
-            schema_versions: vec![EventSchemaVersion::parse("host.source-records.v1").unwrap()],
-            source_kinds: vec![EventSourceKind::parse("slack").unwrap()],
-            ..EventSubscription::default()
-        }]),
+        DispatchRegistry::new("slack-agent", "default", "slack-agent", "1.0.0", agent)
+            .with_subscriptions(vec![EventSubscription {
+                schema_versions: vec![EventSchemaVersion::parse("host.source-records.v1").unwrap()],
+                source_kinds: vec![EventSourceKind::parse("slack").unwrap()],
+                ..EventSubscription::default()
+            }]),
     ) as Arc<dyn AgentRegistry>;
 
     let config_resolver = Arc::new(StaticConfigResolver {
@@ -1192,7 +1181,7 @@ async fn slack_inbox_producer_delivers_durable_ingress_to_semantic_ingress_and_d
             "reply_count": 1,
             "latest_reply": "1735720512.000001"
         })],
-        "support/slack:inbox:semantic-ingress-e2e",
+        "support/slack:inbox:slack-agent-e2e",
     )
     .await;
     assert_eq!(store.undelivered_count().await, 1);
@@ -1255,7 +1244,7 @@ async fn slack_inbox_producer_delivers_durable_ingress_to_semantic_ingress_and_d
         calls[0]
             .prompt
             .contains("Ingress kind: Slack semantic ingress from raw source records"),
-        "expected semantic-ingress prompt header, got: {}",
+        "expected slack-agent prompt header, got: {}",
         calls[0].prompt
     );
     assert!(
@@ -1275,7 +1264,7 @@ async fn slack_inbox_producer_delivers_durable_ingress_to_semantic_ingress_and_d
 }
 
 #[tokio::test]
-async fn semantic_ingress_dispatch_http_rejects_multi_message_batches() {
+async fn slack_source_ingress_dispatch_http_rejects_multi_message_batches() {
     let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
         entries: vec![discovery_entry(
             "clickup-agent",
@@ -1284,15 +1273,15 @@ async fn semantic_ingress_dispatch_http_rejects_multi_message_batches() {
     });
     let handler = Arc::new(CapturingA2aHandler::default());
     let (_permit, agent, built_dir) =
-        setup_semantic_ingress_agent(agent_list, handler.clone()).await;
+        setup_slack_source_ingress_agent(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
-    let runner_api = start_runner_api_server("semantic-ingress-agent", agent)
+    let runner_api = start_runner_api_server("slack-agent", agent)
         .await
-        .expect("start semantic-ingress runner api");
+        .expect("start slack-agent runner api");
 
     let client = reqwest::Client::new();
-    let dispatch_url = semantic_ingress_dispatch_url(&runner_api.base_url);
+    let dispatch_url = slack_source_ingress_dispatch_url(&runner_api.base_url);
     let dispatch_body = json!({
         "routing_key": "event:intake",
         "message_type": "host.source-records.v1",
@@ -1307,14 +1296,14 @@ async fn semantic_ingress_dispatch_http_rejects_multi_message_batches() {
         client.post(&dispatch_url).json(&dispatch_body).send(),
     )
     .await
-    .expect("semantic-ingress multi-message dispatch timed out")
-    .expect("semantic-ingress multi-message dispatch request");
+    .expect("slack-agent multi-message dispatch timed out")
+    .expect("slack-agent multi-message dispatch request");
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
     let ack: Value = response
         .json()
         .await
-        .expect("semantic-ingress multi-message dispatch ack");
+        .expect("slack-agent multi-message dispatch ack");
     assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(false));
     let detail = ack
         .get("detail")
@@ -1333,7 +1322,7 @@ async fn semantic_ingress_dispatch_http_rejects_multi_message_batches() {
 }
 
 #[tokio::test]
-async fn semantic_ingress_dispatch_http_rejects_noncanonical_raw_source_routing_key() {
+async fn slack_source_ingress_dispatch_http_rejects_noncanonical_raw_source_routing_key() {
     let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
         entries: vec![discovery_entry(
             "clickup-agent",
@@ -1342,15 +1331,15 @@ async fn semantic_ingress_dispatch_http_rejects_noncanonical_raw_source_routing_
     });
     let handler = Arc::new(CapturingA2aHandler::default());
     let (_permit, agent, built_dir) =
-        setup_semantic_ingress_agent(agent_list, handler.clone()).await;
+        setup_slack_source_ingress_agent(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
-    let runner_api = start_runner_api_server("semantic-ingress-agent", agent)
+    let runner_api = start_runner_api_server("slack-agent", agent)
         .await
-        .expect("start semantic-ingress runner api");
+        .expect("start slack-agent runner api");
 
     let client = reqwest::Client::new();
-    let dispatch_url = semantic_ingress_dispatch_url(&runner_api.base_url);
+    let dispatch_url = slack_source_ingress_dispatch_url(&runner_api.base_url);
     let dispatch_body = json!({
         "routing_key": "slack:intake",
         "message_type": "host.source-records.v1",
@@ -1364,21 +1353,21 @@ async fn semantic_ingress_dispatch_http_rejects_noncanonical_raw_source_routing_
         client.post(&dispatch_url).json(&dispatch_body).send(),
     )
     .await
-    .expect("semantic-ingress bad-routing dispatch timed out")
-    .expect("semantic-ingress bad-routing dispatch request");
+    .expect("slack-agent bad-routing dispatch timed out")
+    .expect("slack-agent bad-routing dispatch request");
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);
     let ack: Value = response
         .json()
         .await
-        .expect("semantic-ingress bad-routing dispatch ack");
+        .expect("slack-agent bad-routing dispatch ack");
     assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(false));
     let detail = ack
         .get("detail")
         .and_then(Value::as_str)
         .unwrap_or_default();
     assert!(
-        detail.contains("semantic-ingress-agent expected routing_key event:intake"),
+        detail.contains("slack-agent expected routing_key event:intake"),
         "expected routing-key rejection detail, got: {ack:?}"
     );
     assert!(
