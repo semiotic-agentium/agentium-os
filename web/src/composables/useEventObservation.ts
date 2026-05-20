@@ -37,8 +37,6 @@ export function useEventObservation() {
   let preserveRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let diagramFetchSeq = 0;
   let observeCtx = "";
-  let observeTask: string | null = null;
-  let observeAgentPackage: string | null = null;
 
   function closeHistoryStream(): void {
     if (historyStream) {
@@ -205,8 +203,6 @@ export function useEventObservation() {
     const preserve = options?.preserveMessagesUntilTranscript ?? false;
     const agentPackage = options?.agentPackage ?? null;
     observeCtx = ctx;
-    observeTask = task ?? null;
-    observeAgentPackage = agentPackage;
     contextId.value = ctx;
     taskId.value = task ?? null;
     provenanceDiagram.value = "";
@@ -258,8 +254,6 @@ export function useEventObservation() {
       traceRefreshDebounceTimer = null;
     }
     observeCtx = "";
-    observeTask = null;
-    observeAgentPackage = null;
     messages.value = [];
     contextId.value = null;
     taskId.value = null;

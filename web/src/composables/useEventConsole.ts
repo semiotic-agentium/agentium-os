@@ -664,7 +664,7 @@ export function useEventConsole() {
         selectedContextId.value = ackScope.contextId;
         const preview =
           selectedMessageShape.value?.display_name ??
-          ack.summary ??
+          ack.detail ??
           "Operator dispatch";
         rememberRecentDispatchContext(
           draft.value.agent_package,
