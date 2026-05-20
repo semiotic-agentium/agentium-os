@@ -132,8 +132,20 @@ async function handleSelectAgent(agent: AgentDiscoveryEntry): Promise<void> {
 const { theme, toggle: toggleTheme } = useTheme();
 const { createQuery } = useProvenanceOps();
 
-// Active view — defaults to dashboard as landing page
-const view = ref<"dashboard" | "chat" | "settings">("dashboard");
+// Active view — chat is the landing page; dashboard is a debug/metrics surface
+const view = ref<"dashboard" | "chat" | "settings">("chat");
+
+// Traces pane: hidden by default; persisted so power users keep it open across reloads
+const TRACES_STORAGE_KEY = "agentium:showTraces";
+const showTraces = ref<boolean>(
+  typeof localStorage !== "undefined" && localStorage.getItem(TRACES_STORAGE_KEY) === "1",
+);
+function toggleTraces() {
+  showTraces.value = !showTraces.value;
+  if (typeof localStorage !== "undefined") {
+    localStorage.setItem(TRACES_STORAGE_KEY, showTraces.value ? "1" : "0");
+  }
+}
 const isApplyingRouteState = ref(false);
 let lastRouteKey = "";
 
@@ -147,7 +159,7 @@ type UiRouteState = {
 
 function parseView(raw: string | null): ViewName {
   if (raw === "chat" || raw === "settings" || raw === "dashboard") return raw;
-  return "dashboard";
+  return "chat";
 }
 
 function readRouteStateFromUrl(): UiRouteState {
@@ -398,40 +410,23 @@ watch(
           />
           <AgentSelector :agents="agents" :selected="selectedAgent" @select="handleSelectAgent" />
           <ConversationHistorySelector
+            v-if="selectedAgent"
             :histories="conversationHistoryOptions"
             :selected-context-id="selectedHistoryContextId"
             :loading="historyLoading"
-            :disabled="!selectedAgent"
             @select="selectConversationHistory"
             @refresh="refreshConversationHistories"
           />
-        </div>
-
-        <div class="chat-session-zones" aria-label="Session console layout">
-          <div class="zone-pair">
-            <span class="zone-chip zone-chip--primary">Primary</span>
-            <span class="zone-hint">Transcript &amp; compose</span>
-          </div>
-          <div class="session-meta" aria-live="polite">
-            <template v-if="selectedAgent">
-              <span>{{ selectedAgent.agent_package }}/{{ selectedAgent.agent_instance_id }}</span>
-            </template>
-            <template v-if="selectedHistoryContextId">
-              <span> · </span>
-              <code>{{ selectedHistoryContextId }}</code>
-            </template>
-            <template v-if="taskId">
-              <span> · task </span>
-              <code>{{ taskId }}</code>
-            </template>
-            <template v-if="!selectedAgent">
-              <span>Select an agent to bind a session.</span>
-            </template>
-          </div>
-          <div class="zone-pair zone-pair--end">
-            <span class="zone-hint">Traces &amp; metrics</span>
-            <span class="zone-chip zone-chip--observe">Observe</span>
-          </div>
+          <button
+            type="button"
+            class="traces-toggle"
+            :class="{ 'traces-toggle--on': showTraces }"
+            :aria-pressed="showTraces"
+            :title="showTraces ? 'Hide traces panel' : 'Show traces panel'"
+            @click="toggleTraces"
+          >
+            {{ showTraces ? "Hide traces" : "Show traces" }}
+          </button>
         </div>
 
         <div class="app-body">
@@ -444,10 +439,14 @@ watch(
             :workflow-progress="workflowProgress"
             :history-hydrate-state="historyHydrateState"
             :selected-context-id="selectedHistoryContextId"
+            :agents="agents"
             @send="sendMessage"
             @cancel="cancelStream"
+            @select-agent="handleSelectAgent"
+            @open-settings="view = 'settings'"
           />
           <ProvenancePane
+            v-if="showTraces"
             :context-id="contextId"
             :task-id="taskId ?? undefined"
             :selected-agent-id="undefined"

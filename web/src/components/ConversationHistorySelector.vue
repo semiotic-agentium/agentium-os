@@ -34,11 +34,6 @@ function formatTimestamp(ms: number): string {
   });
 }
 
-function shortContextId(contextId: string): string {
-  if (contextId.length <= 22) return contextId;
-  return `${contextId.slice(0, 10)}…${contextId.slice(-6)}`;
-}
-
 function optionLabel(history: {
   contextId: string;
   latestTimestampMs: number;
@@ -46,14 +41,13 @@ function optionLabel(history: {
 }): string {
   const preview = (history.preview ?? "").trim() || "(no preview)";
   const ts = formatTimestamp(history.latestTimestampMs);
-  const id = shortContextId(history.contextId);
-  return `${preview} · ${ts} · ${id}`;
+  return ts ? `${preview} · ${ts}` : preview;
 }
 </script>
 
 <template>
   <div class="conversation-history-selector">
-    <span class="history-label">Context</span>
+    <span class="history-label">History</span>
     <select
       :disabled="disabled || loading || histories.length === 0"
       :value="selectedValue"
@@ -62,16 +56,17 @@ function optionLabel(history: {
       <option value="" disabled>
         {{
           loading
-            ? "Loading history..."
+            ? "Loading..."
             : histories.length === 0
-              ? "No prior conversations"
-              : "Select context"
+              ? "No previous chats"
+              : "Pick a previous chat"
         }}
       </option>
       <option
         v-for="history in histories"
         :key="history.contextId"
         :value="history.contextId"
+        :title="history.contextId"
       >
         {{ optionLabel(history) }}
       </option>

@@ -75,6 +75,13 @@ const confidenceClass = computed(() => {
 const showGoals = ref(false);
 const showGaps = ref(false);
 
+const hasDetails = computed(() => {
+  if (citationRefs.value.length > 0) return true;
+  if (coordinatorData.value) return true;
+  if ((props.message.stateTransitions?.length ?? 0) > 0) return true;
+  return false;
+});
+
 /** Hide vacuous legacy provenance placeholders when message rows still carry separate structured blocks. */
 function displayTextBlockContent(raw: string | undefined): string {
   return stripLegacyStructuredPlaceholderLines(raw ?? "");
@@ -234,7 +241,10 @@ const isRelayUser = computed(
           </div>
         </div>
       </template>
-      <!-- Citation chips — rendered for both structured and legacy text messages -->
+      <details v-if="hasDetails" class="message-details">
+        <summary class="message-details-summary">Details</summary>
+        <div class="message-details-body">
+      <!-- Citation chips -->
       <div v-if="citationRefs.length" class="citation-chip-row" role="group" aria-label="Citations">
         <span class="citation-section-label">Citations</span>
         <div class="source-chips">
@@ -309,6 +319,8 @@ const isRelayUser = computed(
         v-if="message.stateTransitions?.length"
         :transitions="message.stateTransitions"
       />
+        </div>
+      </details>
       <span class="message-time">{{ formatTime(props.message.timestamp) }}</span>
     </div>
   </div>
@@ -352,6 +364,50 @@ const isRelayUser = computed(
 .citation-chip-row {
   margin-top: 0.5rem;
   margin-bottom: 0.25rem;
+}
+
+.message-details {
+  margin-top: 0.5rem;
+}
+
+.message-details-summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  opacity: 0.7;
+  user-select: none;
+  width: max-content;
+  padding: 2px 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.message-details-summary:hover {
+  opacity: 1;
+  color: var(--text-secondary);
+}
+
+.message-details-summary::-webkit-details-marker {
+  display: none;
+}
+
+.message-details-summary::before {
+  content: "▸ ";
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+
+.message-details[open] > .message-details-summary::before {
+  content: "▾ ";
+}
+
+.message-details-body {
+  margin-top: 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 
 .citation-section-label {

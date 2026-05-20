@@ -51,48 +51,53 @@ watch(
       :has-explicit-ordinal="nameParts.hasExplicitOrdinal"
     />
     <ToolCardFsmRail v-if="fsmSteps.length > 0" :steps="fsmSteps" />
-    <div v-if="displayEvents.length" ref="bodyEl" class="tool-card-body" @scroll="onBodyScroll">
-      <div v-for="(disp, i) in displayEvents" :key="i" class="tool-event" :data-kind="disp.kind">
-        <ToolCardToolUseBlock
-          v-if="disp.toolUse"
-          :name="disp.toolUse.name"
-          :detail="disp.toolUse.detail || undefined"
-        />
-        <ToolCardSystemRow
-          v-else-if="disp.kind === 'system'"
-          :text="disp.text"
-          :count="disp.count"
-          :active="i === displayEvents.length - 1 && block.status === 'Running'"
-        />
-        <ToolCardLabeledPre
-          v-else-if="disp.kind === 'read'"
-          label="Read"
-          :text="disp.text"
-          variant="read"
-        />
-        <ToolCardLabeledPre
-          v-else-if="disp.kind === 'step_detail'"
-          label="Step"
-          :text="disp.text"
-          variant="step"
-        />
-        <ToolCardLabeledPre
-          v-else-if="disp.kind === 'comms_outbound'"
-          label="Outbound A2A"
-          :text="disp.text"
-          variant="comms"
-        />
-        <ToolCardLabeledPre
-          v-else-if="disp.kind === 'failure'"
-          label="Execution error"
-          :text="disp.text"
-          variant="failure"
-        />
-        <template v-else>
-          {{ disp.text }}
-        </template>
+    <details v-if="displayEvents.length" class="tool-card-details">
+      <summary class="tool-card-details-summary">
+        Show {{ displayEvents.length }} event{{ displayEvents.length === 1 ? "" : "s" }}
+      </summary>
+      <div ref="bodyEl" class="tool-card-body" @scroll="onBodyScroll">
+        <div v-for="(disp, i) in displayEvents" :key="i" class="tool-event" :data-kind="disp.kind">
+          <ToolCardToolUseBlock
+            v-if="disp.toolUse"
+            :name="disp.toolUse.name"
+            :detail="disp.toolUse.detail || undefined"
+          />
+          <ToolCardSystemRow
+            v-else-if="disp.kind === 'system'"
+            :text="disp.text"
+            :count="disp.count"
+            :active="i === displayEvents.length - 1 && block.status === 'Running'"
+          />
+          <ToolCardLabeledPre
+            v-else-if="disp.kind === 'read'"
+            label="Read"
+            :text="disp.text"
+            variant="read"
+          />
+          <ToolCardLabeledPre
+            v-else-if="disp.kind === 'step_detail'"
+            label="Step"
+            :text="disp.text"
+            variant="step"
+          />
+          <ToolCardLabeledPre
+            v-else-if="disp.kind === 'comms_outbound'"
+            label="Outbound message"
+            :text="disp.text"
+            variant="comms"
+          />
+          <ToolCardLabeledPre
+            v-else-if="disp.kind === 'failure'"
+            label="Execution error"
+            :text="disp.text"
+            variant="failure"
+          />
+          <template v-else>
+            {{ disp.text }}
+          </template>
+        </div>
       </div>
-    </div>
+    </details>
   </div>
 </template>
 
@@ -105,10 +110,43 @@ watch(
   margin-top: 0.5rem;
 }
 
+.tool-card-details {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.tool-card-details-summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.tool-card-details-summary:hover {
+  color: var(--text-secondary);
+}
+
+.tool-card-details-summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-card-details-summary::before {
+  content: "▸ ";
+  display: inline-block;
+}
+
+.tool-card-details[open] > .tool-card-details-summary::before {
+  content: "▾ ";
+}
+
 .tool-card-body {
   max-height: 200px;
   overflow-y: auto;
   padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .tool-event {
