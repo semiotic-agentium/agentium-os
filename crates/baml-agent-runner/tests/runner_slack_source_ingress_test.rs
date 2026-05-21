@@ -25,8 +25,8 @@ use baml_rt_tools::{
 use baml_tools_slack::SlackTool;
 use baml_tools_system::SystemBundle;
 use common::{
-    CapturingA2aHandler, DispatchRegistry, FailingA2aHandler, RunningHttpServer, StaticAgentList,
-    StreamingA2aHandler, build_agent_dir_to_temp_async, discovery_entry, e2e_serial_gate,
+    CapturingA2aHandler, DispatchRegistry, RunningHttpServer, StaticAgentList,
+    build_agent_dir_to_temp_async, discovery_entry, e2e_serial_gate,
     quickjs_config_with_host_ingress, start_http_server, try_load_dotenv_for_tests,
 };
 use serde_json::{Value, json};
@@ -203,12 +203,6 @@ struct MockSlackProducerState {
     hits: Arc<Mutex<Vec<String>>>,
     history_body: Arc<Value>,
     replies_body: Arc<Value>,
-}
-
-impl MockSlackProducerState {
-    async fn snapshot_hits(&self) -> Vec<String> {
-        self.hits.lock().await.clone()
-    }
 }
 
 async fn start_slack_producer_server(
@@ -719,7 +713,7 @@ async fn slack_inbox_producer_delivers_durable_ingress_to_slack_agent_and_downst
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
     let (_store_guard, store) = install_memory_ingress_store();
 
-    let (mock_server, mock_state) = start_slack_producer_server(
+    let (mock_server, _mock_state) = start_slack_producer_server(
         vec![json!({
             "type": "message",
             "user": "U123",

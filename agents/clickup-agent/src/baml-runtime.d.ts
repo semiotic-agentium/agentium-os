@@ -22,6 +22,17 @@ intent: string;
 operation_kind: "read" | "write" | "delete";
  }
 
+export interface ClickUpPlanStep { agent_package: string;
+agent_instance_id: string;
+sub_message: string;
+ }
+
+export interface ClickUpStructuredPlan { intent_description: string;
+objective: string;
+plan_steps: ClickUpPlanStep[];
+citations: string[] | null;
+ }
+
 export interface CreateTaskInput { list_id: string;
 name: string;
 description: string | null;
@@ -69,17 +80,6 @@ last_output_header: string | null;
 last_completion: string | null;
  }
 
-export interface StandardAgentPlanStep { agent_package: string;
-agent_instance_id: string;
-sub_message: string;
- }
-
-export interface StandardStructuredPlan { intent_description: string;
-objective: string;
-plan_steps: StandardAgentPlanStep[];
-citations: string[] | null;
- }
-
 export interface SupportClickupAbortStep { op: "Abort";
  }
 
@@ -121,7 +121,7 @@ declare function ChooseClickUpAction(args: { goal: string; step_description: str
 
 declare function InferClickUpIntent(args: Record<string, never> & { __baml_invocation_token?: string }): Promise<NeedClarification | NotRelevant | ClickUpIntent>;
 
-declare function PlanClickUpWork(args: { intent: string; operation_kind: string } & { __baml_invocation_token?: string }): Promise<StandardStructuredPlan>;
+declare function PlanClickUpWork(args: { intent: string; operation_kind: string } & { __baml_invocation_token?: string }): Promise<ClickUpStructuredPlan>;
 
 }
 

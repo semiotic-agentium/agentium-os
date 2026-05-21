@@ -368,14 +368,29 @@ impl<'a> AgentTarget<'a> {
 /// Two-hop OR pattern: Message ↔ MessageProcessing ↔ AgentRuntimeInstance.
 /// Returns a `(received OR emitted)` predicate that matches messages
 /// processed by the agent target.
-/// Conversation-context export filter: keep only Message / ToolCall / SessionStep rows
-/// owned by agents bootstrapped from the archive package bound as `$agent_pkg`.
-pub(crate) fn conversation_node_matches_agent_package_sql(pkg_bind: &str) -> String {
+/// Message-only clause for [`conversation_context_filtered`] agent-package queries.
+/// Kept separate from tool/session clauses so SurrealDB does not evaluate a cross-label OR
+/// (which can error with `Cannot perform subtraction with 'NONE' and 'NONE'` on some stores).
+pub(crate) fn conversation_message_agent_package_clause(pkg_bind: &str) -> String {
     let subq = agent_instances_in_package_subquery(pkg_bind);
     let msg = message_to_agent_traversal(AgentTarget::Subquery(&subq));
+    format!("AND label = 'Message' AND {msg}")
+}
+
+/// ToolCall / SessionStep clause for [`conversation_context_filtered`] agent-package queries.
+pub(crate) fn conversation_call_agent_package_clause(pkg_bind: &str) -> String {
+    let subq = agent_instances_in_package_subquery(pkg_bind);
     let call = call_activity_to_agent_traversal(AgentTarget::Subquery(&subq));
+    format!("AND label IN ['ToolCall', 'SessionStep'] AND {call}")
+}
+
+/// Combined OR filter (ops-query paths only; conversation context uses split clauses above).
+#[cfg(test)]
+pub(crate) fn conversation_node_matches_agent_package_sql(pkg_bind: &str) -> String {
     format!(
-        "AND ((label = 'Message' AND {msg}) OR (label IN ('ToolCall', 'SessionStep') AND {call}))"
+        "AND (({}) OR ({}))",
+        conversation_message_agent_package_clause(pkg_bind).trim_start_matches("AND "),
+        conversation_call_agent_package_clause(pkg_bind).trim_start_matches("AND "),
     )
 }
 
@@ -1030,6 +1045,19 @@ mod tests {
         );
         let obj = binds.as_object().expect("binds object");
         assert!(obj.values().any(|v| v == "ROLE_USER"));
+    }
+
+    #[test]
+    fn conversation_node_matches_agent_package_uses_surreal_array_in() {
+        let sql = super::conversation_node_matches_agent_package_sql("agent_pkg");
+        assert!(
+            sql.contains("label IN ['ToolCall', 'SessionStep']"),
+            "expected Surreal array IN syntax: {sql}"
+        );
+        assert!(
+            !sql.contains("label IN ('"),
+            "SQL-style IN list is invalid in Surreal: {sql}"
+        );
     }
 
     #[test]

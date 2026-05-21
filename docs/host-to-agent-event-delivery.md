@@ -109,7 +109,7 @@ The runtime wires `onDispatch` onto `globalThis`. When a dispatch request arrive
 
 ## Provenance
 
-`HostSourcePollRecorded` and `HostDispatchAccepted` are **event-level** lineage only (ops/Mermaid), not duplicate transcript rows. Actionable poll text is a normal `user` `Message` at `POST /events/publish` (`record_ingress_poll_user_message`). Each `withTask` prelude writes a task-scoped `user` line for the unit’s `records` slice. Dispatch requests carry optional `context_id`, `task_id`, and `message_id`; scope is built via `invocation_scope_for_agent_dispatch` in `crates/baml-rt-core/src/dispatch.rs`.
+`HostSourcePollRecorded` and `HostDispatchAccepted` are **event-level** lineage only (ops/Mermaid), not transcript rows. For `host.source-records.v1`, actionable ingress text is **only** written per dispatch unit in each `withTask` prelude (task-scoped `ingress-unit-user` `Message`); publish does **not** also emit a global poll-batch `user` line. Each `withTask` prelude formats the unit’s `records` slice for `conversation_transcript` on that task. Dispatch requests carry optional `context_id`, `task_id`, and `message_id`; scope is built via `invocation_scope_for_agent_dispatch` in `crates/baml-rt-core/src/dispatch.rs`.
 
 For **`system/callback`** detached continuation, the host mints a **child** dispatch `context_id` / `task_id` on the emitted event while storing the **scheduling** A2A scope separately. Callback delivery deferral uses **only** the scheduling scope (with `requesting_agent_id`), not the minted dispatch ids. When dispatch is accepted, the runner may record a provenance link from the dispatch task to the scheduling task (`WAS_SCHEDULED_FROM`); see `crates/baml-rt-provenance/PROV_MAPPING.md`.
 

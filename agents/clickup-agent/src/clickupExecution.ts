@@ -4,14 +4,13 @@ import type {
   DispatchRunContext,
   FinalResponse,
   HostDispatchAck,
-  HostDispatchRequest,
   JsonObject,
   JsonValue,
   ReplyPart,
   RunContext,
   SessionResult,
-  StandardAgentPlanStep,
-  StandardStructuredPlan,
+  ClickUpPlanStep,
+  ClickUpStructuredPlan,
   StructuredReply,
 } from "./baml-runtime";
 
@@ -189,28 +188,32 @@ export function sessionResultDetail(result: SessionResult, maxLen = 800): string
   return text.length > maxLen ? `${text.slice(0, maxLen)}…` : text;
 }
 
-function filterPlanCitations(plan: StandardStructuredPlan): string[] {
+function filterPlanCitations(plan: ClickUpStructuredPlan): string[] {
   const raw = plan.citations;
   if (!Array.isArray(raw)) return [];
   return raw.filter((c): c is string => typeof c === "string" && c.trim().length > 0);
 }
 
-export function parseStandardStructuredPlanFromPlanning(v: unknown): StandardStructuredPlan | null {
+/** Coordination-only: verify the runtime value matches ClickUpStructuredPlan after PlanClickUpWork. */
+export function parseClickUpStructuredPlanFromPlanning(v: unknown): ClickUpStructuredPlan | null {
   if (!isJsonObject(v)) return null;
   if (typeof v.intent_description !== "string" || typeof v.objective !== "string") return null;
   if (!Array.isArray(v.plan_steps)) return null;
   const c = v.citations;
   if (c != null && !Array.isArray(c)) return null;
-  return v as unknown as StandardStructuredPlan;
+  return v as unknown as ClickUpStructuredPlan;
 }
 
+/** @deprecated Use parseClickUpStructuredPlanFromPlanning */
+export const parseStandardStructuredPlanFromPlanning = parseClickUpStructuredPlanFromPlanning;
+
 export function validateClickUpPlanForExecution(
-  plan: StandardStructuredPlan,
-): StandardAgentPlanStep[] | string {
+  plan: ClickUpStructuredPlan,
+): ClickUpPlanStep[] | string {
   const raw = plan.plan_steps;
   if (raw.length === 0) return "plan_steps is empty";
 
-  const steps: StandardAgentPlanStep[] = [];
+  const steps: ClickUpPlanStep[] = [];
   for (let i = 0; i < raw.length; i++) {
     const s = raw[i];
     if (!isJsonObject(s)) return `plan_steps[${i}] is not an object`;
@@ -250,10 +253,10 @@ export function validateClickUpPlanForExecution(
 
 export async function executeClickUpPlan(
   _ctx: RunContext | null,
-  structured: StandardStructuredPlan,
+  structured: ClickUpStructuredPlan,
   validatedIntent: string,
   operationKind: string,
-  steps: StandardAgentPlanStep[],
+  steps: ClickUpPlanStep[],
 ): Promise<SessionResult> {
   const goal = structured.objective.trim() || validatedIntent;
   const intentSlug = slugGoal(structured.intent_description || goal);
@@ -362,19 +365,10 @@ export type ClickupSourceRecordsBatch = {
   records: ClickupLifecycleTaskRecord[];
 };
 
-type LifecycleKind = "created" | "terminal" | "removed" | "other";
-
 function normalizeOptionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
-}
-
-function lifecycleKindFromKey(key: string): LifecycleKind {
-  if (key.startsWith("clickup-created:")) return "created";
-  if (key.startsWith("clickup-terminal:")) return "terminal";
-  if (key.startsWith("clickup-removed:")) return "removed";
-  return "other";
 }
 
 export function parseClickupSourceRecordsBatch(value: unknown): ClickupSourceRecordsBatch | null {
@@ -484,11 +478,11 @@ async function processClickupLifecycleUnit(): Promise<
     intent: intentResult.intent,
     operation_kind: intentResult.operation_kind,
   });
-  const structured = parseStandardStructuredPlanFromPlanning(planResult);
+  const structured = parseClickUpStructuredPlanFromPlanning(planResult);
   if (!structured) {
     return {
       ok: false,
-      detail: `${INGRESS_AGENT_NAME} planning failed: PlanClickUpWork did not return StandardStructuredPlan.`,
+      detail: `${INGRESS_AGENT_NAME} planning failed: PlanClickUpWork did not return ClickUpStructuredPlan.`,
     };
   }
   const stepsOrErr = validateClickUpPlanForExecution(structured);

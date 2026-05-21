@@ -6,7 +6,7 @@ import {
   isNeedClarification,
   isNotRelevant,
   onClickupSourceDispatch,
-  parseStandardStructuredPlanFromPlanning,
+  parseClickUpStructuredPlanFromPlanning,
   textReply,
   validateClickUpPlanForExecution,
 } from "./clickupExecution";
@@ -46,11 +46,11 @@ __chat_register({
       intent: resolvedIntent.intent,
       operation_kind: resolvedIntent.operation_kind,
     });
-    const structured = parseStandardStructuredPlanFromPlanning(planResult);
+    const structured = parseClickUpStructuredPlanFromPlanning(planResult);
     if (!structured) {
       return {
         error:
-          "Planning failed: PlanClickUpWork did not return a valid StandardStructuredPlan shape. Try rephrasing your request.",
+          "Planning failed: PlanClickUpWork did not return a valid ClickUpStructuredPlan shape. Try rephrasing your request.",
       };
     }
     const stepsOrErr = validateClickUpPlanForExecution(structured);

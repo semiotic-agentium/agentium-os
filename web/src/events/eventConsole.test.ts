@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentDiscoveryEntry } from "../types/a2a";
 import type { AgentDeliverableMessageShape, EventDispatchScope } from "../types/events";
 import {
@@ -273,6 +273,21 @@ describe("buildOperatorPublishTraceMessages", () => {
     expect(rows[0]?.role).toBe("user");
     expect(rows[1]?.role).toBe("agent");
     expect(rows[1]?.text).toContain("Published 2/2");
+  });
+});
+
+describe("resolveDispatchUnitTaskId", () => {
+  it("picks dispatch-unit prefix from planning response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        allTaskIds: ["dispatch-unit-abc", "other-task"],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { resolveDispatchUnitTaskId } = await import("./dispatchObserve");
+    await expect(resolveDispatchUnitTaskId("ctx-1")).resolves.toBe("dispatch-unit-abc");
+    vi.unstubAllGlobals();
   });
 });
 

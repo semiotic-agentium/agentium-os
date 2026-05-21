@@ -9,7 +9,7 @@ use baml_rt_core::{
     dispatch_ingress::{
         DispatchWorkUnit, WithTaskPrelude, dispatch_unit_runtime_scope, format_unit_ingress_body,
     },
-    host_source_records_body::{IngressPollBody, format_source_records_message_body},
+    host_source_records_body::IngressPollBody,
     host_wire::wire,
     ids::{ActivityAnchorId, AgentId, MessageId, UuidId},
 };
@@ -174,14 +174,8 @@ impl HostIngressRecorder for HostIngressRecorderImpl {
             .add_event_with_logging(prov_event, "host source poll recorded")
             .await;
 
-        if event.schema_version.as_str() == wire::HOST_SOURCE_RECORDS_V1
-            && let Some(batch) = event.messages.first()
-        {
-            let body = format_source_records_message_body(batch);
-            if !body.0.trim().is_empty() {
-                self.record_ingress_poll_user_message(event, &body).await?;
-            }
-        }
+        // Actionable ingress user lines are written per dispatch unit in `with_task_prelude`
+        // (`ingress-unit-user`), not as a second global poll Message for host.source-records.v1.
         Ok(())
     }
 

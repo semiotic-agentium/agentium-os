@@ -1714,6 +1714,8 @@ dependencies = [
  "baml-rt-tools",
  "baml-tools-clickup",
  "baml-tools-github",
+ "baml-tools-notion",
+ "baml-tools-security-eval",
  "baml-tools-slack",
  "baml-tools-system",
  "bytes",

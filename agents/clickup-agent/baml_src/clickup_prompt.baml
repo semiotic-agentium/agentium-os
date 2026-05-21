@@ -92,9 +92,23 @@ Do not add text before or after the JSON object.
 "#
 }
 
-/// Phase 2 — Plan using shared StandardStructuredPlan / StandardAgentPlanStep (same contract as Slack, Notion, etc.).
-/// Sentinels are host-local: clickup-execute vs clickup-format.
-function PlanClickUpWork(intent: string, operation_kind: string) -> StandardStructuredPlan {
+/// One row in the ClickUp host plan — wire keys match coordination `StandardAgentPlanStep`.
+class ClickUpPlanStep {
+  agent_package string @description("Sentinel only: clickup-execute (one ClickUp tool session pass: navigate/list/get/create/update/delete) or clickup-format (final user answer from session evidence; no new API calls). Never clickup-agent, support/clickup, or discovery agent_package names.")
+  agent_instance_id string @description("Always the literal default for this host: default")
+  sub_message string @description("clickup-execute: concrete executor instruction (IDs, operation, limits). clickup-format: how to frame the final reply (counts, table, summary).")
+}
+
+/// ClickUp host structured plan — top-level keys align with shared StandardStructuredPlan for coordination code.
+class ClickUpStructuredPlan {
+  intent_description string @description("One sentence: user-visible outcome (not low-level API mechanics).")
+  objective string @description("One sentence: what this turn achieves (may echo intent).")
+  plan_steps ClickUpPlanStep[] @description("Ordered steps: at least one clickup-execute, then exactly one clickup-format as the LAST step. Extra clickup-execute rows only when separate tool passes are needed.")
+  citations string[]? @description("Optional #N / @N line refs for observability when grounded in history; otherwise omit or [].")
+}
+
+/// Phase 2 — Plan ClickUp work. Contract is in `ClickUpStructuredPlan` / `ClickUpPlanStep` and `{{ ctx.output_format }}`.
+function PlanClickUpWork(intent: string, operation_kind: string) -> ClickUpStructuredPlan {
   client DefaultClient
   prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
@@ -118,12 +132,12 @@ You are the planner for a ClickUp workspace assistant.
     Operation kind: {{ operation_kind }}
     Plan only — do NOT call tools or fetch data.
 
-    Output StandardStructuredPlan:
-    - intent_description — one sentence, user-level outcome (not low-level API steps).
+    Output ClickUpStructuredPlan (not StandardStructuredPlan):
+    - intent_description — one sentence, user-visible outcome (not low-level API steps).
     - objective — one sentence, what we achieve this turn (may echo intent).
-    - plan_steps — ordered StandardAgentPlanStep rows. For THIS host only (not real multi-agent delegation):
+    - plan_steps — ordered ClickUpPlanStep rows. For THIS host only (not multi-agent delegation):
 
-    SENTINEL agent_package values (required):
+    SENTINEL agent_package values (required — never use clickup-agent, support/clickup, or names from discover_agents):
     - clickup-execute — one executor pass: navigate/list/get/create/update/delete via the ClickUp tool session.
       sub_message = concrete instruction for this hop (which IDs to discover, which operation, limits, task_id, etc.).
     - clickup-format — final user-facing answer from tool results already gathered this turn; no new API calls.
@@ -141,7 +155,7 @@ You are the planner for a ClickUp workspace assistant.
 
 {{ ctx.output_format }}
 
-Return exactly one `StandardStructuredPlan` JSON object.
+Return exactly one `ClickUpStructuredPlan` JSON object.
 Do not add text before or after the JSON object.
 "#
 }

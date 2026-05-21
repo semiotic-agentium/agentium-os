@@ -7,6 +7,7 @@ import EventHistoryPanel from "./EventHistoryPanel.vue";
 import EventRunObservePanel from "./EventRunObservePanel.vue";
 import {
   buildOperatorPublishTraceMessages,
+  resolveDispatchUnitTaskId,
   transcriptHasHostIngress,
 } from "../../events/dispatchObserve";
 import {
@@ -229,18 +230,40 @@ function updateScopeTaskId(value: string): void {
   }
 }
 
-function observationLoadOptions(extra?: Partial<LoadContextOptions>): LoadContextOptions {
+function observationLoadOptions(
+  extra?: Partial<LoadContextOptions>,
+  resolvedTaskId?: string | null,
+): LoadContextOptions {
+  // Dispatch-unit task scope already isolates the canonical ingress user line; adding
+  // agentPackage hides host ingress messages that are not linked to the agent archive.
+  const agentPackage =
+    resolvedTaskId != null && resolvedTaskId !== ""
+      ? null
+      : draft.value.agent_package || null;
   return {
-    agentPackage: draft.value.agent_package || null,
+    agentPackage,
     ...extra,
   };
+}
+
+async function resolveObservationTaskId(
+  contextId: string,
+  taskId: string | null | undefined,
+): Promise<string | null> {
+  if (taskId) return taskId;
+  return resolveDispatchUnitTaskId(contextId);
 }
 
 async function refreshObservation(): Promise<void> {
   const { contextId, taskId } = observeIds.value;
   if (contextId) {
     provenancePaneOpen.value = true;
-    await observation.loadContext(contextId, taskId, observationLoadOptions());
+    const resolvedTask = await resolveObservationTaskId(contextId, taskId);
+    await observation.loadContext(
+      contextId,
+      resolvedTask,
+      observationLoadOptions(undefined, resolvedTask),
+    );
     updateDispatchPhaseFromObservation();
   } else {
     observation.clear();
@@ -280,12 +303,17 @@ async function onPublish(): Promise<void> {
   provenancePaneOpen.value = true;
   const { contextId, taskId } = observeIds.value;
   if (contextId) {
-    void observation.loadContext(
-      contextId,
-      taskId,
-      observationLoadOptions({
-        preserveMessagesUntilTranscript: true,
-      }),
+    void resolveObservationTaskId(contextId, taskId).then((resolvedTask) =>
+      observation.loadContext(
+        contextId,
+        resolvedTask,
+        observationLoadOptions(
+          {
+            preserveMessagesUntilTranscript: true,
+          },
+          resolvedTask,
+        ),
+      ),
     );
   }
 }

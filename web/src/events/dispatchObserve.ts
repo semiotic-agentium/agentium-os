@@ -168,6 +168,19 @@ export const buildOperatorDispatchTraceMessages = buildOperatorPublishTraceMessa
 /** @deprecated Use buildOperatorPublishTraceMessages */
 export const buildConsoleTraceFallbackMessages = buildOperatorPublishTraceMessages;
 
+/** First dispatch-unit task id for a context (multi-unit: first match). */
+export async function resolveDispatchUnitTaskId(
+  contextId: string,
+): Promise<string | null> {
+  const res = await fetch(`/contexts/${encodeURIComponent(contextId)}/planning`);
+  if (!res.ok) return null;
+  const data = (await res.json()) as { allTaskIds?: string[] };
+  const ids = data.allTaskIds ?? [];
+  const unit = ids.find((id) => id.startsWith("dispatch-unit-"));
+  if (unit) return unit;
+  return ids.length === 1 ? (ids[0] ?? null) : null;
+}
+
 /** True when transcript includes host-written ingress poll/unit user rows. */
 export function transcriptHasIngressUserRows(messages: ChatMessage[]): boolean {
   return messages.some(

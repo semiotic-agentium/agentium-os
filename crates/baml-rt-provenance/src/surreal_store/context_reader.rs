@@ -181,7 +181,64 @@ fn warn_conversation_context_row_skip(context_id: &ContextId, row: &Value, reaso
     );
 }
 
+struct ScopedConversationQuery<'a> {
+    ctx_node_id: &'a str,
+    scoped_to: &'a str,
+    after_filter_sql: &'a str,
+    task_filter_sql: &'a str,
+    agent_filter_sql: &'a str,
+    task_id: Option<&'a TaskId>,
+    agent_package: Option<&'a str>,
+    after_event_order: Option<u64>,
+}
+
 impl SurrealProvenanceStore {
+    async fn fetch_scoped_conversation_nodes(
+        &self,
+        query: ScopedConversationQuery<'_>,
+    ) -> Result<Vec<Value>> {
+        let ScopedConversationQuery {
+            ctx_node_id,
+            scoped_to,
+            after_filter_sql,
+            task_filter_sql,
+            agent_filter_sql,
+            task_id,
+            agent_package,
+            after_event_order,
+        } = query;
+        let sql = format!(
+            "SELECT node_id, label, props, props.a2a_event_order AS event_order FROM {TBL_NODE} \
+             WHERE node_id IN (\
+               SELECT VALUE from_id FROM {TBL_EDGE} \
+               WHERE to_id = $ctx_node_id AND rel_type = '{scoped_to}' \
+                 AND from_label IN ['Message', 'ToolCall', 'SessionStep']\
+             ) \
+             AND (label != 'ToolCall' OR props.a2a_activity_outcome IN ['Success', 'Failed']) \
+             {after_filter_sql} \
+             {task_filter_sql} \
+             {agent_filter_sql} \
+             ORDER BY event_order ASC, node_id ASC"
+        );
+        let mut q = self.db.query(&sql);
+        q = q.bind(("ctx_node_id", ctx_node_id.to_string()));
+        if let Some(pkg) = agent_package {
+            q = q.bind(("agent_pkg", pkg.to_string()));
+        }
+        if let Some(tid) = task_id {
+            q = q.bind(("task_entity_id", task_entity_id_string_raw(tid.as_str())));
+            q = q.bind((
+                "task_exec_id",
+                task_execution_activity_id_string(tid.as_str()),
+            ));
+        }
+        if let Some(after) = after_event_order {
+            q = q.bind(("after_event_order", after));
+        }
+        let response = q.await.map_err(map_surreal_error)?;
+        check_and_take_zero(response, map_surreal_error)
+    }
+
     pub(super) async fn conversation_context_filtered(
         &self,
         context_id: &ContextId,
@@ -224,43 +281,64 @@ impl SurrealProvenanceStore {
             None => "",
         };
 
-        let agent_filter_sql = agent_package
-            .map(crate::metamodel::query::conversation_node_matches_agent_package_sql)
-            .unwrap_or_default();
-
-        // Single SCOPED_TO edge traversal: fetch all Message, ToolCall, SessionStep
-        // nodes scoped to this context in one query.
-        let main_query = format!(
-            "SELECT node_id, label, props, props.a2a_event_order AS event_order FROM {TBL_NODE} \
-             WHERE node_id IN (\
-               SELECT VALUE from_id FROM {TBL_EDGE} \
-               WHERE to_id = $ctx_node_id AND rel_type = '{scoped_to}' \
-                 AND from_label IN ['Message', 'ToolCall', 'SessionStep']\
-             ) \
-             AND (label != 'ToolCall' OR props.a2a_activity_outcome IN ['Success', 'Failed']) \
-             {after_filter_sql} \
-             {task_filter_sql} \
-             {agent_filter_sql} \
-             ORDER BY event_order ASC, node_id ASC"
-        );
-
-        let mut q = self.db.query(&main_query);
-        q = q.bind(("ctx_node_id", ctx_node_id.clone()));
-        if let Some(pkg) = agent_package {
-            q = q.bind(("agent_pkg", pkg.to_string()));
-        }
-        if let Some(tid) = task_id {
-            q = q.bind(("task_entity_id", task_entity_id_string_raw(tid.as_str())));
-            q = q.bind((
-                "task_exec_id",
-                task_execution_activity_id_string(tid.as_str()),
-            ));
-        }
-        if let Some(after) = after_event_order {
-            q = q.bind(("after_event_order", after));
-        }
-        let response = q.await.map_err(map_surreal_error)?;
-        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
+        // Agent-package filter uses two queries (message vs call/session) to avoid a Surreal
+        // cross-label OR bug on persisted stores (`Cannot perform subtraction with 'NONE' and 'NONE'`).
+        let rows: Vec<Value> = if agent_package.is_some() {
+            let msg_filter =
+                crate::metamodel::query::conversation_message_agent_package_clause("agent_pkg");
+            let call_filter =
+                crate::metamodel::query::conversation_call_agent_package_clause("agent_pkg");
+            let mut rows = self
+                .fetch_scoped_conversation_nodes(ScopedConversationQuery {
+                    ctx_node_id: &ctx_node_id,
+                    scoped_to,
+                    after_filter_sql,
+                    task_filter_sql: &task_filter_sql,
+                    agent_filter_sql: &msg_filter,
+                    task_id,
+                    agent_package,
+                    after_event_order,
+                })
+                .await?;
+            let mut call_rows = self
+                .fetch_scoped_conversation_nodes(ScopedConversationQuery {
+                    ctx_node_id: &ctx_node_id,
+                    scoped_to,
+                    after_filter_sql,
+                    task_filter_sql: &task_filter_sql,
+                    agent_filter_sql: &call_filter,
+                    task_id,
+                    agent_package,
+                    after_event_order,
+                })
+                .await?;
+            rows.append(&mut call_rows);
+            rows.sort_by(|a, b| {
+                let order_key = |row: &Value| {
+                    (
+                        row.get("event_order").and_then(Value::as_u64).unwrap_or(0),
+                        row.get("node_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                    )
+                };
+                order_key(a).cmp(&order_key(b))
+            });
+            rows
+        } else {
+            self.fetch_scoped_conversation_nodes(ScopedConversationQuery {
+                ctx_node_id: &ctx_node_id,
+                scoped_to,
+                after_filter_sql,
+                task_filter_sql: &task_filter_sql,
+                agent_filter_sql: "",
+                task_id,
+                agent_package,
+                after_event_order,
+            })
+            .await?
+        };
 
         // Collect ToolCall node_ids, payload anchors, and Message node_ids for batch queries.
         let mut tool_call_node_ids: Vec<String> = Vec::new();

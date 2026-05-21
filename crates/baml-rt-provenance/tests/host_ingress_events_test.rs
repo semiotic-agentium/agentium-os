@@ -1,15 +1,22 @@
 //! Host ingress `ProvEvent` variants validate, normalize, and project to conversation context.
 
+use std::sync::Arc;
+
 use baml_rt_conversation::view::UserSpeakerKind;
 use baml_rt_core::{
+    AgentDispatchRoutingKey, DispatchWorkUnit, EventSchemaVersion, EventSourceKind,
+    HostIngressRecorder, ProducedEvent, RuntimeScope,
     dispatch_ingress::dispatch_unit_task_id,
+    event_subscription::EventSourceKey,
+    host_source_records_body::format_source_records_unit_body,
     ids::{ActivityAnchorId, AgentId, ContextId, CorrelationId, MessageId, UuidId},
 };
 use baml_rt_provenance::{
-    GraphExporter, ProvEvent, ProvenanceContextReader, ProvenanceWriter, SurrealStoreBuilder,
-    events::ProvEventData, graph_model::event_kind_from_data, normalizer::validate_event,
-    vocabulary::a2a,
+    GraphExporter, HostIngressRecorderImpl, ProvEvent, ProvenanceContextReader, ProvenanceQueryApi,
+    ProvenanceWriter, SurrealStoreBuilder, events::ProvEventData,
+    graph_model::event_kind_from_data, normalizer::validate_event, vocabulary::a2a,
 };
+use serde_json::json;
 use uuid::Uuid;
 
 #[test]
@@ -160,7 +167,7 @@ async fn ingress_poll_user_message_projects_ingress_speaker_kind() {
 }
 
 #[tokio::test]
-async fn conversation_context_with_task_omits_global_poll_user_line() {
+async fn conversation_context_unit_ingress_only_without_poll_user_line() {
     let store = SurrealStoreBuilder::in_memory_isolated()
         .build()
         .await
@@ -168,29 +175,6 @@ async fn conversation_context_with_task_omits_global_poll_user_line() {
     let ctx = ContextId::new(55, 66);
     let unit_key = "clickup-created:task-a:1";
     let task_id = dispatch_unit_task_id(&ctx, unit_key);
-
-    let poll_message_id = MessageId::from("poll-msg-batch");
-    let poll_anchor = ActivityAnchorId::from(format!(
-        "ingress-poll-user:{}:{}",
-        ctx.as_str(),
-        poll_message_id.as_str()
-    ));
-    store
-        .add_event(ProvEvent::Global(baml_rt_provenance::events::GlobalEvent {
-            id: poll_anchor,
-            context_id: ctx.clone(),
-            timestamp_ms: 1,
-            data: ProvEventData::MessageReceived {
-                id: poll_message_id,
-                role: "user".to_string(),
-                content: vec!["1. Poll batch line".to_string()],
-                metadata: None,
-                agent_id: AgentId::from_uuid(UuidId::new(Uuid::nil())),
-                citations: Vec::new(),
-            },
-        }))
-        .await
-        .expect("poll user");
 
     let unit_anchor =
         ActivityAnchorId::from(format!("ingress-unit-user:{}:{}", ctx.as_str(), unit_key));
@@ -218,7 +202,7 @@ async fn conversation_context_with_task_omits_global_poll_user_line() {
         .conversation_context(&ctx, None)
         .await
         .expect("full context");
-    assert_eq!(full.len(), 2, "full context includes poll + unit: {full:?}");
+    assert_eq!(full.len(), 1, "canonical ingress is unit-only: {full:?}");
 
     let task_only = store
         .conversation_context_with_task(&ctx, None, Some(&task_id))
@@ -227,7 +211,7 @@ async fn conversation_context_with_task_omits_global_poll_user_line() {
     assert_eq!(
         task_only.len(),
         1,
-        "task filter must drop global poll: {task_only:?}"
+        "task-scoped matches full: {task_only:?}"
     );
     let text = match &task_only[0].content {
         baml_rt_conversation::view::ConversationItemContent::Message { text, .. } => text.as_str(),
@@ -235,6 +219,80 @@ async fn conversation_context_with_task_omits_global_poll_user_line() {
     };
     assert!(
         text.contains("Unit task line"),
-        "task-scoped read must be the unit ingress line only: {text}"
+        "ingress line must be the unit prelude text: {text}"
     );
+}
+
+#[tokio::test]
+async fn record_source_poll_and_unit_prelude_emit_single_ingress_user_line() {
+    let store = Arc::new(
+        SurrealStoreBuilder::in_memory_isolated()
+            .build()
+            .await
+            .expect("store"),
+    );
+    let recorder = HostIngressRecorderImpl::new(Arc::clone(&store));
+    let ctx = ContextId::new(77, 88);
+    let unit_key = "clickup-created:task-1:1";
+    let batch = json!({
+        "schema_version": "host.source-records.v1",
+        "source": {
+            "source_kind": "clickup",
+            "source_key": "clickup:list:1",
+            "source_label": "List"
+        },
+        "records": [{
+            "record_kind": "clickup.lifecycle_task",
+            "key": unit_key,
+            "title": "Investigate ingress",
+            "description": "Confirm single user line",
+            "priority": "high"
+        }]
+    });
+    let event = ProducedEvent {
+        routing_key: AgentDispatchRoutingKey::parse("event:intake").expect("routing"),
+        schema_version: EventSchemaVersion::parse("host.source-records.v1").expect("schema"),
+        source_kind: EventSourceKind::parse("clickup").expect("kind"),
+        source_key: EventSourceKey::parse("clickup:list:1").expect("key"),
+        messages: vec![batch.clone()],
+        context_id: Some(ctx.clone()),
+        task_id: None,
+        message_id: Some("evt-console-msg-1".into()),
+        metadata: None,
+    };
+    recorder
+        .record_source_poll(&event)
+        .await
+        .expect("poll lineage");
+    let agent_id = AgentId::from_uuid(UuidId::new(Uuid::nil()));
+    let parent =
+        RuntimeScope::message_scope(ctx.clone(), agent_id.clone(), MessageId::from("parent-msg"));
+    let records: Vec<serde_json::Value> = batch
+        .get("records")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let expected_body = format_source_records_unit_body(&records);
+    let unit = DispatchWorkUnit::new(unit_key.to_string(), records).expect("unit");
+    recorder
+        .with_task_prelude(&parent, agent_id, unit)
+        .await
+        .expect("unit prelude");
+
+    let items = store
+        .conversation_context(&ctx, None)
+        .await
+        .expect("conversation_context");
+    assert_eq!(items.len(), 1, "one ingress user line only: {items:?}");
+    assert_eq!(items[0].user_speaker_kind, Some(UserSpeakerKind::Ingress));
+    let text = match &items[0].content {
+        baml_rt_conversation::view::ConversationItemContent::Message { text, .. } => text.as_str(),
+        other => panic!("expected message, got {other:?}"),
+    };
+    assert_eq!(text, expected_body.0);
+
+    store
+        .query_conversation_context(&ctx, None, None, Some("clickup-agent"))
+        .await
+        .expect("agent_package filter over ingress unit row");
 }

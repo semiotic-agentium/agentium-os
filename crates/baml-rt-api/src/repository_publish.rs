@@ -16,6 +16,9 @@ use baml_rt_repository::{
     entry::SourceBundle,
     package::source_bundle_from_tar_gz,
 };
+// Register tool inventory for repository-side artifact builds (POST /repository/publish).
+use baml_tools_notion as _;
+use baml_tools_security_eval as _;
 use http_api_problem::HttpApiProblem;
 
 /// Publish an agent: build from source and store in repository (POST /repository/publish, operator-authenticated).

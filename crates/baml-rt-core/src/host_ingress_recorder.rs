@@ -22,7 +22,8 @@ pub trait HostIngressRecorder: Send + Sync {
     /// Persist poll ingestion before subscriber fan-out.
     async fn record_source_poll(&self, event: &ProducedEvent) -> Result<()>;
 
-    /// Write actionable poll batch as one `user` message (idempotent per poll batch message id).
+    /// Write a global poll-batch `user` message (explicit/tests only; not used on
+    /// `host.source-records.v1` publish — unit preludes own actionable ingress text).
     async fn record_ingress_poll_user_message(
         &self,
         event: &ProducedEvent,

@@ -785,6 +785,7 @@ pub async fn start_http_server(
     feature = "slack",
     feature = "llm-tests"
 ))]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
 pub fn quickjs_config_with_host_ingress(
     store: Arc<SurrealProvenanceStore>,
 ) -> baml_rt::QuickJSConfig {
