@@ -102,6 +102,12 @@ impl<'a, R: SecretResolver + Sync> Importer<'a, R> {
                 .and_then(|s| s.import_timeout_secs)
                 .unwrap_or(DEFAULT_IMPORT_TIMEOUT_SECS),
         );
+        println!(
+            "MCP import: spawning stdio server command={} args={:?} timeout={}s",
+            config.command,
+            config.args,
+            timeout.as_secs(),
+        );
         let spec = SpawnSpec {
             command: config.command.clone(),
             args: config.args.clone(),
@@ -110,6 +116,10 @@ impl<'a, R: SecretResolver + Sync> Importer<'a, R> {
         };
 
         let mut sandboxed = sandbox_spawn(spec)?;
+        println!(
+            "MCP import: child spawned scratch_dir={}",
+            sandboxed.scratch_path.display()
+        );
         let (initialize_result, descriptors, stderr_tail) =
             run_discovery(&mut sandboxed, timeout).await?;
 
@@ -201,8 +211,21 @@ async fn run_discovery(
     let mut stderr = sandboxed.child.stderr.take();
     let mut client = McpStdioClient::new(stdin, stdout);
 
+    println!(
+        "MCP import: sending initialize (timeout={}s)",
+        timeout.as_secs()
+    );
     let initialize_result = client.initialize(timeout).await?;
+    println!(
+        "MCP import: initialize ok protocol={} server_info={}",
+        initialize_result.protocol_version, initialize_result.server_info,
+    );
+    println!(
+        "MCP import: sending tools/list (timeout={}s)",
+        timeout.as_secs()
+    );
     let tools = client.list_tools(timeout).await?.tools;
+    println!("MCP import: tools/list ok count={}", tools.len());
 
     drop(client);
 

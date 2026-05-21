@@ -803,6 +803,21 @@ async fn import_mcp_snapshot_from_config(
         "Importing MCP server `{server_id}` from {}",
         config_path.display()
     );
+    let env_keys = server_config.env.keys().cloned().collect::<Vec<_>>();
+    let secret_refs = server_config
+        .secrets
+        .iter()
+        .map(|secret| secret.name.as_str())
+        .collect::<Vec<_>>();
+    let import_timeout_secs = server_config
+        .sandbox
+        .as_ref()
+        .and_then(|sandbox| sandbox.import_timeout_secs)
+        .unwrap_or(30);
+    println!(
+        "MCP import config: transport=stdio command={} args={:?} env_keys={:?} secret_refs={:?} import_timeout={}s",
+        server_config.command, server_config.args, env_keys, secret_refs, import_timeout_secs,
+    );
     let importer = Importer::new(&EnvSecretResolver);
     importer
         .import(
