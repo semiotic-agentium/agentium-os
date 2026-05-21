@@ -1,7 +1,7 @@
 //! Stdio wrapper around the in-memory fake MCP server. Reads a JSON config
 //! file path from argv and serves over its own stdin/stdout. Test-only.
 
-use std::process::ExitCode;
+use std::{process::ExitCode, time::Duration};
 
 use baml_rt_mcp::fixture::{FakeMcpConfig, new_state, run_fake_server};
 
@@ -28,6 +28,14 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if config.stderr_spam_mode {
+        tokio::spawn(async {
+            loop {
+                eprintln!("fake-mcp-stderr-spam {}", "x".repeat(4096));
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        });
+    }
     let state = new_state();
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();

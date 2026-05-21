@@ -55,6 +55,10 @@ pub struct FakeMcpConfig {
     /// protocol-error classification.
     #[serde(default)]
     pub malformed_response: bool,
+    /// When true, the stdio wrapper spams stderr continuously so tests can
+    /// prove the runtime drains the pipe and does not hang on connect/call.
+    #[serde(default)]
+    pub stderr_spam_mode: bool,
 }
 
 impl FakeMcpConfig {

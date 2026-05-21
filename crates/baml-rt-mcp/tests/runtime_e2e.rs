@@ -202,6 +202,7 @@ fn sample_fixture() -> FakeMcpConfig {
         drift_mode: false,
         drift_changes_schema: false,
         malformed_response: false,
+        stderr_spam_mode: false,
     }
 }
 
@@ -509,6 +510,77 @@ async fn list_changed_is_spurious_for_opaque_fallback_schema() {
 
     let record = read_server(cache.path(), "grafana").expect("server record");
     assert_eq!(record.approval.state, McpApprovalState::Approved);
+}
+
+#[tokio::test]
+async fn noisy_stderr_does_not_block_stdio_mcp_connect_or_call() {
+    let cache = tempfile::tempdir().unwrap();
+    write_snapshot(
+        cache.path(),
+        &approved_snapshot(vec![
+            approved_tool(
+                "search_dashboards",
+                json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+            ),
+            approved_tool("list_alerts", json!({"type": "object", "properties": {}})),
+        ]),
+    )
+    .unwrap();
+    let fixture_path = cache.path().join("fixture.json");
+    let mut fixture = sample_fixture();
+    fixture.stderr_spam_mode = true;
+    write_fixture(&fixture_path, &fixture);
+
+    let resolver = build_resolver(&fixture_path, cache.path());
+    let name = ToolName::parse("mcp/grafana/search_dashboards").unwrap();
+    let (_metadata, handler) = resolver.resolve(&name).unwrap().expect("resolved");
+
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut session = handler
+            .open_session(session_context(&name), json!({}))
+            .await
+            .unwrap();
+        session.send(json!({"q": "cpu"})).await.unwrap();
+        session.read(json!({})).await.unwrap()
+    })
+    .await;
+
+    match outcome {
+        Ok(ToolStep::Done { output: Some(envelope) }) => {
+            assert_eq!(envelope["is_error"], false);
+        }
+        Ok(other) => panic!("expected Done with envelope, got {other:?}"),
+        Err(_) => panic!(
+            "noisy stderr must not block MCP lazy connect or tool call within 5s; \
+             ensure stdio stderr is drained"
+        ),
+    }
+}
+
+#[tokio::test]
+async fn stale_packaged_snapshot_is_rejected_at_resolve_time() {
+    let cache = tempfile::tempdir().unwrap();
+    let mut snap = approved_snapshot(vec![approved_tool(
+        "search_dashboards",
+        json!({"type": "object"}),
+    )]);
+    snap.approval.state = McpApprovalState::Stale;
+    snap.tools[0].approval.state = McpApprovalState::Stale;
+    write_snapshot(cache.path(), &snap).unwrap();
+    let fixture_path = cache.path().join("fixture.json");
+    write_fixture(&fixture_path, &sample_fixture());
+
+    let resolver = build_resolver(&fixture_path, cache.path());
+    let name = ToolName::parse("mcp/grafana/search_dashboards").unwrap();
+    let err = match resolver.resolve(&name) {
+        Err(err) => err,
+        Ok(_) => panic!("stale packaged snapshot must fail closed at resolve time"),
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not approved"),
+        "expected stale rejection, got: {msg}"
+    );
 }
 
 #[tokio::test]
