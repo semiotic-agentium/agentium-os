@@ -310,6 +310,16 @@ fn classify_transport_build_error(
             top.to_string(),
             "MCP HTTP transport auth secret produced an invalid header",
         ),
+        HttpTransportBuildError::ReservedAuthHeader { .. } => fatal_transport(
+            "mcp_transport_auth_header_reserved",
+            top.to_string(),
+            "MCP HTTP transport auth secret targeted a reserved header name",
+        ),
+        HttpTransportBuildError::StdioSecretOnHttp { .. } => fatal_transport(
+            "mcp_transport_stdio_secret_on_http",
+            top.to_string(),
+            "MCP HTTP transport rejected stdio-style env secret; declare credentials under transport `auth` block",
+        ),
         HttpTransportBuildError::InvalidExtraCaCert { .. } => fatal_transport(
             "mcp_transport_ca_cert_invalid",
             top.to_string(),

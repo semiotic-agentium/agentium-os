@@ -24,7 +24,7 @@ use thiserror::Error;
 
 use crate::{
     http::{
-        headers::{HeaderError, build_validated_static_headers},
+        headers::{HeaderError, build_validated_static_headers, is_reserved},
         policy::{PolicyError, validate_http_target},
     },
     runtime::HttpLaunchConfig,
@@ -42,6 +42,14 @@ pub enum HttpTransportBuildError {
     Header(#[from] HeaderError),
     #[error("invalid auth header `{name}`: {reason}")]
     InvalidAuthHeader { name: String, reason: String },
+    #[error(
+        "auth header `{name}` is reserved by the MCP transport; use the bearer/basic auth helpers, or pick a different header name"
+    )]
+    ReservedAuthHeader { name: String },
+    #[error(
+        "stdio-style env secret `{id}` cannot be injected into an HTTP transport; declare the credential under the transport `auth` block instead"
+    )]
+    StdioSecretOnHttp { id: String },
     #[error("invalid extra CA certificate (PEM #{index}): {reason}")]
     InvalidExtraCaCert { index: usize, reason: String },
     #[error("reqwest client build failed: {0}")]
@@ -150,10 +158,23 @@ impl HttpTransportBuilder {
 
     #[must_use = "transport build result must be handled"]
     pub fn build(self) -> Result<RmcpHttpTransport, HttpTransportBuildError> {
-        let has_auth = self
+        // Stdio-style env injections survive into HTTP builds when an
+        // operator migrates a stdio config without scrubbing the `secrets`
+        // block. The injector below silently drops them, and `has_auth` then
+        // reads as `false`, permitting plaintext `http://`. Refuse here so
+        // any path that constructs an `HttpLaunchConfig` directly — including
+        // tests and future callers — is held to the same contract as
+        // `mcp-servers.json` validation.
+        if let Some(env_secret) = self
             .resolved_secrets
             .iter()
-            .any(|s| !matches!(s.spec.inject, SecretInjection::Env { .. }));
+            .find(|s| matches!(s.spec.inject, SecretInjection::Env { .. }))
+        {
+            return Err(HttpTransportBuildError::StdioSecretOnHttp {
+                id: env_secret.spec.id.clone(),
+            });
+        }
+        let has_auth = !self.resolved_secrets.is_empty();
         let (url, policy) =
             validate_http_target(&self.server_id, &self.url, &self.network_policy, has_auth)?;
 
@@ -250,6 +271,15 @@ fn inject_secret_header(
             Ok(())
         }
         SecretInjection::HttpHeader { name } => {
+            // Reserved-name guard: `authorization` is allowed (custom auth
+            // schemes that aren't Bearer/Basic still target the standard
+            // header); everything else in the reserved set belongs to the
+            // transport (session, protocol version, last-event-id, content
+            // negotiation) and must not be hijacked. Defense in depth — the
+            // canonical fail-closed site is `validate_streamable_http_config`.
+            if !name.eq_ignore_ascii_case("authorization") && is_reserved(name) {
+                return Err(HttpTransportBuildError::ReservedAuthHeader { name: name.clone() });
+            }
             let name_h = HeaderName::try_from(name.as_str()).map_err(|err| {
                 HttpTransportBuildError::InvalidAuthHeader {
                     name: name.clone(),

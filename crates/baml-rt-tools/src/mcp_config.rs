@@ -394,6 +394,30 @@ pub struct SandboxConfig {
     pub runtime_call_timeout_secs: Option<u64>,
 }
 
+/// Headers reserved by the MCP Streamable HTTP transport itself. Operators
+/// must not set these via `static_headers`, and `HttpAuthConfig::Header` must
+/// not target them (with the documented exception of `authorization`, which
+/// covers custom auth schemes that are neither Bearer nor Basic).
+///
+/// Mirrored by `baml-rt-mcp::http::headers` for runtime guarding; this copy is
+/// the config-load contract surface that fails closed before any transport is
+/// built.
+pub const RESERVED_HTTP_HEADERS: &[&str] = &[
+    "accept",
+    "authorization",
+    "content-type",
+    "last-event-id",
+    "mcp-protocol-version",
+    "mcp-session-id",
+];
+
+/// Returns `true` when `name` is reserved by the MCP Streamable HTTP transport.
+/// Case-insensitive per RFC 7230.
+pub fn is_reserved_http_header(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    RESERVED_HTTP_HEADERS.contains(&lower.as_str())
+}
+
 #[derive(Debug, Error)]
 pub enum McpConfigError {
     #[error("invalid mcp-servers.json: {0}")]
@@ -416,6 +440,14 @@ pub enum McpConfigError {
     EmptyHttpHeaderName { server: String },
     #[error("server `{server}` streamable_http auth header name is empty")]
     EmptyHttpAuthHeaderName { server: String },
+    #[error(
+        "server `{server}` streamable_http auth header `{name}` is reserved by the MCP transport; use the bearer/basic auth helpers, or pick a different header name"
+    )]
+    ReservedHttpAuthHeader { server: String, name: String },
+    #[error(
+        "server `{server}` declares `secrets` together with a `streamable_http` transport; stdio `secrets` are env-injected into a child process and have no effect on HTTP transports — move credentials into the transport `auth` block instead"
+    )]
+    SecretsForbiddenOnHttpTransport { server: String },
 }
 
 impl McpServerConfig {
@@ -500,6 +532,16 @@ impl McpServersFile {
                 }
                 Some(McpServerTransportConfig::StreamableHttp(http)) => {
                     validate_streamable_http_config(id, http)?;
+                    // stdio `secrets` compile to `SecretInjection::Env`, which
+                    // the HTTP injector silently no-ops (and `has_auth` then
+                    // treats as zero auth, permitting plaintext http://). Fail
+                    // at config load so operators migrating stdio→HTTP move
+                    // credentials into the transport `auth` block.
+                    if !config.secrets.is_empty() {
+                        return Err(McpConfigError::SecretsForbiddenOnHttpTransport {
+                            server: id.clone(),
+                        });
+                    }
                 }
                 None => {}
             }
@@ -558,12 +600,26 @@ fn validate_streamable_http_config(
             });
         }
     }
-    if let Some(HttpAuthConfig::Header { header, .. }) = &config.auth
-        && header.trim().is_empty()
-    {
-        return Err(McpConfigError::EmptyHttpAuthHeaderName {
-            server: server.to_string(),
-        });
+    if let Some(HttpAuthConfig::Header { header, .. }) = &config.auth {
+        if header.trim().is_empty() {
+            return Err(McpConfigError::EmptyHttpAuthHeaderName {
+                server: server.to_string(),
+            });
+        }
+        // `authorization` is intentionally allowed through this path — custom
+        // auth schemes (Digest, Hawk, AWS-SigV4, …) are neither Bearer nor
+        // Basic but still need to target the standard header. Everything else
+        // in the reserved set belongs to the transport itself (session,
+        // protocol version, last-event-id, content negotiation) and must not
+        // be hijacked by a secret-injected value.
+        if header.eq_ignore_ascii_case("authorization") {
+            // allowed
+        } else if is_reserved_http_header(header) {
+            return Err(McpConfigError::ReservedHttpAuthHeader {
+                server: server.to_string(),
+                name: header.clone(),
+            });
+        }
     }
     Ok(())
 }
@@ -740,6 +796,52 @@ mod tests {
         }"#;
         let err = McpServersFile::parse(json).expect_err("reject");
         assert!(matches!(err, McpConfigError::InvalidHttpUrl { .. }));
+    }
+
+    #[test]
+    fn rejects_reserved_auth_header_name() {
+        let json = r#"{
+          "mcpServers": {
+            "x": {
+              "transport": {
+                "kind": "streamable_http",
+                "url": "https://example.com/mcp",
+                "auth": {
+                  "kind": "header",
+                  "header": "mcp-session-id",
+                  "value_ref": { "source": { "kind": "env", "name": "T" } }
+                }
+              }
+            }
+          }
+        }"#;
+        let err = McpServersFile::parse(json).expect_err("reject");
+        assert!(
+            matches!(err, McpConfigError::ReservedHttpAuthHeader { ref name, .. } if name == "mcp-session-id")
+        );
+    }
+
+    #[test]
+    fn rejects_secrets_block_on_streamable_http_transport() {
+        // stdio `secrets` compile to env-inject and silently no-op on HTTP;
+        // worse, they leave `has_auth` reading false so plaintext http://
+        // becomes permissible. Fail at config-load.
+        let json = r#"{
+          "mcpServers": {
+            "x": {
+              "transport": {
+                "kind": "streamable_http",
+                "url": "https://example.com/mcp"
+              },
+              "secrets": [{ "name": "LEGACY_TOKEN" }]
+            }
+          }
+        }"#;
+        let err = McpServersFile::parse(json).expect_err("reject");
+        assert!(matches!(
+            err,
+            McpConfigError::SecretsForbiddenOnHttpTransport { ref server } if server == "x"
+        ));
     }
 
     #[test]

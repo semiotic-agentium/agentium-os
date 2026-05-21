@@ -10,23 +10,13 @@
 //! header at this layer is a fail-closed configuration error, not a runtime
 //! recoverable.
 
-use baml_rt_tools::mcp_config::HttpHeader;
+/// Re-export of the canonical reserved set defined in `baml-rt-tools`. The
+/// authoritative copy lives there so config-load validation and runtime
+/// guarding share one list and cannot drift.
+pub use baml_rt_tools::mcp_config::RESERVED_HTTP_HEADERS as RESERVED_HEADERS;
+use baml_rt_tools::mcp_config::{HttpHeader, is_reserved_http_header};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use thiserror::Error;
-
-/// Headers operators may not set via `static_headers`. The transport itself
-/// writes `accept`, `content-type`, `mcp-protocol-version`, and
-/// `last-event-id`; the rmcp transport writes `mcp-session-id`;
-/// `authorization` only legitimately comes
-/// from `SecretInjection::HttpAuthorizationBearer` or `HttpBasicPassword`.
-pub const RESERVED_HEADERS: &[&str] = &[
-    "accept",
-    "authorization",
-    "content-type",
-    "last-event-id",
-    "mcp-protocol-version",
-    "mcp-session-id",
-];
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum HeaderError {
@@ -45,8 +35,7 @@ pub enum HeaderError {
 /// Lowercased reserved set lookup. Header names are case-insensitive per
 /// RFC 7230, so the comparison is too.
 pub fn is_reserved(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    RESERVED_HEADERS.contains(&lower.as_str())
+    is_reserved_http_header(name)
 }
 
 /// Validate operator-supplied static headers and build the baseline header
