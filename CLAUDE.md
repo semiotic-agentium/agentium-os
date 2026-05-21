@@ -1,16 +1,3 @@
-Looking at this merge, I can see several significant architectural changes:
-
-1. **New crates**: `baml-rt-core` with new types like `step_executor_outcome.rs` and `ids.rs`
-2. **Major provenance refactoring**: New `metamodel/` module with comprehensive query system
-3. **Task update system**: New files like `task_update_broadcaster.rs`, `task_update_drain.rs`, `task_update_session.rs`
-4. **Web dashboard**: New narrative dashboard with provenance drilldown capabilities
-5. **Removed fixture**: `conversational-persona-demo` agent fixture removed
-6. **New unified harness**: `unified-step-harness-demo` fixture added
-7. **BAML conversation history changes**: Script now rejects `ctx.tags['conversation_history']` entirely
-8. **TypeScript config updates**: All `tsconfig.json` files updated (likely moduleResolution changes)
-
-These changes represent significant architectural evolution in the provenance system, task management, and web interface. The CLAUDE.md updates in the merge show the TypeScript 6.x requirement description changed from `ignoreDeprecations: "6.0"` to `moduleResolution: "bundler"`, and test model updated from `grok-4.1-fast` to `grok-4.3`.
-
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
@@ -108,8 +95,8 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 - **baml-rt-embedding** — Embedding and drift detection
 
 **Runtime**
-- **baml-rt-tools** — Tool trait, registry/executor, session FSM (`ToolSessionPlan` with Open/Send/Read/Finish/Abort ops)
-- **baml-rt-mcp** — MCP client and importer for the BAML runtime
+- **baml-rt-tools** — Tool trait, registry/executor, session FSM (`ToolSessionPlan` with Open/Send/Read/Finish/Abort ops), MCP configuration and secrets management
+- **baml-rt-mcp** — MCP client and importer for the BAML runtime with streamable HTTP transport support, governance and security hardening
 - **baml-rt-interceptor** — Interceptor trait + pipeline (pre/post execution hooks)
 - **baml-rt-observability** — OpenTelemetry tracing setup, spans, metrics; `init_tracing()` uses per-layer filters (`RUST_LOG_FMT`, `RUST_LOG_OTEL`); central `spans.rs` keeps A2A ingress at `info` and agent execution spans at `debug` (see `docs/otel-trace-instrumentation-guide.md`); exported OTLP metric names: `docs/metrics-inventory.md`; runner identity foundation for K8s pilot with service.instance.id and deployment.environment resource attributes; distributed tracing support for cross-pod A2A forwarding
 - **baml-rt-quickjs** — QuickJS runtime host: loads JS, bridges JS↔Rust, manages BAML runtime invocations, provenance error mapping
@@ -160,15 +147,15 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 
 ### MCP Integration
 
-MCP (Model Context Protocol) servers provide external tools and resources to agents. The integration supports stdio transport for local MCP servers.
+MCP (Model Context Protocol) servers provide external tools and resources to agents. The integration supports both stdio transport for local MCP servers and streamable HTTP transport for remote servers with governance and security hardening.
 
 **MCP Registry:** The repository stores MCP server schemas and tool definitions. Schemas are discovered via `cargo-agent-platform mcp enable` and stored in the registry for agent builds.
 
 **Agent Build Integration:** Agents can reference MCP tools in their BAML schemas. The builder fetches schemas from the registry (via `BAML_MCP_REGISTRY_URL`) and generates TypeScript types for MCP tools.
 
-**Runtime Execution:** MCP tools are executed through the standard tool session FSM. The runtime manages MCP server processes and handles stdio communication.
+**Runtime Execution:** MCP tools are executed through the standard tool session FSM. The runtime manages MCP server processes and handles both stdio and HTTP communication with security policies and governance controls.
 
-**Configuration:** MCP servers are configured in `~/.agentium-os/mcp-servers.json` with command, args, and environment variables. The registry stores schema snapshots separately from runtime configuration.
+**Configuration:** MCP servers are configured in `~/.agentium-os/mcp-servers.json` with command, args, and environment variables. The registry stores schema snapshots separately from runtime configuration. HTTP MCP servers support additional security policies including request/response size limits, timeout controls, and content filtering.
 
 ### Host Tool Contract
 
@@ -240,6 +227,7 @@ Single job in `rust-ci.yml` (push/PR to main, plus manual dispatch):
 - **APT reliability:** CI uses `scripts/ci/apt-update-retry.sh` to mitigate transient Ubuntu mirror sync failures during package installation.
 - **TypeScript 6.x:** CI installs `typescript@6` globally to match the runner image and ensure consistent fixture builds. The canonical `tsconfig.json` uses `moduleResolution: "bundler"` with TypeScript 6.x.
 - **Test model configuration:** CI sets `BAML_TEST_MODEL` from the `vars.BAML_TEST_MODEL` repository variable with fallback to `x-ai/grok-4.3` for backward compatibility.
+- **Documentation-only changes:** CI skips Rust builds when only `docs/**` files are modified to avoid unnecessary compute and cancellation of in-flight runs.
 
 ## Testing Conventions
 
@@ -308,5 +296,5 @@ The raw manifests under `deploy/k8s/` and the `deploy/demo/run-demo.sh` script a
 - **BAML runtime**: git dependency from `ryan-s-roberts/baml` (`canary` branch); `baml-runtime`, `baml-types`, `internal-baml-core`, `internal-llm-client`
 - **QuickJS**: `quickjs_runtime` crate for JS execution
 - **SurrealDB**: Embedded multi-model database for provenance graph persistence
-- **MCP SDK**: `rmcp` crate for Model Context Protocol client implementation with stdio transport
+- **MCP SDK**: `rmcp` crate for Model Context Protocol client implementation with stdio and streamable HTTP transport support
 - **TypeScript 6.x**: required on `PATH` (or via `npx`) for any code path that exercises the agent build pipeline — `cargo test` on builder fixtures, local `baml-agent-builder package`, and the runner image (Dockerfile installs `typescript@6` globally). The canonical `tsconfig.json` written by bootstrap uses `moduleResolution: "bundler"`. Install with `npm install -g typescript@6`.
