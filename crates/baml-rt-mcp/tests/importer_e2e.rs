@@ -24,6 +24,7 @@ fn write_config(config: &FakeMcpConfig) -> tempfile::NamedTempFile {
 
 fn server_config_for(fixture_path: &std::path::Path) -> McpServerConfig {
     McpServerConfig {
+        transport: None,
         command: FAKE_BIN.into(),
         args: vec![fixture_path.to_string_lossy().into_owned()],
         env: BTreeMap::new(),
@@ -96,13 +97,13 @@ async fn importer_produces_pending_snapshot_with_two_tools() {
     for tool in &snapshot.tools {
         assert_eq!(tool.approval.state, McpApprovalState::Pending);
         assert!(tool.opaque_fallback_reason.is_none());
-        assert!(tool.input_schema_digest.as_str().starts_with("sha256:"));
+        assert!(tool.input_schema_digest.to_string().starts_with("sha256:"));
     }
     assert!(matches!(snapshot.transport, McpTransportRef::Stdio { .. }));
     assert!(
         snapshot
             .server_config_digest
-            .as_str()
+            .to_string()
             .starts_with("sha256:")
     );
 }

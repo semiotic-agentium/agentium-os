@@ -27,7 +27,11 @@ opentelemetry = { workspace = true }
 dashmap = "6.1.0"
 regex = "1"
 sha2 = { workspace = true }
+blake3 = "1.8"
+getrandom = "0.3"
+url = { workspace = true }
 futures-util = { workspace = true }
+zeroize = { version = "1", features = ["derive"] }
 # microsandbox is a beta crate ("expect breaking changes"). Exact pin per
 # tool_sandbox.md §7.3; bumps go through explicit review. Behind the
 # `sandbox-provider` feature so the runtime still builds when the beta crate

@@ -246,8 +246,19 @@ fn regen_agent(root: &Path) -> Result<()> {
                         .ok()
                         .filter(|v| !v.trim().is_empty())
                         .unwrap_or_else(|| "(not set)".to_string());
+                    let mcp_registry_url = std::env::var("BAML_MCP_REGISTRY_URL")
+                        .ok()
+                        .filter(|v| !v.trim().is_empty())
+                        .unwrap_or_else(|| "(not set)".to_string());
+                    let mcp_hint = if msg.contains("mcp/") {
+                        format!(
+                            "\nHint: missing tools include MCP tools. Set BAML_MCP_REGISTRY_URL to the runner repository URL that has the approved MCP server snapshot, e.g. BAML_MCP_REGISTRY_URL=http://127.0.0.1:18080/repository (current: {mcp_registry_url})."
+                        )
+                    } else {
+                        String::new()
+                    };
                     anyhow::anyhow!(
-                        "Type generation failed: {msg}\nHint: if the agent uses external tools, set BAML_EXTERNAL_TOOLS_DIR to the external tool directory (current: {external_dir}).\nHint: run the workspace binary to avoid stale installed subcommands: cargo run -p cargo-agent-platform -- regen <agent>."
+                        "Type generation failed: {msg}{mcp_hint}\nHint: if the agent uses external tools, set BAML_EXTERNAL_TOOLS_DIR to the external tool directory (current: {external_dir}).\nHint: run the workspace binary to avoid stale installed subcommands: cargo run -p cargo-agent-platform -- regen <agent>."
                     )
                 } else {
                     anyhow::anyhow!("Type generation failed: {msg}")

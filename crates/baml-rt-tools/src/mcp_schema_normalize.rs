@@ -37,7 +37,7 @@ pub fn normalize(input: &Value) -> NormalizedSchema {
     let canonical_bytes = serde_jcs::to_vec(input).unwrap_or_else(|_| b"null".to_vec());
     let mut hasher = Sha256::new();
     hasher.update(&canonical_bytes);
-    let digest = Digest::new(format!("sha256:{:x}", hasher.finalize()));
+    let digest = Digest::from_bytes(hasher.finalize().into());
 
     let opaque_fallback_reason = first_unsupported_feature(input, &mut Vec::new());
 
@@ -205,7 +205,7 @@ mod tests {
         });
         let normalized = normalize(&schema);
         assert!(normalized.opaque_fallback_reason.is_none());
-        assert!(normalized.digest.as_str().starts_with("sha256:"));
+        assert!(normalized.digest.to_string().starts_with("sha256:"));
     }
 
     #[test]

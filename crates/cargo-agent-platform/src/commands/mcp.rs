@@ -29,14 +29,25 @@ fn builder_command() -> Command {
 }
 
 fn run_builder(args: &[String]) -> Result<()> {
-    let status = builder_command()
-        .args(args)
-        .status()
-        .context("failed to start baml-agent-builder")?;
+    let mut cmd = builder_command();
+    cmd.args(args);
+    eprintln!(
+        "{} {}",
+        style("Running baml-agent-builder:").dim(),
+        display_command(&cmd)
+    );
+    let status = cmd.status().context("failed to start baml-agent-builder")?;
     if !status.success() {
         bail!("baml-agent-builder exited with {status}");
     }
     Ok(())
+}
+
+fn display_command(cmd: &Command) -> String {
+    let mut parts = Vec::new();
+    parts.push(cmd.get_program().to_string_lossy().to_string());
+    parts.extend(cmd.get_args().map(|arg| arg.to_string_lossy().to_string()));
+    parts.join(" ")
 }
 
 pub fn list(repository_url: &str, json: bool) -> Result<()> {

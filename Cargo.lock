@@ -1337,6 +1337,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "axum-server"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1ab4a3ec9ea8a657c72d99a03a824af695bd0fb5ec639ccbd9cd3543b41a5f9"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "fs-err",
+ "http 1.4.0",
+ "http-body 1.0.1",
+ "hyper 1.8.1",
+ "hyper-util",
+ "pin-project-lite",
+ "rustls 0.23.37",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls 0.26.4",
+ "tower-service",
+]
+
+[[package]]
 name = "azure_core"
 version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1879,17 +1901,28 @@ name = "baml-rt-mcp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum 0.8.8",
+ "axum-server",
  "baml-rt-core",
+ "baml-rt-observability",
  "baml-rt-tools",
+ "base64 0.22.1",
+ "dashmap 6.1.0",
+ "futures-util",
  "libc",
+ "rcgen",
+ "reqwest 0.13.2",
  "rmcp",
+ "rustls 0.23.37",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -2042,9 +2075,11 @@ dependencies = [
  "baml-sandbox-protocol",
  "baml-tool-derive",
  "baml-tools-calculator",
+ "blake3",
  "dashmap 6.1.0",
  "futures-util",
  "genco",
+ "getrandom 0.3.4",
  "inventory",
  "microsandbox",
  "opentelemetry 0.26.0",
@@ -2059,7 +2094,9 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -5015,6 +5052,16 @@ checksum = "0f158e3ff0a1b334408dc9fb811cd99b446986f4d8b741bb08f9df1604085ae7"
 dependencies = [
  "lazy_static",
  "num",
+]
+
+[[package]]
+name = "fs-err"
+version = "3.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73fde052dbfc920003cfd2c8e2c6e6d4cc7c1091538c3a24226cec0665ab08c0"
+dependencies = [
+ "autocfg",
+ "tokio",
 ]
 
 [[package]]
@@ -10719,10 +10766,13 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures",
+ "http 1.4.0",
  "pin-project-lite",
  "process-wrap",
+ "reqwest 0.13.2",
  "serde",
  "serde_json",
+ "sse-stream",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -12227,6 +12277,19 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "sse-stream"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3962b63f038885f15bce2c6e02c0e7925c072f1ac86bb60fd44c5c6b762fb72"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "http-body 1.0.1",
+ "http-body-util",
+ "pin-project-lite",
 ]
 
 [[package]]

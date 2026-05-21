@@ -3,11 +3,19 @@
 //! These types are shared by the builder, runner, and runtime so they can
 //! read snapshots without depending on any MCP protocol/transport crate.
 
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 
-use crate::tools::ToolAccess;
+use crate::{
+    mcp_config::{
+        HttpAuthConfig, McpServerConfig, McpServerTransportConfig, SecretInjection, SecretSource,
+        StreamableHttpConfig,
+    },
+    tools::ToolAccess,
+};
 
 pub const MCP_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 
@@ -119,44 +127,150 @@ pub enum McpTransportRef {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         args: Vec<String>,
     },
-    /// Remote MCP server over HTTP/Streamable HTTP. Phase 1 reserves this
-    /// variant so snapshots can be parsed; production runtime support lands later.
-    Http {
-        url: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        allowlist_digest: Option<Digest>,
-    },
+    /// Remote MCP server over MCP Streamable HTTP. Runtime support lands in
+    /// the HTTP transport PRs; schema support lives here so approved snapshots
+    /// can carry structured, secret-free config.
+    StreamableHttp(StreamableHttpConfig),
 }
 
 /// Reference to a secret stored outside the snapshot. The runtime resolves
 /// the actual value through the existing secret-resolver chain.
+///
+/// `source` / `inject` carry the canonical injection model from
+/// `mcp_config::SecretSpec` so the snapshot records *how* the runtime
+/// reconstructs the secret without persisting any value-derived material.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct SecretRef {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    pub source: SecretSource,
+    pub inject: SecretInjection,
 }
 
-/// Newtype wrapper around a digest string. Format is implementation-defined
-/// but conventionally `sha256:<hex>`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(transparent)]
-pub struct Digest(String);
-
-impl Digest {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+impl SecretRef {
+    /// Construct from a unified `SecretSpec` from `mcp_config`.
+    pub fn from_spec(spec: &crate::mcp_config::SecretSpec) -> Self {
+        Self {
+            name: spec.id.clone(),
+            version: spec.version.clone(),
+            source: spec.source.clone(),
+            inject: spec.inject.clone(),
+        }
     }
 
-    pub fn as_str(&self) -> &str {
+    /// Convenience: stdio env-source/env-inject ref with matching name.
+    pub fn stdio_env(name: impl Into<String>) -> Self {
+        let name = name.into();
+        Self {
+            name: name.clone(),
+            version: None,
+            source: SecretSource::Env { name: name.clone() },
+            inject: SecretInjection::Env { name },
+        }
+    }
+}
+
+/// Validated SHA-256 digest rendered on the wire as `sha256:<64 lowercase hex>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Digest([u8; 32]);
+
+impl Digest {
+    pub fn new(value: impl AsRef<str>) -> Self {
+        value
+            .as_ref()
+            .parse()
+            .expect("invalid sha256 digest string")
+    }
+
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+
+    pub fn to_prefixed_hex(self) -> String {
+        format!("sha256:{}", hex_lower(&self.0))
     }
 }
 
 impl std::fmt::Display for Digest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        f.write_str("sha256:")?;
+        for byte in self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
     }
+}
+
+impl FromStr for Digest {
+    type Err = DigestParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let hex = value
+            .strip_prefix("sha256:")
+            .ok_or(DigestParseError::MissingPrefix)?;
+        if hex.len() != 64 {
+            return Err(DigestParseError::InvalidLength { len: hex.len() });
+        }
+        let mut bytes = [0_u8; 32];
+        for (idx, chunk) in hex.as_bytes().chunks_exact(2).enumerate() {
+            let hi = decode_hex_nibble(chunk[0]).ok_or(DigestParseError::InvalidHex)?;
+            let lo = decode_hex_nibble(chunk[1]).ok_or(DigestParseError::InvalidHex)?;
+            bytes[idx] = (hi << 4) | lo;
+        }
+        Ok(Self(bytes))
+    }
+}
+
+impl Serialize for Digest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_prefixed_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for Digest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum DigestParseError {
+    #[error("digest must start with `sha256:`")]
+    MissingPrefix,
+    #[error("sha256 digest must contain 64 hex chars, got {len}")]
+    InvalidLength { len: usize },
+    #[error("sha256 digest contains non-hex characters")]
+    InvalidHex,
+}
+
+fn decode_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn hex_lower(bytes: &[u8; 32]) -> String {
+    let mut out = String::with_capacity(64);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut out, "{byte:02x}").expect("write to string");
+    }
+    out
 }
 
 /// Hashes a value with JCS-canonicalised serde JSON then SHA-256, returning
@@ -167,7 +281,7 @@ pub fn canonical_digest<T: Serialize + ?Sized>(value: &T) -> Digest {
     let bytes = serde_jcs::to_vec(value).unwrap_or_else(|_| b"null".to_vec());
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
-    Digest::new(format!("sha256:{:x}", hasher.finalize()))
+    Digest::from_bytes(hasher.finalize().into())
 }
 
 /// Computes the server identity digest from the MCP `initialize` response.
@@ -202,12 +316,11 @@ pub fn compute_server_identity_digest(capabilities: &Value, server_info: &Value)
 /// with the same `McpImportedTool` projection so digests are comparable across
 /// code paths.
 pub fn compute_tools_digest(tools: &[McpImportedTool]) -> Digest {
-    compute_tools_digest_from_entries(tools.iter().map(|tool| {
-        (
-            tool.mcp_tool_name.as_str(),
-            tool.input_schema_digest.as_str(),
-        )
-    }))
+    compute_tools_digest_from_entries(
+        tools
+            .iter()
+            .map(|tool| (tool.mcp_tool_name.as_str(), &tool.input_schema_digest)),
+    )
 }
 
 /// Lower-level variant of [`compute_tools_digest`] for callers (e.g. the
@@ -215,15 +328,118 @@ pub fn compute_tools_digest(tools: &[McpImportedTool]) -> Digest {
 /// without a full `McpImportedTool` projection.
 pub fn compute_tools_digest_from_entries<'a, I>(entries: I) -> Digest
 where
-    I: IntoIterator<Item = (&'a str, &'a str)>,
+    I: IntoIterator<Item = (&'a str, &'a Digest)>,
 {
-    let mut pairs: Vec<(&str, &str)> = entries.into_iter().collect();
+    let mut pairs: Vec<(&str, &Digest)> = entries.into_iter().collect();
     pairs.sort_by(|a, b| a.0.cmp(b.0));
     let canonical: Vec<Value> = pairs
         .into_iter()
         .map(|(name, digest)| json!({ "name": name, "input_schema_digest": digest }))
         .collect();
     canonical_digest(&canonical)
+}
+
+/// Computes the approved server config digest without embedding raw secret
+/// values. For Streamable HTTP this covers transport kind, normalized URL,
+/// protocol version, static non-secret headers, auth injection shape + secret
+/// source identity, network policy, and approved tool scope digest.
+///
+/// **Stdio env policy:** non-secret `env` values (`GRAFANA_URL`,
+/// `OPENAI_BASE_URL`, region/model selectors, etc.) are routing/identity
+/// inputs and **are** folded into the digest — changing them must require
+/// re-import/re-approval. Secret values never reach this map: the schema
+/// layer (`McpServersFile::validate`) rejects env keys whose names look like
+/// secrets, and resolved secrets are merged into the child process env at
+/// runtime, not here.
+pub fn compute_server_config_digest(
+    server_id: &str,
+    protocol_version: &str,
+    config: &McpServerConfig,
+    imported_tools_digest: Option<&Digest>,
+) -> Digest {
+    let tool_scope_digest = imported_tools_digest;
+    let canonical = match &config.transport {
+        Some(McpServerTransportConfig::StreamableHttp(http)) => json!({
+            "server_id": server_id,
+            "transport_kind": "streamable_http",
+            "protocol_version": protocol_version,
+            "url": normalized_http_url(&http.url),
+            "headers": http.headers,
+            "auth": auth_digest_shape(http.auth.as_ref()),
+            "timeouts": http.timeouts,
+            "pooling": http.pooling,
+            "network_policy": effective_network_policy(&http.url, &http.network_policy),
+            "imported_tools_digest": tool_scope_digest,
+        }),
+        None => json!({
+            "server_id": server_id,
+            "transport_kind": "stdio",
+            "protocol_version": protocol_version,
+            "command": config.command,
+            "args": config.args,
+            "env": &config.env,
+            "secret_names": config.secrets.iter().map(|s| &s.name).collect::<Vec<_>>(),
+            "sandbox": config.sandbox,
+            "imported_tools_digest": tool_scope_digest,
+        }),
+    };
+    canonical_digest(&canonical)
+}
+
+fn normalized_http_url(raw: &str) -> Value {
+    match url::Url::parse(raw) {
+        Ok(url) => json!({
+            "scheme": url.scheme(),
+            "host": url.host_str(),
+            "port": url.port_or_known_default(),
+            "path": url.path(),
+        }),
+        Err(_) => json!({ "raw": raw }),
+    }
+}
+
+fn effective_network_policy(
+    url: &str,
+    policy: &crate::mcp_config::HttpNetworkPolicyConfig,
+) -> Value {
+    let allow_hosts = if policy.allow_hosts.is_empty() {
+        url::Url::parse(url)
+            .ok()
+            .and_then(|parsed| parsed.host_str().map(str::to_string))
+            .into_iter()
+            .collect::<Vec<_>>()
+    } else {
+        policy.allow_hosts.clone()
+    };
+    json!({
+        "allow_hosts": allow_hosts,
+        "allow_private_ips": policy.allow_private_ips,
+        "follow_redirects": policy.follow_redirects,
+    })
+}
+
+fn auth_digest_shape(auth: Option<&HttpAuthConfig>) -> Value {
+    match auth {
+        None => Value::Null,
+        Some(HttpAuthConfig::Bearer { token_ref }) => json!({
+            "kind": "bearer",
+            "inject": { "kind": "http_header", "name": "Authorization", "scheme": "Bearer" },
+            "secret_ref": token_ref,
+        }),
+        Some(HttpAuthConfig::Header { header, value_ref }) => json!({
+            "kind": "header",
+            "inject": { "kind": "http_header", "name": header },
+            "secret_ref": value_ref,
+        }),
+        Some(HttpAuthConfig::Basic {
+            username,
+            password_ref,
+        }) => json!({
+            "kind": "basic",
+            "inject": { "kind": "http_basic", "username": username },
+            "secret_ref": password_ref,
+        }),
+    }
 }
 
 /// Returns true when the server and the named tool are both `Approved`.
@@ -262,7 +478,9 @@ mod tests {
             mcp_tool_name: name.to_string(),
             description: Some(format!("{name} description")),
             input_schema: json!({ "type": "object", "properties": {} }),
-            input_schema_digest: Digest::new("sha256:input"),
+            input_schema_digest: Digest::new(
+                "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            ),
             output_mode: McpOutputMode::ContentEnvelope,
             access_level: ToolAccess::Read,
             approval: ApprovalRecord {
@@ -286,13 +504,16 @@ mod tests {
             },
             protocol_version: "2025-06-18".into(),
             server_info: Some(json!({ "name": "fake", "version": "0.1.0" })),
-            server_config_digest: Digest::new("sha256:server-config"),
-            server_identity_digest: Digest::new("sha256:server-identity"),
-            tools_digest: Digest::new("sha256:tools"),
-            secret_refs: vec![SecretRef {
-                name: "fake/api_token".into(),
-                version: None,
-            }],
+            server_config_digest: Digest::new(
+                "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+            ),
+            server_identity_digest: Digest::new(
+                "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+            ),
+            tools_digest: Digest::new(
+                "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+            ),
+            secret_refs: vec![SecretRef::stdio_env("fake/api_token")],
             approval: ApprovalRecord {
                 state,
                 owner: Some("reviewer@example.com".into()),
@@ -305,6 +526,93 @@ mod tests {
                 sample_tool("query", McpApprovalState::Approved),
             ],
         }
+    }
+
+    #[test]
+    fn normalized_http_url_ignores_query_fragment_and_default_port() {
+        assert_eq!(
+            normalized_http_url("https://Example.Invalid:443/mcp?token=secret#frag"),
+            json!({
+                "scheme": "https",
+                "host": "example.invalid",
+                "port": 443,
+                "path": "/mcp",
+            })
+        );
+        assert_eq!(
+            normalized_http_url("http://example.invalid:8080/root"),
+            json!({
+                "scheme": "http",
+                "host": "example.invalid",
+                "port": 8080,
+                "path": "/root",
+            })
+        );
+    }
+
+    #[test]
+    fn normalized_http_url_preserves_raw_invalid_url() {
+        assert_eq!(
+            normalized_http_url("not a url"),
+            json!({ "raw": "not a url" })
+        );
+    }
+
+    #[test]
+    fn auth_digest_shape_captures_injection_shape_and_secret_ref() {
+        let env_ref = crate::mcp_config::HttpSecretRef {
+            source: crate::mcp_config::SecretSource::Env {
+                name: "TOKEN".into(),
+            },
+        };
+        assert_eq!(auth_digest_shape(None), Value::Null);
+        assert_eq!(
+            auth_digest_shape(Some(&HttpAuthConfig::Bearer {
+                token_ref: env_ref.clone(),
+            })),
+            json!({
+                "kind": "bearer",
+                "inject": { "kind": "http_header", "name": "Authorization", "scheme": "Bearer" },
+                "secret_ref": env_ref,
+            })
+        );
+
+        let env_ref = crate::mcp_config::HttpSecretRef {
+            source: crate::mcp_config::SecretSource::Env {
+                name: "PASSWORD".into(),
+            },
+        };
+        assert_eq!(
+            auth_digest_shape(Some(&HttpAuthConfig::Basic {
+                username: "grafana".into(),
+                password_ref: env_ref.clone(),
+            })),
+            json!({
+                "kind": "basic",
+                "inject": { "kind": "http_basic", "username": "grafana" },
+                "secret_ref": env_ref,
+            })
+        );
+    }
+
+    #[test]
+    fn auth_digest_shape_distinguishes_custom_header_name() {
+        let env_ref = crate::mcp_config::HttpSecretRef {
+            source: crate::mcp_config::SecretSource::Env {
+                name: "API_KEY".into(),
+            },
+        };
+        assert_eq!(
+            auth_digest_shape(Some(&HttpAuthConfig::Header {
+                header: "X-API-Key".into(),
+                value_ref: env_ref.clone(),
+            })),
+            json!({
+                "kind": "header",
+                "inject": { "kind": "http_header", "name": "X-API-Key" },
+                "secret_ref": env_ref,
+            })
+        );
     }
 
     #[test]
@@ -393,7 +701,9 @@ mod tests {
         let opaque = McpOutputMode::OpaqueJson;
         let schema = McpOutputMode::JsonSchema {
             schema: json!({ "type": "object" }),
-            digest: Digest::new("sha256:out"),
+            digest: Digest::new(
+                "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+            ),
         };
         for mode in [envelope, opaque, schema] {
             let json = serde_json::to_string(&mode).expect("serialize");
@@ -408,10 +718,14 @@ mod tests {
             command_ref: "fake-mcp".into(),
             args: vec!["--quiet".into()],
         };
-        let http = McpTransportRef::Http {
+        let http = McpTransportRef::StreamableHttp(StreamableHttpConfig {
             url: "https://example.invalid/mcp".into(),
-            allowlist_digest: Some(Digest::new("sha256:allow")),
-        };
+            headers: vec![],
+            auth: None,
+            timeouts: Default::default(),
+            pooling: Default::default(),
+            network_policy: Default::default(),
+        });
         for transport in [stdio, http] {
             let json = serde_json::to_string(&transport).expect("serialize");
             let parsed: McpTransportRef = serde_json::from_str(&json).expect("deserialize");
@@ -420,10 +734,194 @@ mod tests {
     }
 
     #[test]
+    fn streamable_http_snapshot_serialization_contains_no_raw_secret_fields() {
+        let transport = McpTransportRef::StreamableHttp(StreamableHttpConfig {
+            url: "https://example.invalid/mcp".into(),
+            headers: vec![crate::mcp_config::HttpHeader {
+                name: "X-Client-Name".into(),
+                value: "agent-platform".into(),
+            }],
+            auth: Some(HttpAuthConfig::Header {
+                header: "X-API-Key".into(),
+                value_ref: crate::mcp_config::HttpSecretRef {
+                    source: crate::mcp_config::SecretSource::Env {
+                        name: "API_KEY".into(),
+                    },
+                },
+            }),
+            timeouts: Default::default(),
+            pooling: Default::default(),
+            network_policy: Default::default(),
+        });
+        let json = serde_json::to_string_pretty(&transport).expect("serialize");
+        assert!(json.contains("streamable_http"));
+        assert!(json.contains("API_KEY"));
+        for forbidden in [
+            "RAW_SECRET_CANARY",
+            "secret_value",
+            "password_value",
+            "token_value",
+        ] {
+            assert!(!json.contains(forbidden), "leaked {forbidden}: {json}");
+        }
+    }
+
+    #[test]
+    fn server_config_digest_tracks_streamable_http_shape_not_secret_value() {
+        let mut config = McpServerConfig {
+            transport: Some(McpServerTransportConfig::StreamableHttp(
+                StreamableHttpConfig {
+                    url: "https://example.invalid:443/mcp".into(),
+                    headers: vec![crate::mcp_config::HttpHeader {
+                        name: "X-Client-Name".into(),
+                        value: "agent-platform".into(),
+                    }],
+                    auth: Some(HttpAuthConfig::Bearer {
+                        token_ref: crate::mcp_config::HttpSecretRef {
+                            source: crate::mcp_config::SecretSource::Env {
+                                name: "GRAFANA_TOKEN".into(),
+                            },
+                        },
+                    }),
+                    timeouts: Default::default(),
+                    pooling: Default::default(),
+                    network_policy: crate::mcp_config::HttpNetworkPolicyConfig {
+                        allow_hosts: vec!["example.invalid".into()],
+                        allow_private_ips: false,
+                        follow_redirects: false,
+                    },
+                },
+            )),
+            command: String::new(),
+            args: vec![],
+            env: std::collections::BTreeMap::new(),
+            secrets: vec![],
+            sandbox: None,
+            description: None,
+        };
+        let tools_a =
+            Digest::new("sha256:8888888888888888888888888888888888888888888888888888888888888888");
+        let a = compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools_a));
+        let b = compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools_a));
+        assert_eq!(a, b, "raw secret values are not an input, only refs are");
+
+        with_streamable_http_mut(&mut config, |http| {
+            http.url = "https://other.invalid/mcp".into();
+        });
+        let changed_url =
+            compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools_a));
+        assert_ne!(a, changed_url);
+
+        with_streamable_http_mut(&mut config, |http| {
+            http.url = "https://example.invalid/mcp".into();
+            http.auth = Some(HttpAuthConfig::Basic {
+                username: "grafana".into(),
+                password_ref: crate::mcp_config::HttpSecretRef {
+                    source: crate::mcp_config::SecretSource::Env {
+                        name: "GRAFANA_PASSWORD".into(),
+                    },
+                },
+            });
+        });
+        let changed_auth =
+            compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools_a));
+        assert_ne!(a, changed_auth);
+
+        with_streamable_http_mut(&mut config, |http| {
+            http.auth = Some(HttpAuthConfig::Bearer {
+                token_ref: crate::mcp_config::HttpSecretRef {
+                    source: crate::mcp_config::SecretSource::Env {
+                        name: "GRAFANA_TOKEN".into(),
+                    },
+                },
+            });
+        });
+        let tools_b =
+            Digest::new("sha256:9999999999999999999999999999999999999999999999999999999999999999");
+        let changed_tools =
+            compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools_b));
+        assert_ne!(a, changed_tools);
+
+        let changed_protocol =
+            compute_server_config_digest("grafana", "2099-01-01", &config, Some(&tools_a));
+        assert_ne!(a, changed_protocol);
+
+        with_streamable_http_mut(&mut config, |http| {
+            http.network_policy = crate::mcp_config::HttpNetworkPolicyConfig {
+                allow_hosts: vec!["other.invalid".into()],
+                allow_private_ips: false,
+                follow_redirects: false,
+            };
+        });
+        let changed_policy =
+            compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools_a));
+        assert_ne!(a, changed_policy);
+    }
+
+    fn with_streamable_http_mut(
+        config: &mut McpServerConfig,
+        f: impl FnOnce(&mut StreamableHttpConfig),
+    ) {
+        let Some(McpServerTransportConfig::StreamableHttp(http)) = &mut config.transport else {
+            panic!("expected streamable_http");
+        };
+        f(http);
+    }
+
+    #[test]
+    fn stdio_digest_folds_in_non_secret_env_values() {
+        // Routing env values (URL, region, model id) are part of the
+        // governed identity. Changing one must force re-import.
+        let mut config = McpServerConfig {
+            transport: None,
+            command: "grafana-mcp".into(),
+            args: vec![],
+            env: std::collections::BTreeMap::from([(
+                "GRAFANA_URL".into(),
+                "https://grafana.example/api".into(),
+            )]),
+            secrets: vec![],
+            sandbox: None,
+            description: None,
+        };
+        let tools =
+            Digest::new("sha256:4444444444444444444444444444444444444444444444444444444444444444");
+        let base = compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools));
+
+        // Same input → same digest.
+        let same = compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools));
+        assert_eq!(base, same);
+
+        // Routing value changed → digest must change.
+        config
+            .env
+            .insert("GRAFANA_URL".into(), "https://grafana.other/api".into());
+        let changed_url =
+            compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools));
+        assert_ne!(base, changed_url, "non-secret env value must affect digest");
+
+        // New non-secret env key added → digest must change.
+        config
+            .env
+            .insert("GRAFANA_URL".into(), "https://grafana.example/api".into());
+        config
+            .env
+            .insert("GRAFANA_REGION".into(), "us-east-1".into());
+        let added_key =
+            compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools));
+        assert_ne!(base, added_key, "new non-secret env key must affect digest");
+    }
+
+    #[test]
     fn digest_stable_for_same_input() {
-        let a = Digest::new("sha256:abc");
-        let b = Digest::new("sha256:abc");
+        let a =
+            Digest::new("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let b =
+            Digest::new("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         assert_eq!(a, b);
-        assert_eq!(a.as_str(), "sha256:abc");
+        assert_eq!(
+            a.to_string(),
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
     }
 }

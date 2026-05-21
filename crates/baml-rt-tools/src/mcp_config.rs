@@ -10,8 +10,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-
-use crate::mcp_snapshot::{Digest, canonical_digest};
+use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpServersFile {
@@ -21,6 +20,12 @@ pub struct McpServersFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct McpServerConfig {
+    /// Omitted for legacy/Claude Desktop stdio configs. Present for transport
+    /// variants with structured config such as Streamable HTTP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<McpServerTransportConfig>,
+    /// Stdio command. Required when `transport` is absent.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub command: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
@@ -38,6 +43,333 @@ pub struct McpServerConfig {
     /// Optional human-readable description shown by MCP registry import commands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum McpServerTransportConfig {
+    StreamableHttp(StreamableHttpConfig),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StreamableHttpConfig {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<HttpHeader>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<HttpAuthConfig>,
+    #[serde(default, skip_serializing_if = "HttpTimeoutsConfig::is_default")]
+    pub timeouts: HttpTimeoutsConfig,
+    #[serde(default, skip_serializing_if = "HttpPoolingConfig::is_default")]
+    pub pooling: HttpPoolingConfig,
+    #[serde(default, skip_serializing_if = "HttpNetworkPolicyConfig::is_default")]
+    pub network_policy: HttpNetworkPolicyConfig,
+}
+
+impl StreamableHttpConfig {
+    pub fn builder(url: impl Into<String>) -> StreamableHttpConfigBuilder {
+        StreamableHttpConfigBuilder::new(url)
+    }
+}
+
+#[derive(Debug, Clone)]
+#[must_use = "builder does nothing unless build() is called"]
+pub struct StreamableHttpConfigBuilder {
+    url: String,
+    headers: Vec<HttpHeader>,
+    auth: Option<HttpAuthConfig>,
+    timeouts: HttpTimeoutsConfig,
+    pooling: HttpPoolingConfig,
+    network_policy: HttpNetworkPolicyConfig,
+}
+
+impl StreamableHttpConfigBuilder {
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            headers: Vec::new(),
+            auth: None,
+            timeouts: HttpTimeoutsConfig::default(),
+            pooling: HttpPoolingConfig::default(),
+            network_policy: HttpNetworkPolicyConfig::default(),
+        }
+    }
+
+    pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.push(HttpHeader {
+            name: name.into(),
+            value: value.into(),
+        });
+        self
+    }
+
+    pub fn headers(mut self, headers: Vec<HttpHeader>) -> Self {
+        self.headers = headers;
+        self
+    }
+
+    pub fn auth(mut self, auth: HttpAuthConfig) -> Self {
+        self.auth = Some(auth);
+        self
+    }
+
+    pub fn timeouts(mut self, timeouts: HttpTimeoutsConfig) -> Self {
+        self.timeouts = timeouts;
+        self
+    }
+
+    pub fn pooling(mut self, pooling: HttpPoolingConfig) -> Self {
+        self.pooling = pooling;
+        self
+    }
+
+    pub fn network_policy(mut self, policy: HttpNetworkPolicyConfig) -> Self {
+        self.network_policy = policy;
+        self
+    }
+
+    pub fn allow_host(mut self, host: impl Into<String>) -> Self {
+        self.network_policy.allow_hosts.push(host.into());
+        self
+    }
+
+    pub fn allow_private_ips(mut self, allow: bool) -> Self {
+        self.network_policy.allow_private_ips = allow;
+        self
+    }
+
+    pub fn follow_redirects(mut self, follow: bool) -> Self {
+        self.network_policy.follow_redirects = follow;
+        self
+    }
+
+    #[must_use]
+    pub fn build(self) -> StreamableHttpConfig {
+        StreamableHttpConfig {
+            url: self.url,
+            headers: self.headers,
+            auth: self.auth,
+            timeouts: self.timeouts,
+            pooling: self.pooling,
+            network_policy: self.network_policy,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HttpHeader {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HttpAuthConfig {
+    Bearer {
+        token_ref: HttpSecretRef,
+    },
+    Header {
+        header: String,
+        value_ref: HttpSecretRef,
+    },
+    Basic {
+        username: String,
+        password_ref: HttpSecretRef,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct HttpSecretRef {
+    pub source: SecretSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SecretSource {
+    Env { name: String },
+}
+
+impl SecretSource {
+    /// Stable identity token used in pool keys and logs. Never contains the
+    /// resolved value. Phase 2 only supports `env`; the prefix discriminates
+    /// future sources so a future `vault:` source can't collide with an `env:`
+    /// source that happens to share a name.
+    pub fn identity(&self) -> String {
+        let mut out = String::new();
+        self.write_identity(&mut out)
+            .expect("writing to String cannot fail");
+        out
+    }
+
+    /// Write the stable identity token without forcing callers to allocate.
+    pub fn write_identity(&self, out: &mut impl std::fmt::Write) -> std::fmt::Result {
+        match self {
+            SecretSource::Env { name } => {
+                out.write_str("env:")?;
+                out.write_str(name)
+            }
+        }
+    }
+}
+
+/// Injection target. Closed by construction: query-string, path-segment, and
+/// cookie injection (all forbidden in Phase 2) are not representable.
+/// Username-as-secret (also forbidden) is not representable either —
+/// `HttpBasicPassword` carries a literal `username`, not a ref.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SecretInjection {
+    /// Stdio: inject as child-process env variable `name`.
+    Env { name: String },
+    /// Streamable HTTP: inject as `name: <value>` request header.
+    HttpHeader { name: String },
+    /// Streamable HTTP: inject as `Authorization: Bearer <value>`.
+    HttpAuthorizationBearer,
+    /// Streamable HTTP: inject as `Authorization: Basic base64(username:value)`.
+    HttpBasicPassword { username: String },
+}
+
+/// Canonical, transport-agnostic description of one secret a server needs.
+///
+/// `id` is server-scoped and stable across runs; used as the key in the
+/// resolved-value map. `source` describes where the runtime looks up the
+/// value; `inject` describes where the runtime puts the resolved value.
+///
+/// Built from operator config via [`McpServerConfig::secret_specs`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretSpec {
+    pub id: String,
+    pub source: SecretSource,
+    pub inject: SecretInjection,
+    pub version: Option<String>,
+}
+
+impl SecretSpec {
+    /// Stable identity+version token. Hashes/pool keys built from this token
+    /// change on credential rotation (new version) and on source rebind, but
+    /// never depend on the resolved secret value.
+    pub fn identity_token(&self) -> String {
+        let mut out = String::new();
+        self.source
+            .write_identity(&mut out)
+            .expect("writing to String cannot fail");
+        if let Some(version) = &self.version {
+            out.push('@');
+            out.push_str(version);
+        }
+        out
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HttpTimeoutsConfig {
+    #[serde(default = "default_connect_ms")]
+    pub connect_ms: u64,
+    #[serde(default = "default_request_ms")]
+    pub request_ms: u64,
+    #[serde(default = "default_idle_stream_ms")]
+    pub idle_stream_ms: u64,
+}
+
+impl Default for HttpTimeoutsConfig {
+    fn default() -> Self {
+        Self {
+            connect_ms: default_connect_ms(),
+            request_ms: default_request_ms(),
+            idle_stream_ms: default_idle_stream_ms(),
+        }
+    }
+}
+
+impl HttpTimeoutsConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HttpPoolingConfig {
+    #[serde(default = "default_share_safe")]
+    pub share_safe: bool,
+    #[serde(default = "default_max_idle_per_host")]
+    pub max_idle_per_host: u64,
+    #[serde(default = "default_idle_ttl_ms")]
+    pub idle_ttl_ms: u64,
+}
+
+impl Default for HttpPoolingConfig {
+    fn default() -> Self {
+        Self {
+            share_safe: default_share_safe(),
+            max_idle_per_host: default_max_idle_per_host(),
+            idle_ttl_ms: default_idle_ttl_ms(),
+        }
+    }
+}
+
+impl HttpPoolingConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HttpNetworkPolicyConfig {
+    /// Empty means "derive allowlist from URL host".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_hosts: Vec<String>,
+    #[serde(default = "default_allow_private_ips")]
+    pub allow_private_ips: bool,
+    #[serde(default = "default_follow_redirects")]
+    pub follow_redirects: bool,
+}
+
+impl Default for HttpNetworkPolicyConfig {
+    fn default() -> Self {
+        Self {
+            allow_hosts: vec![],
+            allow_private_ips: default_allow_private_ips(),
+            follow_redirects: default_follow_redirects(),
+        }
+    }
+}
+
+impl HttpNetworkPolicyConfig {
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+const fn default_connect_ms() -> u64 {
+    5_000
+}
+
+const fn default_request_ms() -> u64 {
+    60_000
+}
+
+const fn default_idle_stream_ms() -> u64 {
+    30_000
+}
+
+const fn default_share_safe() -> bool {
+    false
+}
+
+const fn default_max_idle_per_host() -> u64 {
+    8
+}
+
+const fn default_idle_ttl_ms() -> u64 {
+    300_000
+}
+
+const fn default_allow_private_ips() -> bool {
+    false
+}
+
+const fn default_follow_redirects() -> bool {
+    false
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -62,6 +394,30 @@ pub struct SandboxConfig {
     pub runtime_call_timeout_secs: Option<u64>,
 }
 
+/// Headers reserved by the MCP Streamable HTTP transport itself. Operators
+/// must not set these via `static_headers`, and `HttpAuthConfig::Header` must
+/// not target them (with the documented exception of `authorization`, which
+/// covers custom auth schemes that are neither Bearer nor Basic).
+///
+/// Mirrored by `baml-rt-mcp::http::headers` for runtime guarding; this copy is
+/// the config-load contract surface that fails closed before any transport is
+/// built.
+pub const RESERVED_HTTP_HEADERS: &[&str] = &[
+    "accept",
+    "authorization",
+    "content-type",
+    "last-event-id",
+    "mcp-protocol-version",
+    "mcp-session-id",
+];
+
+/// Returns `true` when `name` is reserved by the MCP Streamable HTTP transport.
+/// Case-insensitive per RFC 7230.
+pub fn is_reserved_http_header(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    RESERVED_HTTP_HEADERS.contains(&lower.as_str())
+}
+
 #[derive(Debug, Error)]
 pub enum McpConfigError {
     #[error("invalid mcp-servers.json: {0}")]
@@ -78,23 +434,84 @@ pub enum McpConfigError {
     InvalidServerId(String),
     #[error("server `{server}` command is empty")]
     EmptyCommand { server: String },
+    #[error("server `{server}` streamable_http url is invalid: {reason}")]
+    InvalidHttpUrl { server: String, reason: String },
+    #[error("server `{server}` streamable_http header name is empty")]
+    EmptyHttpHeaderName { server: String },
+    #[error("server `{server}` streamable_http auth header name is empty")]
+    EmptyHttpAuthHeaderName { server: String },
+    #[error(
+        "server `{server}` streamable_http auth header `{name}` is reserved by the MCP transport; use the bearer/basic auth helpers, or pick a different header name"
+    )]
+    ReservedHttpAuthHeader { server: String, name: String },
+    #[error(
+        "server `{server}` declares `secrets` together with a `streamable_http` transport; stdio `secrets` are env-injected into a child process and have no effect on HTTP transports — move credentials into the transport `auth` block instead"
+    )]
+    SecretsForbiddenOnHttpTransport { server: String },
 }
 
-/// Computes the approved launch-config digest for one MCP server.
-///
-/// Covers launch-shaping fields, secret identities, and sandbox policy, but
-/// deliberately excludes raw non-secret env values so host-specific endpoints
-/// do not leak into snapshots.
-pub fn compute_server_config_digest(server_id: &str, config: &McpServerConfig) -> Digest {
-    let canonical = serde_json::json!({
-        "server_id": server_id,
-        "command": config.command,
-        "args": config.args,
-        "env_keys": config.env.keys().collect::<Vec<_>>(),
-        "secret_names": config.secrets.iter().map(|s| &s.name).collect::<Vec<_>>(),
-        "sandbox": config.sandbox,
-    });
-    canonical_digest(&canonical)
+impl McpServerConfig {
+    /// Normalize the operator config's secret needs into a transport-agnostic
+    /// list of `SecretSpec`. Importer, resolver, and runtime all consume this
+    /// shape so injection-site changes never re-parse raw config.
+    ///
+    /// Stdio: each `SecretDecl { name }` becomes an env-source/env-inject
+    /// spec with `id = name`.
+    ///
+    /// Streamable HTTP auth helpers compile to:
+    ///   - `bearer` -> `HttpAuthorizationBearer`
+    ///   - `header` -> `HttpHeader { name }`
+    ///   - `basic`  -> `HttpBasicPassword { username }`
+    ///
+    /// Order is deterministic: stdio `secrets` first (declaration order),
+    /// then HTTP auth.
+    pub fn secret_specs(&self) -> Vec<SecretSpec> {
+        let mut specs = Vec::new();
+        for decl in &self.secrets {
+            specs.push(SecretSpec {
+                id: decl.name.clone(),
+                source: SecretSource::Env {
+                    name: decl.name.clone(),
+                },
+                inject: SecretInjection::Env {
+                    name: decl.name.clone(),
+                },
+                version: None,
+            });
+        }
+        if let Some(McpServerTransportConfig::StreamableHttp(http)) = &self.transport
+            && let Some(auth) = &http.auth
+        {
+            match auth {
+                HttpAuthConfig::Bearer { token_ref } => specs.push(SecretSpec {
+                    id: "auth.bearer".to_string(),
+                    source: token_ref.source.clone(),
+                    inject: SecretInjection::HttpAuthorizationBearer,
+                    version: None,
+                }),
+                HttpAuthConfig::Header { header, value_ref } => specs.push(SecretSpec {
+                    id: format!("auth.header.{header}"),
+                    source: value_ref.source.clone(),
+                    inject: SecretInjection::HttpHeader {
+                        name: header.clone(),
+                    },
+                    version: None,
+                }),
+                HttpAuthConfig::Basic {
+                    username,
+                    password_ref,
+                } => specs.push(SecretSpec {
+                    id: format!("auth.basic.{username}"),
+                    source: password_ref.source.clone(),
+                    inject: SecretInjection::HttpBasicPassword {
+                        username: username.clone(),
+                    },
+                    version: None,
+                }),
+            }
+        }
+        specs
+    }
 }
 
 impl McpServersFile {
@@ -109,8 +526,24 @@ impl McpServersFile {
             if !is_valid_server_id(id) {
                 return Err(McpConfigError::InvalidServerId(id.clone()));
             }
-            if config.command.trim().is_empty() {
-                return Err(McpConfigError::EmptyCommand { server: id.clone() });
+            match &config.transport {
+                None if config.command.trim().is_empty() => {
+                    return Err(McpConfigError::EmptyCommand { server: id.clone() });
+                }
+                Some(McpServerTransportConfig::StreamableHttp(http)) => {
+                    validate_streamable_http_config(id, http)?;
+                    // stdio `secrets` compile to `SecretInjection::Env`, which
+                    // the HTTP injector silently no-ops (and `has_auth` then
+                    // treats as zero auth, permitting plaintext http://). Fail
+                    // at config load so operators migrating stdio→HTTP move
+                    // credentials into the transport `auth` block.
+                    if !config.secrets.is_empty() {
+                        return Err(McpConfigError::SecretsForbiddenOnHttpTransport {
+                            server: id.clone(),
+                        });
+                    }
+                }
+                None => {}
             }
             for key in config.env.keys() {
                 if looks_like_secret_name(key) {
@@ -132,6 +565,63 @@ impl McpServersFile {
         }
         Ok(())
     }
+}
+
+fn validate_streamable_http_config(
+    server: &str,
+    config: &StreamableHttpConfig,
+) -> Result<(), McpConfigError> {
+    let parsed = Url::parse(&config.url).map_err(|err| McpConfigError::InvalidHttpUrl {
+        server: server.to_string(),
+        reason: err.to_string(),
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err(McpConfigError::InvalidHttpUrl {
+            server: server.to_string(),
+            reason: "url must be absolute http(s) URL with host".into(),
+        });
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(McpConfigError::InvalidHttpUrl {
+            server: server.to_string(),
+            reason: "url must not contain embedded credentials".into(),
+        });
+    }
+    if parsed.query().is_some() {
+        return Err(McpConfigError::InvalidHttpUrl {
+            server: server.to_string(),
+            reason: "url must not contain query parameters".into(),
+        });
+    }
+    for header in &config.headers {
+        if header.name.trim().is_empty() {
+            return Err(McpConfigError::EmptyHttpHeaderName {
+                server: server.to_string(),
+            });
+        }
+    }
+    if let Some(HttpAuthConfig::Header { header, .. }) = &config.auth {
+        if header.trim().is_empty() {
+            return Err(McpConfigError::EmptyHttpAuthHeaderName {
+                server: server.to_string(),
+            });
+        }
+        // `authorization` is intentionally allowed through this path — custom
+        // auth schemes (Digest, Hawk, AWS-SigV4, …) are neither Bearer nor
+        // Basic but still need to target the standard header. Everything else
+        // in the reserved set belongs to the transport itself (session,
+        // protocol version, last-event-id, content negotiation) and must not
+        // be hijacked by a secret-injected value.
+        if header.eq_ignore_ascii_case("authorization") {
+            // allowed
+        } else if is_reserved_http_header(header) {
+            return Err(McpConfigError::ReservedHttpAuthHeader {
+                server: server.to_string(),
+                name: header.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn is_valid_server_id(id: &str) -> bool {
@@ -183,6 +673,7 @@ mod tests {
         }"#;
         let parsed = McpServersFile::parse(json).expect("parse");
         let server = parsed.servers.get("grafana").expect("server present");
+        assert!(server.transport.is_none());
         assert_eq!(server.command, "uvx");
         assert_eq!(server.args, vec!["mcp-grafana".to_string()]);
         assert_eq!(
@@ -236,6 +727,289 @@ mod tests {
         }"#;
         let err = McpServersFile::parse(json).expect_err("reject");
         assert!(matches!(err, McpConfigError::DuplicateSecret { .. }));
+    }
+
+    #[test]
+    fn parses_streamable_http_transport_shape() {
+        let json = r#"{
+          "mcpServers": {
+            "grafana": {
+              "transport": {
+                "kind": "streamable_http",
+                "url": "https://mcp.grafana.example.com/mcp",
+                "headers": [
+                  { "name": "X-Client-Name", "value": "agent-platform" }
+                ],
+                "auth": {
+                  "kind": "bearer",
+                  "token_ref": { "source": { "kind": "env", "name": "GRAFANA_TOKEN" } }
+                },
+                "timeouts": {
+                  "connect_ms": 5000,
+                  "request_ms": 60000,
+                  "idle_stream_ms": 30000
+                },
+                "pooling": {
+                  "share_safe": true,
+                  "max_idle_per_host": 8,
+                  "idle_ttl_ms": 300000
+                },
+                "network_policy": {
+                  "allow_hosts": ["mcp.grafana.example.com"],
+                  "allow_private_ips": false,
+                  "follow_redirects": false
+                }
+              }
+            }
+          }
+        }"#;
+        let parsed = McpServersFile::parse(json).expect("parse");
+        let server = parsed.servers.get("grafana").expect("server present");
+        let Some(McpServerTransportConfig::StreamableHttp(http)) = &server.transport else {
+            panic!("expected streamable_http transport");
+        };
+        assert_eq!(http.url, "https://mcp.grafana.example.com/mcp");
+        assert_eq!(http.headers[0].name, "X-Client-Name");
+        assert!(matches!(http.auth, Some(HttpAuthConfig::Bearer { .. })));
+        assert_eq!(http.timeouts.connect_ms, 5000);
+        assert!(http.pooling.share_safe);
+        assert_eq!(
+            http.network_policy.allow_hosts,
+            vec!["mcp.grafana.example.com"]
+        );
+        let json = serde_json::to_string(server).expect("serialize");
+        assert!(json.contains("streamable_http"));
+        assert!(!json.contains("GRAFANA_TOKEN_VALUE_CANARY"));
+    }
+
+    #[test]
+    fn rejects_streamable_http_url_credentials() {
+        let json = r#"{
+          "mcpServers": {
+            "x": {
+              "transport": {
+                "kind": "streamable_http",
+                "url": "https://user:pass@example.com/mcp"
+              }
+            }
+          }
+        }"#;
+        let err = McpServersFile::parse(json).expect_err("reject");
+        assert!(matches!(err, McpConfigError::InvalidHttpUrl { .. }));
+    }
+
+    #[test]
+    fn rejects_reserved_auth_header_name() {
+        let json = r#"{
+          "mcpServers": {
+            "x": {
+              "transport": {
+                "kind": "streamable_http",
+                "url": "https://example.com/mcp",
+                "auth": {
+                  "kind": "header",
+                  "header": "mcp-session-id",
+                  "value_ref": { "source": { "kind": "env", "name": "T" } }
+                }
+              }
+            }
+          }
+        }"#;
+        let err = McpServersFile::parse(json).expect_err("reject");
+        assert!(
+            matches!(err, McpConfigError::ReservedHttpAuthHeader { ref name, .. } if name == "mcp-session-id")
+        );
+    }
+
+    #[test]
+    fn rejects_secrets_block_on_streamable_http_transport() {
+        // stdio `secrets` compile to env-inject and silently no-op on HTTP;
+        // worse, they leave `has_auth` reading false so plaintext http://
+        // becomes permissible. Fail at config-load.
+        let json = r#"{
+          "mcpServers": {
+            "x": {
+              "transport": {
+                "kind": "streamable_http",
+                "url": "https://example.com/mcp"
+              },
+              "secrets": [{ "name": "LEGACY_TOKEN" }]
+            }
+          }
+        }"#;
+        let err = McpServersFile::parse(json).expect_err("reject");
+        assert!(matches!(
+            err,
+            McpConfigError::SecretsForbiddenOnHttpTransport { ref server } if server == "x"
+        ));
+    }
+
+    #[test]
+    fn rejects_streamable_http_url_query_params() {
+        let json = r#"{
+          "mcpServers": {
+            "x": {
+              "transport": {
+                "kind": "streamable_http",
+                "url": "https://example.com/mcp?token=abc"
+              }
+            }
+          }
+        }"#;
+        let err = McpServersFile::parse(json).expect_err("reject");
+        assert!(matches!(err, McpConfigError::InvalidHttpUrl { .. }));
+        assert!(!err.to_string().contains("abc"));
+    }
+
+    #[test]
+    fn secret_specs_stdio_maps_decls_to_env_inject() {
+        let cfg = McpServerConfig {
+            transport: None,
+            command: "uvx".into(),
+            args: vec![],
+            env: BTreeMap::new(),
+            secrets: vec![
+                SecretDecl {
+                    name: "GRAFANA_TOKEN".into(),
+                    description: None,
+                    reason: None,
+                },
+                SecretDecl {
+                    name: "OTHER".into(),
+                    description: None,
+                    reason: None,
+                },
+            ],
+            sandbox: None,
+            description: None,
+        };
+        let specs = cfg.secret_specs();
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].id, "GRAFANA_TOKEN");
+        assert!(matches!(
+            specs[0].source,
+            SecretSource::Env { ref name } if name == "GRAFANA_TOKEN"
+        ));
+        assert!(matches!(
+            specs[0].inject,
+            SecretInjection::Env { ref name } if name == "GRAFANA_TOKEN"
+        ));
+        assert_eq!(specs[0].identity_token(), "env:GRAFANA_TOKEN");
+    }
+
+    #[test]
+    fn secret_specs_http_bearer_compiles_to_authorization_inject() {
+        let cfg = McpServerConfig {
+            transport: Some(McpServerTransportConfig::StreamableHttp(
+                StreamableHttpConfig {
+                    url: "https://example.com/mcp".into(),
+                    headers: vec![],
+                    auth: Some(HttpAuthConfig::Bearer {
+                        token_ref: HttpSecretRef {
+                            source: SecretSource::Env {
+                                name: "TOKEN".into(),
+                            },
+                        },
+                    }),
+                    timeouts: Default::default(),
+                    pooling: Default::default(),
+                    network_policy: Default::default(),
+                },
+            )),
+            command: String::new(),
+            args: vec![],
+            env: BTreeMap::new(),
+            secrets: vec![],
+            sandbox: None,
+            description: None,
+        };
+        let specs = cfg.secret_specs();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].id, "auth.bearer");
+        assert!(matches!(
+            specs[0].inject,
+            SecretInjection::HttpAuthorizationBearer
+        ));
+        assert!(matches!(
+            specs[0].source,
+            SecretSource::Env { ref name } if name == "TOKEN"
+        ));
+    }
+
+    #[test]
+    fn secret_specs_http_header_and_basic_compile_correctly() {
+        let header_cfg = McpServerConfig {
+            transport: Some(McpServerTransportConfig::StreamableHttp(
+                StreamableHttpConfig {
+                    url: "https://example.com/mcp".into(),
+                    headers: vec![],
+                    auth: Some(HttpAuthConfig::Header {
+                        header: "X-API-Key".into(),
+                        value_ref: HttpSecretRef {
+                            source: SecretSource::Env {
+                                name: "API_KEY".into(),
+                            },
+                        },
+                    }),
+                    timeouts: Default::default(),
+                    pooling: Default::default(),
+                    network_policy: Default::default(),
+                },
+            )),
+            command: String::new(),
+            args: vec![],
+            env: BTreeMap::new(),
+            secrets: vec![],
+            sandbox: None,
+            description: None,
+        };
+        let s = header_cfg.secret_specs();
+        assert_eq!(s[0].id, "auth.header.X-API-Key");
+        assert!(matches!(
+            s[0].inject,
+            SecretInjection::HttpHeader { ref name } if name == "X-API-Key"
+        ));
+
+        let basic_cfg = McpServerConfig {
+            transport: Some(McpServerTransportConfig::StreamableHttp(
+                StreamableHttpConfig {
+                    url: "https://example.com/mcp".into(),
+                    headers: vec![],
+                    auth: Some(HttpAuthConfig::Basic {
+                        username: "grafana".into(),
+                        password_ref: HttpSecretRef {
+                            source: SecretSource::Env { name: "PWD".into() },
+                        },
+                    }),
+                    timeouts: Default::default(),
+                    pooling: Default::default(),
+                    network_policy: Default::default(),
+                },
+            )),
+            command: String::new(),
+            args: vec![],
+            env: BTreeMap::new(),
+            secrets: vec![],
+            sandbox: None,
+            description: None,
+        };
+        let s = basic_cfg.secret_specs();
+        assert_eq!(s[0].id, "auth.basic.grafana");
+        assert!(matches!(
+            s[0].inject,
+            SecretInjection::HttpBasicPassword { ref username } if username == "grafana"
+        ));
+    }
+
+    #[test]
+    fn identity_token_includes_version_when_present() {
+        let spec = SecretSpec {
+            id: "x".into(),
+            source: SecretSource::Env { name: "T".into() },
+            inject: SecretInjection::HttpAuthorizationBearer,
+            version: Some("v3".into()),
+        };
+        assert_eq!(spec.identity_token(), "env:T@v3");
     }
 
     #[test]

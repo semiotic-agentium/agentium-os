@@ -13,6 +13,7 @@ use baml_rt_mcp::{
 use baml_rt_tools::{
     ExternalToolResolver,
     mcp_cache::{read_server, read_snapshot, write_snapshot},
+    mcp_config::{McpConfigError, McpServersFile},
     mcp_schema_normalize::normalize,
     mcp_snapshot::{
         ApprovalRecord, Digest, MCP_SNAPSHOT_SCHEMA_VERSION, McpApprovalState, McpImportedTool,
@@ -70,13 +71,12 @@ fn approved_snapshot(tools: Vec<McpImportedTool>) -> McpServerSnapshot {
         },
         protocol_version: "2025-06-18".into(),
         server_info: None,
-        server_config_digest: Digest::new("sha256:server"),
+        server_config_digest: Digest::new(
+            "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        ),
         server_identity_digest: fixture_identity_digest(),
         tools_digest: compute_tools_digest(&tools),
-        secret_refs: vec![SecretRef {
-            name: "GRAFANA_TOKEN".into(),
-            version: None,
-        }],
+        secret_refs: vec![SecretRef::stdio_env("GRAFANA_TOKEN")],
         approval: ApprovalRecord {
             state: McpApprovalState::Approved,
             owner: Some("op@example.com".into()),
@@ -104,8 +104,12 @@ fn patch_snapshot_config_digest(fixture_path: &Path, cache_root: &Path) {
     let Ok(mut snapshot) = read_snapshot(cache_root, "grafana") else {
         return;
     };
-    snapshot.server_config_digest =
-        baml_rt_tools::mcp_config::compute_server_config_digest("grafana", config);
+    snapshot.server_config_digest = baml_rt_tools::mcp_snapshot::compute_server_config_digest(
+        "grafana",
+        &snapshot.protocol_version,
+        config,
+        Some(&snapshot.tools_digest),
+    );
     write_snapshot(cache_root, &snapshot).unwrap();
 }
 
@@ -145,6 +149,30 @@ fn session_context(name: &ToolName) -> ToolSessionContext {
         task_id: None,
         execution_classifier: None,
     }
+}
+
+#[test]
+fn stdio_config_rejects_empty_command_but_http_config_allows_it() {
+    let stdio_json = r#"{ "mcpServers": { "grafana": { "command": "" } } }"#;
+    let stdio_err = McpServersFile::parse(stdio_json).expect_err("stdio command is required");
+    assert!(matches!(stdio_err, McpConfigError::EmptyCommand { .. }));
+
+    let http_json = r#"
+    {
+      "mcpServers": {
+        "grafana": {
+          "transport": {
+            "kind": "streamable_http",
+            "url": "https://mcp.grafana.example.com/mcp"
+          }
+        }
+      }
+    }
+    "#;
+    let http = McpServersFile::parse(http_json).expect("http transport does not use command");
+    let server = http.servers.get("grafana").expect("server present");
+    assert!(server.command.is_empty());
+    assert!(server.transport.is_some());
 }
 
 fn sample_fixture() -> FakeMcpConfig {
@@ -484,32 +512,6 @@ async fn list_changed_is_spurious_for_opaque_fallback_schema() {
 }
 
 #[tokio::test]
-async fn http_transport_is_rejected_at_resolve() {
-    let cache = tempfile::tempdir().unwrap();
-    let mut snap = approved_snapshot(vec![approved_tool(
-        "search_dashboards",
-        json!({"type": "object"}),
-    )]);
-    snap.transport = McpTransportRef::Http {
-        url: "https://example.invalid/mcp".into(),
-        allowlist_digest: None,
-    };
-    write_snapshot(cache.path(), &snap).unwrap();
-    let fixture_path = cache.path().join("fixture.json");
-    write_fixture(&fixture_path, &sample_fixture());
-
-    let resolver = build_resolver(&fixture_path, cache.path());
-    let name = ToolName::parse("mcp/grafana/search_dashboards").unwrap();
-    match resolver.resolve(&name) {
-        Err(err) => assert!(
-            err.to_string().contains("HTTP transport"),
-            "unexpected error: {err}"
-        ),
-        Ok(_) => panic!("expected HTTP transport to be rejected"),
-    }
-}
-
-#[tokio::test]
 async fn launch_config_digest_mismatch_fails_at_resolve_time() {
     let cache = tempfile::tempdir().unwrap();
     write_snapshot(
@@ -588,7 +590,8 @@ async fn identity_mismatch_fails_closed_on_first_send() {
         "search_dashboards",
         json!({"type": "object"}),
     )]);
-    snap.server_identity_digest = Digest::new("sha256:not-the-server-we-approved");
+    snap.server_identity_digest =
+        Digest::new("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     write_snapshot(cache.path(), &snap).unwrap();
     let fixture_path = cache.path().join("fixture.json");
     write_fixture(&fixture_path, &sample_fixture());

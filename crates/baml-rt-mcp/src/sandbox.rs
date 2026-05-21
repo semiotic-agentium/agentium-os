@@ -9,10 +9,10 @@
 //! - using `kill_on_drop` so any panic/error path tears the child down;
 //! - enforcing a wall-clock timeout for the whole discovery exchange.
 //!
-//! Stronger isolation (microsandbox/seccomp) is intentionally deferred:
-//! the existing microsandbox provider is shaped around length-prefixed
-//! RPC, which does not fit raw stdio MCP. A future PR can introduce a
-//! second sandbox tier without changing this module's caller contract.
+//! Stronger isolation (microsandbox/seccomp) is separate from stdio discovery:
+//! the existing microsandbox provider is shaped around length-prefixed RPC,
+//! which does not fit raw stdio MCP. A second sandbox tier can be added
+//! without changing this module's caller contract.
 
 use std::{
     collections::BTreeMap,

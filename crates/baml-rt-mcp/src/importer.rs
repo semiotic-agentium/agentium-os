@@ -7,12 +7,12 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use baml_rt_tools::{
-    mcp_config::{McpServerConfig, SecretDecl, compute_server_config_digest},
+    mcp_config::{McpServerConfig, McpServerTransportConfig, SecretDecl},
     mcp_schema_normalize::normalize,
     mcp_snapshot::{
         ApprovalRecord, MCP_SNAPSHOT_SCHEMA_VERSION, McpImportedTool, McpOutputMode,
-        McpServerSnapshot, McpTransportRef, SecretRef, compute_server_identity_digest,
-        compute_tools_digest,
+        McpServerSnapshot, McpTransportRef, SecretRef, compute_server_config_digest,
+        compute_server_identity_digest, compute_tools_digest,
     },
     tools::ToolAccess,
 };
@@ -41,6 +41,8 @@ pub enum ImportError {
     },
     #[error("server `{server_id}` exposes no tools")]
     NoTools { server_id: String },
+    #[error("MCP import for `{kind}` transport is not implemented in this build")]
+    UnsupportedTransport { kind: &'static str },
     #[error("missing secret value for `{name}` (resolver returned no value)")]
     MissingSecret { name: String },
 }
@@ -84,6 +86,14 @@ impl<'a, R: SecretResolver + Sync> Importer<'a, R> {
         config: &McpServerConfig,
         options: ImportOptions,
     ) -> Result<McpServerSnapshot, ImportError> {
+        if matches!(
+            config.transport,
+            Some(McpServerTransportConfig::StreamableHttp(_))
+        ) {
+            return Err(ImportError::UnsupportedTransport {
+                kind: "streamable_http",
+            });
+        }
         let env = resolve_env(config, self.resolver)?;
         let timeout = Duration::from_secs(
             config
@@ -91,6 +101,12 @@ impl<'a, R: SecretResolver + Sync> Importer<'a, R> {
                 .as_ref()
                 .and_then(|s| s.import_timeout_secs)
                 .unwrap_or(DEFAULT_IMPORT_TIMEOUT_SECS),
+        );
+        println!(
+            "MCP import: spawning stdio server command={} args={:?} timeout={}s",
+            config.command,
+            config.args,
+            timeout.as_secs(),
         );
         let spec = SpawnSpec {
             command: config.command.clone(),
@@ -100,6 +116,10 @@ impl<'a, R: SecretResolver + Sync> Importer<'a, R> {
         };
 
         let mut sandboxed = sandbox_spawn(spec)?;
+        println!(
+            "MCP import: child spawned scratch_dir={}",
+            sandboxed.scratch_path.display()
+        );
         let (initialize_result, descriptors, stderr_tail) =
             run_discovery(&mut sandboxed, timeout).await?;
 
@@ -122,19 +142,25 @@ impl<'a, R: SecretResolver + Sync> Importer<'a, R> {
         }
 
         let tools = project_tools(&options.server_id, descriptors)?;
-        let server_config_digest = compute_server_config_digest(&options.server_id, config);
+        let tools_digest = compute_tools_digest(&tools);
+        let server_config_digest = compute_server_config_digest(
+            &options.server_id,
+            CLIENT_PROTOCOL_VERSION,
+            config,
+            Some(&tools_digest),
+        );
         let server_identity_digest = compute_server_identity_digest(
             &initialize_result.capabilities,
             &initialize_result.server_info,
         );
-        let tools_digest = compute_tools_digest(&tools);
+        // Derive snapshot secret refs from the unified `SecretSpec` view so
+        // every transport records `source` + `inject` consistently. Streamable
+        // HTTP import is still rejected above, but this keeps the projection
+        // in one place for the runtime resolver.
         let secret_refs = config
-            .secrets
+            .secret_specs()
             .iter()
-            .map(|secret| SecretRef {
-                name: secret.name.clone(),
-                version: None,
-            })
+            .map(SecretRef::from_spec)
             .collect();
 
         Ok(McpServerSnapshot {
@@ -185,8 +211,21 @@ async fn run_discovery(
     let mut stderr = sandboxed.child.stderr.take();
     let mut client = McpStdioClient::new(stdin, stdout);
 
+    println!(
+        "MCP import: sending initialize (timeout={}s)",
+        timeout.as_secs()
+    );
     let initialize_result = client.initialize(timeout).await?;
+    println!(
+        "MCP import: initialize ok protocol={} server_info={}",
+        initialize_result.protocol_version, initialize_result.server_info,
+    );
+    println!(
+        "MCP import: sending tools/list (timeout={}s)",
+        timeout.as_secs()
+    );
     let tools = client.list_tools(timeout).await?.tools;
+    println!("MCP import: tools/list ok count={}", tools.len());
 
     drop(client);
 
@@ -273,7 +312,10 @@ fn project_tools(
 
 #[cfg(test)]
 mod tests {
-    use baml_rt_tools::mcp_config::{SandboxConfig, SecretDecl};
+    use baml_rt_tools::{
+        mcp_config::{SandboxConfig, SecretDecl},
+        mcp_snapshot::Digest,
+    };
 
     use super::*;
 
@@ -286,8 +328,14 @@ mod tests {
     }
 
     #[test]
-    fn server_config_digest_is_stable_and_excludes_env_values() {
+    fn server_config_digest_tracks_non_secret_env_values() {
+        // Non-secret env values are routing/identity inputs (URL, region,
+        // model id) and must be governed: changing one forces re-import.
+        // Secret values never reach `config.env` — the schema layer rejects
+        // env keys that look like secrets, and resolved secrets are merged
+        // into the child process env at runtime, not at digest time.
         let mut config = McpServerConfig {
+            transport: None,
             command: "uvx".into(),
             args: vec!["mcp-grafana".into()],
             env: BTreeMap::from([("GRAFANA_URL".into(), "http://x".into())]),
@@ -299,22 +347,33 @@ mod tests {
             sandbox: Some(SandboxConfig::default()),
             description: None,
         };
-        let a = compute_server_config_digest("grafana", &config);
-        // Changing env value (not key) must not change digest.
+        let tools =
+            Digest::new("sha256:4444444444444444444444444444444444444444444444444444444444444444");
+        let a =
+            compute_server_config_digest("grafana", CLIENT_PROTOCOL_VERSION, &config, Some(&tools));
+        // Same input → same digest.
+        let a2 =
+            compute_server_config_digest("grafana", CLIENT_PROTOCOL_VERSION, &config, Some(&tools));
+        assert_eq!(a, a2);
+        // Changing a non-secret env value MUST shift the digest so operator
+        // re-approval is required.
         config
             .env
             .insert("GRAFANA_URL".into(), "http://other".into());
-        let b = compute_server_config_digest("grafana", &config);
-        assert_eq!(a, b);
-        // Adding a new key changes digest.
+        let b =
+            compute_server_config_digest("grafana", CLIENT_PROTOCOL_VERSION, &config, Some(&tools));
+        assert_ne!(a, b, "non-secret env value change must shift digest");
+        // Adding a new key also changes digest.
         config.env.insert("EXTRA".into(), "y".into());
-        let c = compute_server_config_digest("grafana", &config);
-        assert_ne!(a, c);
+        let c =
+            compute_server_config_digest("grafana", CLIENT_PROTOCOL_VERSION, &config, Some(&tools));
+        assert_ne!(b, c);
     }
 
     #[test]
     fn missing_secret_is_reported() {
         let cfg = McpServerConfig {
+            transport: None,
             command: "sh".into(),
             args: vec!["-c".into(), ":".into()],
             env: BTreeMap::new(),

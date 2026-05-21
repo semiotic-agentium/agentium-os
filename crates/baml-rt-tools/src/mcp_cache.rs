@@ -83,9 +83,9 @@ pub fn write_snapshot(root: &Path, snapshot: &McpServerSnapshot) -> io::Result<(
         transport: snapshot.transport.clone(),
         protocol_version: snapshot.protocol_version.clone(),
         server_info: snapshot.server_info.clone(),
-        server_config_digest: snapshot.server_config_digest.clone(),
-        server_identity_digest: snapshot.server_identity_digest.clone(),
-        tools_digest: snapshot.tools_digest.clone(),
+        server_config_digest: snapshot.server_config_digest,
+        server_identity_digest: snapshot.server_identity_digest,
+        tools_digest: snapshot.tools_digest,
         secret_refs: snapshot.secret_refs.clone(),
         approval: snapshot.approval.clone(),
         sandbox_profile: snapshot.sandbox_profile.clone(),
@@ -277,7 +277,9 @@ mod tests {
             mcp_tool_name: name.into(),
             description: None,
             input_schema: json!({ "type": "object" }),
-            input_schema_digest: Digest::new("sha256:input"),
+            input_schema_digest: Digest::new(
+                "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            ),
             output_mode: McpOutputMode::ContentEnvelope,
             access_level: ToolAccess::Read,
             approval: ApprovalRecord {
@@ -301,13 +303,16 @@ mod tests {
             },
             protocol_version: "2025-06-18".into(),
             server_info: None,
-            server_config_digest: Digest::new("sha256:server"),
-            server_identity_digest: Digest::new("sha256:identity"),
-            tools_digest: Digest::new("sha256:tools"),
-            secret_refs: vec![SecretRef {
-                name: "fake/token".into(),
-                version: None,
-            }],
+            server_config_digest: Digest::new(
+                "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            ),
+            server_identity_digest: Digest::new(
+                "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            ),
+            tools_digest: Digest::new(
+                "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+            ),
+            secret_refs: vec![SecretRef::stdio_env("fake/token")],
             approval: ApprovalRecord {
                 state: McpApprovalState::Approved,
                 owner: Some("op@example.com".into()),

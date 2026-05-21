@@ -1,10 +1,9 @@
 //! Minimal stdio JSON-RPC client used only by the import path.
 //!
-//! Speaks just enough of MCP to run a discovery handshake:
-//! `initialize` -> `notifications/initialized` -> `tools/list`. The runtime
-//! tool-call path (PR 4) will use `rmcp` for the full client surface; this
-//! module exists to keep PR 2 free of an unfamiliar transport dependency
-//! and to stay laser-focused on import.
+//! Speaks just enough of MCP to run stdio discovery:
+//! `initialize` -> `notifications/initialized` -> `tools/list`. Runtime
+//! tool calls use `rmcp`; this module stays importer-only while Streamable
+//! HTTP import remains unsupported.
 
 use std::time::Duration;
 

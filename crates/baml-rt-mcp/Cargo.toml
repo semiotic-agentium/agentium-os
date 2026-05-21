@@ -8,16 +8,27 @@ description = "MCP client and importer for the BAML runtime"
 
 [dependencies]
 baml-rt-core = { path = "../baml-rt-core" }
+baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-tools = { path = "../baml-rt-tools" }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 tempfile = { workspace = true }
 rmcp = { workspace = true }
+url = { workspace = true }
+# rmcp 1.7 depends on reqwest 0.13 and its `StreamableHttpClient` impl is on
+# that version's `reqwest::Client`. The workspace pin (`reqwest 0.12.26`) is
+# kept for the rest of the tree because of a known TLS regression in newer
+# h2/hyper-util — this crate intentionally pulls 0.13 directly so our HTTP
+# transport hands rmcp a client of the exact type rmcp's trait impl targets.
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+dashmap = { workspace = true }
+base64 = "0.22"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = { workspace = true }
@@ -27,3 +38,10 @@ name = "fake-mcp-stdio"
 path = "src/bin/fake_mcp_stdio.rs"
 
 [dev-dependencies]
+axum = { workspace = true }
+axum-server = { workspace = true }
+rcgen = { workspace = true }
+rustls = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "process", "net"] }
+serde_json = { workspace = true }
+futures-util = { workspace = true }

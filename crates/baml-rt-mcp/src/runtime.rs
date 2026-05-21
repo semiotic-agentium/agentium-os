@@ -8,6 +8,7 @@
 
 use std::{
     collections::BTreeMap,
+    error::Error as StdError,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -16,36 +17,62 @@ use std::{
     time::Duration,
 };
 
+use baml_rt_observability::{record_mcp_digest_mismatch, record_mcp_session_expired};
 use baml_rt_tools::{
     mcp_cache::mark_server_stale,
+    mcp_config::{HttpHeader as ConfigHttpHeader, HttpNetworkPolicyConfig},
     mcp_schema_normalize::digest_input_schema,
-    mcp_snapshot::{compute_server_identity_digest, compute_tools_digest_from_entries},
+    mcp_secrets::{McpSecretValue, ResolvedSecret},
+    mcp_snapshot::{Digest, compute_server_identity_digest, compute_tools_digest_from_entries},
 };
 use rmcp::{
     ErrorData as McpError, ServiceExt,
     handler::client::ClientHandler,
     model::{
-        CallToolRequestParams, CallToolResult, CreateElicitationRequestParams,
+        CallToolRequest, CallToolRequestParams, CallToolResult, CancelledNotification,
+        CancelledNotificationParam, ClientRequest, CreateElicitationRequestParams,
         CreateElicitationResult, CreateMessageRequestMethod, CreateMessageRequestParams,
         CreateMessageResult, ErrorCode, ListRootsRequestMethod, ListRootsResult,
+        ProgressNotificationParam, RequestId, ServerResult,
     },
     service::{
-        MaybeSendFuture, NotificationContext, RequestContext, RoleClient, RunningService,
-        ServiceError,
+        MaybeSendFuture, NotificationContext, Peer, PeerRequestOptions, RequestContext, RoleClient,
+        RunningService, ServiceError,
     },
-    transport::{ConfigureCommandExt, TokioChildProcess},
+    transport::{
+        ConfigureCommandExt, TokioChildProcess, streamable_http_client::StreamableHttpError,
+    },
 };
 use serde_json::{Value, to_value};
 use thiserror::Error;
-use tokio::{io::AsyncReadExt, sync::OnceCell};
+use tokio::{
+    io::AsyncReadExt,
+    sync::{Mutex, OnceCell},
+    task::JoinHandle,
+};
+use tokio_util::sync::CancellationToken;
 
-use crate::sandbox::SpawnSpec;
+use crate::http::transport::{HttpTransportBuildError, build_rmcp_http_transport};
 
 /// Maximum time we wait for `initialize + tools/list` during lazy connection
 /// startup. Caps a misbehaving server's hold on the calling task.
 const STARTUP_TIMEOUT_DEFAULT: Duration = Duration::from_secs(30);
 /// Default per-call timeout used when the operator config does not specify one.
 const RUNTIME_CALL_TIMEOUT_DEFAULT: Duration = Duration::from_secs(120);
+// Best-effort bound for abort-time `notifications/cancelled`.
+//
+// Verified against rmcp 1.7.0: `StreamableHttpClientWorker::run` processes
+// outbound `Event::ClientMessage` items serially — it awaits
+// `client.post_message(...)` for the current event before reading the next.
+// A cancellation notification sent through the same `Peer` therefore queues
+// behind the in-flight `tools/call` POST and will not deliver until the
+// original request completes. This timeout protects platform cancellation
+// from waiting on server completion; on HTTP transports the wire
+// notification is best-effort and typically arrives only after the call
+// would have finished anyway. Other transports may deliver more promptly
+// depending on their writer model. Local termination of the call future is
+// unaffected and remains immediate via the `local_token` cancellation path.
+const ABORT_CANCEL_NOTIFY_TIMEOUT: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Error)]
 pub enum ConnectionError {
@@ -56,36 +83,40 @@ pub enum ConnectionError {
         source: std::io::Error,
     },
     #[error("transport setup failed: {0}")]
-    Transport(String),
+    Transport(#[from] HttpTransportBuildError),
     #[error("initialize timed out after {0:?}")]
     InitializeTimeout(Duration),
     #[error("initialize failed: {0}")]
     InitializeFailed(String),
     #[error("call_tool failed: {0}")]
     CallTool(#[from] ServiceError),
+    #[error("MCP server `{server_id}` HTTP session expired; registry will rebuild on next resolve")]
+    SessionExpired { server_id: String },
     #[error("MCP arguments must be a JSON object, got {0}")]
     InvalidArguments(String),
+    #[error("MCP call cancelled for server `{server_id}`: {reason}")]
+    CallCancelled { server_id: String, reason: String },
     #[error("MCP call timed out after {0:?}")]
     CallTimeout(Duration),
     #[error(
-        "MCP server `{server_id}` is stale (startup tools/list or tools/list_changed observed drift); operator must re-import and approve a new registry snapshot"
+        "MCP server `{server_id}` approved snapshot is stale (startup tools/list or tools/list_changed observed drift); operator must re-import and approve a new registry snapshot"
     )]
-    Stale { server_id: String },
+    SnapshotStale { server_id: String },
     #[error(
         "MCP server `{server_id}` identity digest mismatch (expected `{expected}`, observed `{observed}`); operator must re-import and approve a new registry snapshot"
     )]
     IdentityMismatch {
         server_id: String,
-        expected: String,
-        observed: String,
+        expected: Digest,
+        observed: Digest,
     },
     #[error(
         "MCP server `{server_id}` tool surface digest mismatch (expected `{expected}`, observed `{observed}`); operator must re-import and approve a new registry snapshot"
     )]
     ToolsDigestMismatch {
         server_id: String,
-        expected: String,
-        observed: String,
+        expected: Digest,
+        observed: Digest,
     },
     #[error("MCP server `{server_id}` startup tools/list failed: {reason}")]
     StartupToolsListFailed { server_id: String, reason: String },
@@ -105,41 +136,118 @@ pub enum ConnectionError {
 #[derive(Debug, Clone)]
 pub struct ServerLaunch {
     pub server_id: String,
-    pub command: String,
-    pub args: Vec<String>,
-    pub env: BTreeMap<String, String>,
     pub startup_timeout: Duration,
     pub call_timeout: Duration,
     /// Snapshot of `server_config_digest` at registration time. Surfaces in
     /// telemetry; also part of the pool isolation key.
-    pub server_config_digest: String,
+    pub server_config_digest: Digest,
     /// Snapshot's MCP protocol version. Surfaces in telemetry only.
     pub protocol_version: String,
     /// Identity digest recorded at import time, derived from server-advertised
     /// `capabilities` + `serverInfo.name`. The runtime recomputes the same
     /// digest from the live `initialize` response and refuses to bind a
     /// connection on mismatch.
-    pub expected_identity_digest: String,
+    pub expected_identity_digest: Digest,
     /// Server-wide tool-set digest recorded at import time. Startup verifies
     /// it with a live `tools/list` before accepting the connection; the drift
     /// handler recomputes it again on `notifications/tools/list_changed`.
     /// Any mismatch marks the snapshot stale and fails closed.
-    pub expected_tools_digest: String,
+    pub expected_tools_digest: Digest,
     /// Cache root the resolver loaded this snapshot from. Startup verification
     /// and the drift handler use it to flip the on-disk server record to `Stale`
     /// so the runner refuses to bind this server on next startup.
     pub cache_root: PathBuf,
+    /// Transport-specific launch parameters. Typestate: each variant carries
+    /// exactly the fields its transport needs, so a stdio launch can never
+    /// carry an HTTP URL and vice versa.
+    pub kind: LaunchKind,
 }
 
-impl ServerLaunch {
-    pub fn to_spawn_spec(&self) -> SpawnSpec {
-        SpawnSpec {
-            command: self.command.clone(),
-            args: self.args.clone(),
-            env: self.env.clone(),
-            timeout: self.startup_timeout,
+/// Per-transport launch data. Stdio carries the child-process command shape;
+/// HTTP carries the pre-resolved URL, header/secret material, and network
+/// policy.
+#[derive(Debug, Clone)]
+pub enum LaunchKind {
+    Stdio(StdioLaunch),
+    Http(HttpLaunchConfig),
+}
+
+impl LaunchKind {
+    fn transport_kind(&self) -> TransportKind {
+        match self {
+            LaunchKind::Stdio(_) => TransportKind::Stdio,
+            LaunchKind::Http(_) => TransportKind::Http,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransportKind {
+    Stdio,
+    Http,
+}
+
+impl TransportKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TransportKind::Stdio => "stdio",
+            TransportKind::Http => "streamable_http",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StdioLaunch {
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: BTreeMap<String, EnvValue>,
+}
+
+#[derive(Debug, Clone)]
+pub enum EnvValue {
+    Plain(String),
+    Secret(McpSecretValue),
+}
+
+impl EnvValue {
+    pub fn plain(value: impl Into<String>) -> Self {
+        Self::Plain(value.into())
+    }
+
+    pub fn secret(value: McpSecretValue) -> Self {
+        Self::Secret(value)
+    }
+
+    fn expose_for_child(&self) -> &str {
+        match self {
+            EnvValue::Plain(value) => value.as_str(),
+            EnvValue::Secret(value) => value.expose_secret(),
+        }
+    }
+}
+
+/// Pre-resolved Streamable HTTP launch inputs. The resolver freezes the
+/// resolved secret set (and fails closed on missing values) before the
+/// runtime ever instantiates a transport.
+#[derive(Debug, Clone)]
+pub struct HttpLaunchConfig {
+    pub url: String,
+    pub static_headers: Vec<ConfigHttpHeader>,
+    pub resolved_secrets: Vec<ResolvedSecret>,
+    pub network_policy: HttpNetworkPolicyConfig,
+    pub connect_timeout: Duration,
+    pub request_timeout: Duration,
+    /// HTTP connection-pool idle TTL wired to reqwest `pool_idle_timeout`.
+    /// Despite the operator-facing `idle_stream_ms` name, this is not an SSE
+    /// stream inactivity deadline.
+    pub idle_stream_timeout: Duration,
+    pub max_idle_per_host: u64,
+    /// Additional CA certificates (PEM-encoded) to trust beyond the system /
+    /// webpki defaults. Empty in normal operator config — the field exists so
+    /// deployments with private/internal CAs (and the in-process TLS test
+    /// harness) can extend the trust store without touching
+    /// `danger_accept_invalid_certs`, which remains hard-off.
+    pub extra_ca_certs_pem: Vec<Vec<u8>>,
 }
 
 /// Runtime client handler. Listens for `tools/list_changed` notifications
@@ -149,8 +257,9 @@ impl ServerLaunch {
 struct RuntimeClientHandler {
     server_id: Arc<str>,
     drifted: Arc<AtomicBool>,
-    expected_tools_digest: Arc<str>,
+    expected_tools_digest: Digest,
     cache_root: Arc<PathBuf>,
+    transport: TransportKind,
 }
 
 impl ClientHandler for RuntimeClientHandler {
@@ -177,12 +286,34 @@ impl ClientHandler for RuntimeClientHandler {
         _context: RequestContext<RoleClient>,
     ) -> impl Future<Output = Result<CreateElicitationResult, McpError>> + MaybeSendFuture + '_
     {
-        // Hard-deny elicitation; PR4 default would silently decline.
+        // Hard-deny elicitation instead of silently declining.
         std::future::ready(Err(McpError::new(
             ErrorCode::METHOD_NOT_FOUND,
             "elicitation/create",
             None,
         )))
+    }
+
+    fn on_progress(
+        &self,
+        params: ProgressNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) -> impl Future<Output = ()> + MaybeSendFuture + '_ {
+        let server_id = self.server_id.clone();
+        async move {
+            let message_len = params.message.as_ref().map(String::len).unwrap_or(0);
+            tracing::info!(
+                target: "mcp.progress",
+                mcp_server_id = %server_id,
+                mcp_progress_token = ?params.progress_token,
+                mcp_progress = params.progress,
+                mcp_progress_total = ?params.total,
+                mcp_progress_has_message = params.message.is_some(),
+                mcp_progress_message_len = message_len,
+                event = "mcp.progress",
+                "MCP server reported tool-call progress",
+            );
+        }
     }
 
     fn on_tool_list_changed(
@@ -191,8 +322,9 @@ impl ClientHandler for RuntimeClientHandler {
     ) -> impl Future<Output = ()> + MaybeSendFuture + '_ {
         let server_id = self.server_id.clone();
         let drifted = self.drifted.clone();
-        let expected = self.expected_tools_digest.clone();
+        let expected = self.expected_tools_digest;
         let cache_root = self.cache_root.clone();
+        let transport = self.transport;
         async move {
             // Out-of-band tools/list using the peer attached to this
             // notification. Failure here is itself a fail-closed signal:
@@ -212,8 +344,21 @@ impl ClientHandler for RuntimeClientHandler {
                 }
             };
 
-            let observed_digest = digest_from_live_tools(&observed);
-            if observed_digest.as_str() == expected.as_ref() {
+            let observed_digest = match digest_from_live_tools(&observed) {
+                Ok(digest) => digest,
+                Err(err) => {
+                    tracing::warn!(
+                        target: "mcp.drift",
+                        mcp_server_id = %server_id,
+                        error = %err,
+                        event = "mcp.tools_list_serialize_failed",
+                        "failed to serialize live MCP tool schema after list_changed; marking connection stale",
+                    );
+                    mark_drifted_and_persist(&server_id, &drifted, &cache_root);
+                    return;
+                }
+            };
+            if observed_digest == expected {
                 tracing::debug!(
                     target: "mcp.drift",
                     mcp_server_id = %server_id,
@@ -223,13 +368,15 @@ impl ClientHandler for RuntimeClientHandler {
                 return;
             }
 
-            tracing::warn!(
+            record_mcp_digest_mismatch("tools_changed", transport.as_str());
+            tracing::error!(
                 target: "mcp.drift",
                 mcp_server_id = %server_id,
-                expected = %expected.as_ref(),
+                expected = %expected,
                 observed = %observed_digest,
+                tool_count = observed.len(),
                 event = "mcp.tools_list_changed",
-                "MCP server tool set digest changed; marking snapshot stale, operator must re-import and approve a new registry snapshot",
+                "MCP server tool set drifted at runtime (tools/list_changed); snapshot marked stale, in-flight calls will fail. Re-import via `agent-platform mcp enable` and redeploy."
             );
             mark_drifted_and_persist(&server_id, &drifted, &cache_root);
         }
@@ -240,20 +387,21 @@ impl ClientHandler for RuntimeClientHandler {
 /// importer wrote into the snapshot. Each schema is canonicalized through
 /// the shared normalizer so on-wire formatting differences (key order,
 /// whitespace) do not produce false drift signals.
-fn digest_from_live_tools(tools: &[rmcp::model::Tool]) -> baml_rt_tools::mcp_snapshot::Digest {
+fn digest_from_live_tools(
+    tools: &[rmcp::model::Tool],
+) -> Result<baml_rt_tools::mcp_snapshot::Digest, serde_json::Error> {
     let normalized: Vec<(String, baml_rt_tools::mcp_snapshot::Digest)> = tools
         .iter()
         .map(|tool| {
-            let schema =
-                serde_json::to_value(tool.input_schema.as_ref()).unwrap_or(serde_json::Value::Null);
-            (tool.name.to_string(), digest_input_schema(&schema))
+            let schema = serde_json::to_value(tool.input_schema.as_ref())?;
+            Ok((tool.name.to_string(), digest_input_schema(&schema)))
         })
-        .collect();
-    compute_tools_digest_from_entries(
+        .collect::<Result<_, serde_json::Error>>()?;
+    Ok(compute_tools_digest_from_entries(
         normalized
             .iter()
-            .map(|(name, digest)| (name.as_str(), digest.as_str())),
-    )
+            .map(|(name, digest)| (name.as_str(), digest)),
+    ))
 }
 
 /// Flip the in-memory drift flag and best-effort persist `Stale` to disk so
@@ -280,10 +428,56 @@ fn mark_drifted_and_persist(server_id: &str, drifted: &AtomicBool, cache_root: &
 
 /// Shared, lazily-initialized rmcp client. Cloning the connection (via `Arc`)
 /// keeps every handler against the same server bound to the same process.
+#[derive(Clone)]
+pub struct McpCancelHandle {
+    peer: Peer<RoleClient>,
+    request_id: RequestId,
+    local_token: CancellationToken,
+}
+
+impl McpCancelHandle {
+    fn new(peer: Peer<RoleClient>, request_id: RequestId, local_token: CancellationToken) -> Self {
+        Self {
+            peer,
+            request_id,
+            local_token,
+        }
+    }
+
+    pub fn cancel_local(&self) {
+        self.local_token.cancel();
+    }
+
+    pub async fn notify_cancelled(&self, reason: Option<String>) -> Result<(), ServiceError> {
+        let notification = CancelledNotification::new(CancelledNotificationParam {
+            request_id: self.request_id.clone(),
+            reason,
+        });
+        self.peer.send_notification(notification.into()).await
+    }
+
+    pub async fn cancel(&self, reason: Option<String>) -> Result<(), ServiceError> {
+        self.cancel_local();
+        match tokio::time::timeout(ABORT_CANCEL_NOTIFY_TIMEOUT, self.notify_cancelled(reason)).await
+        {
+            Ok(result) => result,
+            Err(_) => Err(ServiceError::Timeout {
+                timeout: ABORT_CANCEL_NOTIFY_TIMEOUT,
+            }),
+        }
+    }
+}
+
+pub type McpCancelSlot = Arc<Mutex<Option<McpCancelHandle>>>;
+
+/// Shared, lazily-initialized rmcp client. Cloning the connection (via `Arc`)
+/// keeps every handler against the same server bound to the same process.
 pub struct McpConnection {
     launch: ServerLaunch,
     drifted: Arc<AtomicBool>,
     service: OnceCell<Arc<RunningService<RoleClient, RuntimeClientHandler>>>,
+    stderr_drain_token: CancellationToken,
+    stderr_drain_task: std::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 impl McpConnection {
@@ -292,6 +486,8 @@ impl McpConnection {
             launch,
             drifted: Arc::new(AtomicBool::new(false)),
             service: OnceCell::new(),
+            stderr_drain_token: CancellationToken::new(),
+            stderr_drain_task: std::sync::Mutex::new(None),
         }
     }
 
@@ -303,8 +499,8 @@ impl McpConnection {
         &self.launch.protocol_version
     }
 
-    pub fn server_config_digest(&self) -> &str {
-        &self.launch.server_config_digest
+    pub fn server_config_digest(&self) -> Digest {
+        self.launch.server_config_digest
     }
 
     /// Returns true once startup verification or `notifications/tools/list_changed`
@@ -314,13 +510,35 @@ impl McpConnection {
         self.drifted.load(Ordering::SeqCst)
     }
 
+    pub fn is_dead(&self) -> bool {
+        self.service
+            .get()
+            .is_some_and(|service| service.is_closed())
+    }
+
     pub async fn call_tool(
         &self,
         mcp_tool_name: &str,
         arguments: Value,
     ) -> Result<CallToolResult, ConnectionError> {
+        self.call_tool_with_cancel_slot(mcp_tool_name, arguments, None)
+            .await
+    }
+
+    pub async fn call_tool_with_cancel_slot(
+        &self,
+        mcp_tool_name: &str,
+        arguments: Value,
+        cancel_slot: Option<McpCancelSlot>,
+    ) -> Result<CallToolResult, ConnectionError> {
         if self.is_drifted() {
-            return Err(ConnectionError::Stale {
+            return Err(ConnectionError::SnapshotStale {
+                server_id: self.launch.server_id.clone(),
+            });
+        }
+        if self.is_dead() {
+            record_mcp_session_expired(self.transport_label());
+            return Err(ConnectionError::SessionExpired {
                 server_id: self.launch.server_id.clone(),
             });
         }
@@ -335,11 +553,59 @@ impl McpConnection {
         } else {
             self.launch.call_timeout
         };
-        match tokio::time::timeout(timeout, service.call_tool(params)).await {
-            Ok(Ok(result)) => Ok(result),
-            Ok(Err(err)) => Err(err.into()),
-            Err(_) => Err(ConnectionError::CallTimeout(timeout)),
+        let handle = service
+            .send_cancellable_request(
+                ClientRequest::CallToolRequest(CallToolRequest::new(params)),
+                request_options_with_timeout(timeout),
+            )
+            .await?;
+        let local_token = CancellationToken::new();
+        let cancel_handle =
+            McpCancelHandle::new(handle.peer.clone(), handle.id.clone(), local_token.clone());
+        if let Some(slot) = &cancel_slot {
+            *slot.lock().await = Some(cancel_handle.clone());
         }
+        let progress_token = handle.progress_token.clone();
+        tracing::debug!(
+            target: "mcp.progress",
+            mcp_server_id = %self.launch.server_id,
+            mcp_tool_name,
+            mcp_progress_token = ?progress_token,
+            event = "mcp.progress_token_created",
+            "MCP call progress token created",
+        );
+        let response = tokio::select! {
+            response = handle.await_response() => response,
+            () = local_token.cancelled() => {
+                if let Some(slot) = &cancel_slot {
+                    drop(slot.lock().await.take());
+                }
+                return Err(ConnectionError::CallCancelled {
+                    server_id: self.launch.server_id.clone(),
+                    reason: "local abort requested".to_string(),
+                });
+            }
+        };
+        if let Some(slot) = &cancel_slot {
+            drop(slot.lock().await.take());
+        }
+        match response {
+            Ok(ServerResult::CallToolResult(result)) => Ok(result),
+            Ok(_) => Err(ConnectionError::CallTool(ServiceError::UnexpectedResponse)),
+            Err(err) if service_error_is_session_expired(&err) => {
+                service.cancellation_token().cancel();
+                record_mcp_session_expired(self.transport_label());
+                Err(ConnectionError::SessionExpired {
+                    server_id: self.launch.server_id.clone(),
+                })
+            }
+            Err(ServiceError::Timeout { .. }) => Err(ConnectionError::CallTimeout(timeout)),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    pub fn transport_label(&self) -> &'static str {
+        self.launch.kind.transport_kind().as_str()
     }
 
     async fn service(
@@ -361,28 +627,51 @@ impl McpConnection {
         } else {
             launch.startup_timeout
         };
+        let stderr_drain_token = self.stderr_drain_token.child_token();
+        let stderr_drain_task = &self.stderr_drain_task;
         let handler = RuntimeClientHandler {
             server_id: Arc::<str>::from(launch.server_id.clone()),
             drifted: drifted.clone(),
-            expected_tools_digest: Arc::<str>::from(launch.expected_tools_digest.clone()),
+            expected_tools_digest: launch.expected_tools_digest,
             cache_root: Arc::new(launch.cache_root.clone()),
+            transport: launch.kind.transport_kind(),
         };
         let serve = async move {
-            let command = tokio::process::Command::new(&launch.command).configure(|cmd| {
-                cmd.args(&launch.args).env_clear().envs(&launch.env);
-            });
-            let (transport, stderr) = TokioChildProcess::builder(command)
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .map_err(|err| ConnectionError::Spawn {
-                    command: launch.command.clone(),
-                    source: err,
-                })?;
-            spawn_stderr_drain(launch.server_id.clone(), stderr);
-            let service = handler
-                .serve(transport)
-                .await
-                .map_err(|err| ConnectionError::InitializeFailed(err.to_string()))?;
+            let service = match &launch.kind {
+                LaunchKind::Stdio(stdio) => {
+                    let command = tokio::process::Command::new(&stdio.command).configure(|cmd| {
+                        cmd.args(&stdio.args).env_clear();
+                        for (name, value) in &stdio.env {
+                            cmd.env(name, value.expose_for_child());
+                        }
+                    });
+                    let (transport, stderr) = TokioChildProcess::builder(command)
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()
+                        .map_err(|err| ConnectionError::Spawn {
+                            command: stdio.command.clone(),
+                            source: err,
+                        })?;
+                    if let Some(task) =
+                        spawn_stderr_drain(launch.server_id.clone(), stderr, stderr_drain_token)
+                    {
+                        *stderr_drain_task
+                            .lock()
+                            .expect("stderr drain task mutex poisoned") = Some(task);
+                    }
+                    handler
+                        .serve(transport)
+                        .await
+                        .map_err(|err| ConnectionError::InitializeFailed(err.to_string()))?
+                }
+                LaunchKind::Http(http) => {
+                    let transport = build_rmcp_http_transport(&launch.server_id, http)?;
+                    handler
+                        .serve(transport)
+                        .await
+                        .map_err(|err| ConnectionError::InitializeFailed(err.to_string()))?
+                }
+            };
             verify_server_identity(&service, &launch).await?;
             verify_startup_tools_digest(&service, &launch, &drifted).await?;
             Ok(service)
@@ -405,6 +694,15 @@ impl Drop for McpConnection {
         //   2. The `Arc<RunningService>` still has live clones (e.g. an
         //      in-flight call). `Arc::try_unwrap` then fails silently; log a
         //      warning so leaked children are at least observable.
+        self.stderr_drain_token.cancel();
+        if let Some(task) = self
+            .stderr_drain_task
+            .lock()
+            .expect("stderr drain task mutex poisoned")
+            .take()
+        {
+            task.abort();
+        }
         let Some(service_arc) = self.service.take() else {
             return;
         };
@@ -412,7 +710,14 @@ impl Drop for McpConnection {
             Ok(service) => match tokio::runtime::Handle::try_current() {
                 Ok(handle) => {
                     handle.spawn(async move {
-                        let _ = service.cancel().await;
+                        if let Err(err) = service.cancel().await {
+                            tracing::debug!(
+                                target: "mcp.runtime",
+                                error = %err,
+                                event = "mcp.connection_drop_cancel_failed",
+                                "failed to cancel MCP service during connection drop",
+                            );
+                        }
                     });
                 }
                 Err(_) => {
@@ -473,21 +778,14 @@ async fn verify_server_identity(
         }
     };
     let observed = compute_server_identity_digest(&capabilities, &server_info);
-    if observed.as_str() != launch.expected_identity_digest {
-        tracing::warn!(
-            target: "mcp.identity",
-            mcp_server_id = %launch.server_id,
-            expected = %launch.expected_identity_digest,
-            observed = %observed,
-            event = "mcp.identity_mismatch",
-            "MCP server identity digest does not match approved snapshot; refusing to bind connection",
-        );
+    if let Err(err) = validate_digest::<IdentityDigest>(
+        launch,
+        launch.expected_identity_digest,
+        observed,
+        DigestMismatchContext::default(),
+    ) {
         signal_cancel(service).await;
-        return Err(ConnectionError::IdentityMismatch {
-            server_id: launch.server_id.clone(),
-            expected: launch.expected_identity_digest.clone(),
-            observed: observed.as_str().to_string(),
-        });
+        return Err(err);
     }
     Ok(())
 }
@@ -510,55 +808,164 @@ async fn verify_startup_tools_digest(
             });
         }
     };
-    let observed = digest_from_live_tools(&observed_tools);
-    if observed.as_str() != launch.expected_tools_digest {
-        tracing::warn!(
-            target: "mcp.drift",
-            mcp_server_id = %launch.server_id,
-            expected = %launch.expected_tools_digest,
-            observed = %observed,
-            event = "mcp.startup_tools_digest_mismatch",
-            "MCP server tool surface digest does not match approved snapshot at startup; refusing to bind connection",
-        );
+    let observed = match digest_from_live_tools(&observed_tools) {
+        Ok(digest) => digest,
+        Err(err) => {
+            signal_cancel(service).await;
+            return Err(ConnectionError::StartupToolsListFailed {
+                server_id: launch.server_id.clone(),
+                reason: format!("failed to serialize live tool schema: {err}"),
+            });
+        }
+    };
+    if let Err(err) = validate_digest::<StartupToolsDigest>(
+        launch,
+        launch.expected_tools_digest,
+        observed,
+        DigestMismatchContext {
+            tool_count: Some(observed_tools.len()),
+        },
+    ) {
         mark_drifted_and_persist(&launch.server_id, drifted, &launch.cache_root);
         signal_cancel(service).await;
-        return Err(ConnectionError::ToolsDigestMismatch {
-            server_id: launch.server_id.clone(),
-            expected: launch.expected_tools_digest.clone(),
-            observed: observed.as_str().to_string(),
-        });
+        return Err(err);
     }
     Ok(())
 }
 
-fn spawn_stderr_drain(server_id: String, stderr: Option<tokio::process::ChildStderr>) {
+#[derive(Debug, Clone, Copy, Default)]
+struct DigestMismatchContext {
+    tool_count: Option<usize>,
+}
+
+trait DigestLabel {
+    const METRIC_REASON: &'static str;
+
+    fn log_mismatch(
+        launch: &ServerLaunch,
+        expected: Digest,
+        observed: Digest,
+        context: DigestMismatchContext,
+    );
+
+    fn mismatch_error(server_id: String, expected: Digest, observed: Digest) -> ConnectionError;
+}
+
+struct IdentityDigest;
+
+impl DigestLabel for IdentityDigest {
+    const METRIC_REASON: &'static str = "identity";
+
+    fn log_mismatch(
+        launch: &ServerLaunch,
+        expected: Digest,
+        observed: Digest,
+        _context: DigestMismatchContext,
+    ) {
+        tracing::error!(
+            target: "mcp.identity",
+            mcp_server_id = %launch.server_id,
+            expected = %expected,
+            observed = %observed,
+            event = "mcp.identity_mismatch",
+            "MCP server identity digest does not match approved snapshot; refusing to bind. Re-import via `agent-platform mcp enable` and redeploy."
+        );
+    }
+
+    fn mismatch_error(server_id: String, expected: Digest, observed: Digest) -> ConnectionError {
+        ConnectionError::IdentityMismatch {
+            server_id,
+            expected,
+            observed,
+        }
+    }
+}
+
+struct StartupToolsDigest;
+
+impl DigestLabel for StartupToolsDigest {
+    const METRIC_REASON: &'static str = "tools_startup";
+
+    fn log_mismatch(
+        launch: &ServerLaunch,
+        expected: Digest,
+        observed: Digest,
+        context: DigestMismatchContext,
+    ) {
+        tracing::error!(
+            target: "mcp.drift",
+            mcp_server_id = %launch.server_id,
+            expected = %expected,
+            observed = %observed,
+            tool_count = context.tool_count,
+            event = "mcp.startup_tools_digest_mismatch",
+            "MCP server tool surface drifted from approved snapshot at startup; refusing to bind. Re-import via `agent-platform mcp enable` to capture new tool schemas, then redeploy."
+        );
+    }
+
+    fn mismatch_error(server_id: String, expected: Digest, observed: Digest) -> ConnectionError {
+        ConnectionError::ToolsDigestMismatch {
+            server_id,
+            expected,
+            observed,
+        }
+    }
+}
+
+fn validate_digest<L: DigestLabel>(
+    launch: &ServerLaunch,
+    expected: Digest,
+    observed: Digest,
+    context: DigestMismatchContext,
+) -> Result<(), ConnectionError> {
+    if observed == expected {
+        return Ok(());
+    }
+    record_mcp_digest_mismatch(L::METRIC_REASON, launch.kind.transport_kind().as_str());
+    L::log_mismatch(launch, expected, observed, context);
+    Err(L::mismatch_error(
+        launch.server_id.clone(),
+        expected,
+        observed,
+    ))
+}
+
+fn spawn_stderr_drain(
+    server_id: String,
+    stderr: Option<tokio::process::ChildStderr>,
+    cancellation_token: CancellationToken,
+) -> Option<JoinHandle<()>> {
     const MAX_CAPTURED_STDERR: usize = 64 * 1024;
 
-    let Some(mut stderr) = stderr else {
-        return;
-    };
-    tokio::spawn(async move {
+    let mut stderr = stderr?;
+    Some(tokio::spawn(async move {
         let mut captured = Vec::new();
         let mut total = 0usize;
         let mut chunk = [0u8; 4096];
         loop {
-            match stderr.read(&mut chunk).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    total = total.saturating_add(n);
-                    let remaining = MAX_CAPTURED_STDERR.saturating_sub(captured.len());
-                    if remaining > 0 {
-                        captured.extend_from_slice(&chunk[..n.min(remaining)]);
+            tokio::select! {
+                biased;
+                () = cancellation_token.cancelled() => return,
+                result = stderr.read(&mut chunk) => {
+                    match result {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            total = total.saturating_add(n);
+                            let remaining = MAX_CAPTURED_STDERR.saturating_sub(captured.len());
+                            if remaining > 0 {
+                                captured.extend_from_slice(&chunk[..n.min(remaining)]);
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                target: "mcp.stdio",
+                                mcp_server_id = %server_id,
+                                error = %err,
+                                "failed to drain MCP stdio server stderr"
+                            );
+                            return;
+                        }
                     }
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        target: "mcp.stdio",
-                        mcp_server_id = %server_id,
-                        error = %err,
-                        "failed to drain MCP stdio server stderr"
-                    );
-                    return;
                 }
             }
         }
@@ -574,7 +981,7 @@ fn spawn_stderr_drain(server_id: String, stderr: Option<tokio::process::ChildStd
             stderr_truncated = total > captured.len(),
             "MCP stdio server stderr"
         );
-    });
+    }))
 }
 
 /// Signal the rmcp service to wind down without consuming it.
@@ -588,6 +995,31 @@ fn spawn_stderr_drain(server_id: String, stderr: Option<tokio::process::ChildStd
 /// `PR_SET_PDEATHSIG=SIGKILL` from the sandbox layer as a safety net).
 async fn signal_cancel(service: &RunningService<RoleClient, RuntimeClientHandler>) {
     service.cancellation_token().cancel();
+}
+
+fn request_options_with_timeout(timeout: Duration) -> PeerRequestOptions {
+    let mut options = PeerRequestOptions::no_options();
+    options.timeout = Some(timeout);
+    options
+}
+
+fn service_error_is_session_expired(err: &ServiceError) -> bool {
+    let ServiceError::TransportSend(transport_err) = err else {
+        return false;
+    };
+
+    // Streamable HTTP session expiry is currently carried as
+    // `StreamableHttpError<reqwest::Error>` inside TransportSend. Future rmcp
+    // transports may box different error types; non-matching downcasts are not
+    // session expiry and must fall through to the existing CallTool mapping.
+    let mut source: Option<&(dyn StdError + 'static)> = Some(transport_err.error.as_ref());
+    while let Some(err) = source {
+        if let Some(http_err) = err.downcast_ref::<StreamableHttpError<reqwest::Error>>() {
+            return matches!(http_err, StreamableHttpError::SessionExpired);
+        }
+        source = err.source();
+    }
+    false
 }
 
 fn arguments_to_map(
