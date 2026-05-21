@@ -199,9 +199,7 @@ async fn approved_registry_snapshot_is_materialized_into_package_tarball() {
         .unpack(extract_dir.path())
         .expect("unpack");
 
-    let packaged_server = extract_dir
-        .path()
-        .join("mcp/servers/grafana/server.json");
+    let packaged_server = extract_dir.path().join("mcp/servers/grafana/server.json");
     assert!(
         packaged_server.exists(),
         "approved MCP snapshot must be carried in the agent package under mcp/"

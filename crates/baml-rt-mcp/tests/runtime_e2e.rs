@@ -546,7 +546,9 @@ async fn noisy_stderr_does_not_block_stdio_mcp_connect_or_call() {
     .await;
 
     match outcome {
-        Ok(ToolStep::Done { output: Some(envelope) }) => {
+        Ok(ToolStep::Done {
+            output: Some(envelope),
+        }) => {
             assert_eq!(envelope["is_error"], false);
         }
         Ok(other) => panic!("expected Done with envelope, got {other:?}"),
