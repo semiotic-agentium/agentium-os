@@ -63,6 +63,7 @@ fn sample_fixture() -> FakeMcpConfig {
         drift_mode: false,
         drift_changes_schema: false,
         malformed_response: false,
+        stderr_spam_mode: false,
     }
 }
 
