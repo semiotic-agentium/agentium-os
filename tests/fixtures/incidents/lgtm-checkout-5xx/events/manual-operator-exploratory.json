@@ -1,0 +1,40 @@
+{
+  "schema_version": "incident.manual.v1",
+  "event_id": "manual-operator-lgtm-checkout-5xx",
+  "fixture_only": true,
+  "fixture_note": "Operator-typed exploratory event — for use from the Event Console (#520/#526) to dispatch the same Ford/Grafana investigation without a real alerting producer.",
+  "emitted_at_unix": 1779286170,
+  "source": {
+    "source_key": "operator:joseph@semiotic.ai",
+    "source_kind": "operator",
+    "source_label": "Exploratory event from Event Console"
+  },
+  "scenario_ref": {
+    "scenario_id": "lgtm-checkout-5xx",
+    "affected_service": "checkout-api",
+    "namespace": "production",
+    "time_range": {
+      "start": "2026-05-20T14:00:00Z",
+      "end": "2026-05-20T14:45:00Z"
+    }
+  },
+  "payload": {
+    "title": "checkout-api looks sick around 14:08",
+    "symptom": "Customers reporting failed checkouts in production. Errors spiked roughly 14:08 UTC.",
+    "affected_service": "checkout-api",
+    "namespace": "production",
+    "time_range": {
+      "start": "2026-05-20T14:00:00Z",
+      "end": "2026-05-20T14:45:00Z"
+    },
+    "severity_hint": "sev2",
+    "dashboard_hints": [
+      "https://grafana.fixture.local/d/checkout-overview/checkout-service-overview"
+    ],
+    "freeform_notes": "Not sure if it's a deploy issue or downstream. Please pull metrics, logs, and traces for the window and tell me what you think."
+  },
+  "subscription_hint": {
+    "schema_versions": ["incident.manual.v1"],
+    "source_kinds": ["operator"]
+  }
+}

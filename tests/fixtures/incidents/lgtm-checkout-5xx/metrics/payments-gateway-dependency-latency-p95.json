@@ -1,0 +1,91 @@
+{
+  "evidence_id": "metric.checkout-api.dependency_latency_payments_gateway_p95",
+  "title": "Dependency p95 latency: checkout-api -> payments-gateway",
+  "datasource": { "kind": "mimir", "uid": "mimir-prod" },
+  "promql": "histogram_quantile(0.95, sum by (le) (rate(dependency_request_duration_seconds_bucket{service=\"checkout-api\",dependency=\"payments-gateway\"}[5m])))",
+  "step_seconds": 60,
+  "unit": "seconds",
+  "time_range": {
+    "start": "2026-05-20T14:00:00Z",
+    "end": "2026-05-20T14:45:00Z"
+  },
+  "panel_ref": {
+    "dashboard_uid": "checkout-overview",
+    "panel_id": 31,
+    "url": "https://grafana.fixture.local/d/checkout-overview/checkout-service-overview?viewPanel=31&from=1779285600000&to=1779288300000"
+  },
+  "annotations": [
+    {
+      "name": "client_timeout_pre_v2_34_0",
+      "value_seconds": 2.0,
+      "applies_until": "2026-05-20T14:02:30Z",
+      "note": "Effective payments-gateway client timeout before the v2.34.0 deploy."
+    },
+    {
+      "name": "client_timeout_post_v2_34_0",
+      "value_seconds": 0.2,
+      "applies_from": "2026-05-20T14:02:30Z",
+      "applies_until": "2026-05-20T14:42:00Z",
+      "note": "Effective payments-gateway client timeout introduced by v2.34.0. Dependency p95 routinely exceeds this."
+    }
+  ],
+  "result": {
+    "status": "success",
+    "data": {
+      "resultType": "matrix",
+      "result": [
+        {
+          "metric": { "service": "checkout-api", "dependency": "payments-gateway", "quantile": "0.95" },
+          "values": [
+            [1779285600, "0.471"],
+            [1779285660, "0.482"],
+            [1779285720, "0.469"],
+            [1779285780, "0.476"],
+            [1779285840, "0.483"],
+            [1779285900, "0.478"],
+            [1779285960, "0.481"],
+            [1779286020, "0.485"],
+            [1779286080, "0.479"],
+            [1779286140, "0.484"],
+            [1779286200, "0.491"],
+            [1779286260, "0.487"],
+            [1779286320, "0.482"],
+            [1779286380, "0.485"],
+            [1779286440, "0.494"],
+            [1779286500, "0.481"],
+            [1779286560, "0.488"],
+            [1779286620, "0.483"],
+            [1779286680, "0.491"],
+            [1779286740, "0.486"],
+            [1779286800, "0.479"],
+            [1779286860, "0.482"],
+            [1779286920, "0.488"],
+            [1779286980, "0.484"],
+            [1779287040, "0.487"],
+            [1779287100, "0.481"],
+            [1779287160, "0.485"],
+            [1779287220, "0.489"],
+            [1779287280, "0.483"],
+            [1779287340, "0.487"],
+            [1779287400, "0.481"],
+            [1779287460, "0.486"],
+            [1779287520, "0.484"],
+            [1779287580, "0.488"],
+            [1779287640, "0.481"],
+            [1779287700, "0.485"],
+            [1779287760, "0.487"],
+            [1779287820, "0.484"],
+            [1779287880, "0.488"],
+            [1779287940, "0.482"],
+            [1779288000, "0.479"],
+            [1779288060, "0.483"],
+            [1779288120, "0.481"],
+            [1779288180, "0.484"],
+            [1779288240, "0.482"],
+            [1779288300, "0.480"]
+          ]
+        }
+      ]
+    }
+  }
+}

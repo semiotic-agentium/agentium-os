@@ -28,6 +28,13 @@ This directory contains test fixtures used by the test suite.
 - **`baml/`** — BAML schema fixtures (if present)
   - Used for schema-level tests
 
+- **`incidents/`** — Seeded LGTM-style outage datasets used by the Ford/Grafana
+  investigation slice (#512). Each scenario directory carries metrics, logs,
+  traces, annotations, ground truth, expected evidence, and sample incident
+  events (Grafana, FireHydrant-shaped, manual operator). See
+  [`incidents/README.md`](./incidents/README.md). Load via
+  `test_support::incident_fixtures::LoadedScenario::load("<scenario_id>")`.
+
 - **`packages/`** — Pre-built test packages (generated during tests)
   - For packages created during test execution
 

@@ -1,0 +1,51 @@
+{
+  "scenario_id": "lgtm-checkout-5xx",
+  "warning": "Ground truth is for tests and reviewers. Do NOT feed this file to the agent as prompt input.",
+  "headline": "Deploy of checkout-api v2.34.0 set the payments-gateway client timeout to 200ms; payments-gateway p95 routinely exceeds 200ms, so most checkout calls fail with upstream timeout (502/504).",
+  "likely_cause": {
+    "component": "checkout-api",
+    "version": "v2.34.0",
+    "change": "payments-gateway client timeout reduced from 2000ms to 200ms",
+    "impact": "Elevated 5xx rate and elevated p95 latency on checkout-api due to upstream timeouts against payments-gateway."
+  },
+  "timeline": [
+    {
+      "at": "2026-05-20T14:02:30Z",
+      "kind": "deploy",
+      "summary": "checkout-api v2.34.0 rolled out to production (10 of 10 pods Ready by 14:04:45Z)."
+    },
+    {
+      "at": "2026-05-20T14:05:12Z",
+      "kind": "noise",
+      "summary": "Three checkout-api pods OOMed once during startup and self-recovered (memory pressure from container image change). Not the root cause."
+    },
+    {
+      "at": "2026-05-20T14:08:00Z",
+      "kind": "symptom_onset",
+      "summary": "checkout-api 5xx rate climbs from baseline ~0.2 rps to ~14 rps as the v2.34.0 fleet saturates."
+    },
+    {
+      "at": "2026-05-20T14:09:30Z",
+      "kind": "alert",
+      "summary": "Grafana alert CheckoutHighErrorRate fires (5xx ratio > 5% for 1m)."
+    },
+    {
+      "at": "2026-05-20T14:42:00Z",
+      "kind": "remediation",
+      "summary": "Operator triggers rollback to checkout-api v2.33.4."
+    },
+    {
+      "at": "2026-05-20T14:43:10Z",
+      "kind": "recovery",
+      "summary": "5xx rate returns to baseline; Grafana alert resolves."
+    }
+  ],
+  "red_herrings": [
+    {
+      "signal": "checkout-api pod restarts at ~14:05:12Z",
+      "why_misleading": "Three pods restarted once. A surface read can confuse this with crash-loop, but restarts do not continue after 14:05 and request rate is normal during the spike, so this is not the source of 5xx.",
+      "evidence_to_disambiguate": "metrics/checkout-api-pod-restarts.json shows a single spike then zero; metrics/checkout-api-request-rate.json shows steady traffic, ruling out capacity loss."
+    }
+  ],
+  "fix": "Roll back to v2.33.4 or raise the payments-gateway client timeout in v2.34.0 to >= 1500ms."
+}
