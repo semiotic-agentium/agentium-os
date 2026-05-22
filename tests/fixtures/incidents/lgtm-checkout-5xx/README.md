@@ -112,6 +112,8 @@ let expected = scenario.expected_evidence()?;
 ## Verifying the fixture is intact
 
 ```bash
+just test-crate test-support
+# or, narrower:
 cargo nextest run -p test-support --test incident_fixtures_lgtm_checkout_5xx
 ```
 
