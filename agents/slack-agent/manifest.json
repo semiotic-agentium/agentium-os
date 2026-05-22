@@ -24,7 +24,6 @@
       "slack:thread-read",
       "slack:todo-extraction",
       "slack:intake",
-      "ingress:semantic-interpretation",
       "planning:action-item-extraction"
     ],
     "subscriptions": [

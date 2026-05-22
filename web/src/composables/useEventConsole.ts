@@ -3,19 +3,26 @@ import type { AgentDiscoveryEntry, ContextPickerPage, ConversationHistoryOption 
 import type {
   AgentDeliverableMessageShape,
   DerivedDispatchEnvelope,
+  EventConsoleRoute,
   EventConsoleSelection,
   EventDispatchPhase,
   EventDispatchScope,
+  EventObservationState,
   EventPayloadDraft,
   EventPublishResponse,
   EventValidationReport,
   MessageShapeSample,
+  ResolvedObservationIds,
 } from "../types/events";
+import { scopeFromRecord, type PublishedScope } from "../events/dispatchObserve";
 import {
-  resolveObservationScope,
-  scopeFromRecord,
-  type PublishedScope,
-} from "../events/dispatchObserve";
+  buildObservationScopeResolveInput,
+  createInitialObservation,
+  parsePreviewProducedEvent,
+  pickerOptionFromContextId,
+  publishedScopeFromPreview,
+  resolveObservedScopeIds,
+} from "../events/eventConsoleState";
 import {
   autofillPayload,
   deriveDispatchEnvelope,
@@ -140,11 +147,7 @@ export function mergeContextPickerItems(
   return merged.sort((a, b) => b.latestTimestampMs - a.latestTimestampMs);
 }
 
-export function readEventConsoleRoute(): {
-  agentPackage: string | null;
-  agentInstance: string | null;
-  contextId: string | null;
-} {
+export function readEventConsoleRoute(): EventConsoleRoute {
   const params = new URLSearchParams(window.location.search);
   return {
     agentPackage: params.get("agentPackage"),
@@ -154,11 +157,9 @@ export function readEventConsoleRoute(): {
 }
 
 /** Keep the events deep link in sync when the operator changes agent or context in the UI. */
-export function writeEventConsoleRoute(patch: {
-  agentPackage?: string;
-  agentInstance?: string;
-  contextId?: string | null;
-}): void {
+export function writeEventConsoleRoute(
+  patch: Partial<EventConsoleRoute> & { contextId?: string | null },
+): void {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
   if (patch.agentPackage !== undefined) {
@@ -183,15 +184,6 @@ export function writeEventConsoleRoute(patch: {
     }
   }
   window.history.replaceState(window.history.state, "", url.toString());
-}
-
-/** @deprecated Use readEventConsoleRoute */
-export function readEventConsoleAgentRoute(): {
-  agentPackage: string | null;
-  agentInstance: string | null;
-} {
-  const route = readEventConsoleRoute();
-  return { agentPackage: route.agentPackage, agentInstance: route.agentInstance };
 }
 
 export function resolveAgentFromRoute(
@@ -239,7 +231,6 @@ function draftFingerprint(
 }
 
 export function useEventConsole() {
-  const mode = ref<"compose" | "history">("compose");
   const agents = ref<AgentDiscoveryEntry[]>([]);
   const messageShapes = ref<AgentDeliverableMessageShape[]>([]);
   const draft = ref<EventPayloadDraft>(emptyDraft());
@@ -250,7 +241,7 @@ export function useEventConsole() {
   const lastPublishOutcome = ref<EventPublishResponse | null>(null);
   const publishError = ref<string | null>(null);
   const historyItems = ref<ConversationHistoryOption[]>([]);
-  const selectedContextId = ref<string | null>(null);
+  const observation = ref<EventObservationState>(createInitialObservation());
   const historyLoading = ref(false);
   const historyFetchError = ref<string | null>(null);
   let historyFetchAbort: AbortController | null = null;
@@ -338,44 +329,20 @@ export function useEventConsole() {
     );
   });
 
-  const activeRunSummary = computed(() => {
-    const agent = selectedAgent.value;
-    const shape = selectedMessageShape.value;
-    const scope = resolveObservationScope({
+  const observedContextId = computed(() => observation.value.contextId);
+
+  const scopeResolveInput = computed(() =>
+    buildObservationScopeResolveInput({
       lastPublishedScope: lastPublishedScope.value,
-      draftScope: draft.value.scope,
-      selectedContextId: selectedContextId.value,
-      previewProducedEvent: validation.value?.preview_produced_event as
-        | Record<string, unknown>
-        | undefined,
-      currentAgent: agent
-        ? {
-            agentPackage: agent.agent_package,
-            agentInstanceId: agent.agent_instance_id,
-          }
-        : null,
-      mode: mode.value,
-    });
-    let statusLabel = "";
-    if (publishError.value) statusLabel = "Failed";
-    else if (lastPublishOutcome.value) {
-      const o = lastPublishOutcome.value;
-      statusLabel = `Published ${o.subscribers_accepted}/${o.subscribers_matched}`;
-      if (o.failures.length > 0) {
-        statusLabel = `${statusLabel} (${o.failures.length} failed)`;
-      }
-    } else if (validation.value?.valid && !validationStale.value) {
-      statusLabel = "Validated";
-    }
-    return {
-      agentLabel: agent ? `${agent.agent_package}/${agent.agent_instance_id}` : null,
-      messageTypeLabel: shape?.display_name ?? null,
-      contextId: scope?.contextId ?? null,
-      taskId: scope?.taskId ?? null,
-      statusLabel,
-      phase: dispatchPhase.value,
-    };
-  });
+      draft: draft.value,
+      observation: observation.value,
+      validation: validation.value,
+    }),
+  );
+
+  const observedScopeIds = computed((): ResolvedObservationIds =>
+    resolveObservedScopeIds(scopeResolveInput.value),
+  );
 
   async function fetchAgents(): Promise<void> {
     const res = await fetch("/agents");
@@ -400,7 +367,7 @@ export function useEventConsole() {
     writeEventConsoleRoute({
       agentPackage: draft.value.agent_package,
       agentInstance: draft.value.agent_instance_id,
-      contextId: selectedContextId.value,
+      contextId: observation.value.contextId,
     });
   }
 
@@ -417,12 +384,13 @@ export function useEventConsole() {
           selectAgent(match, { syncRoute: false });
         }
       }
+    } else if (!draft.value.agent_package && subscribedAgents.value[0]) {
+      selectAgent(subscribedAgents.value[0], { syncRoute: true });
     }
-    if (contextId && selectedContextId.value !== contextId) {
-      selectContextFromPicker(
-        { contextId, latestTimestampMs: 0, preview: "" },
-        { syncRoute: false },
-      );
+    if (contextId && observation.value.contextId !== contextId) {
+      selectContextFromPicker(pickerOptionFromContextId(contextId), {
+        syncRoute: false,
+      });
     }
   }
 
@@ -449,7 +417,7 @@ export function useEventConsole() {
     }
     lastPublishOutcome.value = null;
     lastPublishedScope.value = null;
-    selectedContextId.value = null;
+    observation.value = createInitialObservation();
     publishError.value = null;
     if (options?.syncRoute !== false) {
       syncEventConsoleRoute();
@@ -513,6 +481,7 @@ export function useEventConsole() {
 
   function duplicateMessage(index: number): void {
     const src = draft.value.messages[index];
+    if (!src) return;
     draft.value.messages.splice(index + 1, 0, cloneJson(src));
     activeMessageIndex.value = index + 1;
     validation.value = null;
@@ -580,10 +549,8 @@ export function useEventConsole() {
   });
 
   function syncScopeFromPreview(): void {
-    const preview = validation.value?.preview_produced_event as
-      | Record<string, unknown>
-      | undefined;
-    const scope = scopeFromRecord(preview);
+    const preview = parsePreviewProducedEvent(validation.value?.preview_produced_event);
+    const scope = scopeFromRecord(preview as Record<string, unknown> | null);
     if (scope) {
       lastPublishedScope.value = scope;
     }
@@ -639,24 +606,29 @@ export function useEventConsole() {
     }
   }
 
-  async function publishEvent(): Promise<void> {
-    let preview = validation.value?.preview_produced_event as
-      | Record<string, unknown>
-      | undefined;
-    if (validationStale.value || !validation.value?.valid || !preview) {
+  async function publishEvent(): Promise<"published" | "validation_failed" | "publish_failed"> {
+    publishError.value = null;
+    let previewRecord: Record<string, unknown> | undefined;
+    const existingPreview = parsePreviewProducedEvent(
+      validation.value?.preview_produced_event,
+    );
+    if (existingPreview) {
+      previewRecord = existingPreview as Record<string, unknown>;
+    }
+    if (validationStale.value || !validation.value?.valid || !previewRecord) {
       const report = await validateDraft();
-      if (!report.valid || !report.preview_produced_event) {
+      const validated = parsePreviewProducedEvent(report.preview_produced_event);
+      if (!report.valid || !validated) {
         const first = report.errors[0];
         publishError.value =
           first?.message ?? "Validation failed — fix the draft before publishing.";
         dispatchPhase.value = "failed";
-        return;
+        return "validation_failed";
       }
-      preview = report.preview_produced_event as Record<string, unknown>;
+      previewRecord = validated as Record<string, unknown>;
     }
 
     busy.value = true;
-    publishError.value = null;
     lastPublishOutcome.value = null;
     dispatchPhase.value = "publishing";
     try {
@@ -664,25 +636,28 @@ export function useEventConsole() {
       const res = await fetch("/events/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(preview),
+        body: JSON.stringify(previewRecord),
       });
       if (!res.ok) {
         publishError.value = await res.text();
         dispatchPhase.value = "failed";
-        return;
+        return "publish_failed";
       }
       const outcome = (await res.json()) as EventPublishResponse;
       lastPublishOutcome.value = outcome;
+      const previewParsed = parsePreviewProducedEvent(previewRecord);
       const scope =
-        scopeFromRecord(preview) ??
+        (previewParsed
+          ? publishedScopeFromPreview(
+              previewParsed,
+              draft.value.agent_package,
+              draft.value.agent_instance_id,
+            )
+          : null) ??
         (outcome.context_id ? scopeFromRecord({ context_id: outcome.context_id }) : null);
       if (scope) {
-        lastPublishedScope.value = {
-          ...scope,
-          agentPackage: draft.value.agent_package,
-          agentInstanceId: draft.value.agent_instance_id,
-        };
-        selectedContextId.value = scope.contextId;
+        lastPublishedScope.value = scope;
+        observation.value = { contextId: scope.contextId, source: "publish" };
         const label =
           selectedMessageShape.value?.display_name ?? "Operator publish";
         rememberRecentDispatchContext(
@@ -693,7 +668,8 @@ export function useEventConsole() {
         syncEventConsoleRoute();
       }
       dispatchPhase.value = "recording";
-      await fetchHistory();
+      void fetchHistory();
+      return "published";
     } finally {
       busy.value = false;
     }
@@ -715,6 +691,7 @@ export function useEventConsole() {
     try {
       const params = new URLSearchParams();
       params.set("limit", "100");
+      params.set("eventOnly", "true");
       // Do not pass agentPackage here: scoped Message ops are too slow on large graphs
       // and the picker times out. Transcript/provenance reads still filter by agent.
       const res = await fetch(`/contexts?${params.toString()}`, {
@@ -754,37 +731,22 @@ export function useEventConsole() {
     }
   }
 
-  function selectHistoryContext(contextId: string): void {
-    selectedContextId.value = contextId;
-  }
-
   function selectContextFromPicker(
     option: ConversationHistoryOption,
     options?: { syncRoute?: boolean },
   ): void {
-    selectHistoryContext(option.contextId);
-    const scope = draft.value.scope;
-    if (scope.kind === "existing_task") {
-      setScope({
-        kind: "existing_task",
-        context_id: option.contextId,
-        task_id: scope.task_id,
-      });
-    } else {
-      setScope({ kind: "existing_context", context_id: option.contextId });
-    }
-    validation.value = null;
-    validatedFingerprint.value = null;
+    observation.value = { contextId: option.contextId, source: "picker" };
     if (options?.syncRoute !== false) {
       syncEventConsoleRoute();
     }
   }
 
-  function useContextAsDraftScope(): void {
-    const ctx = selectedContextId.value;
+  /** Copy the observed event run into compose draft scope (explicit, not on picker change). */
+  function applyObservedContextToDraftScope(): void {
+    const ctx = observation.value.contextId;
     if (!ctx) return;
     draft.value.scope = { kind: "existing_context", context_id: ctx };
-    mode.value = "compose";
+    observation.value = { ...observation.value, source: "draft" };
     validation.value = null;
     validatedFingerprint.value = null;
     lastPublishOutcome.value = null;
@@ -804,38 +766,7 @@ export function useEventConsole() {
     }
   });
 
-  function observeContextFromDraftOrFlow(): {
-    contextId: string | null;
-    taskId: string | null;
-  } {
-    const preview = validation.value?.preview_produced_event as
-      | Record<string, unknown>
-      | undefined;
-    const resolved = resolveObservationScope({
-      lastPublishedScope: lastPublishedScope.value,
-      draftScope: draft.value.scope,
-      selectedContextId: selectedContextId.value,
-      previewProducedEvent: preview,
-      currentAgent:
-        draft.value.agent_package && draft.value.agent_instance_id
-          ? {
-              agentPackage: draft.value.agent_package,
-              agentInstanceId: draft.value.agent_instance_id,
-            }
-          : null,
-      mode: mode.value,
-    });
-    if (!resolved) {
-      return { contextId: null, taskId: null };
-    }
-    return {
-      contextId: resolved.contextId,
-      taskId: resolved.taskId ?? null,
-    };
-  }
-
   return {
-    mode,
     agents,
     messageShapes,
     draft,
@@ -851,7 +782,9 @@ export function useEventConsole() {
     publishError,
     historyItems,
     filteredHistoryItems,
-    selectedContextId,
+    observation,
+    observedContextId,
+    observedScopeIds,
     historyLoading,
     historyFetchError,
     historyFilterPreview,
@@ -866,7 +799,6 @@ export function useEventConsole() {
     selectedMessageShape,
     selectedSample,
     derivedEnvelope,
-    activeRunSummary,
     fetchAgents,
     fetchMessageShapes,
     applyRouteFromUrl,
@@ -880,9 +812,7 @@ export function useEventConsole() {
     validateDraft,
     publishEvent,
     fetchHistory,
-    selectHistoryContext,
     selectContextFromPicker,
-    useContextAsDraftScope,
-    observeContextFromDraftOrFlow,
+    applyObservedContextToDraftScope,
   };
 }

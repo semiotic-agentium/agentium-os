@@ -99,7 +99,7 @@ mod tests {
         let clickup = find_message_shape("clickup-source-records").expect("clickup shape");
         assert_ne!(github.payload_schema, clickup.payload_schema);
         let github_schema = github.payload_schema.to_string();
-        assert!(github_schema.contains("GithubIssueRecord"));
-        assert!(!github_schema.contains("ClickupLifecycleTaskRecord"));
+        assert!(github_schema.contains("GithubIssueEventRecord"));
+        assert!(!github_schema.contains("ClickupLifecycleEventRecord"));
     }
 }

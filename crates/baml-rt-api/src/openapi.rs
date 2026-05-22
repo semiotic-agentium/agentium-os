@@ -303,9 +303,18 @@ pub struct EventDeliveryFailureDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct EventPublishAcceptanceDto {
+    pub agent_package: String,
+    pub agent_instance_id: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct EventPublishResponseDto {
     pub subscribers_matched: usize,
     pub subscribers_accepted: usize,
+    #[serde(default)]
+    pub acceptances: Vec<EventPublishAcceptanceDto>,
     pub failures: Vec<EventDeliveryFailureDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
@@ -319,6 +328,15 @@ impl EventPublishResponseDto {
         Self {
             subscribers_matched: value.subscribers_matched,
             subscribers_accepted: value.subscribers_accepted,
+            acceptances: value
+                .acceptances
+                .into_iter()
+                .map(|a| EventPublishAcceptanceDto {
+                    agent_package: a.agent_package,
+                    agent_instance_id: a.agent_instance_id,
+                    detail: a.detail,
+                })
+                .collect(),
             failures: value
                 .failures
                 .into_iter()

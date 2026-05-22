@@ -1,145 +1,89 @@
-//! Actionable user-visible text for `host.source-records.v1` batches (conversation history).
+//! Wire-faithful text for `host.source-records.v1` ingress rows (conversation history).
+//!
+//! The host does not interpret records (no title lines, summaries, or field extraction).
+//! Agents receive the same JSON in dispatch `messages[0]` and in the unit prelude user row.
 
-use serde_json::Value;
+use serde_json::{Value, json};
+
+/// Delimiter prefix for ingress user rows (LLM/UI can detect wire JSON bodies).
+pub const INGRESS_WIRE_BODY_DELIMITER: &str = "--- host.source-records.v1 ---";
 
 /// Formatted poll or unit body for provenance `user` messages.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IngressPollBody(pub String);
 
-/// Format lifecycle/source-record rows for a transcript line (no source keys, schema, or record_kind).
+/// Format a full batch's `records` array for a poll-level user line (legacy poll path).
 #[must_use]
 pub fn format_source_records_message_body(batch: &Value) -> IngressPollBody {
-    IngressPollBody(format_records_array(
-        batch.get("records").and_then(|v| v.as_array()),
-    ))
+    let records = batch
+        .get("records")
+        .and_then(Value::as_array)
+        .map(|a| a.as_slice())
+        .unwrap_or(&[]);
+    format_source_records_wire_body(records)
 }
 
-/// Format a `withTask` record slice using the same rules as the full poll body.
+/// Format a `withTask` record slice — canonical ingress prelude for that unit.
 #[must_use]
 pub fn format_source_records_unit_body(records: &[Value]) -> IngressPollBody {
-    IngressPollBody(format_records_array(Some(&records.to_vec())))
+    format_source_records_wire_body(records)
 }
 
-fn format_records_array(records: Option<&Vec<Value>>) -> String {
-    let Some(records) = records else {
-        return String::new();
-    };
-    if records.is_empty() {
-        return String::new();
-    }
-
-    let mut lines: Vec<String> = Vec::new();
-    let mut index = 0usize;
-    for row in records {
-        let Some(obj) = row.as_object() else {
-            continue;
-        };
-        if let Some(block) = format_slack_message_row(obj, index) {
-            lines.push(block);
-            index += 1;
-            continue;
-        }
-        let title = obj
-            .get("title")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
-        let Some(title) = title else {
-            continue;
-        };
-        let priority = obj
-            .get("priority")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
-        let description = obj
-            .get("description")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
-
-        let mut line = format!("{}. {title}", index + 1);
-        if let Some(priority) = priority {
-            line.push_str(&format!(" (priority: {priority})"));
-        }
-        lines.push(line);
-        if let Some(description) = description {
-            lines.push(format!("   {description}"));
-        }
-        index += 1;
-    }
-    lines.join("\n")
-}
-
-fn format_slack_message_row(obj: &serde_json::Map<String, Value>, index: usize) -> Option<String> {
-    let record_kind = obj.get("record_kind").and_then(|v| v.as_str())?;
-    if record_kind != "slack.message" {
-        return None;
-    }
-    let text = obj
-        .get("text")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())?;
-    let channel = obj
-        .get("channel_id")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .unwrap_or("channel");
-    let speaker = obj
-        .get("user_name")
-        .or_else(|| obj.get("username"))
-        .or_else(|| obj.get("user"))
-        .or_else(|| obj.get("user_id"))
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("user");
-    Some(format!("{}. @{speaker} in #{channel}: {text}", index + 1))
+/// Serialize unit `records` as pretty JSON under a fixed delimiter (no semantic rewriting).
+#[must_use]
+pub fn format_source_records_wire_body(records: &[Value]) -> IngressPollBody {
+    let payload = json!({ "records": records });
+    let json_text = serde_json::to_string_pretty(&payload)
+        .unwrap_or_else(|_| json!({ "records": [] }).to_string());
+    IngressPollBody(format!("{INGRESS_WIRE_BODY_DELIMITER}\n{json_text}"))
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::format_source_records_message_body;
+    use super::{
+        INGRESS_WIRE_BODY_DELIMITER, format_source_records_message_body,
+        format_source_records_unit_body,
+    };
 
     #[test]
-    fn formats_records_without_bookkeeping_fields() {
+    fn wire_body_preserves_record_fields() {
         let batch = json!({
             "schema_version": "host.source-records.v1",
             "source": { "source_kind": "clickup", "source_key": "k", "source_label": "L" },
             "records": [
                 {
-                    "record_kind": "clickup.lifecycle_task",
+                    "record_kind": "clickup.lifecycle_event",
                     "key": "clickup-created:1",
-                    "title": "Fix ingress",
-                    "description": "Wire poll to history",
-                    "priority": "high"
+                    "event": "created",
+                    "task_id": "t1",
+                    "list_id": "list-1",
+                    "snapshot": { "name": "Fix ingress" },
+                    "revision": 1
                 }
             ]
         });
         let body = format_source_records_message_body(&batch).0;
-        assert!(body.contains("1. Fix ingress"));
-        assert!(body.contains("(priority: high)"));
-        assert!(body.contains("Wire poll to history"));
-        assert!(!body.contains("clickup-created"));
-        assert!(!body.contains("source_kind"));
+        assert!(body.starts_with(INGRESS_WIRE_BODY_DELIMITER));
+        assert!(body.contains("clickup.lifecycle_event"));
+        assert!(body.contains("clickup-created:1"));
+        assert!(body.contains("Fix ingress"));
+        assert!(!body.contains("1. Fix ingress"));
+        assert!(!body.contains("(priority:"));
     }
 
     #[test]
-    fn formats_slack_message_records() {
-        let batch = json!({
-            "records": [
-                {
-                    "record_kind": "slack.message",
-                    "channel_id": "C123",
-                    "user_name": "alice",
-                    "text": "deploy blocked?"
-                }
-            ]
-        });
-        let body = format_source_records_message_body(&batch).0;
-        assert!(body.contains("@alice in #C123: deploy blocked?"));
+    fn wire_body_preserves_slack_message_records() {
+        let records = vec![json!({
+            "record_kind": "slack.message",
+            "channel_id": "C123",
+            "user_name": "alice",
+            "text": "deploy blocked?"
+        })];
+        let body = format_source_records_unit_body(&records).0;
+        assert!(body.contains("slack.message"));
+        assert!(body.contains("deploy blocked?"));
+        assert!(!body.contains("@alice in #C123"));
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! List/issue polling is not implemented yet. When added, this module should own the
 //! GitHub API integration; task-daemon will hold a thin `TaskSource` adapter and publish
-//! via `batch_from_issue_records` in [`crate::source_records`].
+//! via `batch_from_issue_events` in [`crate::source_records`].
 
 use serde::{Deserialize, Serialize};
 

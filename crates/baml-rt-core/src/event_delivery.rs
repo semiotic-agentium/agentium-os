@@ -8,7 +8,8 @@ use tracing::warn;
 
 use crate::{
     AgentDiscoveryEntry, AgentDispatchAck, AgentDispatchRequest, AgentInstanceId, AgentPackageName,
-    AgentRouteKey, EventDeliveryOutcome, ProducedEvent, Result, SubscriberDeliveryFailure,
+    AgentRouteKey, EventDeliveryOutcome, ProducedEvent, Result, SubscriberAcceptance,
+    SubscriberDeliveryFailure,
     event_subscription::{PublishedEvent, subscriptions_match_published_event},
 };
 
@@ -109,6 +110,7 @@ pub async fn deliver_to_subscribers(
         return Ok(EventDeliveryOutcome {
             subscribers_matched: 0,
             subscribers_accepted: 0,
+            acceptances: Vec::new(),
             failures: Vec::new(),
         });
     }
@@ -117,6 +119,7 @@ pub async fn deliver_to_subscribers(
     let mut outcome = EventDeliveryOutcome {
         subscribers_matched: targets.len(),
         subscribers_accepted: 0,
+        acceptances: Vec::new(),
         failures: Vec::new(),
     };
 
@@ -124,6 +127,11 @@ pub async fn deliver_to_subscribers(
         match port.dispatch(target, request.clone()).await {
             Ok(ack) if ack.accepted => {
                 outcome.subscribers_accepted += 1;
+                outcome.acceptances.push(SubscriberAcceptance {
+                    agent_package: target.agent_package.to_string(),
+                    agent_instance_id: target.agent_instance_id.to_string(),
+                    detail: ack.detail.unwrap_or_else(|| "accepted".to_string()),
+                });
             }
             Ok(ack) => {
                 let detail = ack.detail.unwrap_or_else(|| "rejected".into());

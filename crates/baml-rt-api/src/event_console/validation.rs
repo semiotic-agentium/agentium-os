@@ -118,6 +118,11 @@ pub fn validate_draft(
             }
         }
         validate_messages_against_schema(&entry.payload_schema, &body.messages, &mut errors);
+        if body.message_type == entry.wire_schema_version
+            && entry.wire_schema_version == "host.source-records.v1"
+        {
+            validate_source_records_nonempty(&body.messages, &mut errors);
+        }
     } else {
         warnings.push(issue(
             "unknown_message_shape",
@@ -249,6 +254,30 @@ fn validate_scope(scope: &EventDispatchScopeDto, errors: &mut Vec<EventValidatio
                     None,
                 ));
             }
+        }
+    }
+}
+
+fn validate_source_records_nonempty(messages: &[Value], errors: &mut Vec<EventValidationIssueDto>) {
+    for (index, message) in messages.iter().enumerate() {
+        let records = message.get("records").and_then(Value::as_array);
+        match records {
+            Some(arr) if arr.is_empty() => {
+                errors.push(issue(
+                    "empty_records",
+                    "messages[].records must contain at least one source record — \
+                     publish would accept with no agent work",
+                    Some(format!("/messages/{index}/records")),
+                ));
+            }
+            None => {
+                errors.push(issue(
+                    "missing_records",
+                    "host.source-records.v1 batch must include a records array",
+                    Some(format!("/messages/{index}/records")),
+                ));
+            }
+            _ => {}
         }
     }
 }

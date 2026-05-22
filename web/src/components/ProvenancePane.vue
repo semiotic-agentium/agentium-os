@@ -25,6 +25,27 @@ import ExploreTab from "./provenance/ExploreTab.vue";
 import type { DrilldownParams } from "./provenance/ExploreTab.vue";
 import type { LlmPromptOperation } from "../types/a2a";
 
+const TRACES_STORAGE_KEY = "agentium:showTraces";
+
+function readTracesPreference(): boolean | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const stored = localStorage.getItem(TRACES_STORAGE_KEY);
+    if (stored === "0") return false;
+    if (stored === "1") return true;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function defaultPaneOpen(preferOpen?: boolean): boolean {
+  if (preferOpen === true) return true;
+  const stored = readTracesPreference();
+  if (stored !== null) return stored;
+  return typeof window !== "undefined" ? window.innerWidth >= 1280 : true;
+}
+
 const props = defineProps<{
   contextId?: string;
   taskId?: string;
@@ -36,9 +57,28 @@ const props = defineProps<{
   llmPromptOperations?: LlmPromptOperation[];
   /** Dashboard / deep-link: bump `nonce` to switch tabs and expand the pane */
   externalTabFocus?: { nonce: number; tab: "live" | "failures" | "anomalies" | "drift" | "explore" };
+  /** Initial open state; Event Console passes false until a context is observed. */
+  defaultOpen?: boolean;
+  /** When true, expand the pane (e.g. after publish). */
+  preferOpen?: boolean;
+  /** Chat vs Event Console empty-state copy. */
+  surface?: "chat" | "event";
 }>();
 
-const isOpen = ref(typeof window !== "undefined" ? window.innerWidth >= 1280 : true);
+function initialPaneOpen(): boolean {
+  if (props.defaultOpen === true) return true;
+  if (props.defaultOpen === false) return false;
+  return defaultPaneOpen(props.preferOpen);
+}
+
+const isOpen = ref(initialPaneOpen());
+
+const emptyStateCopy = computed(() => {
+  if (props.surface === "event") {
+    return "Publish an event or select an event run to load context-scoped traces.";
+  }
+  return "Start a chat turn to attach context-scoped provenance.";
+});
 const activeTab = ref<"live" | "failures" | "anomalies" | "drift" | "explore">("live");
 
 const { theme } = useTheme();
@@ -272,6 +312,13 @@ function downloadSvg(svg: string, index: number) {
 // ── Watchers & lifecycle ───────────────────────────────────────────────────
 
 watch(
+  () => props.preferOpen,
+  (open) => {
+    if (open) isOpen.value = true;
+  },
+);
+
+watch(
   () => props.externalTabFocus?.nonce,
   (nonce) => {
     if (nonce == null) return;
@@ -283,10 +330,13 @@ watch(
 );
 
 watch(
-  () => [props.contextId, props.selectedAgentId],
+  () => [props.contextId, props.taskId, props.selectedAgentId],
   () => {
     if (!props.contextId || isExploreTab.value) return;
     void refreshForActiveTab();
+    if (activeTab.value === "live" || activeTab.value === "drift") {
+      void refreshPlanning();
+    }
   },
   { immediate: true },
 );
@@ -363,7 +413,7 @@ watch(
 
       <div class="provenance-body">
         <div v-if="!props.contextId" class="provenance-empty">
-          Start a chat turn to attach context-scoped provenance.
+          {{ emptyStateCopy }}
         </div>
 
         <template v-else-if="activeTab === 'live'">

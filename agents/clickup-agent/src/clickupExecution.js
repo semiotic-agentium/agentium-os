@@ -312,6 +312,7 @@ export async function executeClickUpPlan(_ctx, structured, validatedIntent, oper
 const INGRESS_AGENT_NAME = "clickup-agent";
 const RAW_SOURCE_SCHEMA_VERSION = "host.source-records.v1";
 const RAW_SOURCE_ROUTING_KEY = "event:intake";
+export const CLICKUP_LIFECYCLE_EVENT_KIND = "clickup.lifecycle_event";
 function normalizeOptionalString(value) {
     if (typeof value !== "string")
         return null;
@@ -343,16 +344,36 @@ export function parseClickupSourceRecordsBatch(value) {
             return null;
         const recordKind = normalizeOptionalString(row.record_kind);
         const key = normalizeOptionalString(row.key);
-        const title = normalizeOptionalString(row.title);
-        if (!recordKind || !key || !title)
+        const event = normalizeOptionalString(row.event);
+        const taskId = normalizeOptionalString(row.task_id);
+        const listId = normalizeOptionalString(row.list_id);
+        const revision = row.revision;
+        const snapshot = row.snapshot;
+        if (recordKind !== CLICKUP_LIFECYCLE_EVENT_KIND ||
+            !key ||
+            !event ||
+            !taskId ||
+            !listId ||
+            typeof revision !== "number" ||
+            !Number.isFinite(revision) ||
+            !isJsonObject(snapshot)) {
             return null;
+        }
+        let previous_snapshot;
+        if (row.previous_snapshot !== undefined) {
+            if (!isJsonObject(row.previous_snapshot))
+                return null;
+            previous_snapshot = row.previous_snapshot;
+        }
         records.push({
             record_kind: recordKind,
             key,
-            title,
-            description: typeof row.description === "string" ? row.description : "",
-            priority: typeof row.priority === "string" ? row.priority : "",
-            sources: Array.isArray(row.sources) ? row.sources : [],
+            event,
+            task_id: taskId,
+            list_id: listId,
+            revision,
+            snapshot,
+            previous_snapshot,
         });
     }
     let project;

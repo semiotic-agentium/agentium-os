@@ -48,12 +48,28 @@ const clickupSourceShape: AgentDeliverableMessageShape = {
       source_key: "clickup:list-1",
       payload: {
         schema_version: "host.source-records.v1",
+        emitted_at_unix: 1_735_720_000,
         source: {
           source_kind: "clickup",
-          source_key: "clickup:list-1",
+          source_key: "clickup:list:901325431486",
           source_label: "ClickUp list",
         },
-        records: [],
+        records: [
+          {
+            record_kind: "clickup.lifecycle_event",
+            key: "clickup-created:task-sample-1:1",
+            event: "created",
+            task_id: "task-sample-1",
+            list_id: "901325431486",
+            revision: 1,
+            snapshot: {
+              id: "task-sample-1",
+              list_id: "901325431486",
+              name: "Sample task from Event Console",
+              status: "in progress",
+            },
+          },
+        ],
       },
     },
   ],

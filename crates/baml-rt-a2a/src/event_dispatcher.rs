@@ -164,6 +164,7 @@ impl EventDispatcher {
                     Ok(EventDeliveryOutcome {
                         subscribers_matched: 0,
                         subscribers_accepted: 0,
+                        acceptances: Vec::new(),
                         failures: Vec::new(),
                     }),
                 ));
@@ -179,6 +180,7 @@ impl EventDispatcher {
             let mut aggregate = EventDeliveryOutcome {
                 subscribers_matched: 0,
                 subscribers_accepted: 0,
+                acceptances: Vec::new(),
                 failures: Vec::new(),
             };
             let mut short_circuit: Option<(BamlRtError, &'static str)> = None;
@@ -218,6 +220,7 @@ impl EventDispatcher {
                         }
                         aggregate.subscribers_matched += outcome.subscribers_matched;
                         aggregate.subscribers_accepted += outcome.subscribers_accepted;
+                        aggregate.acceptances.extend(outcome.acceptances);
                         aggregate.failures.extend(outcome.failures);
                     }
                     Err(err) => {

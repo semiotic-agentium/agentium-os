@@ -1,4 +1,4 @@
-//! `host.source-records.v1` batch types for ClickUp lifecycle polling.
+//! `host.source-records.v1` batch types for ClickUp lifecycle polling (raw events, no host interpretation).
 
 use baml_rt_core::{
     event_subscription::{EventSourceKey, EventSourceKind},
@@ -6,7 +6,9 @@ use baml_rt_core::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
+
+pub const CLICKUP_LIFECYCLE_EVENT_KIND: &str = "clickup.lifecycle_event";
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ClickupSourceRecordsSource {
@@ -24,19 +26,23 @@ pub struct ClickupProjectContext {
     pub repo_path: Option<String>,
 }
 
+/// One lifecycle diff emitted by ClickUp polling (opaque to the host; agents interpret).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ClickupLifecycleTaskRecord {
+pub struct ClickupLifecycleEventRecord {
     pub record_kind: String,
+    /// Stable dedup key (`clickup-created:task-id:rev`, etc.).
     pub key: String,
-    pub title: String,
-    pub description: String,
-    #[serde(default)]
-    pub priority: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sources: Vec<Value>,
+    /// `created` | `terminal` | `removed`
+    pub event: String,
+    pub task_id: String,
+    pub list_id: String,
+    pub revision: u64,
+    pub snapshot: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_snapshot: Option<Value>,
 }
 
-/// Wire batch for ClickUp lifecycle task polls (`host.source-records.v1`).
+/// Wire batch for ClickUp lifecycle polls (`host.source-records.v1`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ClickupSourceRecordsBatch {
     pub schema_version: String,
@@ -44,25 +50,15 @@ pub struct ClickupSourceRecordsBatch {
     pub source: ClickupSourceRecordsSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<ClickupProjectContext>,
-    pub records: Vec<ClickupLifecycleTaskRecord>,
-}
-
-/// Input for one lifecycle task row when building a batch from a host poll.
-#[derive(Debug, Clone)]
-pub struct ClickupLifecycleTaskInput {
-    pub key: String,
-    pub title: String,
-    pub description: String,
-    pub priority: String,
-    pub sources: Vec<Value>,
+    pub records: Vec<ClickupLifecycleEventRecord>,
 }
 
 /// Build a typed ClickUp source-records batch for host publish.
-pub fn batch_from_lifecycle_tasks(
+pub fn batch_from_lifecycle_events(
     source_key: &str,
     source_label: &str,
     project: Option<ClickupProjectContext>,
-    tasks: &[ClickupLifecycleTaskInput],
+    events: &[ClickupLifecycleEventRecord],
     emitted_at_unix: u64,
 ) -> ClickupSourceRecordsBatch {
     let source_kind = EventSourceKind::parse("clickup").expect("clickup is a valid source kind");
@@ -77,17 +73,7 @@ pub fn batch_from_lifecycle_tasks(
             source_label: source_label.to_string(),
         },
         project,
-        records: tasks
-            .iter()
-            .map(|task| ClickupLifecycleTaskRecord {
-                record_kind: "clickup.lifecycle_task".to_string(),
-                key: task.key.clone(),
-                title: task.title.clone(),
-                description: task.description.clone(),
-                priority: task.priority.clone(),
-                sources: task.sources.clone(),
-            })
-            .collect(),
+        records: events.to_vec(),
     }
 }
 
@@ -97,9 +83,9 @@ pub fn clickup_source_records_json_schema() -> Value {
         .expect("ClickupSourceRecordsBatch schema serializes to JSON")
 }
 
-/// Sample batch for operator console / descriptor registration.
+/// Sample batch for operator console / descriptor registration (one lifecycle task created).
 pub fn clickup_source_records_sample_payload() -> Value {
-    let batch = batch_from_lifecycle_tasks(
+    let batch = batch_from_lifecycle_events(
         "clickup:list:901325431486",
         "ClickUp list",
         Some(ClickupProjectContext {
@@ -107,16 +93,74 @@ pub fn clickup_source_records_sample_payload() -> Value {
             repo_available: true,
             repo_path: Some("/repo/agent-platform".to_string()),
         }),
-        &[ClickupLifecycleTaskInput {
-            key: "clickup-created:task-1:1".to_string(),
-            title: "Investigate publish ingress".to_string(),
-            description: "Confirm host bus receives source records".to_string(),
-            priority: "high".to_string(),
-            sources: Vec::new(),
+        &[ClickupLifecycleEventRecord {
+            record_kind: CLICKUP_LIFECYCLE_EVENT_KIND.to_string(),
+            key: "clickup-created:task-sample-1:1".to_string(),
+            event: "created".to_string(),
+            task_id: "task-sample-1".to_string(),
+            list_id: "901325431486".to_string(),
+            revision: 1,
+            snapshot: clickup_task_snapshot_value(
+                "task-sample-1",
+                "901325431486",
+                "Sample task from Event Console",
+                "in progress",
+                Some("Replace list_id and task_id with your workspace before publishing."),
+                Some("https://app.clickup.com/t/task-sample-1"),
+                Some("normal"),
+            ),
+            previous_snapshot: None,
         }],
         1_735_720_000,
     );
     serde_json::to_value(&batch).expect("serialize clickup sample batch")
+}
+
+/// Minimal API-shaped task snapshot for lifecycle events.
+#[must_use]
+pub fn clickup_task_snapshot_value(
+    task_id: &str,
+    list_id: &str,
+    name: &str,
+    status: &str,
+    description: Option<&str>,
+    url: Option<&str>,
+    priority: Option<&str>,
+) -> Value {
+    let mut snap = json!({
+        "id": task_id,
+        "list_id": list_id,
+        "name": name,
+        "status": status,
+    });
+    if let Some(d) = description.filter(|s| !s.is_empty()) {
+        snap["description"] = json!(d);
+    }
+    if let Some(u) = url.filter(|s| !s.is_empty()) {
+        snap["url"] = json!(u);
+    }
+    if let Some(p) = priority.filter(|s| !s.is_empty()) {
+        snap["priority"] = json!(p);
+    }
+    snap
+}
+
+#[must_use]
+pub fn clickup_previous_snapshot_value(
+    list_id: &str,
+    name: &str,
+    status: &str,
+    url: Option<&str>,
+) -> Value {
+    let mut snap = json!({
+        "list_id": list_id,
+        "name": name,
+        "status": status,
+    });
+    if let Some(u) = url.filter(|s| !s.is_empty()) {
+        snap["url"] = json!(u);
+    }
+    snap
 }
 
 #[cfg(test)]
@@ -131,8 +175,35 @@ mod tests {
     }
 
     #[test]
+    fn sample_includes_one_lifecycle_record() {
+        let payload = clickup_source_records_sample_payload();
+        let batch: ClickupSourceRecordsBatch =
+            serde_json::from_value(payload).expect("sample deserializes");
+        assert_eq!(batch.records.len(), 1);
+        assert_eq!(batch.records[0].record_kind, CLICKUP_LIFECYCLE_EVENT_KIND);
+        assert_eq!(batch.records[0].event, "created");
+    }
+
+    #[test]
     fn schema_version_matches_core_wire() {
-        let batch = batch_from_lifecycle_tasks("clickup:list:1", "list", None, &[], 0);
+        let batch = batch_from_lifecycle_events("clickup:list:1", "list", None, &[], 0);
         assert_eq!(batch.schema_version, wire::HOST_SOURCE_RECORDS_V1);
+    }
+
+    #[test]
+    fn lifecycle_event_record_kind_is_wire_constant() {
+        let event = ClickupLifecycleEventRecord {
+            record_kind: CLICKUP_LIFECYCLE_EVENT_KIND.to_string(),
+            key: "clickup-created:t1:1".to_string(),
+            event: "created".to_string(),
+            task_id: "t1".to_string(),
+            list_id: "list-1".to_string(),
+            revision: 1,
+            snapshot: json!({ "name": "x" }),
+            previous_snapshot: None,
+        };
+        let wire = serde_json::to_string(&event).expect("serialize");
+        assert!(wire.contains("clickup.lifecycle_event"));
+        assert!(!wire.contains("lifecycle_task"));
     }
 }

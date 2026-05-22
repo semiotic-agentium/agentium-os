@@ -13,7 +13,7 @@ Task-daemon polls external sources and publishes **`host.source-records.v1`** to
 
 ## Provenance
 
-Lineage is stored in Surreal provenance, not in a parallel interpretation JSON contract. Agents perform semantic work in `onDispatch` against the source-records batch.
+Lineage is stored in Surreal provenance, not in a parallel interpretation JSON contract. Task-daemon publishes **raw** `host.source-records.v1` batches (`slack.message`, `clickup.lifecycle_event`, …). The host injects each `withTask` unit’s `records[]` into conversation history as wire JSON (no title/description rewriting). Agents perform semantic work in `onDispatch` against the same batch.
 
 ## Removed
 

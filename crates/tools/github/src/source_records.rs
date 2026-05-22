@@ -1,4 +1,4 @@
-//! `host.source-records.v1` batch types for GitHub Issues polling.
+//! `host.source-records.v1` batch types for GitHub Issues polling (raw events).
 
 use baml_rt_core::{
     event_subscription::{EventSourceKey, EventSourceKind},
@@ -6,7 +6,9 @@ use baml_rt_core::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
+
+pub const GITHUB_ISSUE_EVENT_KIND: &str = "github.issue_event";
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GithubIssuesSourceRecordsSource {
@@ -24,19 +26,20 @@ pub struct GithubIssuesProjectContext {
     pub repo_path: Option<String>,
 }
 
+/// One GitHub issue lifecycle diff (opaque to the host).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct GithubIssueRecord {
+pub struct GithubIssueEventRecord {
     pub record_kind: String,
     pub key: String,
-    pub title: String,
-    pub description: String,
-    #[serde(default)]
-    pub priority: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sources: Vec<Value>,
+    pub event: String,
+    pub issue_number: u64,
+    pub repo: String,
+    pub revision: u64,
+    pub snapshot: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_snapshot: Option<Value>,
 }
 
-/// Wire batch for GitHub Issues polls (`host.source-records.v1`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GithubIssuesSourceRecordsBatch {
     pub schema_version: String,
@@ -44,23 +47,14 @@ pub struct GithubIssuesSourceRecordsBatch {
     pub source: GithubIssuesSourceRecordsSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<GithubIssuesProjectContext>,
-    pub records: Vec<GithubIssueRecord>,
+    pub records: Vec<GithubIssueEventRecord>,
 }
 
-#[derive(Debug, Clone)]
-pub struct GithubIssueRecordInput {
-    pub key: String,
-    pub title: String,
-    pub description: String,
-    pub priority: String,
-    pub sources: Vec<Value>,
-}
-
-pub fn batch_from_issue_records(
+pub fn batch_from_issue_events(
     source_key: &str,
     source_label: &str,
     project: Option<GithubIssuesProjectContext>,
-    records: &[GithubIssueRecordInput],
+    events: &[GithubIssueEventRecord],
     emitted_at_unix: u64,
 ) -> GithubIssuesSourceRecordsBatch {
     let source_kind =
@@ -76,17 +70,7 @@ pub fn batch_from_issue_records(
             source_label: source_label.to_string(),
         },
         project,
-        records: records
-            .iter()
-            .map(|record| GithubIssueRecord {
-                record_kind: "github.issue".to_string(),
-                key: record.key.clone(),
-                title: record.title.clone(),
-                description: record.description.clone(),
-                priority: record.priority.clone(),
-                sources: record.sources.clone(),
-            })
-            .collect(),
+        records: events.to_vec(),
     }
 }
 
@@ -96,7 +80,7 @@ pub fn github_issues_source_records_json_schema() -> Value {
 }
 
 pub fn github_issues_source_records_sample_payload() -> Value {
-    let batch = batch_from_issue_records(
+    let batch = batch_from_issue_events(
         "github:owner/repo:issues",
         "GitHub Issues",
         Some(GithubIssuesProjectContext {
@@ -104,7 +88,20 @@ pub fn github_issues_source_records_sample_payload() -> Value {
             repo_available: false,
             repo_path: None,
         }),
-        &[],
+        &[GithubIssueEventRecord {
+            record_kind: GITHUB_ISSUE_EVENT_KIND.to_string(),
+            key: "github:owner/repo#42:1".to_string(),
+            event: "opened".to_string(),
+            issue_number: 42,
+            repo: "owner/repo".to_string(),
+            revision: 1,
+            snapshot: json!({
+                "title": "Sample issue from Event Console",
+                "state": "open",
+                "body": "Replace repo and issue_number with your repository before publishing."
+            }),
+            previous_snapshot: None,
+        }],
         1_735_720_000,
     );
     serde_json::to_value(&batch).expect("serialize github issues sample batch")
@@ -122,25 +119,19 @@ mod tests {
     }
 
     #[test]
-    fn schema_differs_from_clickup_lifecycle_kind() {
-        let batch = batch_from_issue_records(
-            "github:o/r:issues",
-            "issues",
-            None,
-            &[GithubIssueRecordInput {
-                key: "github:owner/repo#1".to_string(),
-                title: "Issue".to_string(),
-                description: "body".to_string(),
-                priority: "medium".to_string(),
-                sources: vec![],
-            }],
-            0,
-        );
-        assert_eq!(batch.schema_version, wire::HOST_SOURCE_RECORDS_V1);
-        assert_eq!(batch.source.source_kind, "github_issues");
-        assert_eq!(batch.records[0].record_kind, "github.issue");
-        let wire_json = serde_json::to_string(&batch).expect("serialize batch");
-        assert!(wire_json.contains("github.issue"));
-        assert!(!wire_json.contains("clickup.lifecycle_task"));
+    fn issue_event_record_kind() {
+        let event = GithubIssueEventRecord {
+            record_kind: GITHUB_ISSUE_EVENT_KIND.to_string(),
+            key: "github:owner/repo#1:1".to_string(),
+            event: "opened".to_string(),
+            issue_number: 1,
+            repo: "owner/repo".to_string(),
+            revision: 1,
+            snapshot: json!({ "title": "Issue" }),
+            previous_snapshot: None,
+        };
+        let wire = serde_json::to_string(&event).expect("serialize");
+        assert!(wire.contains("github.issue_event"));
+        assert!(!wire.contains("\"github.issue\""));
     }
 }

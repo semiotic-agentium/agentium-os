@@ -1600,7 +1600,8 @@ fn parse_context_index_request(
     params(
         ("agentPackage" = Option<String>, Query, description = "Optional agent package filter"),
         ("limit" = Option<u32>, Query, description = "Page size in range [1, 200], default 50"),
-        ("cursor" = Option<String>, Query, description = "Opaque pagination cursor")
+        ("cursor" = Option<String>, Query, description = "Opaque pagination cursor"),
+        ("eventOnly" = Option<bool>, Query, description = "When true, only host ingress / event dispatch contexts")
     ),
     responses(
         (status = 200, description = "Context picker page", body = ContextPickerPageDto),

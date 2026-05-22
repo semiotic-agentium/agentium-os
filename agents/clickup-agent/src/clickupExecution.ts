@@ -340,13 +340,17 @@ const INGRESS_AGENT_NAME = "clickup-agent";
 const RAW_SOURCE_SCHEMA_VERSION = "host.source-records.v1";
 const RAW_SOURCE_ROUTING_KEY = "event:intake";
 
-export type ClickupLifecycleTaskRecord = {
+export const CLICKUP_LIFECYCLE_EVENT_KIND = "clickup.lifecycle_event";
+
+export type ClickupLifecycleEventRecord = {
   record_kind: string;
   key: string;
-  title: string;
-  description?: string;
-  priority?: string;
-  sources?: unknown[];
+  event: string;
+  task_id: string;
+  list_id: string;
+  revision: number;
+  snapshot: JsonObject;
+  previous_snapshot?: JsonObject;
 };
 
 export type ClickupSourceRecordsBatch = {
@@ -362,7 +366,7 @@ export type ClickupSourceRecordsBatch = {
     repo_available?: boolean;
     repo_path?: string | null;
   };
-  records: ClickupLifecycleTaskRecord[];
+  records: ClickupLifecycleEventRecord[];
 };
 
 function normalizeOptionalString(value: unknown): string | null {
@@ -385,20 +389,42 @@ export function parseClickupSourceRecordsBatch(value: unknown): ClickupSourceRec
   if (!sourceKind || !sourceKey || !sourceLabel) return null;
   if (!Array.isArray(value.records)) return null;
 
-  const records: ClickupLifecycleTaskRecord[] = [];
+  const records: ClickupLifecycleEventRecord[] = [];
   for (const row of value.records) {
     if (!isJsonObject(row)) return null;
     const recordKind = normalizeOptionalString(row.record_kind);
     const key = normalizeOptionalString(row.key);
-    const title = normalizeOptionalString(row.title);
-    if (!recordKind || !key || !title) return null;
+    const event = normalizeOptionalString(row.event);
+    const taskId = normalizeOptionalString(row.task_id);
+    const listId = normalizeOptionalString(row.list_id);
+    const revision = row.revision;
+    const snapshot = row.snapshot;
+    if (
+      recordKind !== CLICKUP_LIFECYCLE_EVENT_KIND ||
+      !key ||
+      !event ||
+      !taskId ||
+      !listId ||
+      typeof revision !== "number" ||
+      !Number.isFinite(revision) ||
+      !isJsonObject(snapshot)
+    ) {
+      return null;
+    }
+    let previous_snapshot: JsonObject | undefined;
+    if (row.previous_snapshot !== undefined) {
+      if (!isJsonObject(row.previous_snapshot)) return null;
+      previous_snapshot = row.previous_snapshot;
+    }
     records.push({
       record_kind: recordKind,
       key,
-      title,
-      description: typeof row.description === "string" ? row.description : "",
-      priority: typeof row.priority === "string" ? row.priority : "",
-      sources: Array.isArray(row.sources) ? row.sources : [],
+      event,
+      task_id: taskId,
+      list_id: listId,
+      revision,
+      snapshot,
+      previous_snapshot,
     });
   }
 
@@ -430,22 +456,21 @@ export function parseClickupSourceRecordsBatch(value: unknown): ClickupSourceRec
 
 type ClickupLifecycleUnit = {
   unitKey: string;
-  records: JsonObject[];
+  records: ClickupLifecycleEventRecord[];
 };
 
 function groupClickupLifecycleUnits(
-  records: ClickupLifecycleTaskRecord[],
+  records: ClickupLifecycleEventRecord[],
 ): ClickupLifecycleUnit[] {
-  const groups = new Map<string, JsonObject[]>();
+  const groups = new Map<string, ClickupLifecycleEventRecord[]>();
   for (const record of records) {
     const key = normalizeOptionalString(record.key);
     if (!key) continue;
-    const row = record as unknown as JsonObject;
     const existing = groups.get(key);
     if (existing) {
-      existing.push(row);
+      existing.push(record);
     } else {
-      groups.set(key, [row]);
+      groups.set(key, [record]);
     }
   }
   return Array.from(groups.entries()).map(([unitKey, unitRecords]) => ({
@@ -454,25 +479,42 @@ function groupClickupLifecycleUnits(
   }));
 }
 
-async function processClickupLifecycleUnit(): Promise<
-  { ok: true; detail: string } | { ok: false; detail: string }
-> {
-  const intentResult = await InferClickUpIntent({});
-  if (isNotRelevant(intentResult)) {
-    return { ok: true, detail: "skipped:not_relevant" };
-  }
-  if (isNeedClarification(intentResult)) {
+function clickUpIntentFromLifecycleUnit(
+  records: ClickupLifecycleEventRecord[],
+): ClickUpIntent {
+  const primary = records[0]!;
+  const snapshotName =
+    typeof primary.snapshot?.name === "string" ? primary.snapshot.name.trim() : "";
+  const name = snapshotName.length > 0 ? snapshotName : primary.task_id;
+  const event = primary.event;
+  if (event === "deleted" || event === "removed") {
     return {
-      ok: false,
-      detail: `${INGRESS_AGENT_NAME} cannot clarify during dispatch: ${intentResult.question}`,
+      kind: "intent",
+      intent: `Confirm ClickUp task ${name} (${primary.task_id}) after ${event}`,
+      operation_kind: "read",
     };
   }
-  if (!isClickUpIntent(intentResult)) {
+  if (event === "created") {
     return {
-      ok: false,
-      detail: `${INGRESS_AGENT_NAME} expected ClickUpIntent from InferClickUpIntent for lifecycle ingress.`,
+      kind: "intent",
+      intent: `Summarize and verify new ClickUp task ${name} (${primary.task_id}) from lifecycle ingress`,
+      operation_kind: "read",
     };
   }
+  return {
+    kind: "intent",
+    intent: `Reconcile ClickUp task ${name} (${primary.task_id}) after lifecycle event ${event}`,
+    operation_kind: "read",
+  };
+}
+
+async function processClickupLifecycleUnit(
+  records: ClickupLifecycleEventRecord[],
+): Promise<{ ok: true; detail: string } | { ok: false; detail: string }> {
+  if (records.length === 0) {
+    return { ok: true, detail: "skipped:empty_unit" };
+  }
+  const intentResult = clickUpIntentFromLifecycleUnit(records);
 
   const planResult = await PlanClickUpWork({
     intent: intentResult.intent,
@@ -520,8 +562,11 @@ async function handleClickupLifecycleBatch(ctx: DispatchRunContext): Promise<Hos
     let unitOutcome: { ok: true; detail: string } | { ok: false; detail: string };
     try {
       unitOutcome = await ctx.withTask(
-        { unitKey: unit.unitKey, records: unit.records },
-        async () => processClickupLifecycleUnit(),
+        {
+          unitKey: unit.unitKey,
+          records: unit.records as unknown as JsonObject[],
+        },
+        async () => processClickupLifecycleUnit(unit.records),
       );
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);

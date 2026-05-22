@@ -49,6 +49,15 @@
   --color-cite-archive-subtle: rgba(34, 197, 94, 0.15);
   --color-cite-archive-border: rgba(34, 197, 94, 0.3);
 
+  /* Ingress / code blocks (operator-readable contrast) */
+  --ingress-surface: #ffffff;
+  --ingress-header-bg: #f4f4f8;
+  --ingress-border: #d4d4d8;
+  --ingress-accent: #b45309;
+  --code-bg: #f4f4f5;
+  --code-text: #18181b;
+  --code-border: #d4d4d8;
+
   /* Typography */
   --font-mono:
     ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", "Courier New", monospace;
@@ -86,6 +95,14 @@
   --input-bg: #252529;
   --status-green: #4ade80;
 
+  --ingress-surface: #2a2a30;
+  --ingress-header-bg: #323238;
+  --ingress-border: #48484f;
+  --ingress-accent: #fbbf24;
+  --code-bg: #1a1a1f;
+  --code-text: #e8e8ed;
+  --code-border: #48484f;
+
   /* Semantic status colors */
   --color-error: #f87171;
   --color-error-subtle: rgba(239, 68, 68, 0.15);
@@ -108,6 +125,18 @@
 }
 
 /* ── Accessibility ── */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 .sr-only-focusable {
   position: absolute;
@@ -607,6 +636,12 @@ body {
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
+}
+
+.history-refresh-btn:focus-visible,
+.conversation-history-selector select:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
 .history-refresh-btn:disabled,
@@ -2296,12 +2331,25 @@ body {
   border-left: 3px solid color-mix(in srgb, var(--text-muted) 70%, var(--primary));
 }
 
-.message-row--ingress .bubble.user {
-  border-left: 3px solid color-mix(in srgb, var(--text-muted) 55%, var(--warning, #c9a227));
+.message-row--ingress .bubble.user,
+.message-row--ingress .bubble-ingress-summary {
+  border-left: 3px solid var(--ingress-accent);
+}
+
+.message-row--ingress-wire.message-row.user {
+  flex-direction: row;
+}
+
+.message-row--ingress-wire .message-content {
+  max-width: min(100%, 56rem);
+  align-items: stretch;
+  width: 100%;
 }
 
 .speaker-kind-badge--ingress {
-  color: color-mix(in srgb, var(--text-secondary) 90%, var(--warning, #c9a227));
+  color: var(--ingress-accent);
+  background: color-mix(in srgb, var(--ingress-accent) 12%, var(--surface));
+  border-color: color-mix(in srgb, var(--ingress-accent) 35%, var(--border));
 }
 
 .speaker-kind-badge {

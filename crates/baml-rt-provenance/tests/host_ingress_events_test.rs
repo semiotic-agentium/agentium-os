@@ -188,7 +188,18 @@ async fn conversation_context_unit_ingress_only_without_poll_user_line() {
                 data: ProvEventData::MessageReceived {
                     id: MessageId::from("unit-msg-a"),
                     role: "user".to_string(),
-                    content: vec!["1. Unit task line".to_string()],
+                    content: vec![
+                        format_source_records_unit_body(&[json!({
+                            "record_kind": "clickup.lifecycle_event",
+                            "key": unit_key,
+                            "event": "created",
+                            "task_id": "task-a",
+                            "list_id": "list-1",
+                            "snapshot": { "name": "Unit task line" },
+                            "revision": 1
+                        })])
+                        .0,
+                    ],
                     metadata: None,
                     agent_id: AgentId::from_uuid(UuidId::new(Uuid::nil())),
                     citations: Vec::new(),
@@ -218,9 +229,10 @@ async fn conversation_context_unit_ingress_only_without_poll_user_line() {
         other => panic!("expected message content, got {other:?}"),
     };
     assert!(
-        text.contains("Unit task line"),
-        "ingress line must be the unit prelude text: {text}"
+        text.contains("clickup.lifecycle_event"),
+        "ingress line must be wire JSON prelude: {text}"
     );
+    assert!(text.contains("Unit task line"));
 }
 
 #[tokio::test]
@@ -242,11 +254,13 @@ async fn record_source_poll_and_unit_prelude_emit_single_ingress_user_line() {
             "source_label": "List"
         },
         "records": [{
-            "record_kind": "clickup.lifecycle_task",
+            "record_kind": "clickup.lifecycle_event",
             "key": unit_key,
-            "title": "Investigate ingress",
-            "description": "Confirm single user line",
-            "priority": "high"
+            "event": "created",
+            "task_id": "task-1",
+            "list_id": "list-1",
+            "snapshot": { "name": "Investigate ingress", "description": "Confirm single user line" },
+            "revision": 1
         }]
     });
     let event = ProducedEvent {

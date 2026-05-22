@@ -17,6 +17,7 @@ import {
 } from "../utils/parseCoordinatorAnswer";
 import { renderMarkdown } from "../utils/renderMarkdown";
 import { stripLegacyStructuredPlaceholderLines } from "../chat/legacyStructuredPlaceholders";
+import { ingressWireBodyForDisplay, isIngressWireBody } from "../events/ingressWireBody";
 
 const props = withDefaults(
   defineProps<{ message: ChatMessage; showInlineStreamingDots?: boolean }>(),
@@ -128,6 +129,12 @@ const isRelayUser = computed(
 const isIngressUser = computed(
   () => props.message.role === "user" && props.message.speakerKind === "ingress",
 );
+
+const ingressWireDisplay = computed(() => {
+  const raw = props.message.text ?? "";
+  if (!isIngressUser.value || !isIngressWireBody(raw)) return null;
+  return ingressWireBodyForDisplay(raw);
+});
 </script>
 
 <template>
@@ -135,7 +142,11 @@ const isIngressUser = computed(
     :class="[
       'message-row',
       message.role,
-      { 'message-row--relay': isRelayUser, 'message-row--ingress': isIngressUser },
+      {
+        'message-row--relay': isRelayUser,
+        'message-row--ingress': isIngressUser && !ingressWireDisplay,
+        'message-row--ingress-wire': Boolean(ingressWireDisplay),
+      },
     ]"
   >
     <!-- Agent avatar -->
@@ -160,7 +171,11 @@ const isIngressUser = computed(
     </div>
     <div class="message-content">
       <div v-if="isRelayUser" class="speaker-kind-badge" role="note">A2A relay</div>
-      <div v-else-if="isIngressUser" class="speaker-kind-badge speaker-kind-badge--ingress" role="note">
+      <div
+        v-else-if="isIngressUser && !ingressWireDisplay"
+        class="speaker-kind-badge speaker-kind-badge--ingress"
+        role="note"
+      >
         Host ingress
       </div>
       <!-- Block-based content (agent with tool notifications) -->
@@ -224,7 +239,19 @@ const isIngressUser = computed(
       </template>
       <!-- Legacy single-text content -->
       <template v-else>
-        <div :class="['bubble', message.role]">
+        <article
+          v-if="ingressWireDisplay"
+          class="ingress-wire-card"
+          role="region"
+          aria-label="Host source records ingress payload"
+        >
+          <header class="ingress-wire-card__header">
+            <span class="speaker-kind-badge speaker-kind-badge--ingress">Host ingress</span>
+            <span class="ingress-wire-card__schema" translate="no">host.source-records.v1</span>
+          </header>
+          <pre class="ingress-wire-pre" translate="no">{{ ingressWireDisplay }}</pre>
+        </article>
+        <div v-else :class="['bubble', isIngressUser ? 'bubble-ingress-summary' : message.role]">
           <div :class="['bubble-text', message.role === 'agent' ? 'bubble-markdown' : '']">
             <template
               v-if="
@@ -364,13 +391,70 @@ const isIngressUser = computed(
   max-height: 20rem;
   overflow: auto;
   font-family: var(--font-mono);
-  font-size: 0.8rem;
-  line-height: 1.45;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--surface-raised) 88%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  border-radius: var(--radius-sm);
+  background: var(--code-bg);
+  color: var(--code-text);
+  border: 1px solid var(--code-border);
   white-space: pre-wrap;
   word-break: break-word;
+  font-variant-numeric: tabular-nums;
+}
+
+.ingress-wire-card {
+  width: 100%;
+  max-width: 100%;
+  padding: 0;
+  border: 1px solid var(--ingress-border);
+  border-radius: var(--radius-md);
+  background: var(--ingress-surface);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.ingress-wire-card__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--ingress-border);
+  background: var(--ingress-header-bg);
+}
+
+.ingress-wire-card__schema {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+}
+
+.ingress-wire-pre {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  max-height: min(28rem, 55vh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--code-text);
+  background: var(--code-bg);
+  white-space: pre;
+  word-break: normal;
+  tab-size: 2;
+  font-variant-numeric: tabular-nums;
+}
+
+.bubble-ingress-summary {
+  background: var(--ingress-surface);
+  color: var(--text);
+  border: 1px solid var(--ingress-border);
+  border-left: 3px solid var(--ingress-accent);
+  border-bottom-right-radius: var(--radius-md);
 }
 
 .stream-working-hint {

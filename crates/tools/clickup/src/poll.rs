@@ -11,6 +11,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::source_records::{
+    CLICKUP_LIFECYCLE_EVENT_KIND, ClickupLifecycleEventRecord, clickup_previous_snapshot_value,
+    clickup_task_snapshot_value,
+};
+
 const MAX_CLICKUP_LIST_TASK_PAGES: u32 = 50;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -56,31 +61,12 @@ pub enum ClickupInferredPriority {
     High,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-/// Reference back to a ClickUp task for provenance.
-pub struct ClickupSourceReference {
-    pub reference: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permalink: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-/// One lifecycle-derived work item from a ClickUp poll window.
-pub struct ClickupInferredTask {
-    pub key: String,
-    pub title: String,
-    pub description: String,
-    pub priority: ClickupInferredPriority,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sources: Vec<ClickupSourceReference>,
-}
-
 #[derive(Debug, Clone)]
 /// Output of one ClickUp poll cycle.
 pub struct ClickupPollOutcome {
     pub source_key: String,
     pub source_label: String,
-    pub inferred_tasks: Vec<ClickupInferredTask>,
+    pub lifecycle_events: Vec<ClickupLifecycleEventRecord>,
     pub items_scanned: usize,
     pub state: ClickupPollState,
 }
@@ -415,7 +401,7 @@ pub async fn poll_clickup_lists(
         }
     }
 
-    let mut inferred_tasks = Vec::new();
+    let mut lifecycle_events = Vec::new();
 
     for (task_id, task) in &current_records {
         if !previous_snapshot.contains_key(task_id) {
@@ -424,7 +410,7 @@ pub async fn poll_clickup_lists(
                 ClickupLifecycleEventKind::Created,
                 task_id,
             );
-            inferred_tasks.push(created_inferred_task(task, revision));
+            lifecycle_events.push(created_lifecycle_event(task, revision));
             continue;
         }
 
@@ -439,7 +425,7 @@ pub async fn poll_clickup_lists(
                     ClickupLifecycleEventKind::Terminal,
                     task_id,
                 );
-                inferred_tasks.push(terminal_status_inferred_task(task, previous, revision));
+                lifecycle_events.push(terminal_lifecycle_event(task, previous, revision));
             }
         }
     }
@@ -451,7 +437,7 @@ pub async fn poll_clickup_lists(
                 ClickupLifecycleEventKind::Removed,
                 task_id,
             );
-            inferred_tasks.push(removed_inferred_task(task_id, previous, revision));
+            lifecycle_events.push(removed_lifecycle_event(task_id, previous, revision));
         }
     }
 
@@ -459,7 +445,7 @@ pub async fn poll_clickup_lists(
         source_key,
         source_label,
         items_scanned: current_records.len(),
-        inferred_tasks,
+        lifecycle_events,
         state: ClickupPollState {
             task_snapshot: current_snapshot,
             lifecycle_revisions,
@@ -635,88 +621,98 @@ struct RawTaskPriority {
     priority: Option<String>,
 }
 
-fn created_inferred_task(task: &ClickupTaskRecord, revision: u64) -> ClickupInferredTask {
-    let mut description = format!(
-        "New ClickUp task was created in monitored list {list_id}.\nTask ID: {task_id}\nStatus: {status}",
-        list_id = task.list_id,
-        task_id = task.id,
-        status = task.status.original,
-    );
-    if let Some(url) = &task.url {
-        description.push_str(&format!("\nURL: {url}"));
-    }
-    if let Some(original) = &task.description {
-        description.push_str(&format!("\n\nOriginal task description:\n{original}"));
-    }
+fn task_priority_wire(priority: ClickupPriority) -> Option<String> {
+    Some(
+        match priority {
+            ClickupPriority::Urgent => "urgent",
+            ClickupPriority::High => "high",
+            ClickupPriority::Normal => "normal",
+            ClickupPriority::Low => "low",
+            ClickupPriority::Unknown => "unknown",
+        }
+        .to_string(),
+    )
+}
 
-    ClickupInferredTask {
-        key: ClickupLifecycleEventKey::created(&task.id)
-            .with_revision(revision)
-            .as_task_key(),
-        title: format!("Execute ClickUp task: {}", task.name),
-        description,
-        priority: task.priority.into(),
-        sources: vec![clickup_source_reference(&task.id, task.url.as_deref())],
+fn created_lifecycle_event(task: &ClickupTaskRecord, revision: u64) -> ClickupLifecycleEventRecord {
+    let key = ClickupLifecycleEventKey::created(&task.id)
+        .with_revision(revision)
+        .as_task_key();
+    ClickupLifecycleEventRecord {
+        record_kind: CLICKUP_LIFECYCLE_EVENT_KIND.to_string(),
+        key,
+        event: "created".to_string(),
+        task_id: task.id.clone(),
+        list_id: task.list_id.as_str().to_string(),
+        revision,
+        snapshot: clickup_task_snapshot_value(
+            &task.id,
+            task.list_id.as_str(),
+            &task.name,
+            &task.status.original,
+            task.description.as_deref(),
+            task.url.as_deref(),
+            task_priority_wire(task.priority).as_deref(),
+        ),
+        previous_snapshot: None,
     }
 }
 
-fn terminal_status_inferred_task(
+fn terminal_lifecycle_event(
     task: &ClickupTaskRecord,
     previous: &ClickupTaskSnapshot,
     revision: u64,
-) -> ClickupInferredTask {
-    let mut description = format!(
-        "ClickUp task entered a terminal status while monitored.\nTask ID: {task_id}\nPrevious status: {previous_status}\nCurrent status: {current_status}\nList: {list_id}\nStop or reconcile in-flight agent work for this task.",
-        task_id = task.id,
-        previous_status = previous.status,
-        current_status = task.status.original,
-        list_id = task.list_id,
-    );
-    if let Some(url) = &task.url {
-        description.push_str(&format!("\nURL: {url}"));
-    }
-
-    ClickupInferredTask {
-        key: ClickupLifecycleEventKey::terminal(&task.id, &task.status)
-            .with_revision(revision)
-            .as_task_key(),
-        title: format!("Reconcile terminal ClickUp task: {}", task.name),
-        description,
-        priority: ClickupInferredPriority::High,
-        sources: vec![clickup_source_reference(&task.id, task.url.as_deref())],
+) -> ClickupLifecycleEventRecord {
+    let key = ClickupLifecycleEventKey::terminal(&task.id, &task.status)
+        .with_revision(revision)
+        .as_task_key();
+    ClickupLifecycleEventRecord {
+        record_kind: CLICKUP_LIFECYCLE_EVENT_KIND.to_string(),
+        key,
+        event: "terminal".to_string(),
+        task_id: task.id.clone(),
+        list_id: task.list_id.as_str().to_string(),
+        revision,
+        snapshot: clickup_task_snapshot_value(
+            &task.id,
+            task.list_id.as_str(),
+            &task.name,
+            &task.status.original,
+            task.description.as_deref(),
+            task.url.as_deref(),
+            task_priority_wire(task.priority).as_deref(),
+        ),
+        previous_snapshot: Some(clickup_previous_snapshot_value(
+            &previous.list_id,
+            &previous.name,
+            &previous.status,
+            previous.url.as_deref(),
+        )),
     }
 }
 
-fn removed_inferred_task(
+fn removed_lifecycle_event(
     task_id: &str,
     previous: &ClickupTaskSnapshot,
     revision: u64,
-) -> ClickupInferredTask {
-    let mut description = format!(
-        "Previously tracked ClickUp task is no longer present in monitored list output.\nTask ID: {task_id}\nLast known list: {list_id}\nLast known status: {status}\nThis may indicate deletion, archival, or list migration; reconcile active execution.",
-        task_id = task_id,
-        list_id = previous.list_id,
-        status = previous.status,
-    );
-    if let Some(url) = previous.url.as_deref() {
-        description.push_str(&format!("\nLast known URL: {url}"));
-    }
-
-    ClickupInferredTask {
-        key: ClickupLifecycleEventKey::removed(task_id)
-            .with_revision(revision)
-            .as_task_key(),
-        title: format!("Reconcile missing ClickUp task: {task_id}"),
-        description,
-        priority: ClickupInferredPriority::High,
-        sources: vec![clickup_source_reference(task_id, previous.url.as_deref())],
-    }
-}
-
-fn clickup_source_reference(task_id: &str, url: Option<&str>) -> ClickupSourceReference {
-    ClickupSourceReference {
-        reference: format!("clickup://task/{task_id}"),
-        permalink: url.map(ToString::to_string),
+) -> ClickupLifecycleEventRecord {
+    let key = ClickupLifecycleEventKey::removed(task_id)
+        .with_revision(revision)
+        .as_task_key();
+    ClickupLifecycleEventRecord {
+        record_kind: CLICKUP_LIFECYCLE_EVENT_KIND.to_string(),
+        key,
+        event: "removed".to_string(),
+        task_id: task_id.to_string(),
+        list_id: previous.list_id.clone(),
+        revision,
+        snapshot: clickup_previous_snapshot_value(
+            &previous.list_id,
+            &previous.name,
+            &previous.status,
+            previous.url.as_deref(),
+        ),
+        previous_snapshot: None,
     }
 }
 

@@ -6,7 +6,12 @@ import type {
   DerivedDispatchEnvelope,
   EventDispatchScope,
   EventPublishResponse,
+  ObservationSource,
+  PreviewProducedEvent,
 } from "../types/events";
+import { INGRESS_WIRE_BODY_DELIMITER } from "./ingressWireBody";
+
+export type { ObservationSource };
 
 export interface PublishedScope {
   contextId: string;
@@ -78,17 +83,18 @@ export const dispatchedScopeMatchesAgent = publishedScopeMatchesAgent;
 /**
  * Resolve which provenance context to observe for the current Event Console session.
  *
- * In compose mode, toolbar context pickers update the draft scope but must not reuse a
- * prior publish scope from another agent. History mode may browse any listed context.
+ * Observation is decoupled from compose `draftScope`: the event-run picker sets
+ * `observationSource: "picker"` without mutating the publish draft.
  */
 export function resolveObservationScope(input: {
   lastPublishedScope: PublishedScope | null;
   draftScope: EventDispatchScope;
-  selectedContextId: string | null;
-  previewProducedEvent: Record<string, unknown> | undefined | null;
+  observedContextId: string | null;
+  previewProducedEvent: PreviewProducedEvent | null;
   currentAgent: ObservationAgentRef | null;
-  mode: "compose" | "history";
+  observationSource: ObservationSource;
 }): PublishedScope | null {
+  const fromPicker = scopeFromContextId(input.observedContextId);
   const fromPublish = publishedScopeMatchesAgent(
     input.lastPublishedScope,
     input.currentAgent,
@@ -96,11 +102,19 @@ export function resolveObservationScope(input: {
     ? input.lastPublishedScope
     : null;
   const fromDraft = scopeFromDraftScope(input.draftScope);
-  const fromPreview = scopeFromRecord(input.previewProducedEvent);
-  const fromPicker =
-    input.mode === "history" ? scopeFromContextId(input.selectedContextId) : null;
+  const fromPreview = scopeFromRecord(
+    input.previewProducedEvent as Record<string, unknown> | null,
+  );
 
-  return fromDraft ?? fromPublish ?? fromPreview ?? fromPicker;
+  if (input.observationSource === "picker") {
+    if (fromPicker) return fromPicker;
+    return fromPublish ?? fromDraft ?? fromPreview;
+  }
+  if (input.observationSource === "publish") {
+    if (fromPublish) return fromPublish;
+    return fromDraft ?? fromPreview ?? fromPicker;
+  }
+  return fromDraft ?? fromPreview ?? fromPublish ?? null;
 }
 
 export function buildOperatorPublishTraceMessages(input: {
@@ -145,6 +159,12 @@ export function buildOperatorPublishTraceMessages(input: {
 
   if (input.outcome) {
     const o = input.outcome;
+    const acceptanceLines =
+      (o.acceptances?.length ?? 0) > 0
+        ? `\n${o.acceptances!
+            .map((a) => `- ${a.agent_package}/${a.agent_instance_id}: ${a.detail}`)
+            .join("\n")}`
+        : "";
     const failureLines =
       o.failures.length > 0
         ? `\nFailures:\n${o.failures
@@ -154,7 +174,7 @@ export function buildOperatorPublishTraceMessages(input: {
     rows.push({
       id: "operator-publish-trace-outcome",
       role: "agent",
-      text: `Published ${o.subscribers_accepted}/${o.subscribers_matched} subscriber(s)${failureLines}`.trim(),
+      text: `Published ${o.subscribers_accepted}/${o.subscribers_matched} subscriber(s)${acceptanceLines}${failureLines}`.trim(),
       timestamp: now,
     });
   }
@@ -179,6 +199,95 @@ export async function resolveDispatchUnitTaskId(
   const unit = ids.find((id) => id.startsWith("dispatch-unit-"));
   if (unit) return unit;
   return ids.length === 1 ? (ids[0] ?? null) : null;
+}
+
+function recordsFromPreviewBatch(preview: unknown): unknown[] {
+  if (!preview || typeof preview !== "object" || Array.isArray(preview)) {
+    return [];
+  }
+  const messages = (preview as { messages?: unknown }).messages;
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return [];
+  }
+  const batch = messages[0];
+  if (!batch || typeof batch !== "object" || Array.isArray(batch)) {
+    return [];
+  }
+  const records = (batch as { records?: unknown }).records;
+  return Array.isArray(records) ? records : [];
+}
+
+/** Local ingress wire row matching host `format_source_records_wire_body`. */
+export function buildIngressWireUserMessage(records: unknown[]): ChatMessage {
+  const jsonText = JSON.stringify({ records }, null, 2);
+  return {
+    id: "event-console-local-ingress-wire",
+    role: "user",
+    speakerKind: "ingress",
+    text: `${INGRESS_WIRE_BODY_DELIMITER}\n${jsonText}`,
+    timestamp: new Date(),
+  };
+}
+
+/**
+ * Optimistic transcript rows after publish until provenance conversation-history hydrates.
+ */
+export function buildEventConsoleLocalTranscript(input: {
+  previewProducedEvent: unknown;
+  outcome: EventPublishResponse | null;
+  publishError: string | null;
+  agentPackage: string;
+  agentInstanceId: string;
+  messageShape: AgentDeliverableMessageShape | undefined;
+  envelope: DerivedDispatchEnvelope | null;
+  sampleLabel?: string;
+}): ChatMessage[] {
+  const rows: ChatMessage[] = [];
+  const records = recordsFromPreviewBatch(input.previewProducedEvent);
+  if (records.length > 0) {
+    rows.push(buildIngressWireUserMessage(records));
+  }
+
+  const summaryRows = buildOperatorPublishTraceMessages({
+    agentPackage: input.agentPackage,
+    agentInstanceId: input.agentInstanceId,
+    messageShape: input.messageShape,
+    envelope: input.envelope,
+    sampleLabel: input.sampleLabel,
+    outcome: input.outcome,
+    publishError: input.publishError,
+  });
+  for (const row of summaryRows) {
+    if (row.role === "user" && records.length > 0) {
+      continue;
+    }
+    rows.push({
+      ...row,
+      id: `event-console-local-${row.id}`,
+    });
+  }
+  return rows;
+}
+
+export function localTranscriptMatchesScope(
+  scope: PublishedScope | null,
+  contextId: string | null,
+): boolean {
+  if (!scope || !contextId) return false;
+  return scope.contextId === contextId;
+}
+
+/** Merge provenance transcript with optimistic publish rows until host ingress lands. */
+export function mergeEventConsoleTranscript(
+  provenance: ChatMessage[],
+  local: ChatMessage[],
+): ChatMessage[] {
+  if (local.length === 0) return provenance;
+  if (transcriptHasIngressUserRows(provenance)) return provenance;
+  if (provenance.length === 0) return local;
+  const localIds = new Set(local.map((m) => m.id));
+  const tail = provenance.filter((m) => !localIds.has(m.id));
+  return [...local, ...tail];
 }
 
 /** True when transcript includes host-written ingress poll/unit user rows. */

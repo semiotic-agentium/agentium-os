@@ -26,14 +26,15 @@ use baml_rt_tools::{
 pub use integrations_clickup_client::BASE_URL;
 use integrations_clickup_client::{ClickUpClient, ClickUpClientError};
 pub use poll::{
-    ClickupInferredPriority, ClickupInferredTask, ClickupLifecycleRevisionSlot, ClickupPollOutcome,
-    ClickupPollState, ClickupSourceConfig, ClickupSourceConfigError, ClickupSourceReference,
-    ClickupTaskSnapshot, poll_clickup_lists,
+    ClickupInferredPriority, ClickupLifecycleRevisionSlot, ClickupPollOutcome, ClickupPollState,
+    ClickupSourceConfig, ClickupSourceConfigError, ClickupTaskSnapshot, poll_clickup_lists,
 };
 use serde::{Deserialize, Serialize};
 pub use source_records::{
-    ClickupLifecycleTaskInput, ClickupLifecycleTaskRecord, ClickupProjectContext,
-    ClickupSourceRecordsBatch, batch_from_lifecycle_tasks, clickup_source_records_json_schema,
+    CLICKUP_LIFECYCLE_EVENT_KIND, ClickupLifecycleEventRecord, ClickupProjectContext,
+    ClickupSourceRecordsBatch, batch_from_lifecycle_events, clickup_previous_snapshot_value,
+    clickup_source_records_json_schema, clickup_source_records_sample_payload,
+    clickup_task_snapshot_value,
 };
 use tracing::Instrument;
 

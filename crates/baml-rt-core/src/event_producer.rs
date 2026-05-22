@@ -122,6 +122,14 @@ impl SubscriberDeliveryFailure {
     }
 }
 
+/// Accepted dispatch with operator-facing detail from the agent `onDispatch` ack.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscriberAcceptance {
+    pub agent_package: String,
+    pub agent_instance_id: String,
+    pub detail: String,
+}
+
 /// Aggregate outcome of dispatching one [`ProducedEvent`] to all matched subscribers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventDeliveryOutcome {
@@ -129,6 +137,9 @@ pub struct EventDeliveryOutcome {
     pub subscribers_matched: usize,
     /// Number of agents that accepted the dispatch.
     pub subscribers_accepted: usize,
+    /// Per-subscriber acceptances with agent ack detail (noop vs processed units, etc.).
+    #[serde(default)]
+    pub acceptances: Vec<SubscriberAcceptance>,
     /// Per-subscriber failures: route key and failure reason.
     pub failures: Vec<(AgentRouteKey, SubscriberDeliveryFailure)>,
 }

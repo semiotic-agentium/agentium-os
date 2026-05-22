@@ -37,6 +37,9 @@ export function useEventObservation() {
   let preserveRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let diagramFetchSeq = 0;
   let observeCtx = "";
+  /** Skip redundant full reloads when context/task/agent unchanged. */
+  let loadedObserveKey = "";
+  let lastSnapshotVersion = "";
 
   function closeHistoryStream(): void {
     if (historyStream) {
@@ -96,7 +99,12 @@ export function useEventObservation() {
     stream.addEventListener("snapshot", (ev) => {
       try {
         const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
-        applyConversationHistoryPage(messages, page);
+        const sameVersion =
+          page.version === lastSnapshotVersion && messages.value.length > 0;
+        if (!sameVersion) {
+          applyConversationHistoryPage(messages, page);
+          lastSnapshotVersion = page.version;
+        }
         if (messages.value.length > 0) {
           hydrateState.value = "ready";
           stopPreserveRetry();
@@ -167,16 +175,40 @@ export function useEventObservation() {
     agentPackage?: string | null,
     options?: { bumpTrace?: boolean },
   ): Promise<void> {
-    const params = historyQueryParams(task, agentPackage);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), HISTORY_FETCH_TIMEOUT_MS);
     try {
-      const res = await fetch(`/contexts/${ctx}/conversation-history?${params.toString()}`, {
-        signal: controller.signal,
-      });
-      if (!res.ok) return;
-      const page = (await res.json()) as ConversationHistoryPage;
-      applyConversationHistoryPage(messages, page);
+      const allItems: ConversationHistoryPage["items"] = [];
+      let cursor: string | undefined;
+      let lastPage: ConversationHistoryPage | null = null;
+      let maxEventOrder = 0;
+
+      for (;;) {
+        const params = historyQueryParams(task, agentPackage);
+        if (cursor) params.set("cursor", cursor);
+        const res = await fetch(`/contexts/${ctx}/conversation-history?${params.toString()}`, {
+          signal: controller.signal,
+        });
+        if (!res.ok) return;
+        const page = (await res.json()) as ConversationHistoryPage;
+        if (!Array.isArray(page.items)) return;
+        allItems.push(...page.items);
+        maxEventOrder = Math.max(maxEventOrder, page.maxEventOrder);
+        lastPage = page;
+        if (!page.nextCursor) break;
+        cursor = page.nextCursor;
+      }
+
+      if (!lastPage) return;
+
+      const merged: ConversationHistoryPage = {
+        ...lastPage,
+        items: allItems,
+        maxEventOrder,
+        nextCursor: null,
+      };
+      applyConversationHistoryPage(messages, merged);
+      lastSnapshotVersion = merged.version;
       await fetchDiagram(ctx);
       if (options?.bumpTrace) {
         scheduleTraceRefreshBump();
@@ -195,6 +227,14 @@ export function useEventObservation() {
     provenanceDiagram.value = text;
   }
 
+  function observeKey(
+    ctx: string,
+    task?: string | null,
+    agentPackage?: string | null,
+  ): string {
+    return `${ctx}:${task ?? ""}:${agentPackage ?? ""}`;
+  }
+
   async function loadContext(
     ctx: string,
     task?: string | null,
@@ -202,15 +242,26 @@ export function useEventObservation() {
   ): Promise<void> {
     const preserve = options?.preserveMessagesUntilTranscript ?? false;
     const agentPackage = options?.agentPackage ?? null;
+    const key = observeKey(ctx, task, agentPackage);
+    const sameObserveTarget = key === loadedObserveKey && messages.value.length > 0;
+
     observeCtx = ctx;
     contextId.value = ctx;
     taskId.value = task ?? null;
-    provenanceDiagram.value = "";
-    diagramFetchSeq += 1;
-    if (!preserve) {
-      messages.value = [];
+
+    if (sameObserveTarget && !preserve) {
+      scheduleTraceRefreshBump();
+      return;
     }
-    hydrateState.value = "loading";
+
+    loadedObserveKey = key;
+    lastSnapshotVersion = "";
+    if (!preserve) {
+      provenanceDiagram.value = "";
+      diagramFetchSeq += 1;
+      messages.value = [];
+      hydrateState.value = "loading";
+    }
     stopPreserveRetry();
     closeHistoryStream();
     if (traceRefreshDebounceTimer !== null) {
@@ -219,6 +270,9 @@ export function useEventObservation() {
     }
     try {
       await refreshHistoryPage(ctx, task, agentPackage);
+      if (messages.value.length > 0) {
+        lastSnapshotVersion = "";
+      }
       if (messages.value.length > 0) {
         hydrateState.value = "ready";
         ensureHistoryStream(ctx, task, agentPackage);
@@ -254,6 +308,8 @@ export function useEventObservation() {
       traceRefreshDebounceTimer = null;
     }
     observeCtx = "";
+    loadedObserveKey = "";
+    lastSnapshotVersion = "";
     messages.value = [];
     contextId.value = null;
     taskId.value = null;

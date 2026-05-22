@@ -11,7 +11,8 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, SurrealProvenanceStore};
 use baml_tools_clickup::{
-    ClickUpTool, ClickupLifecycleTaskInput, ClickupProjectContext, batch_from_lifecycle_tasks,
+    CLICKUP_LIFECYCLE_EVENT_KIND, ClickUpTool, ClickupLifecycleEventRecord, ClickupProjectContext,
+    batch_from_lifecycle_events, clickup_task_snapshot_value,
 };
 use common::{
     RunningHttpServer, TempDirCleanup, build_clickup_agent_to_temp_async, e2e_serial_gate,
@@ -178,7 +179,7 @@ fn clickup_ingress_dispatch_url(base_url: &str) -> String {
 }
 
 fn lifecycle_batch_message() -> Value {
-    let batch = batch_from_lifecycle_tasks(
+    let batch = batch_from_lifecycle_events(
         "clickup:list:901325431486",
         "ClickUp list",
         Some(ClickupProjectContext {
@@ -186,12 +187,23 @@ fn lifecycle_batch_message() -> Value {
             repo_available: true,
             repo_path: Some("/repo/agent-platform".to_string()),
         }),
-        &[ClickupLifecycleTaskInput {
+        &[ClickupLifecycleEventRecord {
+            record_kind: CLICKUP_LIFECYCLE_EVENT_KIND.to_string(),
             key: "clickup-created:task-1:1".to_string(),
-            title: "Investigate publish ingress".to_string(),
-            description: "Confirm host bus receives source records".to_string(),
-            priority: "high".to_string(),
-            sources: Vec::new(),
+            event: "created".to_string(),
+            task_id: "task-1".to_string(),
+            list_id: "901325431486".to_string(),
+            revision: 1,
+            snapshot: clickup_task_snapshot_value(
+                "task-1",
+                "901325431486",
+                "Investigate publish ingress",
+                "in progress",
+                Some("Confirm host bus receives source records"),
+                Some("https://app.clickup.com/t/task-1"),
+                Some("high"),
+            ),
+            previous_snapshot: None,
         }],
         1_735_720_000,
     );
@@ -210,7 +222,7 @@ async fn clickup_source_ingress_dispatch_empty_batch_accepted_without_llm() {
         .await
         .expect("runner api");
     let client = reqwest::Client::new();
-    let empty_batch = batch_from_lifecycle_tasks("clickup:list:1", "list", None, &[], 0);
+    let empty_batch = batch_from_lifecycle_events("clickup:list:1", "list", None, &[], 0);
     let body = json!({
         "routing_key": "event:intake",
         "message_type": "host.source-records.v1",

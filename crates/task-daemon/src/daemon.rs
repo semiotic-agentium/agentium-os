@@ -6,10 +6,11 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use baml_rt_core::ProducedEvent;
 use baml_rt_observability::metrics;
+use baml_tools_clickup::ClickupLifecycleEventRecord;
 use thiserror::Error;
 
 use crate::{
-    model::{InvestigationTask, ProjectContext, SlackMessage, TaskSourceKind},
+    model::{ProjectContext, SlackMessage, TaskSourceKind},
     poll_lineage::mint_poll_lineage,
     sink::TaskSink,
     source_records::poll_to_produced_event,
@@ -32,7 +33,7 @@ enum SourcePollPayload {
         messages: Vec<SlackMessage>,
     },
     Clickup {
-        inferred_tasks: Vec<InvestigationTask>,
+        lifecycle_events: Vec<ClickupLifecycleEventRecord>,
     },
 }
 
@@ -55,15 +56,15 @@ impl SourcePoll {
     pub fn clickup(
         source_key: String,
         source_label: String,
-        inferred_tasks: Vec<InvestigationTask>,
+        lifecycle_events: Vec<ClickupLifecycleEventRecord>,
         source_items_scanned: usize,
     ) -> Self {
         Self {
             source_key,
             source_label,
             source_items_scanned,
-            source_cursor: clickup_source_cursor(&inferred_tasks),
-            payload: SourcePollPayload::Clickup { inferred_tasks },
+            source_cursor: clickup_source_cursor(&lifecycle_events),
+            payload: SourcePollPayload::Clickup { lifecycle_events },
         }
     }
 
@@ -78,10 +79,10 @@ impl SourcePoll {
         }
     }
 
-    pub fn inferred_tasks(&self) -> &[InvestigationTask] {
+    pub fn clickup_lifecycle_events(&self) -> &[ClickupLifecycleEventRecord] {
         match &self.payload {
             SourcePollPayload::Slack { .. } => &[],
-            SourcePollPayload::Clickup { inferred_tasks } => inferred_tasks,
+            SourcePollPayload::Clickup { lifecycle_events } => lifecycle_events,
         }
     }
 
@@ -92,7 +93,7 @@ impl SourcePoll {
     pub fn is_empty(&self) -> bool {
         match &self.payload {
             SourcePollPayload::Slack { messages } => messages.is_empty(),
-            SourcePollPayload::Clickup { inferred_tasks } => inferred_tasks.is_empty(),
+            SourcePollPayload::Clickup { lifecycle_events } => lifecycle_events.is_empty(),
         }
     }
 
@@ -121,12 +122,12 @@ fn slack_source_cursor(messages: &[SlackMessage]) -> Option<String> {
     Some(format!("slack:{}:{}:{}", first.ts, last.ts, messages.len()))
 }
 
-fn clickup_source_cursor(inferred_tasks: &[InvestigationTask]) -> Option<String> {
-    if inferred_tasks.is_empty() {
+fn clickup_source_cursor(events: &[ClickupLifecycleEventRecord]) -> Option<String> {
+    if events.is_empty() {
         return None;
     }
     const CURSOR_KEY_SEPARATOR: &str = "\u{1f}";
-    let mut task_keys = inferred_tasks
+    let mut task_keys = events
         .iter()
         .map(|task| task.key.as_str())
         .collect::<Vec<_>>();
@@ -286,12 +287,14 @@ impl TaskDaemon {
                     source_items_scanned,
                 )
             }
-            SourcePollPayload::Clickup { mut inferred_tasks } => {
+            SourcePollPayload::Clickup {
+                mut lifecycle_events,
+            } => {
                 {
                     let source_state = state.source_state_mut(&source_key);
-                    inferred_tasks.retain(|task| !source_state.has_seen_task(&task.key));
+                    lifecycle_events.retain(|event| !source_state.has_seen_task(&event.key));
                 }
-                if inferred_tasks.is_empty() && !self.emit_empty_batches {
+                if lifecycle_events.is_empty() && !self.emit_empty_batches {
                     self.state_store
                         .save(&state)
                         .await
@@ -300,7 +303,7 @@ impl TaskDaemon {
                         &SourcePoll::clickup(
                             source_key.clone(),
                             source_label.clone(),
-                            inferred_tasks,
+                            lifecycle_events,
                             source_items_scanned,
                         ),
                         &self.project_context,
@@ -310,7 +313,7 @@ impl TaskDaemon {
                 SourcePoll::clickup(
                     source_key.clone(),
                     source_label,
-                    inferred_tasks,
+                    lifecycle_events,
                     source_items_scanned,
                 )
             }
@@ -341,8 +344,8 @@ impl TaskDaemon {
                 let source_state = state.source_state_mut(&source_key);
                 let seen_at =
                     baml_rt_core::now_unix_secs(baml_rt_core::clock_events::TASK_DAEMON_SEEN_TASK);
-                for task in poll_for_event.inferred_tasks() {
-                    source_state.mark_task_seen(task.key.clone(), seen_at);
+                for event in poll_for_event.clickup_lifecycle_events() {
+                    source_state.mark_task_seen(event.key.clone(), seen_at);
                 }
             }
         }

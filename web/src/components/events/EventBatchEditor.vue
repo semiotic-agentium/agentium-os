@@ -2,17 +2,17 @@
 import { computed, ref } from "vue";
 import EventSchemaFormFields from "./EventSchemaFormFields.vue";
 import { ensureObjectPayload } from "../../events/schemaForm";
-import type { AgentDeliverableMessageShape } from "../../types/events";
+import type { AgentDeliverableMessageShape, DraftPayloadRecord } from "../../types/events";
 
 const props = defineProps<{
   messageShape: AgentDeliverableMessageShape | null;
-  messages: unknown[];
+  messages: DraftPayloadRecord[];
   activeIndex: number;
   validationFocusPath?: string | null;
 }>();
 
 const emit = defineEmits<{
-  "update:messages": [unknown[]];
+  "update:messages": [DraftPayloadRecord[]];
   "update:activeIndex": [number];
   add: [];
   duplicate: [number];
@@ -43,7 +43,7 @@ const jsonText = computed({
   },
   set(raw: string) {
     try {
-      const parsed = JSON.parse(raw) as unknown;
+      const parsed = ensureObjectPayload(JSON.parse(raw) as unknown);
       const next = [...props.messages];
       next[props.activeIndex] = parsed;
       emit("update:messages", next);
@@ -57,7 +57,7 @@ const previewRequest = computed(() => ({
   messages: props.messages,
 }));
 
-function updateActive(model: Record<string, unknown>): void {
+function updateActive(model: DraftPayloadRecord): void {
   const next = [...props.messages];
   next[props.activeIndex] = model;
   emit("update:messages", next);

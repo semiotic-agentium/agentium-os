@@ -97,7 +97,9 @@ pub use event_delivery::{
     AgentDispatchPort, DiscoveryPublishClient, HostPublishClient, SubscriberIndex,
     deliver_to_subscribers, matching_subscriber_routes, publish_to_subscribers,
 };
-pub use event_producer::{EventDeliveryOutcome, ProducedEvent, SubscriberDeliveryFailure};
+pub use event_producer::{
+    EventDeliveryOutcome, ProducedEvent, SubscriberAcceptance, SubscriberDeliveryFailure,
+};
 pub use event_subscription::{
     EventSchemaVersion, EventSourceKind, EventSubscription, EventSubscriptionFilter,
     subscriptions_match_filter,

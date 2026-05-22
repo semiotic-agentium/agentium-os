@@ -5,18 +5,14 @@ use baml_rt_core::{
     DispatchMetadata, EventSourceKind, HostPollLineage, ProducedEvent, clock_events,
     event_subscription::EventSourceKey, host_wire::wire,
 };
-use baml_tools_clickup::{
-    ClickupLifecycleTaskInput, ClickupProjectContext, batch_from_lifecycle_tasks,
-};
-use baml_tools_github::{
-    GithubIssueRecordInput, GithubIssuesProjectContext, batch_from_issue_records,
-};
+use baml_tools_clickup::{ClickupProjectContext, batch_from_lifecycle_events};
+use baml_tools_github::{GithubIssuesProjectContext, batch_from_issue_events};
 use baml_tools_slack::{normalize::normalize_polling_batch, slack_history_row_value};
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::{
     daemon::SourcePoll,
-    model::{InvestigationTask, ProjectContext, SlackMessage, TaskSourceKind},
+    model::{ProjectContext, SlackMessage, TaskSourceKind},
 };
 
 fn event_source_kind(source: TaskSourceKind) -> Result<EventSourceKind> {
@@ -35,7 +31,7 @@ fn slack_channel_id(source_key: &str) -> Result<&str> {
         .ok_or_else(|| anyhow!("slack source_key must be slack:<channel_id>, got {source_key}"))
 }
 
-fn slack_messages_to_values(messages: &[SlackMessage]) -> Vec<Value> {
+fn slack_messages_to_values(messages: &[SlackMessage]) -> Vec<serde_json::Value> {
     messages
         .iter()
         .map(|message| {
@@ -66,61 +62,6 @@ fn github_project_context(project: &ProjectContext) -> GithubIssuesProjectContex
     }
 }
 
-type InvestigationRecordFields = (String, String, String, String, Vec<Value>);
-
-fn investigation_task_record_inputs(
-    tasks: &[InvestigationTask],
-) -> Result<Vec<InvestigationRecordFields>> {
-    tasks
-        .iter()
-        .map(|task| {
-            let sources = task
-                .sources
-                .iter()
-                .map(serde_json::to_value)
-                .collect::<Result<Vec<_>, _>>()
-                .context("serializing investigation task source references")?;
-            Ok((
-                task.key.clone(),
-                task.title.clone(),
-                task.description.clone(),
-                task.priority.to_string(),
-                sources,
-            ))
-        })
-        .collect()
-}
-
-fn clickup_task_inputs(tasks: &[InvestigationTask]) -> Result<Vec<ClickupLifecycleTaskInput>> {
-    Ok(investigation_task_record_inputs(tasks)?
-        .into_iter()
-        .map(
-            |(key, title, description, priority, sources)| ClickupLifecycleTaskInput {
-                key,
-                title,
-                description,
-                priority,
-                sources,
-            },
-        )
-        .collect())
-}
-
-fn github_issue_inputs(tasks: &[InvestigationTask]) -> Result<Vec<GithubIssueRecordInput>> {
-    Ok(investigation_task_record_inputs(tasks)?
-        .into_iter()
-        .map(
-            |(key, title, description, priority, sources)| GithubIssueRecordInput {
-                key,
-                title,
-                description,
-                priority,
-                sources,
-            },
-        )
-        .collect())
-}
-
 /// Convert one polled source window into a host-routable [`ProducedEvent`].
 pub fn poll_to_produced_event(
     poll: &SourcePoll,
@@ -147,23 +88,21 @@ pub fn poll_to_produced_event(
             serde_json::to_value(&batch).context("serializing slack source-records batch")?
         }
         TaskSourceKind::Clickup => {
-            let tasks = clickup_task_inputs(poll.inferred_tasks())?;
-            let batch = batch_from_lifecycle_tasks(
+            let batch = batch_from_lifecycle_events(
                 &poll.source_key,
                 &poll.source_label,
                 Some(clickup_project_context(project)),
-                &tasks,
+                poll.clickup_lifecycle_events(),
                 emitted_at_unix,
             );
             serde_json::to_value(&batch).context("serializing clickup source-records batch")?
         }
         TaskSourceKind::GithubIssues => {
-            let records = github_issue_inputs(poll.inferred_tasks())?;
-            let batch = batch_from_issue_records(
+            let batch = batch_from_issue_events(
                 &poll.source_key,
                 &poll.source_label,
                 Some(github_project_context(project)),
-                &records,
+                &[],
                 emitted_at_unix,
             );
             serde_json::to_value(&batch)

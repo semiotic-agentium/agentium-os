@@ -21,14 +21,17 @@ struct ContextIndexCursorStateV1 {
     v: u8,
     offset: usize,
     agent_package: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    event_only: Option<bool>,
 }
 
 impl ContextIndexCursorToken {
-    pub fn encode_v1(offset: usize, agent_package: Option<&str>) -> Self {
+    pub fn encode_v1(offset: usize, agent_package: Option<&str>, event_only: Option<bool>) -> Self {
         let state = ContextIndexCursorStateV1 {
             v: 1,
             offset,
             agent_package: agent_package.map(str::to_string),
+            event_only,
         };
         let bytes = serde_json::to_vec(&state).unwrap_or_default();
         Self(format!("v1.{:x}", HexBytes(bytes)))
@@ -87,6 +90,8 @@ pub struct ContextIndexQueryParams {
     pub agent_package: Option<String>,
     pub limit: Option<u32>,
     pub cursor: Option<String>,
+    /// When true, only contexts with host ingress transcript rows (event dispatch runs).
+    pub event_only: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +99,7 @@ pub struct ContextIndexRequest {
     pub agent_package: Option<String>,
     pub limit: usize,
     pub offset: usize,
+    pub event_only: bool,
 }
 
 #[derive(Debug)]
@@ -143,14 +149,21 @@ impl ContextIndexRequest {
                 if state.agent_package.as_deref() != agent_package.as_deref() {
                     return Err(ContextIndexRequestParseError::CursorScopeMismatch);
                 }
+                let event_only = params.event_only.filter(|&v| v).is_some();
+                if state.event_only.unwrap_or(false) != event_only {
+                    return Err(ContextIndexRequestParseError::CursorScopeMismatch);
+                }
                 state.offset
             }
         };
+
+        let event_only = params.event_only.filter(|&v| v).is_some();
 
         Ok(Self {
             agent_package,
             limit: raw_limit as usize,
             offset,
+            event_only,
         })
     }
 }

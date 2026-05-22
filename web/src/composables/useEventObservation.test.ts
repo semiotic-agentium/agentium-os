@@ -76,6 +76,42 @@ describe("useEventObservation SSE trace refresh debounce", () => {
     vi.unstubAllGlobals();
   });
 
+  it("skips redundant SSE snapshots with the same version when transcript is loaded", async () => {
+    const pageWithItem: ConversationHistoryPage = {
+      contextId: "ctx-debounce",
+      version: "v1",
+      maxEventOrder: 1,
+      items: [
+        {
+          activityAnchor: "a1",
+          role: "user",
+          timestampMs: 1,
+          content: { type: "message", text: "hello" },
+        },
+      ],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/conversation-history?")) {
+        return { ok: true, json: async () => pageWithItem };
+      }
+      if (url.includes("/mermaid")) {
+        return { ok: true, text: async () => "" };
+      }
+      return { ok: false };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await obs.loadContext("ctx-debounce", null);
+    await vi.advanceTimersByTimeAsync(TRACE_DEBOUNCE_MS);
+    expect(obs.messages.value).toHaveLength(1);
+
+    const stream = MockEventSource.instances[MockEventSource.instances.length - 1]!;
+    stream.emit("snapshot", pageWithItem);
+    await vi.advanceTimersByTimeAsync(TRACE_DEBOUNCE_MS);
+    expect(obs.messages.value).toHaveLength(1);
+  });
+
   it("coalesces rapid SSE snapshot events into one trace refresh bump", async () => {
     await obs.loadContext("ctx-debounce", null);
     await vi.advanceTimersByTimeAsync(TRACE_DEBOUNCE_MS);

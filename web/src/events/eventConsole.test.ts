@@ -8,7 +8,10 @@ import {
   writeEventConsoleRoute,
 } from "../composables/useEventConsole";
 import {
+  buildEventConsoleLocalTranscript,
+  buildIngressWireUserMessage,
   buildOperatorPublishTraceMessages,
+  mergeEventConsoleTranscript,
   publishedScopeMatchesAgent,
   resolveObservationScope,
   scopeFromContextId,
@@ -143,10 +146,10 @@ describe("resolveObservationScope", () => {
         kind: "existing_context",
         context_id: "ctx-draft",
       },
-      selectedContextId: "ctx-history",
+      observedContextId: "ctx-history",
       previewProducedEvent: { context_id: "ctx-preview" },
       currentAgent: coordinatorAgent,
-      mode: "compose",
+      observationSource: "draft",
     });
     expect(resolved?.contextId).toBe("ctx-draft");
   });
@@ -162,10 +165,10 @@ describe("resolveObservationScope", () => {
         kind: "existing_context",
         context_id: "ctx-coordinator",
       },
-      selectedContextId: "ctx-notion",
+      observedContextId: "ctx-notion",
       previewProducedEvent: null,
       currentAgent: coordinatorAgent,
-      mode: "compose",
+      observationSource: "draft",
     });
     expect(resolved?.contextId).toBe("ctx-coordinator");
   });
@@ -177,24 +180,56 @@ describe("resolveObservationScope", () => {
     const resolved = resolveObservationScope({
       lastPublishedScope: null,
       draftScope: { kind: "new_context" },
-      selectedContextId: "ctx-history",
+      observedContextId: "ctx-history",
       previewProducedEvent: { context_id: "ctx-preview" },
       currentAgent: coordinatorAgent,
-      mode: "compose",
+      observationSource: "draft",
     });
     expect(resolved?.contextId).toBe("ctx-preview");
   });
 
-  it("does not use toolbar selected context in compose mode", () => {
+  it("does not use toolbar selected context in draft mode", () => {
     const resolved = resolveObservationScope({
       lastPublishedScope: null,
       draftScope: { kind: "new_context" },
-      selectedContextId: "ctx-stale-picker",
+      observedContextId: "ctx-stale-picker",
       previewProducedEvent: null,
       currentAgent: coordinatorAgent,
-      mode: "compose",
+      observationSource: "draft",
     });
     expect(resolved).toBeNull();
+  });
+
+  it("picker wins over publish and new_context draft", () => {
+    const resolved = resolveObservationScope({
+      lastPublishedScope: {
+        contextId: "ctx-dispatch",
+        agentPackage: "coordinator-agent",
+        agentInstanceId: "default",
+      },
+      draftScope: { kind: "new_context" },
+      observedContextId: "ctx-history",
+      previewProducedEvent: null,
+      currentAgent: coordinatorAgent,
+      observationSource: "picker",
+    });
+    expect(resolved?.contextId).toBe("ctx-history");
+  });
+
+  it("publish source prefers last publish scope", () => {
+    const resolved = resolveObservationScope({
+      lastPublishedScope: {
+        contextId: "ctx-dispatch",
+        agentPackage: "coordinator-agent",
+        agentInstanceId: "default",
+      },
+      draftScope: { kind: "new_context" },
+      observedContextId: "ctx-other",
+      previewProducedEvent: null,
+      currentAgent: coordinatorAgent,
+      observationSource: "publish",
+    });
+    expect(resolved?.contextId).toBe("ctx-dispatch");
   });
 });
 
@@ -235,15 +270,15 @@ describe("publishedScopeMatchesAgent", () => {
   });
 });
 
-describe("resolveObservationScope history", () => {
-  it("uses selected context when no dispatch scope", () => {
+describe("resolveObservationScope picker", () => {
+  it("uses selected context when observation source is picker", () => {
     const resolved = resolveObservationScope({
       lastPublishedScope: null,
       draftScope: { kind: "new_context" },
-      selectedContextId: "ctx-history",
+      observedContextId: "ctx-history",
       previewProducedEvent: null,
       currentAgent: coordinatorAgent,
-      mode: "history",
+      observationSource: "picker",
     });
     expect(resolved?.contextId).toBe("ctx-history");
     expect(scopeFromContextId("ctx-history")?.contextId).toBe("ctx-history");
@@ -288,6 +323,46 @@ describe("resolveDispatchUnitTaskId", () => {
     const { resolveDispatchUnitTaskId } = await import("./dispatchObserve");
     await expect(resolveDispatchUnitTaskId("ctx-1")).resolves.toBe("dispatch-unit-abc");
     vi.unstubAllGlobals();
+  });
+});
+
+describe("buildEventConsoleLocalTranscript", () => {
+  it("includes wire ingress and publish summary", () => {
+    const rows = buildEventConsoleLocalTranscript({
+      previewProducedEvent: {
+        context_id: "ctx-1",
+        messages: [{ records: [{ record_kind: "clickup.lifecycle_event", key: "k" }] }],
+      },
+      outcome: {
+        subscribers_matched: 1,
+        subscribers_accepted: 1,
+        failures: [],
+      },
+      publishError: null,
+      agentPackage: "clickup-agent",
+      agentInstanceId: "default",
+      messageShape: undefined,
+      envelope: null,
+    });
+    expect(rows.some((m) => m.speakerKind === "ingress")).toBe(true);
+    expect(rows.some((m) => m.role === "agent" && m.text?.includes("Published"))).toBe(true);
+  });
+});
+
+describe("mergeEventConsoleTranscript", () => {
+  it("drops local rows once provenance ingress exists", () => {
+    const local = [buildIngressWireUserMessage([{ x: 1 }])];
+    const provenance = [
+      {
+        id: "prov-user-ingress-unit-user:ctx:unit",
+        role: "user" as const,
+        text: "host line",
+        timestamp: new Date(),
+      },
+    ];
+    const merged = mergeEventConsoleTranscript(provenance, local);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.id).toContain("ingress-unit-user");
   });
 });
 

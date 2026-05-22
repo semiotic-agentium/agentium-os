@@ -19,9 +19,9 @@ use baml_rt_tools::{
 pub use poll::GithubPollState;
 use serde::{Deserialize, Serialize};
 pub use source_records::{
-    GithubIssueRecord, GithubIssueRecordInput, GithubIssuesProjectContext,
-    GithubIssuesSourceRecordsBatch, batch_from_issue_records,
-    github_issues_source_records_json_schema,
+    GITHUB_ISSUE_EVENT_KIND, GithubIssueEventRecord, GithubIssuesProjectContext,
+    GithubIssuesSourceRecordsBatch, batch_from_issue_events,
+    github_issues_source_records_json_schema, github_issues_source_records_sample_payload,
 };
 
 /// Placeholder input for GitHub tool registration (invoke surface expands later).

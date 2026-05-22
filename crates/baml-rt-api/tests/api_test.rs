@@ -750,6 +750,7 @@ impl ContextIndexService for MockContextIndex {
                 baml_rt_api::ContextIndexCursorToken::encode_v1(
                     end,
                     request.agent_package.as_deref(),
+                    Some(request.event_only),
                 )
                 .0,
             )
@@ -2340,7 +2341,7 @@ async fn get_context_index_cursor_scope_mismatch_returns_400() {
     )
     .await;
 
-    let cursor = baml_rt_api::ContextIndexCursorToken::encode_v1(1, Some("pkg-a")).0;
+    let cursor = baml_rt_api::ContextIndexCursorToken::encode_v1(1, Some("pkg-a"), None).0;
     let response = app
         .oneshot(
             Request::builder()
@@ -3108,6 +3109,16 @@ async fn conversation_history_includes_ingress_poll_user_message_rows() {
     );
     let context_id = ContextId::new(88, 99);
     let message_id = MessageId::from("batch-msg-1");
+    use baml_rt_core::host_source_records_body::format_source_records_wire_body;
+    let wire_body = format_source_records_wire_body(&[serde_json::json!({
+        "record_kind": "clickup.lifecycle_event",
+        "key": "clickup-created:task-1:1",
+        "event": "created",
+        "task_id": "task-1",
+        "list_id": "list-1",
+        "revision": 1,
+        "snapshot": { "name": "Investigate publish ingress", "status": "normal" }
+    })]);
     store
         .add_event(ProvEvent::Global(baml_rt_provenance::events::GlobalEvent {
             id: ActivityAnchorId::from(format!(
@@ -3120,7 +3131,7 @@ async fn conversation_history_includes_ingress_poll_user_message_rows() {
             data: baml_rt_provenance::events::ProvEventData::MessageReceived {
                 id: message_id.clone(),
                 role: "user".to_string(),
-                content: vec!["1. Investigate publish ingress (priority: normal)".to_string()],
+                content: vec![wire_body.0],
                 metadata: None,
                 agent_id: AgentId::from_uuid(
                     UuidId::parse_str("00000000-0000-0000-0000-000000000000").expect("nil uuid"),
@@ -3157,6 +3168,7 @@ async fn conversation_history_includes_ingress_poll_user_message_rows() {
         })
         .collect();
     assert_eq!(user_lines.len(), 1, "items={:?}", page.items);
+    assert!(user_lines[0].contains("clickup.lifecycle_event"));
     assert!(user_lines[0].contains("Investigate publish ingress"));
     assert!(
         page.items.iter().all(|i| i.role != "host"),

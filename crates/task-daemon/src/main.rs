@@ -116,7 +116,7 @@ impl fmt::Display for SourceSinkRouteArg {
 #[derive(Debug, Parser)]
 #[command(
     name = "baml-task-daemon",
-    about = "Local polling daemon that interprets Slack project discussions into investigation tasks"
+    about = "Local polling daemon that publishes raw host.source-records.v1 batches from Slack, ClickUp, and GitHub"
 )]
 struct Cli {
     #[command(subcommand)]

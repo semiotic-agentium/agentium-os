@@ -5,6 +5,37 @@ export type EventDispatchScope =
   | { kind: "existing_context"; context_id: string }
   | { kind: "existing_task"; context_id: string; task_id: string };
 
+export type EventDispatchScopeKind = EventDispatchScope["kind"];
+
+/** One message object in an event publish batch (schema-driven JSON). */
+export type DraftPayloadRecord = Record<string, unknown>;
+
+/** How transcript/provenance observation scope is chosen (decoupled from compose draft). */
+export type ObservationSource = "picker" | "publish" | "draft";
+
+export interface EventObservationState {
+  contextId: string | null;
+  source: ObservationSource;
+}
+
+export interface ResolvedObservationIds {
+  contextId: string | null;
+  taskId: string | null;
+}
+
+export interface EventConsoleRoute {
+  agentPackage: string | null;
+  agentInstance: string | null;
+  contextId: string | null;
+}
+
+/** Subset of validate `preview_produced_event` used for scope resolution. */
+export interface PreviewProducedEvent {
+  context_id?: string;
+  task_id?: string;
+  message_id?: string;
+}
+
 export interface MessageShapeFieldGroup {
   title: string;
   json_pointers: string[];
@@ -60,7 +91,7 @@ export interface DerivedDispatchEnvelope {
 export interface EventPayloadDraft {
   agent_package: string;
   agent_instance_id: string;
-  messages: unknown[];
+  messages: DraftPayloadRecord[];
   scope: EventDispatchScope;
   message_id: string;
   metadata: Record<string, unknown>;
@@ -86,9 +117,16 @@ export interface EventPublishFailure {
   detail: string;
 }
 
+export interface EventPublishAcceptance {
+  agent_package: string;
+  agent_instance_id: string;
+  detail: string;
+}
+
 export interface EventPublishResponse {
   subscribers_matched: number;
   subscribers_accepted: number;
+  acceptances?: EventPublishAcceptance[];
   failures: EventPublishFailure[];
   context_id?: string;
 }

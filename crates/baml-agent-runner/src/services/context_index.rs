@@ -29,6 +29,11 @@ struct ContextAggregate {
     latest_preview: String,
     first_user_timestamp_ms: u64,
     first_user_message: String,
+    has_host_ingress: bool,
+}
+
+fn is_host_ingress_activity_anchor(activity_id: &str) -> bool {
+    activity_id.starts_with("ingress-poll-user:") || activity_id.starts_with("ingress-unit-user:")
 }
 
 fn normalize_preview(text: &str) -> String {
@@ -115,6 +120,11 @@ impl baml_rt_api::ContextIndexService for ContextIndexServiceImpl {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_ascii_uppercase();
+                let activity_id = row
+                    .get("activity_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let ingress_row = is_host_ingress_activity_anchor(activity_id);
 
                 let entry =
                     grouped
@@ -125,7 +135,12 @@ impl baml_rt_api::ContextIndexService for ContextIndexServiceImpl {
                             latest_preview: preview.clone(),
                             first_user_timestamp_ms: u64::MAX,
                             first_user_message: String::new(),
+                            has_host_ingress: false,
                         });
+
+                if ingress_row {
+                    entry.has_host_ingress = true;
+                }
 
                 if timestamp_ms >= entry.latest_timestamp_ms {
                     entry.latest_timestamp_ms = timestamp_ms;
@@ -151,6 +166,9 @@ impl baml_rt_api::ContextIndexService for ContextIndexServiceImpl {
         }
 
         let mut contexts = grouped.into_values().collect::<Vec<_>>();
+        if request.event_only {
+            contexts.retain(|ctx| ctx.has_host_ingress);
+        }
         contexts.sort_by_key(|ctx| std::cmp::Reverse(ctx.latest_timestamp_ms));
 
         if request.offset > contexts.len() {
@@ -181,6 +199,7 @@ impl baml_rt_api::ContextIndexService for ContextIndexServiceImpl {
                 baml_rt_api::ContextIndexCursorToken::encode_v1(
                     end,
                     request.agent_package.as_deref(),
+                    Some(request.event_only),
                 )
                 .0,
             )
@@ -189,5 +208,21 @@ impl baml_rt_api::ContextIndexService for ContextIndexServiceImpl {
         };
 
         Ok(baml_rt_api::ContextPickerPageDto { items, next_cursor })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_host_ingress_activity_anchor;
+
+    #[test]
+    fn host_ingress_activity_anchors() {
+        assert!(is_host_ingress_activity_anchor(
+            "ingress-poll-user:ctx-1:msg-1"
+        ));
+        assert!(is_host_ingress_activity_anchor(
+            "ingress-unit-user:ctx-1:unit-1"
+        ));
+        assert!(!is_host_ingress_activity_anchor("a2a:user-turn:1"));
     }
 }
