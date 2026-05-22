@@ -25,6 +25,19 @@ fn next_extract_dir() -> Result<PathBuf> {
 /// (extract_dir, validated manifest). Caller is responsible for ensuring
 /// baml_src exists under extract_dir if they need it.
 pub async fn load_package(package_path: &Path) -> Result<(PathBuf, AgentManifest)> {
+    let package_path = package_path.to_path_buf();
+    tokio::task::spawn_blocking(move || load_package_blocking(&package_path))
+        .await
+        .map_err(|e| blocking_join_error("agent package load", e))?
+}
+
+pub(crate) fn blocking_join_error(operation: &str, err: tokio::task::JoinError) -> BamlRtError {
+    BamlRtError::Io(std::io::Error::other(format!(
+        "{operation} blocking task failed: {err}"
+    )))
+}
+
+fn load_package_blocking(package_path: &Path) -> Result<(PathBuf, AgentManifest)> {
     let span = spans::load_agent_package(package_path);
     let _guard = span.enter();
 
