@@ -1,0 +1,60 @@
+{
+  "fixture_version": "v1",
+  "scenario_id": "lgtm-checkout-5xx",
+  "title": "checkout-api 5xx surge after v2.34.0 deploy",
+  "affected_service": "checkout-api",
+  "namespace": "production",
+  "cluster": "k8s-prod-us-east-2",
+  "environment": "production-fixture",
+  "severity": "sev2",
+  "time_range": {
+    "started_at": "2026-05-20T14:00:00Z",
+    "ended_at": "2026-05-20T14:45:00Z",
+    "alert_fired_at": "2026-05-20T14:09:30Z",
+    "alert_resolved_at": "2026-05-20T14:43:10Z"
+  },
+  "dashboards": [
+    {
+      "uid": "checkout-overview",
+      "title": "Checkout Service Overview",
+      "url": "https://grafana.fixture.local/d/checkout-overview/checkout-service-overview",
+      "panels": [
+        { "id": 12, "title": "HTTP 5xx rate" },
+        { "id": 18, "title": "Request latency (p50/p95/p99)" },
+        { "id": 23, "title": "Pod restarts" },
+        { "id": 31, "title": "Dependency latency: payments-gateway" }
+      ]
+    }
+  ],
+  "datasources": {
+    "metrics": { "kind": "mimir", "uid": "mimir-prod" },
+    "logs": { "kind": "loki", "uid": "loki-prod" },
+    "traces": { "kind": "tempo", "uid": "tempo-prod" }
+  },
+  "evidence_files": {
+    "metrics": [
+      "metrics/checkout-api-5xx-rate.json",
+      "metrics/checkout-api-latency-p95.json",
+      "metrics/checkout-api-request-rate.json",
+      "metrics/checkout-api-pod-restarts.json",
+      "metrics/payments-gateway-dependency-latency-p95.json"
+    ],
+    "logs": [
+      "logs/checkout-api-errors.json"
+    ],
+    "traces": [
+      "traces/checkout-api-payments-gateway-timeout.json"
+    ],
+    "annotations": [
+      "annotations/checkout-api-deploy-v2.34.0.json"
+    ]
+  },
+  "event_samples": {
+    "grafana_alert_firing": "events/grafana-alert-firing.json",
+    "grafana_alert_resolved": "events/grafana-alert-resolved.json",
+    "firehydrant_incident_opened": "events/firehydrant-incident-opened.json",
+    "manual_operator_exploratory": "events/manual-operator-exploratory.json"
+  },
+  "ground_truth_file": "ground-truth.json",
+  "expected_evidence_file": "expected-evidence.json"
+}

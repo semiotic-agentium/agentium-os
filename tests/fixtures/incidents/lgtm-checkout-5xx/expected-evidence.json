@@ -1,0 +1,110 @@
+{
+  "scenario_id": "lgtm-checkout-5xx",
+  "manifest_version": "v1",
+  "purpose": "Machine-readable list of evidence a competent investigation should retrieve and cite. Reviewer- and rehearsal-facing; not for the agent prompt.",
+  "match_strategy": {
+    "preferred": ["evidence_id", "promql", "logql", "traceql", "annotation_id", "time_window_overlap"],
+    "avoid": "exact_prose_matching"
+  },
+  "minimums": {
+    "telemetry_families": 2,
+    "mcp_tool_calls": 2,
+    "cited_evidence_items": 3
+  },
+  "evidence": [
+    {
+      "evidence_id": "metric.checkout-api.http_5xx_rate",
+      "family": "metrics",
+      "file": "metrics/checkout-api-5xx-rate.json",
+      "promql": "sum by (status) (rate(http_requests_total{service=\"checkout-api\",status=~\"5..\"}[1m]))",
+      "must_cover_window": { "start": "2026-05-20T14:08:00Z", "end": "2026-05-20T14:43:00Z" },
+      "discriminating_observation": "5xx rate climbs from ~0.2 rps baseline to ~14 rps starting 14:08 and returns to baseline after rollback at 14:42.",
+      "priority": "high"
+    },
+    {
+      "evidence_id": "metric.checkout-api.http_request_duration_p95",
+      "family": "metrics",
+      "file": "metrics/checkout-api-latency-p95.json",
+      "promql": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"checkout-api\"}[5m])))",
+      "must_cover_window": { "start": "2026-05-20T14:08:00Z", "end": "2026-05-20T14:43:00Z" },
+      "discriminating_observation": "p95 jumps from ~0.28s baseline to ~1.6s during the incident window.",
+      "priority": "high"
+    },
+    {
+      "evidence_id": "metric.checkout-api.dependency_latency_payments_gateway_p95",
+      "family": "metrics",
+      "file": "metrics/payments-gateway-dependency-latency-p95.json",
+      "promql": "histogram_quantile(0.95, sum by (le) (rate(dependency_request_duration_seconds_bucket{service=\"checkout-api\",dependency=\"payments-gateway\"}[5m])))",
+      "must_cover_window": { "start": "2026-05-20T14:00:00Z", "end": "2026-05-20T14:45:00Z" },
+      "discriminating_observation": "Dependency p95 stays around 480ms across the window — which exceeds the 200ms client timeout introduced by v2.34.0.",
+      "priority": "critical"
+    },
+    {
+      "evidence_id": "log.checkout-api.upstream_timeout_payments_gateway",
+      "family": "logs",
+      "file": "logs/checkout-api-errors.json",
+      "logql": "{namespace=\"production\",app=\"checkout-api\"} |= \"ERROR\"",
+      "expected_substrings_any_of": [
+        "upstream timeout calling payments-gateway after 200ms",
+        "gateway returned 502 from payments-gateway: deadline_exceeded"
+      ],
+      "expected_dependency": "payments-gateway",
+      "expected_client_timeout_ms": 200,
+      "priority": "critical"
+    },
+    {
+      "evidence_id": "trace.checkout-api.payments_gateway_timeout_example",
+      "family": "traces",
+      "file": "traces/checkout-api-payments-gateway-timeout.json",
+      "traceql": "{ resource.service.name=\"checkout-api\" && status=error && span.dependency=\"payments-gateway\" }",
+      "expected_attributes": {
+        "error.kind": "timeout",
+        "dependency": "payments-gateway",
+        "client.timeout_ms": 200
+      },
+      "priority": "high"
+    },
+    {
+      "evidence_id": "annotation.checkout-api.deploy_v2_34_0",
+      "family": "annotations",
+      "file": "annotations/checkout-api-deploy-v2.34.0.json",
+      "expected_window_overlap_with_alert": true,
+      "expected_text_substrings_any_of": [
+        "checkout-api v2.34.0",
+        "payments-gateway client",
+        "timeout"
+      ],
+      "priority": "high"
+    },
+    {
+      "evidence_id": "metric.checkout-api.pod_restarts",
+      "family": "metrics",
+      "file": "metrics/checkout-api-pod-restarts.json",
+      "role": "red_herring_disambiguator",
+      "discriminating_observation": "Restarts spike once at 14:05 then return to zero — not a sustained crash-loop, so cannot explain the 35-minute 5xx surge that follows.",
+      "priority": "supporting"
+    },
+    {
+      "evidence_id": "metric.checkout-api.http_request_rate",
+      "family": "metrics",
+      "file": "metrics/checkout-api-request-rate.json",
+      "role": "supporting",
+      "discriminating_observation": "Request volume is stable around ~185 rps throughout — rules out capacity loss as the cause.",
+      "priority": "supporting"
+    }
+  ],
+  "expected_root_cause_terms_any_of": [
+    "payments-gateway",
+    "client timeout",
+    "200ms",
+    "v2.34.0",
+    "upstream timeout",
+    "deadline_exceeded"
+  ],
+  "expected_recommendation_terms_any_of": [
+    "rollback",
+    "v2.33.4",
+    "raise timeout",
+    "increase client timeout"
+  ]
+}

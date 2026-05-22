@@ -1,0 +1,23 @@
+{
+  "evidence_id": "annotation.checkout-api.deploy_v2_34_0",
+  "title": "Grafana dashboard annotation: checkout-api v2.34.0 release",
+  "datasource": { "kind": "grafana_annotations" },
+  "annotation": {
+    "id": 91827,
+    "dashboardUID": "checkout-overview",
+    "panelId": null,
+    "tags": ["release", "checkout-api", "production"],
+    "text": "Release: checkout-api v2.34.0 to production (10 of 10 pods Ready by 14:04:45Z).",
+    "time": 1779285750000,
+    "timeEnd": 1779285885000,
+    "isRegion": true,
+    "source": "argo-rollouts-annotator",
+    "data": {
+      "service": "checkout-api",
+      "version": "v2.34.0",
+      "previous_version": "v2.33.4",
+      "release_url": "https://github.com/example-corp/checkout-api/releases/tag/v2.34.0",
+      "change_summary": "Switched payments-gateway client to new HTTP/2 lib; default timeout now 200ms (was 2000ms)."
+    }
+  }
+}

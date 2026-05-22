@@ -1,0 +1,78 @@
+{
+  "schema_version": "grafana.alert.v1",
+  "event_id": "grafana-alert-lgtm-checkout-5xx-firing",
+  "fixture_only": true,
+  "fixture_note": "Shaped as a Grafana Alerting webhook payload (https://grafana.com/docs/grafana/latest/alerting/configure-notifications/template-notifications/reference/) for the lgtm-checkout-5xx scenario. Replaceable by a real Grafana producer without changing downstream contract.",
+  "emitted_at_unix": 1779286170,
+  "source": {
+    "source_key": "grafana:checkout-overview/CheckoutHighErrorRate",
+    "source_kind": "grafana",
+    "source_label": "Grafana Alerting (CheckoutHighErrorRate)"
+  },
+  "scenario_ref": {
+    "scenario_id": "lgtm-checkout-5xx",
+    "affected_service": "checkout-api",
+    "namespace": "production",
+    "time_range": {
+      "start": "2026-05-20T14:00:00Z",
+      "end": "2026-05-20T14:45:00Z"
+    }
+  },
+  "payload": {
+    "receiver": "agentium-dispatch",
+    "status": "firing",
+    "orgId": 1,
+    "alerts": [
+      {
+        "status": "firing",
+        "labels": {
+          "alertname": "CheckoutHighErrorRate",
+          "severity": "high",
+          "service": "checkout-api",
+          "namespace": "production",
+          "cluster": "k8s-prod-us-east-2",
+          "team": "checkout-platform"
+        },
+        "annotations": {
+          "summary": "checkout-api 5xx ratio > 5% for 1m",
+          "description": "checkout-api is returning 5xx for more than 5% of requests over a 1-minute window.",
+          "runbook_url": "https://runbooks.fixture.local/checkout-api/high-error-rate"
+        },
+        "startsAt": "2026-05-20T14:09:30Z",
+        "endsAt": "0001-01-01T00:00:00Z",
+        "generatorURL": "https://grafana.fixture.local/alerting/grafana/CheckoutHighErrorRate/view",
+        "fingerprint": "9c4e2a3a7b1d0f81",
+        "silenceURL": "https://grafana.fixture.local/alerting/silence/new?fingerprint=9c4e2a3a7b1d0f81",
+        "dashboardURL": "https://grafana.fixture.local/d/checkout-overview/checkout-service-overview",
+        "panelURL": "https://grafana.fixture.local/d/checkout-overview/checkout-service-overview?viewPanel=12",
+        "values": { "B": 0.078, "C": 1 }
+      }
+    ],
+    "groupLabels": {
+      "alertname": "CheckoutHighErrorRate",
+      "service": "checkout-api"
+    },
+    "commonLabels": {
+      "alertname": "CheckoutHighErrorRate",
+      "severity": "high",
+      "service": "checkout-api",
+      "namespace": "production",
+      "cluster": "k8s-prod-us-east-2"
+    },
+    "commonAnnotations": {
+      "summary": "checkout-api 5xx ratio > 5% for 1m",
+      "runbook_url": "https://runbooks.fixture.local/checkout-api/high-error-rate"
+    },
+    "externalURL": "https://grafana.fixture.local",
+    "version": "1",
+    "groupKey": "{}/{alertname=\"CheckoutHighErrorRate\"}:{service=\"checkout-api\"}",
+    "truncatedAlerts": 0,
+    "title": "[FIRING:1] CheckoutHighErrorRate (high checkout-api production)",
+    "state": "alerting",
+    "message": "checkout-api 5xx ratio > 5% for 1m. See dashboard for detail."
+  },
+  "subscription_hint": {
+    "schema_versions": ["grafana.alert.v1"],
+    "source_kinds": ["grafana"]
+  }
+}
