@@ -2,7 +2,7 @@ name: Rust CI
 
 on:
   push:
-    branches: [main]
+    branches: [build/kvm-ci-runner, main]
     # Documentation-only edits do not affect the Rust artifact graph; skipping
     # avoids spinning ~30min nextest lanes and cancelling in-flight runs via
     # extra pushes (see paths-ignore semantics for bundled PR diffs).
@@ -43,7 +43,7 @@ env:
 jobs:
   changes:
     name: Detect sandbox lane changes
-    runs-on: arc-runner-set
+    runs-on: agentium-os-ci-1
     outputs:
       sandbox_changed: ${{ steps.filter.outputs.sandbox }}
     steps:
@@ -66,7 +66,7 @@ jobs:
 
   doctor:
     name: Workspace integrity (doctor)
-    runs-on: arc-runner-set
+    runs-on: agentium-os-ci-1
     needs: changes
     steps:
       - uses: actions/checkout@v4
@@ -104,7 +104,7 @@ jobs:
 
   nextest:
     name: Nextest (workspace)
-    runs-on: arc-runner-set
+    runs-on: agentium-os-ci-1
     needs: changes
     steps:
       - uses: actions/checkout@v4
@@ -312,7 +312,7 @@ jobs:
 
   sandbox-adapter:
     name: Sandbox adapter (stdio E2E + protocol)
-    runs-on: arc-runner-set
+    runs-on: agentium-os-ci-1
     needs: [changes, nextest]
     if: needs.changes.outputs.sandbox_changed == 'true'
     steps:
@@ -386,7 +386,7 @@ jobs:
 
   sandbox-adapter-image:
     name: Sandbox adapter image (no-publish)
-    runs-on: arc-runner-set
+    runs-on: agentium-os-ci-1
     needs: [changes, nextest]
     if: needs.changes.outputs.sandbox_changed == 'true'
     env:
@@ -575,7 +575,7 @@ jobs:
 
   sandbox-adapter-image-handoff:
     name: Sandbox image metadata handoff validation
-    runs-on: arc-runner-set
+    runs-on: agentium-os-ci-1
     needs: [changes, nextest, sandbox-adapter-image]
     if: needs.changes.outputs.sandbox_changed == 'true'
     steps:
