@@ -43,7 +43,7 @@ env:
 jobs:
   changes:
     name: Detect sandbox lane changes
-    runs-on: agentium-os-ci-1
+    runs-on: kvm-gcp
     outputs:
       sandbox_changed: ${{ steps.filter.outputs.sandbox }}
     steps:
@@ -66,7 +66,7 @@ jobs:
 
   doctor:
     name: Workspace integrity (doctor)
-    runs-on: agentium-os-ci-1
+    runs-on: kvm-gcp
     needs: changes
     steps:
       - uses: actions/checkout@v4
@@ -104,7 +104,7 @@ jobs:
 
   nextest:
     name: Nextest (workspace)
-    runs-on: agentium-os-ci-1
+    runs-on: kvm-gcp
     needs: changes
     steps:
       - uses: actions/checkout@v4
@@ -312,7 +312,7 @@ jobs:
 
   sandbox-adapter:
     name: Sandbox adapter (stdio E2E + protocol)
-    runs-on: agentium-os-ci-1
+    runs-on: kvm-gcp
     needs: [changes, nextest]
     if: needs.changes.outputs.sandbox_changed == 'true'
     steps:
@@ -386,7 +386,7 @@ jobs:
 
   sandbox-adapter-image:
     name: Sandbox adapter image (no-publish)
-    runs-on: agentium-os-ci-1
+    runs-on: kvm-gcp
     needs: [changes, nextest]
     if: needs.changes.outputs.sandbox_changed == 'true'
     env:
@@ -575,7 +575,7 @@ jobs:
 
   sandbox-adapter-image-handoff:
     name: Sandbox image metadata handoff validation
-    runs-on: agentium-os-ci-1
+    runs-on: kvm-gcp
     needs: [changes, nextest, sandbox-adapter-image]
     if: needs.changes.outputs.sandbox_changed == 'true'
     steps:
