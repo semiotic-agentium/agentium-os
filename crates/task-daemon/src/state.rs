@@ -3,8 +3,9 @@
 use std::{
     collections::BTreeMap,
     fs,
-    io::Write,
+    io::{ErrorKind, Write},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use anyhow::{Context, Result};
@@ -142,11 +143,14 @@ impl StateStore {
     /// The filesystem read runs on [`tokio::task::spawn_blocking`] so the
     /// daemon poll loop's executor worker stays free to drive other
     /// futures while disk I/O is in flight.
+    ///
+    /// A scheduled load cannot be cancelled — the blocking pool runs the
+    /// read to completion even if the awaiting future is dropped.
     pub async fn load(&self) -> Result<TaskDaemonState> {
         let path = self.path.clone();
         tokio::task::spawn_blocking(move || load_blocking(&path))
             .await
-            .map_err(|e| anyhow::anyhow!("daemon state load blocking task failed: {e}"))?
+            .map_err(propagate_join_error("daemon state load"))?
     }
 
     /// Persists state to disk via write-then-rename atomic replacement.
@@ -156,23 +160,48 @@ impl StateStore {
     /// is cloned once into the blocking task so the calling future
     /// retains ownership and the executor worker is not blocked on
     /// `fsync`.
+    ///
+    /// A scheduled save cannot be cancelled — the rename completes even
+    /// if the calling future is dropped. This is desirable for crash
+    /// safety: a half-written `state.json` is never visible to a future
+    /// `load()`.
     pub async fn save(&self, state: &TaskDaemonState) -> Result<()> {
         let path = self.path.clone();
         let max = self.max_seen_tasks_per_source;
         let snapshot = state.clone();
         tokio::task::spawn_blocking(move || save_blocking(&path, max, snapshot))
             .await
-            .map_err(|e| anyhow::anyhow!("daemon state save blocking task failed: {e}"))?
+            .map_err(propagate_join_error("daemon state save"))?
+    }
+}
+
+/// Maps a `JoinError` to an `anyhow::Error` for non-panic outcomes, but
+/// re-raises panics so a bug inside the blocking task aborts the daemon
+/// task loudly instead of being downgraded to a transient-looking error
+/// the poll loop would retry indefinitely.
+fn propagate_join_error(
+    operation: &'static str,
+) -> impl FnOnce(tokio::task::JoinError) -> anyhow::Error {
+    move |e| {
+        if e.is_panic() {
+            std::panic::resume_unwind(e.into_panic());
+        }
+        anyhow::anyhow!("{operation} blocking task failed: {e}")
     }
 }
 
 fn load_blocking(path: &Path) -> Result<TaskDaemonState> {
-    if !path.exists() {
-        return Ok(TaskDaemonState::default());
-    }
-
-    let bytes =
-        fs::read(path).with_context(|| format!("reading daemon state at {}", path.display()))?;
+    // Match on the read error directly instead of pre-checking with
+    // `path.exists()` — a concurrent rename-onto-target by a peer save
+    // can otherwise flip the outcome from "missing file → defaults" to
+    // a hard read error.
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(TaskDaemonState::default()),
+        Err(e) => {
+            return Err(e).with_context(|| format!("reading daemon state at {}", path.display()));
+        }
+    };
     let state: TaskDaemonState = serde_json::from_slice(&bytes)
         .with_context(|| format!("parsing daemon state at {}", path.display()))?;
     Ok(state)
@@ -196,7 +225,7 @@ fn save_blocking(
 
     let payload =
         serde_json::to_vec_pretty(&state).context("serializing task daemon state to JSON")?;
-    let tmp = path.with_extension("json.tmp");
+    let tmp = unique_temp_path(path);
 
     {
         let mut file = fs::File::create(&tmp)
@@ -215,6 +244,21 @@ fn save_blocking(
         )
     })?;
     Ok(())
+}
+
+/// Produces a per-call unique temp-file path next to `path` so two
+/// concurrent saves (e.g. from cloned `StateStore` handles) cannot
+/// collide on a single `state.json.tmp` and corrupt each other's
+/// rename-into-place sequence.
+fn unique_temp_path(path: &Path) -> PathBuf {
+    static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    path.with_extension(format!("{pid}-{nanos}-{seq}.tmp"))
 }
 
 #[cfg(test)]
@@ -261,20 +305,27 @@ mod tests {
         store.save(&original).await.expect("save");
         let loaded = store.load().await.expect("load");
 
-        assert!(loaded.source_state("slack:C123").is_some());
-        assert!(
-            loaded
-                .source_state("slack:C123")
-                .unwrap()
-                .has_seen_task("task-1")
+        let source = loaded
+            .source_state("slack:C123")
+            .expect("source state should round-trip");
+        assert_eq!(
+            source.seen_task_keys.get("task-1"),
+            Some(&42),
+            "seen-task timestamp should round-trip verbatim"
         );
     }
 
-    /// Sanity check that load + save work under a `current_thread`
-    /// runtime — the smallest reproducer for the deadlock that would
-    /// fire if a future regression accidentally called
-    /// [`tokio::runtime::Handle::block_on`] inside save or load instead
-    /// of [`tokio::task::spawn_blocking`].
+    /// Sanity check that load + save compose under a `current_thread`
+    /// runtime — the spawn_blocking pattern delegates disk I/O to the
+    /// blocking-thread pool (separate from the runtime worker), so the
+    /// single executor thread is free to drive the awaiting future. A
+    /// future regression that reverted to inline `fs::*` calls would
+    /// still pass this test (sync I/O completes synchronously on the
+    /// worker), but the test guards against the cheaper class of bug:
+    /// accidentally introducing a runtime-on-runtime construction
+    /// (e.g. `Runtime::new()`/`block_on` inside the async path) which
+    /// panics under `flavor = "current_thread"` because there is no
+    /// blocking pool to relocate the inner runtime onto.
     #[tokio::test(flavor = "current_thread")]
     async fn load_and_save_compose_under_current_thread_runtime() {
         let dir = tempdir().expect("tempdir");
