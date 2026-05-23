@@ -138,58 +138,89 @@ impl StateStore {
     }
 
     /// Loads state from disk, returning defaults when no file exists.
-    pub fn load(&self) -> Result<TaskDaemonState> {
-        if !self.path.exists() {
-            return Ok(TaskDaemonState::default());
-        }
-
-        let bytes = fs::read(&self.path)
-            .with_context(|| format!("reading daemon state at {}", self.path.display()))?;
-        let state: TaskDaemonState = serde_json::from_slice(&bytes)
-            .with_context(|| format!("parsing daemon state at {}", self.path.display()))?;
-        Ok(state)
+    ///
+    /// The filesystem read runs on [`tokio::task::spawn_blocking`] so the
+    /// daemon poll loop's executor worker stays free to drive other
+    /// futures while disk I/O is in flight.
+    pub async fn load(&self) -> Result<TaskDaemonState> {
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || load_blocking(&path))
+            .await
+            .map_err(|e| anyhow::anyhow!("daemon state load blocking task failed: {e}"))?
     }
 
     /// Persists state to disk via write-then-rename atomic replacement.
-    pub fn save(&self, state: &TaskDaemonState) -> Result<()> {
-        if let Some(parent) = self.path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating state directory for {}", self.path.display()))?;
-        }
-
-        let mut normalized = state.clone();
-        for source in normalized.sources.values_mut() {
-            source.prune_seen_tasks(self.max_seen_tasks_per_source);
-        }
-
-        let payload = serde_json::to_vec_pretty(&normalized)
-            .context("serializing task daemon state to JSON")?;
-        let tmp = self.path.with_extension("json.tmp");
-
-        {
-            let mut file = fs::File::create(&tmp)
-                .with_context(|| format!("creating temporary state file {}", tmp.display()))?;
-            file.write_all(&payload)
-                .with_context(|| format!("writing temporary state file {}", tmp.display()))?;
-            file.sync_all()
-                .with_context(|| format!("syncing temporary state file {}", tmp.display()))?;
-        }
-
-        fs::rename(&tmp, &self.path).with_context(|| {
-            format!(
-                "atomically replacing daemon state {} with {}",
-                self.path.display(),
-                tmp.display()
-            )
-        })?;
-        Ok(())
+    ///
+    /// The serialize + `sync_all` + rename chain runs on
+    /// [`tokio::task::spawn_blocking`]. The caller's `&TaskDaemonState`
+    /// is cloned once into the blocking task so the calling future
+    /// retains ownership and the executor worker is not blocked on
+    /// `fsync`.
+    pub async fn save(&self, state: &TaskDaemonState) -> Result<()> {
+        let path = self.path.clone();
+        let max = self.max_seen_tasks_per_source;
+        let snapshot = state.clone();
+        tokio::task::spawn_blocking(move || save_blocking(&path, max, snapshot))
+            .await
+            .map_err(|e| anyhow::anyhow!("daemon state save blocking task failed: {e}"))?
     }
+}
+
+fn load_blocking(path: &Path) -> Result<TaskDaemonState> {
+    if !path.exists() {
+        return Ok(TaskDaemonState::default());
+    }
+
+    let bytes =
+        fs::read(path).with_context(|| format!("reading daemon state at {}", path.display()))?;
+    let state: TaskDaemonState = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parsing daemon state at {}", path.display()))?;
+    Ok(state)
+}
+
+fn save_blocking(
+    path: &Path,
+    max_seen_tasks_per_source: usize,
+    mut state: TaskDaemonState,
+) -> Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating state directory for {}", path.display()))?;
+    }
+
+    for source in state.sources.values_mut() {
+        source.prune_seen_tasks(max_seen_tasks_per_source);
+    }
+
+    let payload =
+        serde_json::to_vec_pretty(&state).context("serializing task daemon state to JSON")?;
+    let tmp = path.with_extension("json.tmp");
+
+    {
+        let mut file = fs::File::create(&tmp)
+            .with_context(|| format!("creating temporary state file {}", tmp.display()))?;
+        file.write_all(&payload)
+            .with_context(|| format!("writing temporary state file {}", tmp.display()))?;
+        file.sync_all()
+            .with_context(|| format!("syncing temporary state file {}", tmp.display()))?;
+    }
+
+    fs::rename(&tmp, path).with_context(|| {
+        format!(
+            "atomically replacing daemon state {} with {}",
+            path.display(),
+            tmp.display()
+        )
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use tempfile::tempdir;
+
     use super::*;
 
     #[test]
@@ -204,5 +235,62 @@ mod tests {
         assert!(!source_state.has_seen_task("task-a"));
         assert!(source_state.has_seen_task("task-b"));
         assert!(source_state.has_seen_task("task-c"));
+    }
+
+    #[tokio::test]
+    async fn load_returns_default_when_file_missing() {
+        let dir = tempdir().expect("tempdir");
+        let store = StateStore::new(dir.path().join("missing.json"), 100);
+
+        let state = store.load().await.expect("load");
+
+        assert_eq!(state.version, 1);
+        assert!(state.sources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn save_then_load_roundtrips_state() {
+        let dir = tempdir().expect("tempdir");
+        let store = StateStore::new(dir.path().join("state.json"), 100);
+
+        let mut original = TaskDaemonState::default();
+        original
+            .source_state_mut("slack:C123")
+            .mark_task_seen("task-1".to_string(), 42);
+
+        store.save(&original).await.expect("save");
+        let loaded = store.load().await.expect("load");
+
+        assert!(loaded.source_state("slack:C123").is_some());
+        assert!(
+            loaded
+                .source_state("slack:C123")
+                .unwrap()
+                .has_seen_task("task-1")
+        );
+    }
+
+    /// Sanity check that load + save work under a `current_thread`
+    /// runtime — the smallest reproducer for the deadlock that would
+    /// fire if a future regression accidentally called
+    /// [`tokio::runtime::Handle::block_on`] inside save or load instead
+    /// of [`tokio::task::spawn_blocking`].
+    #[tokio::test(flavor = "current_thread")]
+    async fn load_and_save_compose_under_current_thread_runtime() {
+        let dir = tempdir().expect("tempdir");
+        let store = StateStore::new(dir.path().join("state.json"), 100);
+
+        let mut state = TaskDaemonState::default();
+        state
+            .source_state_mut("source-1")
+            .mark_task_seen("task-1".to_string(), 1);
+        store.save(&state).await.expect("save");
+        let loaded = store.load().await.expect("load");
+        assert!(
+            loaded
+                .source_state("source-1")
+                .unwrap()
+                .has_seen_task("task-1")
+        );
     }
 }

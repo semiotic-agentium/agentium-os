@@ -283,7 +283,11 @@ impl TaskDaemon {
     }
 
     async fn run_once_impl(&mut self) -> Result<TaskDispatch> {
-        let mut state = self.state_store.load().context("loading daemon state")?;
+        let mut state = self
+            .state_store
+            .load()
+            .await
+            .context("loading daemon state")?;
         let poll = self
             .source
             .poll(&mut state)
@@ -364,6 +368,7 @@ impl TaskDaemon {
 
         self.state_store
             .save(&state)
+            .await
             .context("saving daemon state")?;
         Ok(dispatch)
     }
@@ -786,6 +791,7 @@ mod tests {
 
         let persisted_state = StateStore::new(state_path, 100)
             .load()
+            .await
             .expect("load persisted state");
         assert!(
             persisted_state.source_state(SOURCE_KEY).is_none(),
@@ -823,6 +829,7 @@ mod tests {
 
         let persisted_state = StateStore::new(state_path, 100)
             .load()
+            .await
             .expect("load persisted state");
         assert!(
             persisted_state.source_state(SOURCE_KEY).is_none(),
@@ -860,6 +867,7 @@ mod tests {
 
         let persisted_state = StateStore::new(state_path, 100)
             .load()
+            .await
             .expect("load persisted state");
         assert!(
             persisted_state.source_state("clickup:test-list").is_none(),
