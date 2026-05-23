@@ -1,38 +1,47 @@
 //! Centralized error mapping for `tokio::task::spawn_blocking` failures.
 //!
-//! When a blocking task panics, `JoinError`'s `Display` impl renders only
-//! `"task panicked at ..."` — the panic payload is dropped. Operators
-//! debugging deploy/publish failures via the HTTP API need the actual
-//! panic message in the response body, not the runner stderr.
+//! Tokio's `JoinError` `Display` impl renders string panics as
+//! `task <id> panicked with message "<msg>"` and non-string panics as
+//! `task <id> panicked` — operator-facing surfaces (HTTP 500 detail bodies,
+//! `tracing::error!` output) end up with the payload either wrapped in
+//! escape-quotes or, for `panic_any(custom_type)`, dropped entirely.
 //!
-//! [`join_error_message`] extracts the panic payload via
-//! [`tokio::task::JoinError::into_panic`] and downcasts it to the standard
-//! `&'static str` / `String` shapes produced by `panic!`.
+//! [`join_error_message`] strips the boilerplate: it captures the tokio
+//! task id, extracts the payload via [`tokio::task::JoinError::into_panic`]
+//! with downcasts to `&'static str` / `String`, and falls back to the raw
+//! `JoinError` `Display` (which carries the panic location) when the
+//! payload is neither.
 
 use tokio::task::JoinError;
 
-const NON_STRING_PANIC_PAYLOAD: &str = "<non-string panic payload>";
-
 /// Render a [`JoinError`] for inclusion in a higher-level error string,
-/// extracting the panic payload when the task panicked.
+/// extracting the panic payload when the task panicked and including the
+/// tokio task id so concurrent failures can be correlated.
 ///
 /// `operation` is a short label describing what the blocking task was doing
 /// (e.g. `"agent package load"`); it appears as the prefix of the returned
 /// message.
 #[must_use]
 pub fn join_error_message(operation: &str, err: JoinError) -> String {
+    let id = err.id();
     if err.is_panic() {
+        // Capture Display before into_panic() consumes `err`, so non-string
+        // payloads still have the panic location / type info to surface.
+        let join_display = err.to_string();
         let payload = err.into_panic();
         let msg = payload
             .downcast_ref::<&'static str>()
             .map(|s| (*s).to_string())
             .or_else(|| payload.downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| NON_STRING_PANIC_PAYLOAD.to_string());
-        format!("{operation} panicked: {msg}")
+            .unwrap_or(join_display);
+        format!("{operation} (task {id}) panicked: {msg}")
     } else if err.is_cancelled() {
-        format!("{operation} blocking task cancelled")
+        format!("{operation} (task {id}) blocking task cancelled")
     } else {
-        format!("{operation} blocking task failed: {err}")
+        // Unreachable in tokio 1.x — `JoinError` has only Panic and
+        // Cancelled discriminants — but kept as a defensive default in
+        // case a future tokio release adds a variant.
+        format!("{operation} (task {id}) blocking task failed: {err}")
     }
 }
 
@@ -55,9 +64,17 @@ mod tests {
 
         let msg = join_error_message("artifact build", err);
 
-        assert_eq!(
-            msg, "artifact build panicked: tsc assertion tripped",
-            "operator-facing message should be the bare panic payload without JoinError boilerplate"
+        assert!(
+            msg.starts_with("artifact build (task ") && msg.contains(") panicked: "),
+            "expected `operation (task <id>) panicked: ...` prefix, got: {msg}"
+        );
+        assert!(
+            msg.ends_with(": tsc assertion tripped"),
+            "panic payload should appear unwrapped, got: {msg}"
+        );
+        assert!(
+            !msg.contains("panicked with message"),
+            "JoinError Display boilerplate should be stripped, got: {msg}"
         );
     }
 
@@ -71,22 +88,54 @@ mod tests {
 
         let msg = join_error_message("manifest parse", err);
 
-        assert_eq!(
-            msg, "manifest parse panicked: malformed manifest at offset 42",
-            "formatted panic payloads (owned String) should surface verbatim"
+        assert!(
+            msg.starts_with("manifest parse (task ") && msg.contains(") panicked: "),
+            "expected `operation (task <id>) panicked: ...` prefix, got: {msg}"
+        );
+        assert!(
+            msg.ends_with(": malformed manifest at offset 42"),
+            "formatted (String) panic payloads should surface verbatim, got: {msg}"
         );
     }
 
     #[tokio::test]
-    async fn non_string_panic_payload_is_labeled() {
+    async fn non_string_panic_payload_falls_back_to_join_error_display() {
         let err = spawn_panicking(|| std::panic::panic_any(404_u32)).await;
 
         let msg = join_error_message("registry lookup", err);
 
-        assert!(msg.starts_with("registry lookup panicked: "), "got: {msg}");
         assert!(
-            msg.contains(NON_STRING_PANIC_PAYLOAD),
-            "non-string payload should be labeled, got: {msg}"
+            msg.starts_with("registry lookup (task ") && msg.contains(") panicked: "),
+            "got: {msg}"
+        );
+        // The JoinError Display for a non-string panic includes the task id
+        // and the substring "panicked" without a message — verifies we
+        // surfaced something diagnostic rather than dropping the payload.
+        assert!(
+            msg.contains("task ") && msg.matches("task ").count() >= 2,
+            "fallback should include JoinError Display (which mentions \"task <id>\"), got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn task_id_is_included_for_cancellation() {
+        let handle = tokio::task::spawn_blocking(|| {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        });
+        handle.abort();
+        let err = handle.await.expect_err("aborted task must yield JoinError");
+
+        let msg = join_error_message("agent package load", err);
+
+        // spawn_blocking tasks ignore abort once they start; only a not-yet
+        // started task will surface as cancelled. Accept either outcome —
+        // both branches must include the task id breadcrumb.
+        assert!(
+            msg.starts_with("agent package load (task ")
+                && (msg.contains(") blocking task cancelled")
+                    || msg.contains(") panicked: ")
+                    || msg.contains(") blocking task failed: ")),
+            "every JoinError branch must include the task id, got: {msg}"
         );
     }
 }

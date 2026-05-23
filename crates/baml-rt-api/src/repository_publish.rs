@@ -46,7 +46,7 @@ pub async fn publish_with_build(
             .await
             .map_err(|e| {
                 HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR)
-                    .title("Artifact parse task failed")
+                    .title("Artifact parse failed")
                     .detail(join_error_message("artifact parse", e))
             })?
             .map_err(|e| {
