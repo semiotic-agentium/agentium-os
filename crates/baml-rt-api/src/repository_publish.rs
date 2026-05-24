@@ -5,6 +5,7 @@ use baml_rt_builder::builder::{
     AgentDir, BuildDir, BuilderService, FileSystem, RuntimeTypeGenerator, StdFileSystem,
     StdPackager, TscCompiler,
 };
+use baml_rt_core::join_error_message;
 use baml_rt_repository::{
     RepositoryService,
     commands::{PublishCommand, PublishResult},
@@ -45,8 +46,8 @@ pub async fn publish_with_build(
             .await
             .map_err(|e| {
                 HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR)
-                    .title("Artifact parse task failed")
-                    .detail(e.to_string())
+                    .title("Artifact parse failed")
+                    .detail(join_error_message("artifact parse", e))
             })?
             .map_err(|e| {
                 HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR)
@@ -89,7 +90,7 @@ async fn build_artifact(
     let handle = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || handle.block_on(build_artifact_inner(&source, svc)))
         .await
-        .map_err(|e| anyhow::anyhow!("artifact build task failed: {e}"))?
+        .map_err(|e| anyhow::anyhow!("{}", join_error_message("artifact build", e)))?
 }
 
 async fn build_artifact_inner(

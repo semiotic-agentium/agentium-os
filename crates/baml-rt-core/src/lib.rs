@@ -6,6 +6,7 @@ pub mod a2a_wire;
 pub mod agent_routing;
 pub mod atomic_io;
 pub mod backoff;
+pub mod blocking_task;
 pub mod bus;
 pub(crate) mod bus_spans;
 pub mod callback_store;
@@ -47,6 +48,7 @@ pub use agent_routing::{
 };
 pub use backoff::ExponentialBackoff;
 pub use baml_rt_citation::Citation;
+pub use blocking_task::join_error_message;
 pub use bus::{
     A2aEffectMetadata, A2aKind, Bus, BusApi, BusStream, BusWithEffects, Command, DomainEvent,
     EffectEmitter, EffectEvent, EffectKind, EffectLiveness, EffectRuntime, EffectStartToken,

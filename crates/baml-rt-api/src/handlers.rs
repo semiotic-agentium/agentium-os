@@ -19,6 +19,7 @@ use baml_rt_core::{
     A2aWireRequest, AgentDispatchRequest, AgentInstanceId, AgentPackageName, AgentRouteKey,
     BamlRtError, DeploymentContentHash, DeploymentStatus,
     ids::{AgentId, ContextId, TaskId},
+    join_error_message,
 };
 use baml_rt_provenance::{
     ProvenanceOpsFilters, ProvenanceOpsQueryRequest, ProvenanceOpsResource,
@@ -81,8 +82,9 @@ where
     tokio::task::spawn_blocking(move || handle.block_on(builder()))
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, "blocking deployment task failed");
-            problem(500, "Internal Server Error", "deployment task failed")
+            let detail = join_error_message("deployment", e);
+            tracing::error!(error = %detail, "blocking deployment task failed");
+            problem(500, "Internal Server Error", detail)
         })
 }
 

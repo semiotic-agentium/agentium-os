@@ -6,7 +6,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use baml_rt_core::{AgentManifest, BamlRtError, Result};
+use baml_rt_core::{AgentManifest, BamlRtError, Result, join_error_message};
 use baml_rt_observability::spans;
 use tracing::info;
 
@@ -32,9 +32,7 @@ pub async fn load_package(package_path: &Path) -> Result<(PathBuf, AgentManifest
 }
 
 pub(crate) fn blocking_join_error(operation: &str, err: tokio::task::JoinError) -> BamlRtError {
-    BamlRtError::Io(std::io::Error::other(format!(
-        "{operation} blocking task failed: {err}"
-    )))
+    BamlRtError::Io(std::io::Error::other(join_error_message(operation, err)))
 }
 
 fn load_package_blocking(package_path: &Path) -> Result<(PathBuf, AgentManifest)> {
