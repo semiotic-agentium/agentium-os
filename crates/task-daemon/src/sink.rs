@@ -231,31 +231,60 @@ impl TaskSink for JsonlFileSink {
     }
 
     async fn deliver(&mut self, dispatch: &TaskDispatch) -> Result<()> {
-        if let Some(parent) = self.path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent).map_err(|source| SinkDeliveryError::JsonlIo {
-                path: self.path.clone(),
-                source,
-            })?;
-        }
-
-        let line = serde_json::to_string(&dispatch.result_event)
-            .map_err(SinkDeliveryError::JsonlSerialize)?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .map_err(|source| SinkDeliveryError::JsonlIo {
-                path: self.path.clone(),
-                source,
-            })?;
-        writeln!(file, "{line}").map_err(|source| SinkDeliveryError::JsonlIo {
-            path: self.path.clone(),
-            source,
-        })?;
+        let path = self.path.clone();
+        let event = dispatch.result_event.clone();
+        tokio::task::spawn_blocking(move || jsonl_deliver_blocking(&path, &event))
+            .await
+            .map_err(|e| {
+                if e.is_panic() {
+                    // Preserve the original daemon-aborts-on-panic semantics
+                    // so a panic in the blocking task surfaces loudly rather
+                    // than being downgraded to a soft anyhow error that the
+                    // poll loop would retry indefinitely.
+                    std::panic::resume_unwind(e.into_panic());
+                }
+                anyhow!("jsonl sink deliver blocking task failed: {e}")
+            })??;
         Ok(())
     }
+}
+
+fn jsonl_deliver_blocking(
+    path: &Path,
+    event: &crate::contract::InterpretationResultEvent,
+) -> std::result::Result<(), SinkDeliveryError> {
+    let line = serde_json::to_string(event).map_err(SinkDeliveryError::JsonlSerialize)?;
+
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|source| SinkDeliveryError::JsonlIo {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|source| SinkDeliveryError::JsonlIo {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    writeln!(file, "{line}").map_err(|source| SinkDeliveryError::JsonlIo {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    // Sync the line to disk so a host-level crash between deliver and the
+    // next dirty-page flush cannot lose a batch that the daemon has already
+    // advanced its seen-task cursor past.
+    file.sync_all()
+        .map_err(|source| SinkDeliveryError::JsonlIo {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    Ok(())
 }
 
 /// Truncates a task title to `max_len` characters, appending ellipsis if needed.
@@ -1329,6 +1358,59 @@ mod tests {
         let truncated = truncate_title(&long, 240);
         assert_eq!(truncated.chars().count(), 240);
         assert!(truncated.ends_with("..."));
+    }
+
+    #[tokio::test]
+    async fn jsonl_sink_appends_one_line_per_dispatch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nested/dispatches.jsonl");
+        let mut sink = JsonlFileSink::new(path.clone());
+
+        sink.deliver(&sample_dispatch(sample_batch()))
+            .await
+            .expect("first deliver");
+        sink.deliver(&sample_dispatch(sample_batch()))
+            .await
+            .expect("second deliver");
+
+        let contents = std::fs::read_to_string(&path).expect("read jsonl file");
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 2, "one line per deliver");
+        for line in &lines {
+            let _: Value = serde_json::from_str(line).expect("each line is valid JSON");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn jsonl_sink_runs_under_current_thread_runtime() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut sink = JsonlFileSink::new(dir.path().join("out.jsonl"));
+
+        sink.deliver(&sample_dispatch(sample_batch()))
+            .await
+            .expect("deliver should not deadlock on current_thread runtime");
+    }
+
+    #[tokio::test]
+    async fn jsonl_sink_surfaces_io_failure_when_parent_path_is_a_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Make the "parent" of the target path a regular file so
+        // `create_dir_all` inside the blocking helper fails with
+        // NotADirectory — exercises the I/O failure branch that the
+        // happy-path tests don't cover.
+        let blocker = dir.path().join("not-a-dir");
+        std::fs::write(&blocker, b"i am a regular file").expect("write blocker file");
+        let mut sink = JsonlFileSink::new(blocker.join("dispatches.jsonl"));
+
+        let err = sink
+            .deliver(&sample_dispatch(sample_batch()))
+            .await
+            .expect_err("delivery must fail when parent path is a file");
+        assert!(
+            err.chain()
+                .any(|cause| cause.to_string().contains("jsonl sink I/O failed")),
+            "expected SinkDeliveryError::JsonlIo in chain, got: {err:#}"
+        );
     }
 
     #[tokio::test]
