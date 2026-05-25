@@ -1206,25 +1206,48 @@ Track progress. Check boxes as work lands. Order roughly = dependency order; par
 - [x] Threading derived from `context_id` (in-memory map).
 - [x] Tests: reject unknown fields, channel never from input, threading stable per context.
 
-### Phase 7 — Agents
+### Phase 7 — Agents 🚧 In Progress
 
-- [ ] `agents/observability-coordinator/`:
-  - [ ] `manifest.json` subscription `schema_versions=["grafana.alert.v1"]`, `source_kinds=["grafana"]`, `source_keys=["grafana:local"]`.
-  - [ ] `onDispatch(request)` implementation.
-  - [ ] Parse alert; delegate to grafana investigator via A2A.
-  - [ ] Emit progress messages on each tool call.
+Demo agents live under `demo/ford-observability/agents/` so the demo is self-contained and Helm/scripts can package them by path. Agent dirs must keep standard `cargo agent-platform new-agent` structure: `manifest.json`, `tsconfig.json`, `src/`, and `baml_src/`. Regenerate generated artifacts with:
+
+```bash
+BAML_MCP_REGISTRY_URL=http://127.0.0.1:18080/repository \
+  cargo run -q -p cargo-agent-platform -- regen \
+    --path demo/ford-observability/agents/observability-coordinator \
+    --path demo/ford-observability/agents/grafana-investigator \
+    --path demo/ford-observability/agents/slack-notify
+```
+
+`BAML_MCP_REGISTRY_URL` is required for agents that list MCP tools, because tool schemas come from the approved MCP registry snapshot and are compiled into `baml_src/_baml_runtime.baml` + `src/baml-runtime.d.ts`.
+
+Future demo agents should be scaffolded with `cargo run -q -p cargo-agent-platform -- new-agent <name> --output demo/ford-observability/agents/<name> ...` and then customized, rather than hand-created.
+
+- [ ] `demo/ford-observability/agents/observability-coordinator/`:
+  - [x] Create agent directory, `manifest.json`, `tsconfig.json`, `baml_src/`, and TypeScript entrypoint.
+  - [x] Regenerate `_baml_runtime.baml` + `src/baml-runtime.d.ts` via `cargo agent-platform regen --path`.
+  - [x] `manifest.json` subscription `schema_versions=["grafana.alert.v1"]`, `source_kinds=["grafana"]`, `source_keys=["grafana:local"]`.
+  - [x] `onDispatch(request)` implementation.
+  - [x] Parse alert; delegate to grafana investigator via A2A.
+  - [x] Build deterministic final report scaffold with dashboard/provenance URL and next actions.
+  - [x] Hand summary + dashboard URL to `slack-notify` via A2A in shared `context_id`.
+  - [ ] Emit coordinator progress messages during `onDispatch` if dispatch emitter support exists; otherwise document limitation.
   - [ ] Cap investigation at ~60s wall clock.
-  - [ ] Final report synthesis (impact, cause, confidence, citations, next actions).
-  - [ ] Hand summary + dashboard URL to `slack-notify` via A2A in shared `context_id`.
-- [ ] `agents/grafana-investigator/` (extend `examples/agents/grafana-mcp-agent/`):
-  - [ ] Package `mcp/grafana/list_datasources`, `query_prometheus`, Loki/LogQL op, `get_annotations`.
-  - [ ] PromQL: p95 latency / error rate / request rate / `up` over alert window vs baseline.
-  - [ ] LogQL bounded by service + alert window; identify dependency timeouts.
-  - [ ] Annotations: `tags=kind=trace,incident=<id>` with `limit≤20` + time bound.
-  - [ ] Return structured findings with archive refs.
-- [ ] `agents/slack-notify/`:
-  - [ ] Write-only manifest with `support/slack_notify` + `system/internal_a2a`.
-  - [ ] Receive A2A summary; format + post once per incident.
+  - [ ] Citation-grade final synthesis (impact, cause, confidence, citations) from investigator/tool archive refs.
+- [ ] `demo/ford-observability/agents/grafana-investigator/` (adapted from `examples/agents/grafana-mcp-agent/`):
+  - [x] Create agent directory, `manifest.json`, `tsconfig.json`, `baml_src/`, and TypeScript entrypoint.
+  - [x] Regenerate `_baml_runtime.baml` + `src/baml-runtime.d.ts` via `cargo agent-platform regen --path`.
+  - [x] Package `mcp/grafana/list_datasources`, `query_prometheus`, `query_loki_logs`, `get_annotations`.
+  - [x] PromQL: p95 latency / error rate / request rate / `up` over alert window vs baseline.
+  - [x] LogQL bounded by service + alert window; identify dependency timeouts.
+  - [x] Annotations: `tags=kind=trace,service=<service>` with `limit≤20` + time bound.
+  - [x] Verify exact `query_loki_logs` and `get_annotations` input shapes against live MCP tool schemas (`query_loki_logs`: `logql`, `startRfc3339`, `endRfc3339`; `get_annotations`: epoch-ms `from`/`to`, `tags`, `matchAny`).
+  - [ ] Return structured findings with archive refs/citations, not only compact text.
+- [x] `demo/ford-observability/agents/slack-notify/`:
+  - [x] Create agent directory, `manifest.json`, `tsconfig.json`, `baml_src/`, and TypeScript entrypoint.
+  - [x] Regenerate `_baml_runtime.baml` + `src/baml-runtime.d.ts` via `cargo agent-platform regen --path`.
+  - [x] Write-only manifest with `support/slack_notify`.
+  - [x] Receive A2A summary; format + post once per incident.
+- [x] TypeScript checks pass for all three demo agents via `npx -y -p typescript@latest tsc --noEmit`.
 
 ### Phase 8 — Helm chart templates
 

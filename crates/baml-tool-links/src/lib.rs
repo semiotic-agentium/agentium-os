@@ -20,9 +20,10 @@
 //! - `memory` - Graph-based cognitive memory tool
 //! - `notion` - Notion integration tool
 //! - `security-eval` - CRM/email support tools for security-eval fixtures
-//! - `slack` - Slack integration tool
+//! - `slack` - Slack read integration tool
+//! - `slack-notify` - Slack notification write tool
 //! - `internal-dev` - Test tool implementations (Calculator, Delay, etc.)
-//! - `http-tools` - Enables `clickup`, `notion`, `slack`, `security-eval`
+//! - `http-tools` - Enables `clickup`, `notion`, `slack`, `slack-notify`, `security-eval`
 //! - `all-tools` - Enables `http-tools` and `memory`
 
 // Re-export tool crates so binaries can access them through baml_tool_links
@@ -46,6 +47,8 @@ pub use baml_tools_notion;
 pub use baml_tools_security_eval;
 #[cfg(feature = "slack")]
 pub use baml_tools_slack;
+#[cfg(feature = "slack-notify")]
+pub use baml_tools_slack_notify;
 pub use baml_tools_system;
 
 /// Force-link all registered tool crates into the binary's inventory.
@@ -82,6 +85,8 @@ macro_rules! force_link_all_tools {
         use $crate::baml_tools_security_eval as _;
         #[cfg(feature = "slack")]
         use $crate::baml_tools_slack as _;
+        #[cfg(feature = "slack-notify")]
+        use $crate::baml_tools_slack_notify as _;
         use $crate::{
             baml_rt_tools_claude as _, baml_tools_calculator as _, baml_tools_system as _,
         };

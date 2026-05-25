@@ -1,0 +1,12 @@
+{
+  "version": "1.0.0",
+  "name": "slack-notify",
+  "entry_point": "src/index.ts",
+  "signature": "slack-notify@1.0.0",
+  "tools": ["support/slack_notify"],
+  "tags": ["demo", "slack", "notify", "write-only"],
+  "discovery": {
+    "description": "Demo write-only Slack notifier. Receives an incident summary via A2A and posts to the host-configured Slack channel through support/slack_notify.",
+    "capabilities": ["slack:notify", "incident:notify"]
+  }
+}

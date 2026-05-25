@@ -1,0 +1,19 @@
+{
+  "version": "1.0.0",
+  "name": "observability-coordinator",
+  "entry_point": "src/index.ts",
+  "signature": "observability-coordinator@1.0.0",
+  "tools": ["system/internal_a2a"],
+  "tags": ["demo", "observability", "coordinator", "grafana"],
+  "discovery": {
+    "description": "Demo observability coordinator for Grafana alert incidents. Subscribes to grafana.alert.v1, delegates evidence gathering, synthesizes report, and asks slack-notify to post a summary.",
+    "capabilities": ["observability:coordinate", "incident:synthesize", "grafana-alert:handle"],
+    "subscriptions": [
+      {
+        "schema_versions": ["grafana.alert.v1"],
+        "source_kinds": ["grafana"],
+        "source_keys": ["grafana:local"]
+      }
+    ]
+  }
+}

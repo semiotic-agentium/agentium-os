@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "name": "grafana-investigator",
+  "entry_point": "src/index.ts",
+  "signature": "grafana-investigator@1.0.0",
+  "tools": [
+    "mcp/grafana/list_datasources",
+    "mcp/grafana/query_prometheus",
+    "mcp/grafana/query_loki_logs",
+    "mcp/grafana/get_annotations"
+  ],
+  "tags": ["demo", "observability", "grafana", "mcp", "investigator"],
+  "discovery": {
+    "description": "Demo Grafana investigator. Gathers Prometheus metric evidence, Loki log evidence, and synthetic trace annotations for a bounded incident window.",
+    "capabilities": ["observability:grafana-investigate", "evidence:metrics", "evidence:logs", "evidence:trace-annotations"]
+  }
+}
