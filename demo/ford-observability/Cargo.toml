@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "services/checkout-api",
     "services/payments-api",
+    "services/failure-harness",
 ]
 
 [workspace.package]
@@ -29,3 +30,4 @@ uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 once_cell = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }

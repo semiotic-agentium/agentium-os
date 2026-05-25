@@ -1147,27 +1147,27 @@ Track progress. Check boxes as work lands. Order roughly = dependency order; par
 - [x] Add `just` recipes: `demo-observability-images`, `-install`, `-inject`, `-reset`, `-e2e`.
 - [x] Add `docs/demos/ford-grafana/` with empty `runbook.md`, `demo-script.md`, `demo-recording.md`.
 
-### Phase 1 — Dummy services (Rust)
+### Phase 1 — Dummy services (Rust) ✅ Completed
 
-- [ ] `checkout-api` binary: endpoints `/healthz`, `/readyz`, `/api/checkout`, `/api/orders`, `/metrics`, `/admin/failure-mode`, `/admin/reset-active`.
-- [ ] `checkout-api` calls `payments-api` during checkout path.
-- [ ] `checkout-api` emits Prometheus metrics (`demo_service_*`).
-- [ ] `checkout-api` emits JSON stdout logs (timestamp, service, route, status, latency_ms, trace_id, failure_mode, message).
-- [ ] `checkout-api` generates synthetic span records during injected incidents.
-- [ ] `payments-api` binary: endpoints `/healthz`, `/readyz`, `/payments/authorize`, `/metrics`.
-- [ ] `payments-api` supports slow/fail modes for dependency evidence.
-- [ ] Dockerfiles for both services.
+- [x] `checkout-api` binary: endpoints `/healthz`, `/readyz`, `/api/checkout`, `/api/orders`, `/metrics`, `/admin/failure-mode`, `/admin/reset-active`.
+- [x] `checkout-api` calls `payments-api` during checkout path.
+- [x] `checkout-api` emits Prometheus metrics (`demo_service_*`).
+- [x] `checkout-api` emits JSON stdout logs (timestamp, service, route, status, latency_ms, trace_id, failure_mode, message).
+- [x] `checkout-api` generates synthetic span records during injected incidents.
+- [x] `payments-api` binary: endpoints `/healthz`, `/readyz`, `/payments/authorize`, `/metrics`.
+- [x] `payments-api` supports slow/fail modes for dependency evidence.
+- [x] Dockerfiles for both services.
 
-### Phase 2 — Failure harness
+### Phase 2 — Failure harness ✅ Completed
 
-- [ ] `failure-harness` binary scaffolding (HTTP server, SQLite PVC path).
-- [ ] `POST /admin/failure-mode` on-demand endpoint (latency_spike only).
-- [ ] `POST /admin/failure-mode/{incident_id}/stop` + `POST /admin/reset-active`.
-- [ ] SQLite ledger schema + writes (start row, ended_at finalize).
-- [ ] Ledger read endpoints: `GET /admin/ledger`, `/admin/ledger/{id}`, `POST /admin/reset-ledger`.
-- [ ] Time-overlap rule constants `[started_at-30s, ended_at+90s]`.
-- [ ] Grafana annotation writer (HTTP `POST /api/annotations`): `kind=window`, `kind=trace`, `kind=window,status=resolved`.
-- [ ] Harness calls `checkout-api/admin/failure-mode` to activate/stop.
+- [x] `failure-harness` binary scaffolding (HTTP server, SQLite PVC path).
+- [x] `POST /admin/failure-mode` on-demand endpoint (latency_spike only).
+- [x] `POST /admin/failure-mode/{incident_id}/stop` + `POST /admin/reset-active`.
+- [x] SQLite ledger schema + writes (start row, ended_at finalize).
+- [x] Ledger read endpoints: `GET /admin/ledger`, `/admin/ledger/{id}`, `POST /admin/reset-ledger`.
+- [x] Time-overlap rule constants `[started_at-30s, ended_at+90s]`.
+- [x] Grafana annotation writer (HTTP `POST /api/annotations`): `kind=window`, `kind=trace`, `kind=window,status=resolved`.
+- [x] Harness calls `checkout-api/admin/failure-mode` to activate/stop.
 
 ### Phase 3 — Observability stack manifests
 
