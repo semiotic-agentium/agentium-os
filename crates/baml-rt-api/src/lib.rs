@@ -68,6 +68,4 @@ pub use router::{
 };
 pub use runtime_progress::{READYZ_LAG_THRESHOLD_MS, RuntimeProgressMeter};
 pub use service_error::{ServiceError, service_result_to_http};
-pub use webhook_mount::{
-    OPERATOR_PREFIX as WEBHOOK_OPERATOR_PREFIX, WebhookIntakeRouters, build_webhook_intake_router,
-};
+pub use webhook_mount::{WebhookIntakeRouters, build_webhook_intake_router};

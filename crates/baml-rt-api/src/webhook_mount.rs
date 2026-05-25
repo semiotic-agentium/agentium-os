@@ -3,10 +3,12 @@
 //! This is the host-side adapter for [`baml_rt_tools::WebhookIntake`]. The
 //! runner loads intakes from inventory via
 //! [`baml_rt_tools::load_configured_webhook_intakes`], then calls
-//! [`build_webhook_intake_router`] to produce a sub-router it can merge into
-//! the public surface. Operator-tier intakes are mounted under
-//! [`OPERATOR_PREFIX`]; the caller wraps that sub-router with the existing
-//! `X-Runner-Token` auth layer.
+//! [`build_webhook_intake_router`] to produce two flat sub-routers — one
+//! for [`WebhookAuthTier::Public`] intakes and one for
+//! [`WebhookAuthTier::OperatorToken`] intakes — both mounted at each
+//! intake's declared `mount_path`. The caller decides how to merge them and
+//! is responsible for wrapping the operator arm in the existing
+//! `X-Runner-Token` auth layer before merging into the public router.
 
 use std::sync::Arc;
 
@@ -20,10 +22,6 @@ use axum::{
 use baml_rt_tools::{WebhookAuthTier, WebhookIntake, WebhookRequest, WebhookResponse};
 use http::{HeaderMap, Method, Request};
 use tracing::{error, warn};
-
-/// Prefix where operator-token intakes are mounted by
-/// [`build_webhook_intake_router`]. Public intakes are mounted at the root.
-pub const OPERATOR_PREFIX: &str = "/operator";
 
 /// Group of intakes by auth tier.
 struct PartitionedIntakes {
@@ -44,30 +42,38 @@ fn partition(intakes: Vec<Arc<dyn WebhookIntake>>) -> PartitionedIntakes {
 }
 
 /// Two-arm router holding the public and operator sub-routers for the
-/// loaded webhook intakes. The caller is responsible for wrapping
-/// [`Self::operator`] in the runner-token auth layer before merging.
+/// loaded webhook intakes. Each arm is **flat**: intakes are mounted at
+/// their declared `mount_path` with no added prefix. The caller decides
+/// how to merge them and is responsible for wrapping [`Self::operator`]
+/// in the runner-token auth layer before merging.
 pub struct WebhookIntakeRouters {
     pub public: Router,
     pub operator: Router,
 }
 
 /// Build axum sub-routers for the supplied intakes, partitioned by
-/// [`WebhookAuthTier`]. Operator-tier intakes are mounted under
-/// [`OPERATOR_PREFIX`].
+/// [`WebhookAuthTier`]. Each intake is mounted at its declared
+/// `mount_path` exactly — no prefix is added. The caller decides the
+/// merge strategy:
+///
+/// ```ignore
+/// let routers = build_webhook_intake_router(intakes);
+/// router = router.merge(routers.public);
+/// router = router.merge(routers.operator.route_layer(auth_layer));
+/// ```
 pub fn build_webhook_intake_router(intakes: Vec<Arc<dyn WebhookIntake>>) -> WebhookIntakeRouters {
     let PartitionedIntakes { public, operator } = partition(intakes);
-    let public = mount_intakes(Router::new(), public, "");
-    let operator = mount_intakes(Router::new(), operator, OPERATOR_PREFIX);
+    let public = mount_intakes(Router::new(), public);
+    let operator = mount_intakes(Router::new(), operator);
     WebhookIntakeRouters { public, operator }
 }
 
-fn mount_intakes(mut router: Router, intakes: Vec<Arc<dyn WebhookIntake>>, prefix: &str) -> Router {
+fn mount_intakes(mut router: Router, intakes: Vec<Arc<dyn WebhookIntake>>) -> Router {
     for intake in intakes {
-        let path = format!("{prefix}{}", intake.mount_path());
         let methods = collect_methods(intake.as_ref());
         let filter = method_filter(&methods);
         router = router.route(
-            &path,
+            intake.mount_path(),
             axum::routing::on(filter, dispatch).with_state(intake.clone()),
         );
     }
@@ -172,7 +178,7 @@ mod tests {
     use http::{Method, Request, StatusCode};
     use tower::ServiceExt;
 
-    use super::{OPERATOR_PREFIX, build_webhook_intake_router};
+    use super::build_webhook_intake_router;
 
     struct EchoIntake {
         path: &'static str,
@@ -224,7 +230,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn operator_intake_mounts_under_operator_prefix() {
+    async fn operator_intake_mounts_on_operator_arm_at_declared_path() {
         let routers = build_webhook_intake_router(vec![intake(
             "/webhooks/secret",
             WebhookAuthTier::OperatorToken,
@@ -234,13 +240,35 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
-                    .uri(format!("{OPERATOR_PREFIX}/webhooks/secret"))
+                    .uri("/webhooks/secret")
                     .body(Body::from("hi"))
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn public_and_operator_arms_are_separate() {
+        let routers = build_webhook_intake_router(vec![intake(
+            "/webhooks/secret",
+            WebhookAuthTier::OperatorToken,
+        )]);
+        // Operator-tier route must not appear on the public arm — caller is
+        // responsible for merging the operator arm with the auth layer.
+        let response = routers
+            .public
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/webhooks/secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
