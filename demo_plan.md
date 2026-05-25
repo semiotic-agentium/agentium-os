@@ -1187,14 +1187,14 @@ Track progress. Check boxes as work lands. Order roughly = dependency order; par
 
 ### Phase 5 — `grafana-alerts` tool crate
 
-- [ ] Create `crates/tools/grafana-alerts` modeled on `crates/tools/slack`.
-- [ ] Tool metadata declares `event_sources = ["grafana"]`.
-- [ ] Webhook route served by runner (`/webhooks/grafana`) persisting to `IngressStore`.
-- [ ] SQLite mapping table: `fingerprint`, `group_key`, `context_id`, `status`, `active_since`, `resolved_at`, `updated_at`.
-- [ ] Firing/resolved reuse semantics (new ctx on first firing, reuse while active, mark resolved, new ctx on next firing).
-- [ ] `GrafanaAlertEventProducer` via `inventory` registration.
-- [ ] Producer drains `IngressStore`, emits `grafana.alert.v1` with `context_id` + `message_id` (`grafana:<fingerprint>:<status>:<startsAt>`).
-- [ ] Unit + integration tests (mapping reuse, producer emit shape).
+- [x] Create `crates/tools/grafana-alerts` modeled on `crates/tools/slack`.
+- [x] Tool metadata declares `event_sources = ["grafana"]`.
+- [x] Webhook route served by runner (`/webhooks/grafana`) persisting to `IngressStore` — registered via `WebhookIntakeProvider` inventory (`baml_rt_tools::WebhookIntake`), mounted by `baml_rt_api::build_webhook_intake_router`. No runner-side hardcoding.
+- [x] SQLite mapping table: `fingerprint`, `group_key`, `context_id`, `status`, `active_since`, `resolved_at`, `updated_at`.
+- [x] Firing/resolved reuse semantics (new ctx on first firing, reuse while active, mark resolved, new ctx on next firing).
+- [x] `GrafanaAlertEventProducer` via `inventory` registration.
+- [x] Producer drains `IngressStore`, emits `grafana.alert.v1` with `context_id` + `message_id` (`grafana:<fingerprint>:<status>:<startsAt>`).
+- [x] Unit + integration tests (mapping reuse, producer emit shape).
 
 ### Phase 6 — `support/slack_notify` write tool
 

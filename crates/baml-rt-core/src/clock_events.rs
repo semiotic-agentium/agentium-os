@@ -25,6 +25,7 @@ pub const CORRELATION_ID_MINT: &str = "correlation_id_mint";
 pub const EPISODE_SNAPSHOT: &str = "episode_snapshot";
 pub const EXTERNAL_QUARANTINE: &str = "external_quarantine";
 pub const EXTERNAL_QUARANTINE_LIFT: &str = "external_quarantine_lift";
+pub const GRAFANA_INGRESS: &str = "grafana_ingress";
 pub const PROVENANCE_EVENT: &str = "provenance_event";
 pub const REPOSITORY_TIMESTAMP: &str = "repository_timestamp";
 pub const RUNNER_TIMESTAMP: &str = "runner_timestamp";
