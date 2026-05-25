@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = [
+    "services/checkout-api",
+    "services/payments-api",
 ]
 
 [workspace.package]
@@ -8,3 +10,22 @@ edition = "2024"
 rust-version = "1.88"
 license = "UNLICENSED"
 publish = false
+
+[workspace.dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+prometheus = { version = "0.13", default-features = false }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+anyhow = "1"
+thiserror = "2"
+parking_lot = "0.12"
+uuid = { version = "1", features = ["v4"] }
+rand = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+once_cell = "1"
