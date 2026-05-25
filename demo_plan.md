@@ -1185,7 +1185,7 @@ Track progress. Check boxes as work lands. Order roughly = dependency order; par
 - [x] ConfigMap-mounted JS script, constant-arrival-rate 50 RPS minimum.
 - [x] Baseline traffic against `checkout-api`.
 
-### Phase 5 — `grafana-alerts` tool crate
+### Phase 5 — `grafana-alerts` tool crate ✅ Completed
 
 - [x] Create `crates/tools/grafana-alerts` modeled on `crates/tools/slack`.
 - [x] Tool metadata declares `event_sources = ["grafana"]`.
@@ -1196,15 +1196,15 @@ Track progress. Check boxes as work lands. Order roughly = dependency order; par
 - [x] Producer drains `IngressStore`, emits `grafana.alert.v1` with `context_id` + `message_id` (`grafana:<fingerprint>:<status>:<startsAt>`).
 - [x] Unit + integration tests (mapping reuse, producer emit shape).
 
-### Phase 6 — `support/slack_notify` write tool
+### Phase 6 — `support/slack_notify` write tool ✅ Completed
 
-- [ ] Create `crates/tools/slack-notify` (or write surface in `crates/tools/slack`).
-- [ ] One op: `chat.postMessage` to configured channel.
-- [ ] Strict input: `{ text, context_id }`, `serde(deny_unknown_fields)`.
-- [ ] `SLACK_NOTIFY_CHANNEL_ID` env config; name→ID resolution once at startup via `conversations.list`.
-- [ ] Bot token via secret resolver chain.
-- [ ] Threading derived from `context_id` (in-memory map).
-- [ ] Tests: reject unknown fields, channel never from input, threading stable per context.
+- [x] Create `crates/tools/slack-notify` (or write surface in `crates/tools/slack`).
+- [x] One op: `chat.postMessage` to configured channel.
+- [x] Strict input: `{ text, context_id }`, `serde(deny_unknown_fields)`.
+- [x] `SLACK_NOTIFY_CHANNEL_ID` env config; name→ID resolution once at startup via `conversations.list`.
+- [x] Bot token via secret resolver chain.
+- [x] Threading derived from `context_id` (in-memory map).
+- [x] Tests: reject unknown fields, channel never from input, threading stable per context.
 
 ### Phase 7 — Agents
 
