@@ -301,6 +301,11 @@ pub struct ApiServerConfig {
     pub cluster: ClusterTopology,
     pub runtime_progress: Arc<RuntimeProgressMeter>,
     pub web_dir: Option<std::path::PathBuf>,
+    /// Webhook intakes loaded from inventory via
+    /// [`baml_rt_tools::load_configured_webhook_intakes`]. The router mounts
+    /// each at its declared `mount_path`; operator-tier intakes inherit the
+    /// runner-token auth layer applied to the operator route group.
+    pub webhook_intakes: Vec<Arc<dyn baml_rt_tools::WebhookIntake>>,
 }
 
 impl ApiServerConfig {
@@ -334,6 +339,7 @@ impl ApiServerConfig {
             cluster: ClusterTopology::Standalone,
             runtime_progress,
             web_dir: None,
+            webhook_intakes: Vec::new(),
         }
     }
 }
@@ -397,6 +403,7 @@ pub fn api_router_with_services_and_deploy(
         cluster,
         runtime_progress,
         web_dir,
+        webhook_intakes,
     } = config;
 
     let http_trace_layer =
@@ -580,6 +587,25 @@ pub fn api_router_with_services_and_deploy(
         .route("/diagnose", axum::routing::get(diagnose))
         .route_layer(http_trace_layer)
         .with_state(state);
+
+    // ── Webhook intakes from inventory (push sources: Grafana, ...).
+    // Mounted after with_state so the intakes (which carry their own per-route
+    // state via with_state(intake)) merge into a state-discharged Router<()>.
+    // The operator arm gets the same X-Runner-Token auth as /config, /deploy
+    // via route_layer; the public arm is reachable without auth like /chat.
+    if !webhook_intakes.is_empty() {
+        let webhook_intake_count = webhook_intakes.len();
+        let crate::webhook_mount::WebhookIntakeRouters {
+            public: webhook_public,
+            operator: webhook_operator,
+        } = crate::webhook_mount::build_webhook_intake_router(webhook_intakes);
+        router = router.merge(webhook_public);
+        router = router.merge(webhook_operator.route_layer(auth_layer.clone()));
+        tracing::info!(
+            webhook_intake_count,
+            "mounted webhook intakes from inventory"
+        );
+    }
 
     if let Some(dir) = web_dir.as_deref() {
         let fallback = ServeDir::new(dir)
