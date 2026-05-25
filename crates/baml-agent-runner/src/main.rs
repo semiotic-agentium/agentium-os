@@ -44,11 +44,14 @@ use baml_rt_repository::{
 };
 use baml_rt_tools::{
     ACCESS_ALLOWLIST_ENV, InventoryCatalog, ProducerCheckpoint,
-    load_configured_event_producers_with_checkpoints, parse_access_allowlist,
+    load_configured_event_producers_with_checkpoints, load_configured_webhook_intakes,
+    parse_access_allowlist,
 };
 use baml_tools_calculator as _;
 #[cfg(feature = "clickup")]
 use baml_tools_clickup as _;
+#[cfg(feature = "grafana-alerts")]
+use baml_tools_grafana_alerts as _;
 #[cfg(feature = "memory")]
 use baml_tools_memory as _;
 #[cfg(feature = "notion")]
@@ -542,6 +545,16 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             },
             _ => baml_rt_api::ClusterTopology::Standalone,
         };
+        let webhook_intakes = load_configured_webhook_intakes(
+            &InventoryCatalog::new(),
+            Some(runner.provenance_config().config_service()),
+        )
+        .await
+        .context("loading configured webhook intakes")?;
+        info!(
+            webhook_intake_count = webhook_intakes.len(),
+            "configured webhook intakes loaded for HTTP API"
+        );
         let api_config = baml_rt_api::ApiServerConfig {
             mermaid,
             context_metrics,
@@ -559,6 +572,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             runner_token,
             cluster,
             web_dir,
+            webhook_intakes,
             ..baml_rt_api::ApiServerConfig::empty(
                 tool_catalog,
                 config_service,
