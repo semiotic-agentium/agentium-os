@@ -1,0 +1,80 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-alerting
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: alerting
+    app.kubernetes.io/part-of: agentium-observability-demo
+data:
+  rules.yaml: |
+    apiVersion: 1
+    groups:
+      - orgId: 1
+        name: agentium-demo
+        folder: Agentium Demo
+        interval: 30s
+        rules:
+          - uid: high-latency
+            title: HighLatency
+            condition: C
+            data:
+              - refId: A
+                relativeTimeRange:
+                  from: 600
+                  to: 0
+                datasourceUid: prometheus
+                model:
+                  refId: A
+                  expr: histogram_quantile(0.95, sum(rate(demo_service_request_duration_seconds_bucket{service="checkout-api"}[2m])) by (le, service))
+                  intervalMs: 1000
+                  maxDataPoints: 43200
+              - refId: C
+                relativeTimeRange:
+                  from: 0
+                  to: 0
+                datasourceUid: __expr__
+                model:
+                  refId: C
+                  type: classic_conditions
+                  conditions:
+                    - evaluator:
+                        type: gt
+                        params: [0.75]
+                      operator:
+                        type: and
+                      query:
+                        params: [A]
+                      reducer:
+                        type: last
+                        params: []
+            noDataState: NoData
+            execErrState: Error
+            for: 1m
+            labels:
+              severity: warning
+              service: checkout-api
+            annotations:
+              summary: "{{ `{{ $labels.service }}` }} p95 latency is high"
+              description: "p95 latency exceeded 750ms in the recent window"
+  contact-points.yaml: |
+    apiVersion: 1
+    contactPoints:
+      - orgId: 1
+        name: agentium-runner-webhook
+        receivers:
+          - uid: agentium-runner-webhook
+            type: webhook
+            disableResolveMessage: false
+            settings:
+              url: http://{{ .Values.agentiumRunner.service.name }}:{{ .Values.agentiumRunner.service.port }}{{ .Values.agentiumRunner.webhookPath }}
+              httpMethod: POST
+  policies.yaml: |
+    apiVersion: 1
+    policies:
+      - orgId: 1
+        receiver: agentium-runner-webhook
+        group_by: [grafana_folder, alertname]
+        group_wait: 10s
+        group_interval: 30s
+        repeat_interval: 1m

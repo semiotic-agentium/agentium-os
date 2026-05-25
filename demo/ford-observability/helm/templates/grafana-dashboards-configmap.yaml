@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-provider
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: provisioning
+    app.kubernetes.io/part-of: agentium-observability-demo
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: agentium-demo
+        orgId: 1
+        folder: Agentium Demo
+        type: file
+        disableDeletion: true
+        editable: false
+        allowUiUpdates: false
+        options:
+          path: /var/lib/grafana/dashboards/agentium-demo
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: dashboards
+    app.kubernetes.io/part-of: agentium-observability-demo
+data:
+  service-health.json: |
+    {
+      "title": "Agentium Demo — Service Health",
+      "uid": "agentium-demo-service-health",
+      "schemaVersion": 39,
+      "version": 1,
+      "timezone": "browser",
+      "time": {"from": "now-30m", "to": "now"},
+      "refresh": "10s",
+      "tags": ["agentium-demo"],
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "p95 request latency (s)",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(demo_service_request_duration_seconds_bucket[2m])) by (le, service))",
+              "legendFormat": "{{ `{{service}}` }} p95",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Request rate (req/s)",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [
+            {
+              "expr": "sum(rate(demo_service_requests_total[1m])) by (service)",
+              "legendFormat": "{{ `{{service}}` }}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "5xx error rate",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [
+            {
+              "expr": "sum(rate(demo_service_requests_total{status=~\"5..\"}[2m])) by (service)",
+              "legendFormat": "{{ `{{service}}` }}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Up",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "targets": [
+            {
+              "expr": "up{job=~\"checkout-api|payments-api\"}",
+              "legendFormat": "{{ `{{job}}` }}",
+              "refId": "A"
+            }
+          ]
+        }
+      ]
+    }

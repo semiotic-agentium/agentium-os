@@ -12,19 +12,33 @@ secrets:
   slackNotifyChannelId: ""
 
 grafana:
+  image: grafana/grafana:11.3.0
   adminUser: admin
   service:
     port: 3000
+  storage: 2Gi
 
 prometheus:
+  image: prom/prometheus:v2.55.1
   service:
     port: 9090
+  storage: 5Gi
+  retention: 24h
+  scrapeInterval: 15s
+  evaluationInterval: 15s
 
 loki:
+  image: grafana/loki:3.2.1
   service:
     port: 3100
+  storage: 5Gi
+
+alloy:
+  image: grafana/alloy:v1.5.1
 
 agentiumRunner:
   service:
+    name: agentium-runner
     port: 18080
   uiBaseUrl: http://localhost:18080
+  webhookPath: /webhooks/grafana

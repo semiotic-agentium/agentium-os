@@ -1169,15 +1169,15 @@ Track progress. Check boxes as work lands. Order roughly = dependency order; par
 - [x] Grafana annotation writer (HTTP `POST /api/annotations`): `kind=window`, `kind=trace`, `kind=window,status=resolved`.
 - [x] Harness calls `checkout-api/admin/failure-mode` to activate/stop.
 
-### Phase 3 — Observability stack manifests
+### Phase 3 — Observability stack manifests ✅ Completed
 
-- [ ] Vendored, version-pinned Prometheus manifest + scrape config ConfigMap.
-- [ ] Vendored Loki manifest + storage.
-- [ ] Alloy (or promtail) log shipper manifest + config to push pod stdout to Loki.
-- [ ] Vendored Grafana manifest with Prometheus + Loki datasources provisioned.
-- [ ] Grafana dashboards ConfigMap (service health).
-- [ ] Grafana alert rules ConfigMap with `HighLatency` rule.
-- [ ] Grafana webhook contact point → runner `/webhooks/grafana`.
+- [x] Vendored, version-pinned Prometheus manifest + scrape config ConfigMap.
+- [x] Vendored Loki manifest + storage.
+- [x] Alloy (or promtail) log shipper manifest + config to push pod stdout to Loki.
+- [x] Vendored Grafana manifest with Prometheus + Loki datasources provisioned.
+- [x] Grafana dashboards ConfigMap (service health).
+- [x] Grafana alert rules ConfigMap with `HighLatency` rule.
+- [x] Grafana webhook contact point → runner `/webhooks/grafana`.
 
 ### Phase 4 — k6 load generator
 
