@@ -1179,11 +1179,11 @@ Track progress. Check boxes as work lands. Order roughly = dependency order; par
 - [x] Grafana alert rules ConfigMap with `HighLatency` rule.
 - [x] Grafana webhook contact point → runner `/webhooks/grafana`.
 
-### Phase 4 — k6 load generator
+### Phase 4 — k6 load generator ✅ Completed
 
-- [ ] `k6-load-generator` Deployment using `grafana/k6` image.
-- [ ] ConfigMap-mounted JS script, constant-arrival-rate 50 RPS minimum.
-- [ ] Baseline traffic against `checkout-api`.
+- [x] `k6-load-generator` Deployment using `grafana/k6` image.
+- [x] ConfigMap-mounted JS script, constant-arrival-rate 50 RPS minimum.
+- [x] Baseline traffic against `checkout-api`.
 
 ### Phase 5 — `grafana-alerts` tool crate
 

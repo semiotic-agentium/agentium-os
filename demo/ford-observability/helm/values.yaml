@@ -36,6 +36,22 @@ loki:
 alloy:
   image: grafana/alloy:v1.5.1
 
+k6:
+  image: grafana/k6:0.54.0
+  replicas: 1
+  targetUrl: http://checkout-api:8080
+  rps: 50
+  duration: 24h
+  preAllocatedVUs: 80
+  maxVUs: 200
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
 agentiumRunner:
   service:
     name: agentium-runner

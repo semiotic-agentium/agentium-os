@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k6-load-generator
+  labels:
+    app.kubernetes.io/name: k6-load-generator
+    app.kubernetes.io/component: load-generator
+    app.kubernetes.io/part-of: agentium-observability-demo
+spec:
+  replicas: {{ .Values.k6.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: k6-load-generator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: k6-load-generator
+        app.kubernetes.io/component: load-generator
+        app.kubernetes.io/part-of: agentium-observability-demo
+      annotations:
+        checksum/load-script: {{ include (print $.Template.BasePath "/k6-script-configmap.yaml") . | sha256sum }}
+    spec:
+      restartPolicy: Always
+      containers:
+        - name: k6
+          image: {{ .Values.k6.image }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          args:
+            - run
+            - /scripts/load.js
+          env:
+            - name: TARGET_URL
+              value: {{ .Values.k6.targetUrl | quote }}
+            - name: RPS
+              value: {{ .Values.k6.rps | quote }}
+            - name: DURATION
+              value: {{ .Values.k6.duration | quote }}
+            - name: PREALLOCATED_VUS
+              value: {{ .Values.k6.preAllocatedVUs | quote }}
+            - name: MAX_VUS
+              value: {{ .Values.k6.maxVUs | quote }}
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+          resources:
+{{ toYaml .Values.k6.resources | indent 12 }}
+      volumes:
+        - name: script
+          configMap:
+            name: k6-load-script

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k6-load-script
+  labels:
+    app.kubernetes.io/name: k6-load-generator
+    app.kubernetes.io/component: load-generator
+    app.kubernetes.io/part-of: agentium-observability-demo
+data:
+  load.js: |
+{{ .Files.Get "files/k6/load.js" | indent 4 }}
