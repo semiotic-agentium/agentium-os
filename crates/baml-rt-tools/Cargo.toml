@@ -31,6 +31,8 @@ blake3 = "1.8"
 getrandom = "0.3"
 url = { workspace = true }
 futures-util = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
 zeroize = { version = "1", features = ["derive"] }
 # microsandbox is a beta crate ("expect breaking changes"). Exact pin per
 # tool_sandbox.md §7.3; bumps go through explicit review. Behind the

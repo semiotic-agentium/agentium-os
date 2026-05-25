@@ -38,6 +38,7 @@ pub mod tool_fsm;
 pub mod tool_schema;
 pub mod tools;
 pub mod ts_gen;
+pub mod webhook_intake;
 
 pub use access::{
     ACCESS_ALLOWLIST_ENV, ToolAccessPolicy, enforce_tool_access, parse_access_allowlist,
@@ -53,6 +54,10 @@ pub use event_producer::{
     EventProducer, EventProducerBuildContext, EventProducerBuildFuture, EventProducerProvider,
     ProducerCheckpoint, ProducerPoll, ProducerRegistry, load_configured_event_producers,
     load_configured_event_producers_with_checkpoints,
+};
+pub use webhook_intake::{
+    WebhookAuthTier, WebhookIntake, WebhookIntakeBuildContext, WebhookIntakeBuildFuture,
+    WebhookIntakeProvider, WebhookRequest, WebhookResponse, load_configured_webhook_intakes,
 };
 pub use host_registration::{
     ExternalToolResolver, register_manifest_tools, register_manifest_tools_with_fallback,
