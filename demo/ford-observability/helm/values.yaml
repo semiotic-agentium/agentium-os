@@ -1,0 +1,30 @@
+images:
+  registry: ghcr.io/semiotic-ai/agent-platform-demo
+  tag: latest
+  pullPolicy: IfNotPresent
+
+namespaceOverride: ""
+
+secrets:
+  openrouterApiKey: ""
+  grafanaAdminPassword: "admin"
+  slackBotToken: ""
+  slackNotifyChannelId: ""
+
+grafana:
+  adminUser: admin
+  service:
+    port: 3000
+
+prometheus:
+  service:
+    port: 9090
+
+loki:
+  service:
+    port: 3100
+
+agentiumRunner:
+  service:
+    port: 18080
+  uiBaseUrl: http://localhost:18080

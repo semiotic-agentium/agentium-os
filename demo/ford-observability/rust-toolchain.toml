@@ -1,0 +1,4 @@
+# Keep demo services on same toolchain as repository root.
+[toolchain]
+channel = "nightly"
+components = ["rustfmt", "clippy"]

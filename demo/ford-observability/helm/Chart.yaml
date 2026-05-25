@@ -1,0 +1,6 @@
+apiVersion: v2
+name: agentium-observability-demo
+description: Agentium observability incident copilot demo stack.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
