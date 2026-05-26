@@ -2366,6 +2366,78 @@ body {
   border: 1px solid var(--border);
 }
 
+.message-row--host .message-content,
+.message-row--system .message-content--operational {
+  max-width: 100%;
+}
+
+.operational-card {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  margin-bottom: 8px;
+}
+
+.operational-card--error {
+  border-color: color-mix(in srgb, var(--color-error) 45%, var(--border));
+  background: color-mix(in srgb, var(--color-error) 6%, var(--surface));
+}
+
+.operational-card--warning {
+  border-color: color-mix(in srgb, var(--color-warning) 45%, var(--border));
+  background: color-mix(in srgb, var(--color-warning) 6%, var(--surface));
+}
+
+.operational-card--info {
+  border-color: color-mix(in srgb, var(--ingress-accent) 35%, var(--border));
+}
+
+.operational-card__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.operational-card__route {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.operational-card__summary {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.operational-card__detail {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+
+.operational-card__chip {
+  display: inline-block;
+  margin: 8px 0 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+}
+
+.operational-card__status-pill {
+  margin: 8px 0 0;
+  font-size: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--text-secondary);
+}
+
 .message-avatar {
   display: flex;
   align-items: flex-start;

@@ -2355,9 +2355,127 @@ fn normalize_event_with_registry(
                 attributes: edge_attrs,
             });
         }
-        ProvEventData::HostSourcePollRecorded { .. }
-        | ProvEventData::HostDispatchAccepted { .. } => {
-            // Event-level lineage only; actionable poll/unit bodies are normal `user` messages.
+        ProvEventData::HostSourcePollRecorded {
+            source_kind,
+            source_key,
+            source_cursor,
+            schema_version,
+            record_count,
+            ..
+        } => {
+            use crate::host_ingress_transcript::format_source_poll_summary;
+            let summary = format_source_poll_summary(
+                source_kind,
+                source_key,
+                schema_version,
+                source_cursor,
+                *record_count,
+            );
+            let mut extra = HashMap::new();
+            extra.insert(
+                a2a::HOST_INGRESS_SOURCE_KIND.to_string(),
+                Value::String(source_kind.clone()),
+            );
+            extra.insert(
+                a2a::HOST_INGRESS_SOURCE_KEY.to_string(),
+                Value::String(source_key.clone()),
+            );
+            extra.insert(
+                a2a::HOST_INGRESS_RECORD_COUNT.to_string(),
+                Value::Number((*record_count).into()),
+            );
+            insert_host_ingress_transcript_message(
+                &mut doc,
+                event,
+                "source_poll_recorded",
+                summary,
+                extra,
+            );
+        }
+        ProvEventData::HostDispatchAccepted {
+            routing_key,
+            schema_version,
+            target_package,
+            target_instance,
+            source_kind,
+            source_key,
+        } => {
+            use crate::host_ingress_transcript::format_dispatch_accepted_summary;
+            let summary = format_dispatch_accepted_summary(
+                routing_key,
+                target_package,
+                target_instance,
+                schema_version,
+                source_kind,
+                source_key,
+            );
+            let mut extra = HashMap::new();
+            extra.insert(
+                a2a::HOST_INGRESS_ROUTING_KEY.to_string(),
+                Value::String(routing_key.clone()),
+            );
+            extra.insert(
+                a2a::HOST_INGRESS_TARGET_PACKAGE.to_string(),
+                Value::String(target_package.clone()),
+            );
+            extra.insert(
+                a2a::HOST_INGRESS_TARGET_INSTANCE.to_string(),
+                Value::String(target_instance.clone()),
+            );
+            extra.insert(
+                a2a::HOST_INGRESS_SOURCE_KIND.to_string(),
+                Value::String(source_kind.clone()),
+            );
+            extra.insert(
+                a2a::HOST_INGRESS_SOURCE_KEY.to_string(),
+                Value::String(source_key.clone()),
+            );
+            insert_host_ingress_transcript_message(
+                &mut doc,
+                event,
+                "dispatch_accepted",
+                summary,
+                extra,
+            );
+        }
+        ProvEventData::HostDispatchRejected {
+            routing_key,
+            schema_version: _,
+            target_package,
+            target_instance,
+            source_kind: _,
+            source_key: _,
+            detail,
+            transport_failure,
+        } => {
+            use crate::host_ingress_transcript::format_dispatch_rejected_summary;
+            let ingress_kind = if *transport_failure {
+                "dispatch_transport_error"
+            } else {
+                "dispatch_rejected"
+            };
+            let summary = format_dispatch_rejected_summary(
+                routing_key,
+                target_package,
+                target_instance,
+                detail,
+                *transport_failure,
+            );
+            let mut extra = HashMap::new();
+            extra.insert(
+                a2a::HOST_INGRESS_ROUTING_KEY.to_string(),
+                Value::String(routing_key.clone()),
+            );
+            extra.insert(
+                a2a::HOST_INGRESS_TARGET_PACKAGE.to_string(),
+                Value::String(target_package.clone()),
+            );
+            extra.insert(
+                a2a::HOST_INGRESS_TARGET_INSTANCE.to_string(),
+                Value::String(target_instance.clone()),
+            );
+            extra.insert(a2a::REASON.to_string(), Value::String(detail.clone()));
+            insert_host_ingress_transcript_message(&mut doc, event, ingress_kind, summary, extra);
         }
     }
 
@@ -2450,7 +2568,8 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
         }
         ProvEventData::CallbackDispatchContextsLinked { .. } => {}
         ProvEventData::HostSourcePollRecorded { .. }
-        | ProvEventData::HostDispatchAccepted { .. } => {
+        | ProvEventData::HostDispatchAccepted { .. }
+        | ProvEventData::HostDispatchRejected { .. } => {
             if event.context_id_opt().is_none() {
                 return Err(ProvenanceError::InvalidEvent {
                     activity_anchor: event.id().as_str().to_string(),
@@ -3026,6 +3145,50 @@ fn message_entity_id(context_id: &ContextId, message_id: &MessageId) -> ProvEnti
         context_id,
         message_id,
     })
+}
+
+fn host_ingress_message_id(event: &ProvEvent) -> MessageId {
+    MessageId::from_external(ExternalId::new(format!(
+        "host-ingress:{}",
+        event.id().as_str()
+    )))
+}
+
+fn insert_host_ingress_transcript_message(
+    doc: &mut ProvDocument,
+    event: &ProvEvent,
+    ingress_kind: &str,
+    summary: String,
+    extra: HashMap<String, Value>,
+) {
+    let message_id = host_ingress_message_id(event);
+    let entity_id = message_entity_id(event.context_id(), &message_id);
+    let mut attrs = base_attrs(event);
+    attrs.insert(
+        a2a::MESSAGE_ID.to_string(),
+        Value::String(message_id.as_str().to_string()),
+    );
+    attrs.insert(a2a::ROLE.to_string(), Value::String("host".to_string()));
+    attrs.insert(
+        a2a::CONTENT.to_string(),
+        Value::Array(vec![Value::String(summary)]),
+    );
+    attrs.insert(
+        a2a::DIRECTION.to_string(),
+        Value::String(message_directions::RECEIVED.to_string()),
+    );
+    attrs.insert(
+        a2a::HOST_INGRESS_KIND.to_string(),
+        Value::String(ingress_kind.to_string()),
+    );
+    attrs.extend(extra);
+    doc.insert_entity(
+        entity_id,
+        Entity {
+            prov_type: Some(prov_type::<MessageEntityId>()),
+            attributes: attrs,
+        },
+    );
 }
 
 /// Message processing activity id: derived from `(ContextId, MessageId)`.

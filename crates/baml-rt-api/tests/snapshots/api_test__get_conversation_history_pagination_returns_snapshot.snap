@@ -13,24 +13,26 @@ expression: snapshot
         {
           "timestampMs": "[timestamp_ms]",
           "activityAnchor": "[prov_activity_anchor]",
-          "role": "user",
+          "role": "system",
           "content": {
-            "type": "message",
-            "text": "run analysis"
+            "type": "operational_event",
+            "kind": "llm_call_failed",
+            "severity": "error",
+            "summary": "LLM DraftPrompt failed",
+            "detail": "llm_call_failed",
+            "failure_class": "failed_graph_incomplete",
+            "failure_evidence": "llm_call_failed"
           }
         },
         {
           "timestampMs": "[timestamp_ms]",
           "activityAnchor": "[prov_activity_anchor]",
-          "role": "tool",
+          "role": "user",
           "content": {
-            "type": "tool_call",
-            "tool_name": "support/calculate",
-            "args": {
-              "expression": "2+2"
-            },
-            "fsm_phase": ""
-          }
+            "type": "message",
+            "text": "run analysis"
+          },
+          "userSpeakerKind": "human"
         }
       ],
       "nextCursor": "v1.7b2276223a312c226f6666736574223a322c22636f6e746578745f6964223a226374782d3130302d31222c227461736b5f6964223a6e756c6c2c226167656e745f7061636b616765223a6e756c6c7d"
@@ -48,6 +50,19 @@ expression: snapshot
           "activityAnchor": "[prov_activity_anchor]",
           "role": "tool",
           "content": {
+            "type": "tool_call",
+            "tool_name": "support/calculate",
+            "args": {
+              "expression": "2+2"
+            },
+            "fsm_phase": ""
+          }
+        },
+        {
+          "timestampMs": "[timestamp_ms]",
+          "activityAnchor": "[prov_activity_anchor]",
+          "role": "tool",
+          "content": {
             "type": "tool_result",
             "tool_name": "support/calculate",
             "fsm_phase": "",
@@ -55,15 +70,6 @@ expression: snapshot
               "kind": "error",
               "value": "timeout while calling tool"
             }
-          }
-        },
-        {
-          "timestampMs": "[timestamp_ms]",
-          "activityAnchor": "[prov_activity_anchor]",
-          "role": "assistant",
-          "content": {
-            "type": "message",
-            "text": "BAML validation failed: invalid response schema"
           }
         }
       ],

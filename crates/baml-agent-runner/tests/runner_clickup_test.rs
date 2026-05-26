@@ -262,6 +262,7 @@ fn provenance_mentions_clickup_tool(items: &[ProvenanceConversationContextItem])
         ConversationItemContent::ToolResult(tr) => tr.tool_name.contains("clickup"),
         ConversationItemContent::SessionStep(ss) => ss.tool_name.contains("clickup"),
         ConversationItemContent::Message { .. } => false,
+        ConversationItemContent::Operational(_) => false,
     })
 }
 

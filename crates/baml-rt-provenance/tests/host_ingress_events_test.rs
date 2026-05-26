@@ -66,7 +66,7 @@ fn host_dispatch_accepted_requires_context() {
 }
 
 #[tokio::test]
-async fn host_ingress_lineage_events_do_not_project_bookkeeping_transcript_rows() {
+async fn host_ingress_lineage_events_project_operational_transcript_rows() {
     let store = SurrealStoreBuilder::in_memory_isolated()
         .build()
         .await
@@ -103,10 +103,57 @@ async fn host_ingress_lineage_events_do_not_project_bookkeeping_transcript_rows(
         .conversation_context(&ctx, None)
         .await
         .expect("conversation_context");
-    assert!(
-        items.is_empty(),
-        "poll/dispatch lineage events must not emit host-role transcript rows: {items:?}"
+    assert_eq!(
+        items.len(),
+        2,
+        "poll + dispatch accepted operational rows: {items:?}"
     );
+    assert!(items.iter().all(|i| i.role == "host"));
+    assert!(
+        items.iter().all(|i| matches!(
+            i.content,
+            baml_rt_conversation::view::ConversationItemContent::Operational(_)
+        )),
+        "{items:?}"
+    );
+}
+
+#[tokio::test]
+async fn host_dispatch_rejected_projects_operational_row() {
+    let store = SurrealStoreBuilder::in_memory_isolated()
+        .build()
+        .await
+        .expect("store");
+    let ctx = ContextId::new(11, 22);
+    store
+        .add_event(ProvEvent::host_dispatch_rejected(
+            ctx.clone(),
+            "event:intake".to_string(),
+            "host.source-records.v1".to_string(),
+            "coordinator-agent".to_string(),
+            "default".to_string(),
+            "slack".to_string(),
+            "slack:C123".to_string(),
+            "no handler for record_kind".to_string(),
+            false,
+        ))
+        .await
+        .expect("reject write");
+
+    let items = store
+        .conversation_context(&ctx, None)
+        .await
+        .expect("conversation_context");
+    assert_eq!(items.len(), 1);
+    let baml_rt_conversation::view::ConversationItemContent::Operational(op) = &items[0].content
+    else {
+        panic!("expected operational row: {:?}", items[0].content);
+    };
+    assert!(matches!(
+        op.kind,
+        baml_rt_conversation::operational::OperationalEventKind::DispatchRejected
+    ));
+    assert!(op.summary.contains("coordinator-agent"));
 }
 
 #[tokio::test]

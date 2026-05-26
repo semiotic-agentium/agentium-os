@@ -45,4 +45,14 @@ pub trait HostIngressRecorder: Send + Sync {
         agent_package: &str,
         agent_instance: &str,
     ) -> Result<()>;
+
+    /// Persist dispatch rejection or transport failure after fan-out.
+    async fn record_dispatch_rejected(
+        &self,
+        request: &AgentDispatchRequest,
+        agent_package: &str,
+        agent_instance: &str,
+        detail: &str,
+        transport_failure: bool,
+    ) -> Result<()>;
 }

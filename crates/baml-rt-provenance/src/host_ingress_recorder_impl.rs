@@ -253,6 +253,36 @@ impl HostIngressRecorder for HostIngressRecorderImpl {
             .await;
         Ok(())
     }
+
+    async fn record_dispatch_rejected(
+        &self,
+        request: &AgentDispatchRequest,
+        agent_package: &str,
+        agent_instance: &str,
+        detail: &str,
+        transport_failure: bool,
+    ) -> Result<()> {
+        let context_id = request
+            .context_id
+            .clone()
+            .ok_or_else(|| BamlRtError::InvalidArgument("dispatch missing context_id".into()))?;
+        let (source_kind, source_key) = dispatch_source_fields(request);
+        let prov_event = ProvEvent::host_dispatch_rejected(
+            context_id,
+            request.routing_key.as_str().to_string(),
+            request.message_type.as_str().to_string(),
+            agent_package.to_string(),
+            agent_instance.to_string(),
+            source_kind,
+            source_key,
+            detail.to_string(),
+            transport_failure,
+        );
+        self.store
+            .add_event_with_logging(prov_event, "host dispatch rejected")
+            .await;
+        Ok(())
+    }
 }
 
 fn dispatch_source_fields(request: &AgentDispatchRequest) -> (String, String) {

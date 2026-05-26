@@ -862,6 +862,7 @@ fn conv_item_to_entries(
                 )
             }
         },
+        ConversationItemContent::Operational(_) => return Ok(Vec::new()),
     };
 
     *seq += 1;

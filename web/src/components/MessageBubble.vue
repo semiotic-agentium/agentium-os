@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import type { ChatMessage, ContentBlock, DataContentBlock } from "../types/a2a";
+import type { ChatMessage, ContentBlock, DataContentBlock, OperationalContentBlock } from "../types/a2a";
 import TaskTimeline from "./TaskTimeline.vue";
 import ToolNotificationCard from "./ToolNotificationCard.vue";
 import {
@@ -34,8 +34,23 @@ function isToolBlock(block: ContentBlock): block is import("../types/a2a").ToolN
   return block.type === "tool";
 }
 
+function isOperationalBlock(block: ContentBlock): block is OperationalContentBlock {
+  return block.type === "operational";
+}
+
 function isDataBlock(block: ContentBlock): block is DataContentBlock {
   return block.type === "data";
+}
+
+function operationalBadgeLabel(block: OperationalContentBlock): string {
+  if (block.kind.startsWith("dispatch_")) return "Host";
+  return "System";
+}
+
+function operationalSeverityClass(block: OperationalContentBlock): string {
+  if (block.severity === "error") return "operational-card--error";
+  if (block.severity === "warning") return "operational-card--warning";
+  return "operational-card--info";
 }
 
 function formatStructuredBody(mediaType: string, data: unknown): string {
@@ -130,6 +145,14 @@ const isIngressUser = computed(
   () => props.message.role === "user" && props.message.speakerKind === "ingress",
 );
 
+const isHostOperational = computed(
+  () => props.message.role === "agent" && props.message.speakerKind === "host",
+);
+
+const isSystemOperational = computed(
+  () => props.message.role === "agent" && props.message.speakerKind === "system",
+);
+
 const ingressWireDisplay = computed(() => {
   const raw = props.message.text ?? "";
   if (!isIngressUser.value || !isIngressWireBody(raw)) return null;
@@ -146,11 +169,46 @@ const ingressWireDisplay = computed(() => {
         'message-row--relay': isRelayUser,
         'message-row--ingress': isIngressUser && !ingressWireDisplay,
         'message-row--ingress-wire': Boolean(ingressWireDisplay),
+        'message-row--host': isHostOperational,
+        'message-row--system': isSystemOperational,
       },
     ]"
   >
+    <!-- Host / system operational rows (no agent avatar) -->
+    <div
+      v-if="(isHostOperational || isSystemOperational) && message.contentBlocks?.length"
+      class="message-content message-content--operational"
+    >
+      <template v-for="(block, idx) in message.contentBlocks" :key="idx">
+        <article
+          v-if="isOperationalBlock(block)"
+          class="operational-card"
+          :class="operationalSeverityClass(block)"
+          role="note"
+        >
+          <header class="operational-card__header">
+            <span class="speaker-kind-badge speaker-kind-badge--ingress">{{
+              operationalBadgeLabel(block)
+            }}</span>
+            <span v-if="block.agentPackage" class="operational-card__route" translate="no">
+              {{ block.agentPackage }}/{{ block.agentInstanceId ?? "default" }}
+            </span>
+          </header>
+          <p class="operational-card__summary">{{ block.summary }}</p>
+          <p v-if="block.detail" class="operational-card__detail">{{ block.detail }}</p>
+          <p v-if="block.failureClass" class="operational-card__chip">{{ block.failureClass }}</p>
+          <p
+            v-if="block.oldStatus && block.newStatus"
+            class="operational-card__status-pill"
+            translate="no"
+          >
+            {{ block.oldStatus }} → {{ block.newStatus }}
+          </p>
+        </article>
+      </template>
+    </div>
     <!-- Agent avatar -->
-    <div v-if="message.role === 'agent'" class="message-avatar">
+    <div v-else-if="message.role === 'agent'" class="message-avatar">
       <div class="avatar-icon">
         <svg
           xmlns="http://www.w3.org/2000/svg"
@@ -213,6 +271,20 @@ const ingressWireDisplay = computed(() => {
             </div>
           </div>
           <ToolNotificationCard v-else-if="isToolBlock(block)" :block="block" />
+          <article
+            v-else-if="isOperationalBlock(block)"
+            class="operational-card operational-card--inline"
+            :class="operationalSeverityClass(block)"
+            role="note"
+          >
+            <header class="operational-card__header">
+              <span class="speaker-kind-badge speaker-kind-badge--ingress">{{
+                operationalBadgeLabel(block)
+              }}</span>
+            </header>
+            <p class="operational-card__summary">{{ block.summary }}</p>
+            <p v-if="block.detail" class="operational-card__detail">{{ block.detail }}</p>
+          </article>
           <div
             v-else-if="isDataBlock(block)"
             :class="['bubble', 'bubble-data', message.role]"

@@ -74,13 +74,13 @@ The agent responds with `AgentDispatchAck { accepted: bool, detail: Option<Strin
 
 **HTTP endpoint**: `POST /agents/{pkg}/{inst}/dispatch` (single-agent delivery; programmatic and callback paths).
 
-**Publish ingress**: `POST /events/publish` accepts a `ProducedEvent`, records `HostSourcePollRecorded` in provenance, matches all deployed agent subscriptions, and fans out dispatch to each subscriber (recording `HostDispatchAccepted` per accept). This is the same path **task-daemon** and the **Event Console** use.
+**Publish ingress**: `POST /events/publish` accepts a `ProducedEvent`, records `HostSourcePollRecorded` in provenance, matches all deployed agent subscriptions, and fans out dispatch to each subscriber (recording `HostDispatchAccepted` per accept and `HostDispatchRejected` per reject or transport failure). This is the same path **task-daemon** and the **Event Console** use.
 
 See `crates/baml-rt-core/src/dispatch.rs` for types and `crates/baml-rt-api/src/handlers.rs` for the HTTP handlers.
 
 ## Event Console (operator simulate)
 
-The web **Event Console** validates drafts via `POST /event-dispatch/validate` (returns `preview_produced_event`) and publishes via `POST /events/publish` — not direct per-agent dispatch. Operator evidence is the **conversation-history transcript** at the pinned `context_id`: graph-backed `Message` rows with role `host` for poll and dispatch-accept lines (`Host source poll: …`, `Host dispatch accepted: …`), then agent A2A rows as they arrive.
+The web **Event Console** validates drafts via `POST /event-dispatch/validate` (returns `preview_produced_event`) and publishes via `POST /events/publish` — not direct per-agent dispatch. Operator evidence is the **conversation-history transcript** (`profile=full`) at the pinned `context_id`: `operational_event` rows with role `host` for poll, dispatch-accept, and dispatch-reject/transport lines, unit-scoped ingress `user` wire JSON, then agent A2A rows as they arrive.
 
 ## Agent Handler
 
@@ -109,7 +109,11 @@ The runtime wires `onDispatch` onto `globalThis`. When a dispatch request arrive
 
 ## Provenance
 
-`HostSourcePollRecorded` and `HostDispatchAccepted` are **event-level** lineage only (ops/Mermaid), not transcript rows. For `host.source-records.v1`, actionable ingress text is **only** written per dispatch unit in each `withTask` prelude (task-scoped `ingress-unit-user` `Message`); publish does **not** also emit a global poll-batch `user` line. Each `withTask` prelude injects the unit’s `records[]` slice as **wire JSON** (delimiter `--- host.source-records.v1 ---` + pretty-printed `{ "records": [...] }`) — the same fields the agent receives in dispatch `messages[0]`; the host does **not** rewrite records into title/description summaries. Agents own interpretation in `onDispatch` / BAML. Dispatch requests carry optional `context_id`, `task_id`, and `message_id`; scope is built via `invocation_scope_for_agent_dispatch` in `crates/baml-rt-core/src/dispatch.rs`.
+`HostSourcePollRecorded`, `HostDispatchAccepted`, and `HostDispatchRejected` emit **event-level lineage** (ops/Mermaid) and project to **`operational_event` conversation-history rows** (`role: host`, kinds such as `source_poll_recorded`, `dispatch_accepted`, `dispatch_rejected`, `dispatch_transport_error`). These rows appear in HTTP `profile=full` only; `profile=compact` strips them. They are **not** included in BAML `conversation_transcript` projection.
+
+For `host.source-records.v1`, actionable ingress text is **also** written per dispatch unit in each `withTask` prelude (task-scoped `ingress-unit-user` `Message` with `user_speaker_kind: ingress`); publish does **not** also emit a global poll-batch `user` line. Each `withTask` prelude injects the unit’s `records[]` slice as **wire JSON** (delimiter `--- host.source-records.v1 ---` + pretty-printed `{ "records": [...] }`) — the same fields the agent receives in dispatch `messages[0]`; the host does **not** rewrite records into title/description summaries. Agents own interpretation in `onDispatch` / BAML. Dispatch requests carry optional `context_id`, `task_id`, and `message_id`; scope is built via `invocation_scope_for_agent_dispatch` in `crates/baml-rt-core/src/dispatch.rs`.
+
+Failed tool calls, LLM failures (`llm_call_failed`), prompt rejections (`prompt_rejected`), and terminal task status transitions (`task_status_changed`) also project as `operational_event` rows with `role: system` when present in the provenance graph.
 
 **Record kinds (wire):** `slack.message`, `clickup.lifecycle_event`, `github.issue_event` — see `crates/tools/*/src/source_records.rs`.
 

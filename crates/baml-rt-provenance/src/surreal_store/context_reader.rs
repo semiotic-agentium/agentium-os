@@ -33,6 +33,7 @@ use super::{
 use crate::{
     error::Result,
     events::ToolSessionStepOpKind,
+    host_ingress_transcript::operational_from_host_message,
     id_semantics::{
         context_entity_id_string, task_entity_id_string_raw, task_execution_activity_id_string,
     },
@@ -513,6 +514,52 @@ impl SurrealProvenanceStore {
                     let content_raw = props.get("a2a_content").cloned().unwrap_or(Value::Null);
                     let content_value = json_value_from_embedded_string(&content_raw);
                     let text = normalize_message_content(&content_value);
+                    let props_map = props.as_object().cloned().unwrap_or_default();
+                    let is_host_ingress = role.eq_ignore_ascii_case("host")
+                        || props_map.contains_key("a2a_host_ingress_kind");
+                    if is_host_ingress {
+                        if text.trim().is_empty()
+                            && operational_from_host_message("", &props_map).is_none()
+                        {
+                            warn_conversation_context_row_skip(
+                                context_id,
+                                row,
+                                "host_ingress_empty",
+                            );
+                            continue;
+                        }
+                        let operational = operational_from_host_message(&text, &props_map)
+                            .or_else(|| operational_from_host_message("", &props_map))
+                            .unwrap_or_else(|| {
+                                use baml_rt_conversation::operational::{
+                                    OperationalEventContent, OperationalEventKind,
+                                    OperationalEventSeverity,
+                                };
+                                OperationalEventContent {
+                                    kind: OperationalEventKind::SourcePollRecorded,
+                                    severity: OperationalEventSeverity::Info,
+                                    summary: text.clone(),
+                                    detail: None,
+                                    agent_package: None,
+                                    agent_instance_id: None,
+                                    failure_class: None,
+                                    failure_evidence: None,
+                                    old_status: None,
+                                    new_status: None,
+                                }
+                            });
+                        items.push(ProvenanceConversationContextItem {
+                            timestamp_ms: props
+                                .get("a2a_event_order")
+                                .and_then(Value::as_u64)
+                                .unwrap_or(0),
+                            activity_anchor: ActivityAnchorId::from(event_id),
+                            role: "host".to_string(),
+                            content: ConversationItemContent::Operational(operational),
+                            user_speaker_kind: None,
+                        });
+                        continue;
+                    }
                     if text.trim().is_empty() {
                         warn_conversation_context_row_skip(context_id, row, "message_empty_text");
                         continue;
@@ -882,6 +929,20 @@ impl SurrealProvenanceStore {
             .await?
             .canonicalize_suppress_covered_tool_rows()
             .into_items();
+
+        let existing_anchors: std::collections::HashSet<String> = items
+            .iter()
+            .map(|i| i.activity_anchor.as_str().to_string())
+            .collect();
+        let mut supplement = self
+            .load_operational_supplement_items(
+                context_id,
+                task_id,
+                after_event_order,
+                &existing_anchors,
+            )
+            .await?;
+        items.append(&mut supplement);
 
         items.sort_by_key(|i| i.timestamp_ms);
         if let Some(n) = limit {

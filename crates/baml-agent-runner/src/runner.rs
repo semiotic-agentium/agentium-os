@@ -658,6 +658,18 @@ impl AgentRunner {
                     .add_event_with_logging(event, "runner callback dispatch context link")
                     .await;
             }
+        } else if let Err(err) = self
+            .host_ingress_recorder
+            .record_dispatch_rejected(
+                &dispatch_snapshot,
+                agent_package.as_str(),
+                agent_instance.as_str(),
+                ack.detail.as_deref().unwrap_or("rejected"),
+                false,
+            )
+            .await
+        {
+            tracing::warn!(error = %err, "host dispatch rejected provenance write failed");
         }
         Ok(ack)
     }

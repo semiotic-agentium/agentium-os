@@ -726,6 +726,18 @@ pub enum ProvEventData {
         source_kind: String,
         source_key: String,
     },
+    /// Host dispatch to a subscriber failed (agent rejected or transport error).
+    HostDispatchRejected {
+        routing_key: String,
+        schema_version: String,
+        target_package: String,
+        target_instance: String,
+        source_kind: String,
+        source_key: String,
+        detail: String,
+        /// When true, failure was a transport/dispatch error rather than `accepted: false`.
+        transport_failure: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1871,6 +1883,35 @@ impl ProvEvent {
                 target_instance,
                 source_kind,
                 source_key,
+            },
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn host_dispatch_rejected(
+        context_id: ContextId,
+        routing_key: String,
+        schema_version: String,
+        target_package: String,
+        target_instance: String,
+        source_kind: String,
+        source_key: String,
+        detail: String,
+        transport_failure: bool,
+    ) -> Self {
+        ProvEvent::Global(GlobalEvent {
+            id: next_activity_anchor_id(),
+            context_id,
+            timestamp_ms: now_millis(),
+            data: ProvEventData::HostDispatchRejected {
+                routing_key,
+                schema_version,
+                target_package,
+                target_instance,
+                source_kind,
+                source_key,
+                detail,
+                transport_failure,
             },
         })
     }

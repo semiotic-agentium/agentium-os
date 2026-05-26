@@ -23,11 +23,48 @@ import { deriveToolStatus, getOrCreateToolBlockForAppend } from "./toolBlocks";
 import {
   pushSystemNoticeEvent,
   pushTerminalResultEvent,
+  pushExecutionErrorDetailEvent,
   stableJsonSignature,
 } from "./toolNotificationEvents";
 import { stripLegacyStructuredPlaceholderLines } from "./legacyStructuredPlaceholders";
 import { isSyntheticInputRequiredPrompt } from "./inputRequiredUi";
 import { isWorkflowStatusText, shouldSuppressAgentTranscriptText } from "./workflowUiFilters";
+import { parseToolOutcome } from "./parseToolOutcome";
+import type { OperationalContentBlock } from "../types/a2a";
+
+function operationalBlockFromHistoryContent(
+  content: Extract<ConversationHistoryItem["content"], { type: "operational_event" }>,
+): OperationalContentBlock {
+  return {
+    type: "operational",
+    kind: content.kind,
+    severity: content.severity,
+    summary: content.summary,
+    detail: content.detail,
+    agentPackage: content.agent_package,
+    agentInstanceId: content.agent_instance_id,
+    failureClass: content.failure_class,
+    failureEvidence: content.failure_evidence,
+    oldStatus: content.old_status,
+    newStatus: content.new_status,
+  };
+}
+
+function pushOperationalHistoryRow(
+  rebuilt: ChatMessage[],
+  item: ConversationHistoryItem,
+  ts: Date,
+): void {
+  if (item.content.type !== "operational_event") return;
+  rebuilt.push({
+    id: `prov-op-${item.activityAnchor}`,
+    role: "agent",
+    text: "",
+    timestamp: ts,
+    speakerKind: item.role === "host" ? "host" : "system",
+    contentBlocks: [operationalBlockFromHistoryContent(item.content)],
+  });
+}
 
 function speakerKindFromHistoryItem(item: ConversationHistoryItem): UserSpeakerKind {
   return item.userSpeakerKind ?? "human";
@@ -210,6 +247,12 @@ export function applyConversationHistoryPage(
     const ts = new Date(normalizeEpochMs(item.timestampMs));
     const content = item.content;
 
+    if (content.type === "operational_event") {
+      activeAgentMsg = null;
+      pushOperationalHistoryRow(rebuilt, item, ts);
+      continue;
+    }
+
     if (isUser) {
       turnOrdinal += 1;
       activeAgentMsg = null;
@@ -290,13 +333,19 @@ export function applyConversationHistoryPage(
         const status = statusFromFsmPhase(content.fsm_phase);
         const completion = completionFromStatus(status) ?? "DONE";
         const block = getOrCreateToolBlockForAppend(msg, content.tool_name, "end");
+        const parsed = parseToolOutcome(content.outcome);
         pushSystemNoticeEvent(block, `FSM phase: ${content.fsm_phase}`, `FSM phase: ${content.fsm_phase}`);
         pushTerminalResultEvent(
           block,
-          "success",
-          typeof content.outcome === "string" ? content.outcome : JSON.stringify(content.outcome),
+          parsed.kind === "error" ? "error" : "success",
+          parsed.detail,
         );
-        block.completion = completion;
+        if (parsed.kind === "error") {
+          pushExecutionErrorDetailEvent(block, parsed.detail);
+          block.completion = "INTERRUPTED";
+        } else {
+          block.completion = completion;
+        }
         block.status = deriveToolStatus(block);
         break;
       }
@@ -347,6 +396,10 @@ export function applyConversationHistoryDelta(
       const isUser = item.role.toLowerCase() === "user";
       const ts = new Date(normalizeEpochMs(item.timestampMs));
       const content = item.content;
+      if (content.type === "operational_event") {
+        pushOperationalHistoryRow(messages.value, item, ts);
+        continue;
+      }
       if (isUser) {
         if (applyMode === ConversationHistoryDeltaApplyMode.StructuralOnly) {
           continue;
@@ -411,13 +464,19 @@ export function applyConversationHistoryDelta(
           const status = statusFromFsmPhase(content.fsm_phase);
           const completion = completionFromStatus(status) ?? "DONE";
           const block = getOrCreateToolBlockForAppend(msg, content.tool_name, "end");
+          const parsed = parseToolOutcome(content.outcome);
           pushSystemNoticeEvent(block, `FSM phase: ${content.fsm_phase}`, `FSM phase: ${content.fsm_phase}`);
           pushTerminalResultEvent(
             block,
-            "success",
-            typeof content.outcome === "string" ? content.outcome : JSON.stringify(content.outcome),
+            parsed.kind === "error" ? "error" : "success",
+            parsed.detail,
           );
-          block.completion = completion;
+          if (parsed.kind === "error") {
+            pushExecutionErrorDetailEvent(block, parsed.detail);
+            block.completion = "INTERRUPTED";
+          } else {
+            block.completion = completion;
+          }
           block.status = deriveToolStatus(block);
           break;
         }

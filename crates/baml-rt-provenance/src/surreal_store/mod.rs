@@ -71,6 +71,7 @@ mod context_reader;
 mod conversation_context_pipeline;
 mod helpers;
 mod history_ref;
+mod operational_context_supplement;
 mod ops_query;
 mod payload;
 mod planning_query;

@@ -12,11 +12,26 @@ expression: snapshot
       {
         "timestampMs": "[timestamp_ms]",
         "activityAnchor": "[prov_activity_anchor]",
+        "role": "system",
+        "content": {
+          "type": "operational_event",
+          "kind": "llm_call_failed",
+          "severity": "error",
+          "summary": "LLM DraftPrompt failed",
+          "detail": "llm_call_failed",
+          "failure_class": "failed_graph_incomplete",
+          "failure_evidence": "llm_call_failed"
+        }
+      },
+      {
+        "timestampMs": "[timestamp_ms]",
+        "activityAnchor": "[prov_activity_anchor]",
         "role": "user",
         "content": {
           "type": "message",
           "text": "run analysis"
-        }
+        },
+        "userSpeakerKind": "human"
       },
       {
         "timestampMs": "[timestamp_ms]",
@@ -29,20 +44,6 @@ expression: snapshot
             "expression": "2+2"
           },
           "fsm_phase": ""
-        }
-      },
-      {
-        "timestampMs": "[timestamp_ms]",
-        "activityAnchor": "[prov_activity_anchor]",
-        "role": "tool",
-        "content": {
-          "type": "tool_result",
-          "tool_name": "support/calculate",
-          "fsm_phase": "",
-          "outcome": {
-            "kind": "error",
-            "value": "timeout while calling tool"
-          }
         }
       }
     ],

@@ -17,8 +17,11 @@ use std::{
 };
 
 use async_trait::async_trait;
-use baml_rt_conversation::view::{
-    ConversationItemContent, ProvenanceConversationContextItem, ToolOutcome, ToolSessionPhase,
+use baml_rt_conversation::{
+    operational::{OperationalEventContent, OperationalEventKind, OperationalEventSeverity},
+    view::{
+        ConversationItemContent, ProvenanceConversationContextItem, ToolOutcome, ToolSessionPhase,
+    },
 };
 use baml_rt_core::{
     Citation,
@@ -379,6 +382,25 @@ pub enum ConversationHistoryContentDto {
         #[serde(skip_serializing_if = "Option::is_none")]
         read_replay_lines: Option<Vec<String>>,
     },
+    OperationalEvent {
+        kind: String,
+        severity: String,
+        summary: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_package: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_instance_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        failure_class: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        failure_evidence: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        old_status: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        new_status: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -471,6 +493,37 @@ impl From<ToolOutcome> for ToolOutcomeDto {
     }
 }
 
+fn operational_kind_wire(kind: OperationalEventKind) -> String {
+    serde_json::to_value(kind)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn operational_severity_wire(severity: OperationalEventSeverity) -> String {
+    serde_json::to_value(severity)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| "info".to_string())
+}
+
+impl From<OperationalEventContent> for ConversationHistoryContentDto {
+    fn from(value: OperationalEventContent) -> Self {
+        Self::OperationalEvent {
+            kind: operational_kind_wire(value.kind),
+            severity: operational_severity_wire(value.severity),
+            summary: value.summary,
+            detail: value.detail,
+            agent_package: value.agent_package,
+            agent_instance_id: value.agent_instance_id,
+            failure_class: value.failure_class,
+            failure_evidence: value.failure_evidence,
+            old_status: value.old_status,
+            new_status: value.new_status,
+        }
+    }
+}
+
 impl From<ConversationItemContent> for ConversationHistoryContentDto {
     fn from(value: ConversationItemContent) -> Self {
         match value {
@@ -497,6 +550,7 @@ impl From<ConversationItemContent> for ConversationHistoryContentDto {
                 send_done_replay_payload: session_step.send_done_replay_payload,
                 read_replay_lines: session_step.read_replay_lines,
             },
+            ConversationItemContent::Operational(op) => op.into(),
         }
     }
 }
@@ -672,6 +726,19 @@ pub fn paginate_items(
         awaiting_input: false,
         input_required_prompt: None,
     })
+}
+
+pub fn include_in_conversation_history_profile(
+    item: &ConversationHistoryItemDto,
+    profile: ConversationHistoryProfile,
+) -> bool {
+    match profile {
+        ConversationHistoryProfile::Full => true,
+        ConversationHistoryProfile::Compact => !matches!(
+            item.content,
+            ConversationHistoryContentDto::OperationalEvent { .. }
+        ),
+    }
 }
 
 pub fn profile_filter(

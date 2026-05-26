@@ -297,6 +297,7 @@ graph_event!(ExternalToolLifecycle => ExternalToolLifecycle, primary: ToolCall, 
 graph_event!(CallbackDispatchContextsLinked => CallbackDispatchContextsLinked, primary: Task, required: LegacyRequiredProps);
 graph_event!(HostSourcePollRecorded => HostSourcePollRecorded, primary: Message, required: LegacyRequiredProps);
 graph_event!(HostDispatchAccepted => HostDispatchAccepted, primary: Message, required: LegacyRequiredProps);
+graph_event!(HostDispatchRejected => HostDispatchRejected, primary: Message, required: LegacyRequiredProps);
 
 #[cfg(test)]
 mod tests {

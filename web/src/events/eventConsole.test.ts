@@ -364,6 +364,52 @@ describe("mergeEventConsoleTranscript", () => {
     expect(merged).toHaveLength(1);
     expect(merged[0]?.id).toContain("ingress-unit-user");
   });
+
+  it("retains publish outcome failures until provenance operational rows land", () => {
+    const local = [
+      {
+        id: "event-console-local-operator-publish-trace-outcome",
+        role: "agent" as const,
+        text: "Published 1/2 subscriber(s)\nFailures:\n- coord/default: rejected detail",
+        timestamp: new Date(),
+      },
+    ];
+    const provenance = [
+      {
+        id: "prov-user-ingress-unit-user:ctx:unit",
+        role: "user" as const,
+        speakerKind: "ingress" as const,
+        text: "wire",
+        timestamp: new Date(),
+      },
+    ];
+    const merged = mergeEventConsoleTranscript(provenance, local);
+    expect(merged.some((m) => m.id.includes("publish-trace-outcome"))).toBe(true);
+
+    const provenanceWithOperational = [
+      ...provenance,
+      {
+        id: "prov-op-1",
+        role: "agent" as const,
+        speakerKind: "host" as const,
+        text: "",
+        timestamp: new Date(),
+        contentBlocks: [
+          {
+            type: "operational" as const,
+            kind: "dispatch_rejected",
+            severity: "error",
+            summary: "Host dispatch rejected",
+            detail: "rejected detail",
+            agentPackage: "coord",
+            agentInstanceId: "default",
+          },
+        ],
+      },
+    ];
+    const mergedAfterOp = mergeEventConsoleTranscript(provenanceWithOperational, local);
+    expect(mergedAfterOp.some((m) => m.id.includes("publish-trace-outcome"))).toBe(false);
+  });
 });
 
 describe("transcriptHasIngressUserRows", () => {

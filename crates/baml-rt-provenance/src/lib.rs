@@ -49,6 +49,7 @@ pub mod events;
 pub mod graph_export;
 pub mod graph_model;
 pub mod host_ingress_recorder_impl;
+pub mod host_ingress_transcript;
 pub mod id_semantics;
 pub mod interceptors;
 pub mod mermaid_cache;

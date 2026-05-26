@@ -78,7 +78,7 @@ impl SurrealProvenanceStore {
     /// `FailureClassification` entity via the typed [`EdgeProjection`]
     /// surface; no global graph scan and no raw edge-label string
     /// interpolation.
-    async fn load_failure_classification_for_activity_ids(
+    pub(super) async fn load_failure_classification_for_activity_ids(
         &self,
         activity_ids: &[String],
     ) -> Result<HashMap<String, (String, String)>> {

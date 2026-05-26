@@ -149,6 +149,9 @@ impl baml_rt_api::ConversationHistoryService for ConversationHistoryServiceImpl 
             page.items = page
                 .items
                 .into_iter()
+                .filter(|item| {
+                    baml_rt_api::include_in_conversation_history_profile(item, request.profile)
+                })
                 .map(|item| baml_rt_api::profile_filter(item, request.profile))
                 .collect();
         }
@@ -191,6 +194,9 @@ impl baml_rt_api::ConversationHistoryService for ConversationHistoryServiceImpl 
         ) {
             items = items
                 .into_iter()
+                .filter(|item| {
+                    baml_rt_api::include_in_conversation_history_profile(item, request.profile)
+                })
                 .map(|item| baml_rt_api::profile_filter(item, request.profile))
                 .collect();
         }

@@ -283,11 +283,75 @@ export function mergeEventConsoleTranscript(
   local: ChatMessage[],
 ): ChatMessage[] {
   if (local.length === 0) return provenance;
-  if (transcriptHasIngressUserRows(provenance)) return provenance;
-  if (provenance.length === 0) return local;
-  const localIds = new Set(local.map((m) => m.id));
+
+  const hasIngress = transcriptHasIngressUserRows(provenance);
+  let retainedLocal = local;
+  if (hasIngress) {
+    retainedLocal = local.filter(
+      (m) => !(m.role === "user" && m.speakerKind === "ingress"),
+    );
+  }
+
+  const outcomeRow = retainedLocal.find((m) => m.id.includes("publish-trace-outcome"));
+  if (outcomeRow && provenanceHasPublishOutcomeEquivalent(provenance, outcomeRow)) {
+    retainedLocal = retainedLocal.filter((m) => m !== outcomeRow);
+  }
+
+  if (retainedLocal.length === 0) return provenance;
+  if (provenance.length === 0) return retainedLocal;
+
+  const localIds = new Set(retainedLocal.map((m) => m.id));
   const tail = provenance.filter((m) => !localIds.has(m.id));
-  return [...local, ...tail];
+  return [...retainedLocal, ...tail];
+}
+
+function provenanceHasPublishOutcomeEquivalent(
+  provenance: ChatMessage[],
+  localOutcome: ChatMessage,
+): boolean {
+  const failureLines = parsePublishFailureLines(localOutcome.text ?? "");
+  if (failureLines.length === 0) return false;
+  const operational = provenance.flatMap((m) =>
+    (m.contentBlocks ?? []).filter(
+      (b): b is import("../types/a2a").OperationalContentBlock =>
+        b.type === "operational" &&
+        (b.kind === "dispatch_rejected" || b.kind === "dispatch_transport_error"),
+    ),
+  );
+  if (operational.length === 0) return false;
+  return failureLines.every((failure) =>
+    operational.some(
+      (op) =>
+        op.agentPackage === failure.agentPackage &&
+        op.agentInstanceId === failure.agentInstanceId &&
+        (op.detail?.includes(failure.detail) ?? op.summary.includes(failure.detail)),
+    ),
+  );
+}
+
+function parsePublishFailureLines(text: string): Array<{
+  agentPackage: string;
+  agentInstanceId: string;
+  detail: string;
+}> {
+  const lines = text.split("\n");
+  const failures: Array<{ agentPackage: string; agentInstanceId: string; detail: string }> = [];
+  let inFailures = false;
+  for (const line of lines) {
+    if (line.trim() === "Failures:") {
+      inFailures = true;
+      continue;
+    }
+    if (!inFailures) continue;
+    const match = line.match(/^- ([^/]+)\/([^:]+):\s*(.+)$/);
+    if (!match) continue;
+    failures.push({
+      agentPackage: match[1]!,
+      agentInstanceId: match[2]!,
+      detail: match[3]!.trim(),
+    });
+  }
+  return failures;
 }
 
 /** True when transcript includes host-written ingress poll/unit user rows. */

@@ -168,6 +168,19 @@ export type ConversationHistoryContent =
       op: SessionStepOp;
       send_done_replay_payload?: unknown;
       read_replay_lines?: string[];
+    }
+  | {
+      type: "operational_event";
+      kind: string;
+      severity: "info" | "warning" | "error";
+      summary: string;
+      detail?: string;
+      agent_package?: string;
+      agent_instance_id?: string;
+      failure_class?: string;
+      failure_evidence?: string;
+      old_status?: string;
+      new_status?: string;
     };
 
 /** A2A message part (wire may use snake_case media_type) */
@@ -272,8 +285,26 @@ export interface ToolEvent {
 
 export type ToolCompletion = "DONE" | "INPUT_REQUIRED" | "INTERRUPTED";
 
-/** Block inside an agent message (text, structured data, or tool notification). */
-export type ContentBlock = TextContentBlock | DataContentBlock | ToolNotificationBlock;
+/** Block inside an agent message (text, structured data, tool notification, or operational). */
+export type ContentBlock =
+  | TextContentBlock
+  | DataContentBlock
+  | ToolNotificationBlock
+  | OperationalContentBlock;
+
+export interface OperationalContentBlock {
+  type: "operational";
+  kind: string;
+  severity: string;
+  summary: string;
+  detail?: string;
+  agentPackage?: string;
+  agentInstanceId?: string;
+  failureClass?: string;
+  failureEvidence?: string;
+  oldStatus?: string;
+  newStatus?: string;
+}
 
 export interface TextContentBlock {
   type: "text";
@@ -296,7 +327,7 @@ export interface ToolNotificationBlock {
 }
 
 /** Who speaks in the transcript (trust / styling). Defaults implied from `role`. */
-export type ChatSpeakerKind = "human" | "agent" | "relay" | "system" | "ingress";
+export type ChatSpeakerKind = "human" | "agent" | "relay" | "system" | "ingress" | "host";
 
 /** Internal chat message for the UI */
 export interface ChatMessage {

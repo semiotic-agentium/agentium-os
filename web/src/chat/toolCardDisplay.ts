@@ -162,7 +162,9 @@ function eventDisplay(ev: ToolEvent): DisplayEvent {
   }
   if (ev.kind === "terminal_result") {
     const sub = ev.subtype ?? "done";
-    return { kind: "terminal", text: sub === "success" ? "Complete" : sub };
+    if (sub === "success") return { kind: "terminal", text: "Complete" };
+    if (sub === "error") return { kind: "terminal", text: "Failed" };
+    return { kind: "terminal", text: sub };
   }
   if (ev.kind === "system_notice") {
     const raw = ev.subtype ?? ev.text ?? "Status";

@@ -147,9 +147,10 @@ pub enum EventGraphKind {
     CallbackDispatchContextsLinked,
     HostSourcePollRecorded,
     HostDispatchAccepted,
+    HostDispatchRejected,
 }
 
-pub const ALL_EVENT_KINDS: [EventGraphKind; 22] = [
+pub const ALL_EVENT_KINDS: [EventGraphKind; 23] = [
     EventGraphKind::IntentResolved,
     EventGraphKind::PlanGenerated,
     EventGraphKind::PlanStepStatusChanged,
@@ -172,6 +173,7 @@ pub const ALL_EVENT_KINDS: [EventGraphKind; 22] = [
     EventGraphKind::CallbackDispatchContextsLinked,
     EventGraphKind::HostSourcePollRecorded,
     EventGraphKind::HostDispatchAccepted,
+    EventGraphKind::HostDispatchRejected,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -419,6 +421,21 @@ const MAPPING_HOST_DISPATCH_ACCEPTED: EventGraphMapping = EventGraphMapping {
     ],
 };
 
+const MAPPING_HOST_DISPATCH_REJECTED: EventGraphMapping = EventGraphMapping {
+    kind: EventGraphKind::HostDispatchRejected,
+    primary_node: GraphNodeLabel::Message,
+    expected_edges: &[],
+    required_properties: &[
+        a2a::CONTEXT_ID,
+        a2a::ROLE,
+        a2a::HOST_INGRESS_KIND,
+        a2a::HOST_INGRESS_TARGET_PACKAGE,
+        a2a::HOST_INGRESS_TARGET_INSTANCE,
+        a2a::HOST_INGRESS_ROUTING_KEY,
+        a2a::REASON,
+    ],
+};
+
 pub fn event_kind_from_data(data: &ProvEventData) -> EventGraphKind {
     match data {
         ProvEventData::IntentResolved { .. } => EventGraphKind::IntentResolved,
@@ -445,6 +462,7 @@ pub fn event_kind_from_data(data: &ProvEventData) -> EventGraphKind {
         }
         ProvEventData::HostSourcePollRecorded { .. } => EventGraphKind::HostSourcePollRecorded,
         ProvEventData::HostDispatchAccepted { .. } => EventGraphKind::HostDispatchAccepted,
+        ProvEventData::HostDispatchRejected { .. } => EventGraphKind::HostDispatchRejected,
     }
 }
 
@@ -474,6 +492,7 @@ pub fn mapping_for_event_kind(kind: EventGraphKind) -> &'static EventGraphMappin
         }
         EventGraphKind::HostSourcePollRecorded => &MAPPING_HOST_SOURCE_POLL_RECORDED,
         EventGraphKind::HostDispatchAccepted => &MAPPING_HOST_DISPATCH_ACCEPTED,
+        EventGraphKind::HostDispatchRejected => &MAPPING_HOST_DISPATCH_REJECTED,
     }
 }
 

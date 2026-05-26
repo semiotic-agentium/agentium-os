@@ -14,6 +14,8 @@ use baml_rt_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::operational::OperationalEventContent;
+
 /// Re-export: session step op in conversation history (same as core bus wire).
 pub type SessionStepOp = baml_rt_core::bus::SessionStepOp;
 
@@ -85,6 +87,8 @@ pub enum ConversationItemContent {
     ToolResult(ToolResultContent),
     /// An individual session step — Open/SendDone/SearchRead/PageRead within an in-progress session.
     SessionStep(SessionStepContent),
+    /// Host dispatch, LLM/tool failure classification, or task status (operator transcript only).
+    Operational(OperationalEventContent),
 }
 
 impl ConversationItemContent {
@@ -96,6 +100,7 @@ impl ConversationItemContent {
             Self::ToolCall(_) => true,
             Self::ToolResult(tr) => !matches!(tr.outcome, ToolOutcome::StatusOnly),
             Self::SessionStep(_) => true,
+            Self::Operational(op) => op.is_meaningful(),
         }
     }
 }
@@ -204,6 +209,7 @@ impl ProvenanceConversationContextItem {
             ConversationItemContent::ToolCall(_) => "tool_call",
             ConversationItemContent::ToolResult(_) => "tool_result",
             ConversationItemContent::SessionStep(_) => "session_step",
+            ConversationItemContent::Operational(_) => "operational_event",
         }
     }
 }

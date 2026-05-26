@@ -1393,8 +1393,33 @@ pub async fn post_events_publish(
         return (AxumStatus::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
     }
     let context_id = event.context_id.as_ref().map(|c| c.to_string());
+    let dispatch_request = event.clone().into_dispatch_request();
     match publish_to_subscribers(&entries, event, &port).await {
         Ok(outcome) => {
+            if let Some(recorder) = state.host_ingress_recorder.as_ref() {
+                for (route, failure) in &outcome.failures {
+                    let transport = matches!(
+                        failure,
+                        baml_rt_core::SubscriberDeliveryFailure::Dispatch { .. }
+                    );
+                    if let Err(err) = recorder
+                        .record_dispatch_rejected(
+                            &dispatch_request,
+                            route.agent_package.as_str(),
+                            route.agent_instance_id.as_str(),
+                            &failure.detail(),
+                            transport,
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %err,
+                            agent = %route.agent_package,
+                            "host dispatch rejected provenance write failed"
+                        );
+                    }
+                }
+            }
             metrics::record_request("post_events_publish", "success", start.elapsed());
             Json(crate::openapi::EventPublishResponseDto::from_outcome(
                 outcome, context_id,
