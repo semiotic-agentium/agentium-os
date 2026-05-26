@@ -123,7 +123,7 @@ async fn build_artifact_inner(
         let builder = BuilderService::new(
             TscCompiler::new(),
             RuntimeTypeGenerator::with_mcp_registry_service(svc),
-            StdPackager::new(fs_impl),
+            StdPackager::new(),
         );
         builder
             .build_package(&agent_dir, &build_dir, &output)

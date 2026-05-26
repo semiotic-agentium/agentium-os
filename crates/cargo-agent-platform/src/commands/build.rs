@@ -168,7 +168,7 @@ async fn build_agent(agent_dir: &Path, output: &Path) -> Result<()> {
     // Initialize services
     let ts_compiler = TscCompiler::new();
     let type_generator = RuntimeTypeGenerator::new();
-    let packager = StdPackager::new(filesystem);
+    let packager = StdPackager::new();
 
     let builder_service = BuilderService::new(ts_compiler, type_generator, packager);
 
