@@ -963,16 +963,17 @@ demo/ford-observability/scripts/
   run-e2e.sh
 ```
 
-Just recipes (callable from repo root):
+Demo-local dispatcher (no repo-root `just` recipes — keeps demo artifacts inside the demo dir):
 
 ```txt
-just demo-observability-images        # build + load images (kind) or push (registry)
-just demo-observability-install       # helm upgrade --install
-just demo-observability-inject        # default = latency_spike
-just demo-observability-reset
-just demo-observability-e2e           # smoke path first: install → inject → wait → fetch report + ledger
-                                       # ledger-assertion stage is nice-to-have (see §Demo Scope) and lands later
+demo/ford-observability/demo.sh install   # scripts/install.sh (helm upgrade --install, waits for rollouts)
+demo/ford-observability/demo.sh inject    # scripts/inject-latency.sh (latency_spike via failure-harness)
+demo/ford-observability/demo.sh reset     # scripts/reset-demo.sh (stop active + reset ledger)
+demo/ford-observability/demo.sh e2e       # scripts/run-e2e.sh smoke: install → inject → wait → fetch report + ledger
+                                          # ledger-assertion (citation matching) is nice-to-have (see §Demo Scope)
 ```
+
+Image build/load is left as a runbook step (kind load / registry push) so the demo dir owns only deploy + drive behavior.
 
 Helm values pin image source so CI can later push to GHCR without chart changes:
 
@@ -995,9 +996,8 @@ helm upgrade --install agentium-observability-demo ./demo/ford-observability/hel
 Fast local script path:
 
 ```bash
-just demo-observability-images
-just demo-observability-install
-just demo-observability-inject
+demo/ford-observability/demo.sh install
+demo/ford-observability/demo.sh inject
 ```
 
 README/runbook must document:
@@ -1144,7 +1144,7 @@ Track progress. Check boxes as work lands. Order roughly = dependency order; par
 - [x] Create `demo/ford-observability/` dir with separate Cargo workspace (`Cargo.toml`, `rust-toolchain.toml` inherit).
 - [x] Add `demo/ford-observability/helm/` skeleton (`Chart.yaml`, `values.yaml`, empty `templates/`).
 - [x] Add `demo/ford-observability/scripts/` with placeholder `install.sh`, `inject-latency.sh`, `reset-demo.sh`, `run-e2e.sh`.
-- [x] Add `just` recipes: `demo-observability-images`, `-install`, `-inject`, `-reset`, `-e2e`.
+- [x] Demo-local dispatcher `demo/ford-observability/demo.sh install|inject|reset|e2e` (replaces earlier repo-root `just demo-observability-*` recipes, which were removed to keep demo artifacts inside the demo dir).
 - [x] Add `docs/demos/ford-grafana/` with empty `runbook.md`, `demo-script.md`, `demo-recording.md`.
 
 ### Phase 1 — Dummy services (Rust) ✅ Completed
@@ -1262,13 +1262,16 @@ Future demo agents should be scaffolded with `cargo run -q -p cargo-agent-platfo
 - [x] `values.yaml` image registry/tag/pullPolicy + secrets stubs.
 - [x] Template implementation complete; `helm upgrade --install` smoke run moves to Phase 9 script/e2e validation.
 
-### Phase 9 — Scripts + just recipes wired
+### Phase 9 — Demo-local scripts wired ✅ Completed
 
-- [ ] `scripts/install.sh` (helm upgrade --install).
-- [ ] `scripts/inject-latency.sh` (kubectl exec → harness `/admin/failure-mode`).
-- [ ] `scripts/reset-demo.sh` (stop active + reset ledger).
-- [ ] `scripts/run-e2e.sh` smoke: install → inject → wait → fetch report + ledger.
-- [ ] `just` recipes work end-to-end on k3d.
+Scripts live entirely under `demo/ford-observability/` to keep the demo self-contained — no repo-root `justfile` recipes, no cross-cutting Make targets. Single dispatcher at `demo/ford-observability/demo.sh` so the operator-facing entrypoint is one file inside the demo dir.
+
+- [x] `scripts/install.sh` — helm upgrade --install with `WAIT_ROLLOUTS`, `ROLLOUT_TIMEOUT`, `VALUES_FILE` env knobs; waits on all chart workloads.
+- [x] `scripts/inject-latency.sh` — `kubectl exec deploy/failure-harness` → `/admin/failure-mode` with tunable `DURATION_SECONDS`, `LATENCY_MS_P95`, `ERROR_RATE`, `INCIDENT_ID`.
+- [x] `scripts/reset-demo.sh` — stop active mode + reset ledger (`KEEP_LEDGER=1` to skip).
+- [x] `scripts/run-e2e.sh` smoke — install (skippable), port-forward runner, baseline `/contexts`, inject, poll for new coordinator `context_id`, dump `conversation-history` + `/provenance/{llm,tool}-calls` + ledger to `OUT_DIR`.
+- [x] `demo.sh install|inject|reset|e2e` dispatcher inside demo dir (no `just` recipes in repo root).
+- [x] End-to-end smoke run on k3d (validates Phase 8 `helm upgrade --install` + Phase 9 e2e path).
 
 ### Phase 10 — Documentation
 
@@ -1307,8 +1310,8 @@ This is a demonstration project, not a product MVP. Scope below reflects what is
 Must-have for first recording:
 
 - Helm chart and vendored, version-pinned Grafana + Prometheus + Loki + log shipper manifests under `demo/ford-observability/helm/`.
-- `just demo-observability-images` recipe that builds and loads/pushes service images.
-- `just demo-observability-e2e` recipe — first cut runs the smoke path (install → inject → wait → fetch report + ledger). The ledger-assertion stage is nice-to-have and lands after the first recording (see §Demo Scope).
+- Operator-facing image build/load step documented in the runbook (kind load or registry push); kept out of the demo dispatcher so demo scripts only deploy and drive.
+- `demo/ford-observability/demo.sh e2e` — first cut runs the smoke path (install → inject → wait → fetch report + ledger). The ledger-assertion stage is nice-to-have and lands after the first recording (see §Demo Scope).
 - README/runbook with install, inject, reset, troubleshoot, and expected-output steps, including the **honest framing** disclaimer.
 - Grafana + Prometheus + Loki for the observability backend.
 - `checkout-api` and `payments-api` services (Rust, separate workspace under `demo/ford-observability/`).

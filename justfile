@@ -709,25 +709,7 @@ demo-rehearsal-assert:
     ./scripts/k8s-pilot-assert-placement-consistency.sh --port-forward --local-port 18181
     ./scripts/k8s-pilot-assert-no-warn-logs.sh
 
-# Agentium observability incident copilot demo (demo/ford-observability).
-demo-observability-images:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "$(git rev-parse --show-toplevel)"
-    echo "TODO phase 1/8: build and load/push demo service images."
-
-# Install/upgrade demo Helm chart.
-demo-observability-install *args='':
-    ./demo/ford-observability/scripts/install.sh {{args}}
-
-# Inject default latency spike via failure harness.
-demo-observability-inject:
-    ./demo/ford-observability/scripts/inject-latency.sh
-
-# Reset active failure + ledger.
-demo-observability-reset:
-    ./demo/ford-observability/scripts/reset-demo.sh
-
-# Smoke path: install -> inject -> wait -> read ledger (full assertions later).
-demo-observability-e2e:
-    ./demo/ford-observability/scripts/run-e2e.sh
+# Agentium observability incident copilot demo lives entirely under
+# demo/ford-observability/. Use the in-demo dispatcher to keep demo artifacts
+# out of the repo-root justfile:
+#   demo/ford-observability/demo.sh install|inject|reset|e2e
