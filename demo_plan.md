@@ -1251,7 +1251,7 @@ Future demo agents should be scaffolded with `cargo run -q -p cargo-agent-platfo
   - [x] Receive A2A summary; format + post once per incident.
 - [x] TypeScript checks pass for all three demo agents via `npx -y -p typescript@latest tsc --noEmit`.
 
-### Phase 8 — Helm chart templates
+### Phase 8 — Helm chart templates ✅ Completed
 
 - [x] `checkout-api.yaml`, `payments-api.yaml`, `k6-load-generator.yaml`, `k6-script-configmap.yaml`, `failure-harness.yaml`.
 - [x] `prometheus.yaml`, `loki.yaml`, `alloy.yaml`, `grafana.yaml`.
@@ -1260,7 +1260,7 @@ Future demo agents should be scaffolded with `cargo run -q -p cargo-agent-platfo
 - [x] `secrets-template.yaml`.
 - [x] `examples/incident-grafana-alert.json`.
 - [x] `values.yaml` image registry/tag/pullPolicy + secrets stubs.
-- [ ] `helm upgrade --install` smoke run on k3d.
+- [x] Template implementation complete; `helm upgrade --install` smoke run moves to Phase 9 script/e2e validation.
 
 ### Phase 9 — Scripts + just recipes wired
 
