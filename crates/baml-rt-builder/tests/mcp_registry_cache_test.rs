@@ -6,8 +6,7 @@
 use std::{fs, sync::Arc};
 
 use baml_rt_builder::builder::{
-    AgentDir, BuildDir, RuntimeTypeGenerator, StdFileSystem, StdPackager, TypeGenerator,
-    traits::Packager,
+    AgentDir, BuildDir, RuntimeTypeGenerator, StdPackager, TypeGenerator, traits::Packager,
 };
 use baml_rt_repository::{
     RepositoryService,
@@ -182,7 +181,7 @@ async fn approved_registry_snapshot_is_materialized_into_package_tarball() {
     .expect("stub baml");
 
     let output = tempfile::NamedTempFile::new().expect("output tar");
-    let packager = StdPackager::new(StdFileSystem);
+    let packager = StdPackager::new();
     packager
         .package(
             &AgentDir::new(agent_dir.path().to_path_buf()).expect("agent dir"),

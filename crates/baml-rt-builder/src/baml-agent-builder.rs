@@ -346,7 +346,7 @@ async fn package_agent(agent_dir: &AgentDir, output: &std::path::Path) -> Result
     let filesystem = StdFileSystem;
     let ts_compiler = TscCompiler::new();
     let type_generator = RuntimeTypeGenerator::new();
-    let packager = StdPackager::new(filesystem);
+    let packager = StdPackager::new();
 
     // Copy baml_src to build directory (runtime loads from baml_src)
     filesystem.copy_dir_all(&agent_dir.baml_src(), &build_dir.join("baml_src"))?;

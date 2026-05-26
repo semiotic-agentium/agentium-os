@@ -38,7 +38,7 @@ pub async fn build_agent_package(
 
     let ts_compiler = TscCompiler::new();
     let type_generator = RuntimeTypeGenerator::new();
-    let packager = StdPackager::new(filesystem);
+    let packager = StdPackager::new();
 
     let builder_service = BuilderService::new(ts_compiler, type_generator, packager);
     builder_service
