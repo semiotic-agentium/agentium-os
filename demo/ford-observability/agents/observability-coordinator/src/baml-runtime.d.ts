@@ -10,6 +10,8 @@
 
 declare global {
 
+declare function SynthesizeIncidentReport(args: { incident_json: string; investigator_pack_json: string; links_json: string } & { __baml_invocation_token?: string }): Promise<StructuredReply>;
+
 }
 
 /** Runtime interaction API: A2A task FSM (message-first, typestate rails). */

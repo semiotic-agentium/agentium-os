@@ -1,5 +1,29 @@
 /// <reference path="./baml-runtime.d.ts" />
-import type { HostDispatchAck, HostDispatchRequest, JsonObject, SessionResult } from "./baml-runtime";
+//
+// Multi-alert handling — Phase A (current): Grafana batches alerts with the
+// same alertname/folder into one webhook payload. We iterate envelope.alerts[]
+// and fan out one investigator + one synthesis + one Slack post per alert via
+// Promise.all. Demo only fires HighLatency so N=1 in practice, but the loop
+// stops alerts[1..] from being silently dropped if Grafana ever groups.
+//
+// Multi-alert handling — Phase B (deferred, gated on phase-2 alert rules
+// landing: ServiceDown, HighErrorRate, DependencyTimeout):
+//   - Switch SynthesizeIncidentReport to accept incidents_json: Incident[] and
+//     packs_json: InvestigatorPack[] (BAML schema change + prompt rework).
+//   - Fan out investigators in parallel, then call synthesis ONCE over the
+//     full batch so the LLM can correlate across services (e.g. checkout-api
+//     latency + payments-api ServiceDown → shared dependency).
+//   - Emit a single grouped Slack post per webhook envelope instead of N.
+//   - Needs correlation eval before enabling; not worth doing blind while only
+//     one rule exists.
+//
+import type {
+  HostDispatchAck,
+  HostDispatchRequest,
+  JsonObject,
+  SessionResult,
+  StructuredReply,
+} from "./baml-runtime";
 
 const INVESTIGATOR = { agent_package: "grafana-investigator", agent_instance_id: "default" };
 const SLACK = { agent_package: "slack-notify", agent_instance_id: "default" };
@@ -32,49 +56,24 @@ type Incident = {
   panelURL: string;
 };
 
-type EvidenceItem = {
-  id?: string;
-  kind?: string;
-  summary?: string;
-  query?: string;
-  labels?: Record<string, unknown>;
-  samples?: unknown[];
-  caveat?: string;
-  tool?: string;
-  tool_input?: Record<string, unknown>;
-  tool_output_preview?: string;
-};
-
-type EvidencePack = {
-  likely_cause?: string;
-  confidence?: string;
-  evidence?: EvidenceItem[];
-  caveats?: string[];
-  open_questions?: string[];
-  incident?: Record<string, unknown>;
-  window?: Record<string, unknown>;
-};
-
 function s(value: unknown, fallback = ""): string {
   return typeof value === "string" && value.length > 0 ? value : fallback;
 }
 
-function firstAlert(request: HostDispatchRequest): GrafanaAlert {
+function extractAlerts(request: HostDispatchRequest): GrafanaAlert[] {
   const envelope = request.messages[0] as JsonObject | undefined;
   const alerts = Array.isArray(envelope?.alerts) ? envelope.alerts : [];
-  const alert = alerts[0];
-  return alert && typeof alert === "object" ? (alert as GrafanaAlert) : {} as GrafanaAlert;
+  const out: GrafanaAlert[] = alerts.filter((a) => !!a && typeof a === "object") as GrafanaAlert[];
+  return out.length > 0 ? out : [{} as GrafanaAlert];
 }
 
-function incidentFromDispatch(request: HostDispatchRequest): Incident {
+function incidentFromAlert(request: HostDispatchRequest, alert: GrafanaAlert): Incident {
   const envelope = request.messages[0] as JsonObject | undefined;
-  const alert = firstAlert(request);
   const labels = alert.labels ?? {};
   const annotations = alert.annotations ?? {};
   const status = s(alert.status, s(envelope?.status, "firing"));
-  const contextId = s(request.context_id, "unknown-context");
   return {
-    contextId,
+    contextId: s(request.context_id, "unknown-context"),
     messageId: s(request.message_id, "unknown-message"),
     status,
     alertName: s(labels.alertname, "GrafanaAlert"),
@@ -98,7 +97,7 @@ async function runSingleSendSession(
   let session = await openToolSession(toolName, openInput);
   try {
     await session.send(sendInput);
-    for (let i = 0; i < 12; i += 1) {
+    for (let i = 0; i < 16; i += 1) {
       const next = await session.continue();
       if (next && typeof next === "object") {
         const obj = next as Record<string, unknown>;
@@ -128,97 +127,56 @@ async function a2a(target: { agent_package: string; agent_instance_id: string },
     { target },
     { parts: [{ text }] },
   );
-  return typeof raw === "string" ? raw : JSON.stringify(raw, null, 2);
+  return typeof raw === "string" ? raw : JSON.stringify(raw);
 }
 
 function buildInvestigatorPrompt(incident: Incident): string {
   return JSON.stringify({
-    task: "Investigate Grafana alert. Gather bounded Prometheus metrics, Loki logs, and synthetic trace annotations. Return structured JSON evidence pack with likely_cause, confidence, evidence summaries, log samples, trace caveat, and citations/archive refs when available.",
+    goal: `Diagnose Grafana alert ${incident.alertName} on ${incident.service}. Pick the right Grafana MCP tools, gather metric (baseline + incident windows), log, and synthetic trace evidence, then return a structured InvestigatorReport JSON.`,
     incident,
-    required_queries: {
-      p95_latency: `histogram_quantile(0.95, sum(rate(demo_service_request_duration_seconds_bucket{service=\"${incident.service}\"}[2m])) by (le))`,
-      error_rate: `sum(rate(demo_service_requests_total{service=\"${incident.service}\",status=~\"5..\"}[2m]))`,
-      request_rate: `sum(rate(demo_service_requests_total{service=\"${incident.service}\"}[2m]))`,
-      up: `up{job=\"${incident.service}\"}`,
-      logs: `{service=\"${incident.service}\"} |= \"payments-api\"`,
-      annotations: `tags=kind=trace service=${incident.service} limit<=20`,
-    },
-  }, null, 2);
-}
-
-function parseEvidencePack(findings: string): EvidencePack | null {
-  const trimmed = findings.trim();
-  const unfenced = trimmed.startsWith("```")
-    ? trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "")
-    : trimmed;
-  try {
-    const parsed = JSON.parse(unfenced) as unknown;
-    if (parsed && typeof parsed === "object") return parsed as EvidencePack;
-  } catch {}
-  return null;
+  });
 }
 
 function linksFor(incident: Incident): Record<string, string> {
-  const dashboard = incident.contextId === "unknown-context"
-    ? "context unavailable"
-    : `${UI_BASE_URL}/?view=dashboard&contextId=${encodeURIComponent(incident.contextId)}`;
-  const encoded = encodeURIComponent(incident.contextId);
+  const hasContext = incident.contextId && incident.contextId !== "unknown-context";
+  const encoded = hasContext ? encodeURIComponent(incident.contextId) : "";
   return {
     grafana_dashboard: incident.dashboardURL || "not provided",
     grafana_panel: incident.panelURL || "not provided",
-    agentium_dashboard: dashboard,
-    transcript_api: incident.contextId === "unknown-context" ? "context unavailable" : `${UI_BASE_URL}/contexts/${encoded}/conversation-history`,
-    llm_provenance_api: incident.contextId === "unknown-context" ? "context unavailable" : `${UI_BASE_URL}/provenance/llm-calls?context_id=${encoded}`,
-    tool_provenance_api: incident.contextId === "unknown-context" ? "context unavailable" : `${UI_BASE_URL}/provenance/tool-calls?context_id=${encoded}`,
+    agentium_dashboard: hasContext ? `${UI_BASE_URL}/?view=dashboard&contextId=${encoded}` : "context unavailable",
+    transcript_api: hasContext ? `${UI_BASE_URL}/contexts/${encoded}/conversation-history` : "context unavailable",
+    llm_provenance_api: hasContext ? `${UI_BASE_URL}/provenance/llm-calls?context_id=${encoded}` : "context unavailable",
+    tool_provenance_api: hasContext ? `${UI_BASE_URL}/provenance/tool-calls?context_id=${encoded}` : "context unavailable",
   };
 }
 
-function formatEvidenceSummaries(pack: EvidencePack | null): string {
-  const evidence = pack?.evidence ?? [];
-  if (evidence.length === 0) return "- No structured evidence items returned; see raw investigator output in provenance.";
-  return evidence
-    .filter((item) => item.kind !== "datasource")
-    .map((item) => {
-      const id = item.id ? ` [${item.id}]` : "";
-      const query = item.query ? ` Query: ${item.query}` : "";
-      const tool = item.tool ? ` Tool: ${item.tool}.` : "";
-      return `- ${item.kind || "evidence"}${id}: ${item.summary || "No summary returned."}${tool}${query}`;
+function stringifyReply(reply: StructuredReply | string): string {
+  if (typeof reply === "string") return reply;
+  const parts = Array.isArray(reply?.parts) ? reply.parts : [];
+  const text = parts
+    .map((p: unknown) => {
+      if (!p || typeof p !== "object") return "";
+      const obj = p as Record<string, unknown>;
+      if (obj.type === "text" && typeof obj.text === "string") return obj.text;
+      if (obj.type === "data" && typeof obj.data === "string") return obj.data;
+      return "";
     })
-    .join("\n") || "- Only datasource resolution evidence returned.";
+    .filter((s: string) => s.length > 0)
+    .join("\n\n");
+  return text || JSON.stringify(reply);
 }
 
-function formatLogSamples(pack: EvidencePack | null): string {
-  const samples = (pack?.evidence ?? [])
-    .filter((item) => item.kind === "log")
-    .flatMap((item) => item.samples ?? [])
-    .map((sample) => typeof sample === "string" ? sample : JSON.stringify(sample))
-    .filter((sample) => sample.length > 0)
-    .slice(0, 5);
-  if (samples.length === 0) return "- No representative log samples returned.";
-  return samples.map((sample) => `- ${sample}`).join("\n");
-}
-
-function traceCaveat(pack: EvidencePack | null): string {
-  const itemCaveat = (pack?.evidence ?? []).find((item) => item.kind === "trace_annotation" && item.caveat)?.caveat;
-  const packCaveat = (pack?.caveats ?? []).find((caveat) => caveat.toLowerCase().includes("trace"));
-  return itemCaveat || packCaveat || "Trace/span evidence is synthetic Grafana annotation data, not Tempo/OTLP trace data.";
-}
-
-function synthesizeReport(incident: Incident, findings: string): string {
-  const pack = parseEvidencePack(findings);
-  const links = linksFor(incident);
-  const likelyCause = pack?.likely_cause || "Unknown; investigator did not return structured likely_cause.";
-  const confidence = pack?.confidence || "unknown";
-  const openQuestions = pack?.open_questions?.length
-    ? pack.open_questions.map((q, i) => `${i + 1}. ${q}`).join("\n")
-    : "1. Confirm whether this matches demo injection.\n2. Watch resolution and verify p95 returns to baseline.";
-
-  const rawFallback = pack ? "" : `\n\nRaw investigator output (unparsed):\n${findings}`;
-  return `🚨 Grafana Alert: ${incident.alertName} ${incident.status}\nService: ${incident.service}\nSeverity: ${incident.severity}\nStarted: ${incident.startsAt}\n\nLikely cause:\n- ${likelyCause}\n\nConfidence:\n- ${confidence}\n\nEvidence summaries:\n${formatEvidenceSummaries(pack)}\n\nLog samples:\n${formatLogSamples(pack)}\n\nTrace caveat:\n- ${traceCaveat(pack)}\n\nLinks:\n- Grafana dashboard: ${links.grafana_dashboard}\n- Grafana panel: ${links.grafana_panel}\n- Agentium dashboard: ${links.agentium_dashboard}\n- Transcript API: ${links.transcript_api}\n- LLM provenance API: ${links.llm_provenance_api}\n- Tool provenance API: ${links.tool_provenance_api}\n\nSuggested next actions:\n${openQuestions}${rawFallback}`;
+async function buildReport(incident: Incident, investigatorPack: string): Promise<{ reply: StructuredReply; text: string }> {
+  const reply = await SynthesizeIncidentReport({
+    incident_json: JSON.stringify(incident),
+    investigator_pack_json: investigatorPack,
+    links_json: JSON.stringify(linksFor(incident)),
+  });
+  return { reply, text: stringifyReply(reply) };
 }
 
 __chat_register({
-  run: async (ctx): Promise<SessionResult> => {
+  run: async (_ctx): Promise<SessionResult> => {
     return { message: "observability-coordinator handles grafana.alert.v1 dispatch events. POST Grafana alerts to runner /webhooks/grafana." };
   },
 
@@ -227,30 +185,77 @@ __chat_register({
       return { accepted: false, detail: `unsupported message_type=${request.message_type}` };
     }
 
-    const incident = incidentFromDispatch(request);
-    let findings = "Investigation failed before evidence collection.";
-    try {
-      findings = await a2a(INVESTIGATOR, buildInvestigatorPrompt(incident));
-    } catch (error) {
-      findings = `Investigation error: ${error instanceof Error ? error.message : String(error)}`;
-    }
+    const alerts = extractAlerts(request);
+    const incidents = alerts.map((a) => incidentFromAlert(request, a));
 
-    const report = synthesizeReport(incident, findings);
-    try {
-      await a2a(SLACK, JSON.stringify({
-        context_id: incident.contextId,
-        text: report,
-      }, null, 2));
-    } catch (error) {
-      return {
-        accepted: true,
-        detail: `incident ${incident.alertName}/${incident.service} investigated; Slack notify failed: ${error instanceof Error ? error.message : String(error)}\n\nFinal report:\n${report}`,
-      };
-    }
+    const results = await Promise.all(incidents.map(async (incident) => {
+      const isResolved = incident.status.toLowerCase() === "resolved";
+
+      let investigatorPack = "";
+      if (isResolved) {
+        investigatorPack = JSON.stringify({
+          service: incident.service,
+          alert_name: incident.alertName,
+          status: "resolved",
+          likely_cause: "Alert resolved; no fresh investigation requested.",
+          confidence: "unknown",
+          metrics: [],
+          log_samples: [],
+          traces: [],
+          open_questions: [
+            "Confirm whether latency/error metrics have returned to baseline.",
+          ],
+          caveats: [
+            "No new evidence gathered on resolution — see prior firing investigation in the same context.",
+          ],
+        });
+      } else {
+        try {
+          investigatorPack = await a2a(INVESTIGATOR, buildInvestigatorPrompt(incident));
+        } catch (error) {
+          investigatorPack = JSON.stringify({
+            service: incident.service,
+            alert_name: incident.alertName,
+            status: incident.status,
+            likely_cause: "Investigation failed before evidence collection.",
+            confidence: "unknown",
+            metrics: [],
+            log_samples: [],
+            traces: [],
+            open_questions: ["Re-run investigation manually."],
+            caveats: [`Investigator A2A failed: ${error instanceof Error ? error.message : String(error)}`],
+          });
+        }
+      }
+
+      let reportText: string;
+      try {
+        const built = await buildReport(incident, investigatorPack);
+        reportText = built.text;
+      } catch (error) {
+        reportText = `Report synthesis failed: ${error instanceof Error ? error.message : String(error)}\n\nInvestigator pack:\n${investigatorPack}`;
+      }
+
+      let slackError: string | null = null;
+      try {
+        await a2a(SLACK, JSON.stringify({
+          context_id: incident.contextId,
+          text: reportText,
+        }));
+      } catch (error) {
+        slackError = error instanceof Error ? error.message : String(error);
+      }
+
+      const header = `incident ${incident.alertName}/${incident.service} ${incident.status} context_id=${incident.contextId}`;
+      const detail = slackError
+        ? `${header}; Slack notify failed: ${slackError}\n\n${reportText}`
+        : `${header}\n\n${reportText}`;
+      return detail;
+    }));
 
     return {
       accepted: true,
-      detail: `incident ${incident.alertName}/${incident.service} investigated and Slack notification requested context_id=${incident.contextId}\n\nFinal report:\n${report}`,
+      detail: results.join("\n\n---\n\n"),
     };
   },
 });

@@ -6,9 +6,199 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
+export interface ArchivePageReadInput { archive_ref: string;
+offset: number | null;
+limit: number | null;
+ }
+
+export interface ArchiveSearchReadInput { archive_ref: string;
+grep: string;
+offset: number | null;
+limit: number | null;
+ }
+
+export type InvestigatorConfidence = "High" | "Medium" | "Low" | "Unknown";
+
+export interface InvestigatorLogSample { line: string;
+why: string;
+ }
+
+export interface InvestigatorMetricFinding { name: string;
+query: string;
+incident_peak: string;
+baseline: string;
+delta_summary: string;
+ }
+
+export interface InvestigatorReport { service: string;
+alert_name: string;
+status: string;
+likely_cause: string;
+confidence: InvestigatorConfidence;
+metrics: InvestigatorMetricFinding[];
+log_samples: InvestigatorLogSample[];
+traces: InvestigatorTraceFinding[];
+open_questions: string[];
+caveats: string[];
+ }
+
+export interface InvestigatorTraceFinding { operation: string;
+dependency: string;
+duration_ms: number;
+note: string;
+ }
+
+export interface McpGrafanaGetAnnotationsAbortStep { op: "Abort";
+ }
+
+export interface McpGrafanaGetAnnotationsFinishStep { op: "Finish";
+ }
+
+export interface McpGrafanaGetAnnotationsInput { alertUid: string | null;
+dashboardUid: string | null;
+from: number | null;
+limit: number | null;
+matchAny: boolean | null;
+panelId: number | null;
+tags: string[] | null;
+to: number | null;
+type: string | null;
+userId: number | null;
+ }
+
+export interface McpGrafanaGetAnnotationsOpenStep { op: "Open";
+tool_name: "mcp/grafana/get_annotations";
+ }
+
+export interface McpGrafanaGetAnnotationsPageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
+ }
+
+export interface McpGrafanaGetAnnotationsSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
+ }
+
+export interface McpGrafanaGetAnnotationsSendStep { op: "Send";
+input: McpGrafanaGetAnnotationsInput;
+citations: string[];
+ }
+
+export interface McpGrafanaGetAnnotationsSessionPlan { step: McpGrafanaGetAnnotationsOpenStep | McpGrafanaGetAnnotationsSendStep | McpGrafanaGetAnnotationsSearchReadStep | McpGrafanaGetAnnotationsPageReadStep | McpGrafanaGetAnnotationsFinishStep | McpGrafanaGetAnnotationsAbortStep;
+citations: string[];
+ }
+
+export interface McpGrafanaListDatasourcesAbortStep { op: "Abort";
+ }
+
+export interface McpGrafanaListDatasourcesFinishStep { op: "Finish";
+ }
+
+export interface McpGrafanaListDatasourcesInput { limit: number | null;
+offset: number | null;
+type: string | null;
+ }
+
+export interface McpGrafanaListDatasourcesOpenStep { op: "Open";
+tool_name: "mcp/grafana/list_datasources";
+ }
+
+export interface McpGrafanaListDatasourcesPageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
+ }
+
+export interface McpGrafanaListDatasourcesSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
+ }
+
+export interface McpGrafanaListDatasourcesSendStep { op: "Send";
+input: McpGrafanaListDatasourcesInput;
+citations: string[];
+ }
+
+export interface McpGrafanaListDatasourcesSessionPlan { step: McpGrafanaListDatasourcesOpenStep | McpGrafanaListDatasourcesSendStep | McpGrafanaListDatasourcesSearchReadStep | McpGrafanaListDatasourcesPageReadStep | McpGrafanaListDatasourcesFinishStep | McpGrafanaListDatasourcesAbortStep;
+citations: string[];
+ }
+
+export interface McpGrafanaQueryLokiLogsAbortStep { op: "Abort";
+ }
+
+export interface McpGrafanaQueryLokiLogsFinishStep { op: "Finish";
+ }
+
+export interface McpGrafanaQueryLokiLogsInput { datasourceUid: string;
+direction: string | null;
+endRfc3339: string | null;
+limit: number | null;
+logql: string;
+queryType: string | null;
+startRfc3339: string | null;
+stepSeconds: number | null;
+ }
+
+export interface McpGrafanaQueryLokiLogsOpenStep { op: "Open";
+tool_name: "mcp/grafana/query_loki_logs";
+ }
+
+export interface McpGrafanaQueryLokiLogsPageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
+ }
+
+export interface McpGrafanaQueryLokiLogsSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
+ }
+
+export interface McpGrafanaQueryLokiLogsSendStep { op: "Send";
+input: McpGrafanaQueryLokiLogsInput;
+citations: string[];
+ }
+
+export interface McpGrafanaQueryLokiLogsSessionPlan { step: McpGrafanaQueryLokiLogsOpenStep | McpGrafanaQueryLokiLogsSendStep | McpGrafanaQueryLokiLogsSearchReadStep | McpGrafanaQueryLokiLogsPageReadStep | McpGrafanaQueryLokiLogsFinishStep | McpGrafanaQueryLokiLogsAbortStep;
+citations: string[];
+ }
+
+export interface McpGrafanaQueryPrometheusAbortStep { op: "Abort";
+ }
+
+export interface McpGrafanaQueryPrometheusFinishStep { op: "Finish";
+ }
+
+export interface McpGrafanaQueryPrometheusInput { datasourceUid: string;
+endTime: string;
+expr: string;
+projectName: string | null;
+queryType: string | null;
+startTime: string | null;
+stepSeconds: number | null;
+ }
+
+export interface McpGrafanaQueryPrometheusOpenStep { op: "Open";
+tool_name: "mcp/grafana/query_prometheus";
+ }
+
+export interface McpGrafanaQueryPrometheusPageReadStep { op: "PageRead";
+input: ArchivePageReadInput;
+ }
+
+export interface McpGrafanaQueryPrometheusSearchReadStep { op: "SearchRead";
+input: ArchiveSearchReadInput;
+ }
+
+export interface McpGrafanaQueryPrometheusSendStep { op: "Send";
+input: McpGrafanaQueryPrometheusInput;
+citations: string[];
+ }
+
+export interface McpGrafanaQueryPrometheusSessionPlan { step: McpGrafanaQueryPrometheusOpenStep | McpGrafanaQueryPrometheusSendStep | McpGrafanaQueryPrometheusSearchReadStep | McpGrafanaQueryPrometheusPageReadStep | McpGrafanaQueryPrometheusFinishStep | McpGrafanaQueryPrometheusAbortStep;
+citations: string[];
+ }
+
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
 
 declare global {
+
+declare function AnalyzeGrafanaEvidence(args: { incident_json: string } & { __baml_invocation_token?: string }): Promise<InvestigatorReport>;
+
+declare function DecideInvestigationAction(args: { incident_brief: string; investigation_goal: string } & { __baml_invocation_token?: string }): Promise<McpGrafanaListDatasourcesSessionPlan | McpGrafanaQueryPrometheusSessionPlan | McpGrafanaQueryLokiLogsSessionPlan | McpGrafanaGetAnnotationsSessionPlan | string | null>;
 
 }
 
@@ -330,4 +520,85 @@ export interface ToolFailure {
     kind: ToolFailureKind;
     message: string;
     retryable: boolean;
+}
+
+/** Generated Step Executor bindings (function -> typed step-executor args/result). */
+
+export type StepExecutorFunctionName = "DecideInvestigationAction" | "DecideInvestigationAction__active__mcp_grafana_get_annotations" | "DecideInvestigationAction__active__mcp_grafana_list_datasources" | "DecideInvestigationAction__active__mcp_grafana_query_loki_logs" | "DecideInvestigationAction__active__mcp_grafana_query_prometheus" | "DecideInvestigationAction__entry";
+
+export interface SessionContext {
+    contract_version: "session_context_v2";
+    session_open: boolean;
+    status: "awaiting_open" | "just_opened" | "done";
+    last_step_op?: "open" | "send" | "read" | "finish" | "abort";
+    last_step_status?: "open" | "done" | "finished" | "aborted";
+    last_archive_ref?: string;
+    last_output_header?: string;
+    last_completion?: string;
+}
+
+/** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */
+
+export type HistoryContextSessionOp = "SearchRead" | "PageRead";
+
+export type HistoryContextStatus = "done" | "streaming" | "suspended" | "error";
+
+export interface HistoryContext {
+    hop: number;
+    op: HistoryContextSessionOp;
+    status: HistoryContextStatus;
+    truncated: boolean;
+    cursor: string | null;
+    payload: Record<string, unknown> | null;
+}
+
+export interface StepExecutorStateInput {
+    session_context?: SessionContext | null;
+    history_context?: HistoryContext | null;
+}
+
+export interface StepExecutorRunOptions {
+    max_steps?: number;
+}
+
+export type ErrorDisposition =
+    | "host_retriable"
+    | "llm_correctable"
+    | "inform_and_continue"
+    | "fatal";
+
+export interface StepPlanRecovery {
+    code: string;
+    disposition: ErrorDisposition;
+    mistake: string;
+    invariant: string;
+    fix_steps?: string[];
+}
+
+export type StepExecutorRunEnvelope<R = unknown> = { outcome: "completed", last: R, steps: R[], session_context: SessionContext, selected_tool: string | null } | { outcome: "agent_correctable", recovery: StepPlanRecovery } | { outcome: "fatal", message: string, code?: string | null };
+
+/**
+ * Result of runGeneratedStepExecutor: discriminated envelope (`outcome`).
+ * On `completed`, fields match the former flat telemetry shape.
+ * `agent_correctable` carries structured recovery — not a thrown JS error.
+ * User-facing replies are still SessionResult.message from the chat handler.
+ */
+
+export type StepExecutorRunResult<R = unknown> = StepExecutorRunEnvelope<R>;
+
+export interface StepExecutorFunctionMap {
+  DecideInvestigationAction: { args: Parameters<typeof DecideInvestigationAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof DecideInvestigationAction>>; };
+  DecideInvestigationAction__active__mcp_grafana_get_annotations: { args: Parameters<typeof DecideInvestigationAction__active__mcp_grafana_get_annotations>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof DecideInvestigationAction__active__mcp_grafana_get_annotations>>; };
+  DecideInvestigationAction__active__mcp_grafana_list_datasources: { args: Parameters<typeof DecideInvestigationAction__active__mcp_grafana_list_datasources>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof DecideInvestigationAction__active__mcp_grafana_list_datasources>>; };
+  DecideInvestigationAction__active__mcp_grafana_query_loki_logs: { args: Parameters<typeof DecideInvestigationAction__active__mcp_grafana_query_loki_logs>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof DecideInvestigationAction__active__mcp_grafana_query_loki_logs>>; };
+  DecideInvestigationAction__active__mcp_grafana_query_prometheus: { args: Parameters<typeof DecideInvestigationAction__active__mcp_grafana_query_prometheus>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof DecideInvestigationAction__active__mcp_grafana_query_prometheus>>; };
+  DecideInvestigationAction__entry: { args: Parameters<typeof DecideInvestigationAction__entry>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof DecideInvestigationAction__entry>>; };
+}
+
+declare global {
+  function runGeneratedStepExecutor<F extends StepExecutorFunctionName>(
+    stepExecutor: F,
+    args: Omit<StepExecutorFunctionMap[F]["args"], keyof StepExecutorStateInput>,
+    options?: StepExecutorRunOptions
+  ): Promise<StepExecutorRunEnvelope<StepExecutorFunctionMap[F]["result"]>>;
 }
