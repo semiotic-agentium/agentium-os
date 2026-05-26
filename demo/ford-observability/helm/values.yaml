@@ -8,8 +8,22 @@ namespaceOverride: ""
 secrets:
   openrouterApiKey: ""
   grafanaAdminPassword: "admin"
+  # Optional Grafana service account token for failure-harness annotation writes.
+  grafanaApiToken: ""
   slackBotToken: ""
+  slackUserToken: ""
   slackNotifyChannelId: ""
+
+existingSecrets:
+  # If set, runner env pulls keys from this Secret instead of generated demo secret.
+  # Expected keys default to env var names below.
+  name: ""
+  openrouterApiKeyKey: OPENROUTER_API_KEY
+  grafanaApiTokenKey: GRAFANA_API_TOKEN
+  slackBotTokenKey: SLACK_BOT_TOKEN
+  slackUserTokenKey: SLACK_USER_TOKEN
+  slackNotifyChannelIdKey: SLACK_NOTIFY_CHANNEL_ID
+  runnerTokenKey: RUNNER_TOKEN
 
 grafana:
   image: grafana/grafana:11.3.0
@@ -52,9 +66,78 @@ k6:
       cpu: 500m
       memory: 512Mi
 
+services:
+  checkoutApi:
+    image:
+      repository: ""
+      tag: ""
+    replicas: 1
+    port: 8080
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  paymentsApi:
+    image:
+      repository: ""
+      tag: ""
+    replicas: 1
+    port: 8080
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  failureHarness:
+    image:
+      repository: ""
+      tag: ""
+    replicas: 1
+    port: 8080
+    storage: 1Gi
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
 agentiumRunner:
+  image:
+    repository: agentium-runner
+    tag: demo
+    pullPolicy: IfNotPresent
+  deployAgentsImage:
+    repository: agentium-runner
+    tag: demo
+    pullPolicy: IfNotPresent
+  replicas: 1
   service:
     name: agentium-runner
     port: 18080
   uiBaseUrl: http://localhost:18080
   webhookPath: /webhooks/grafana
+  stateStorage: 1Gi
+  repositoryStorage: 1Gi
+  runnerToken: demo-runner-token
+  rustLog: info
+  model: x-ai/grok-4.3
+  otel:
+    tracesExporter: otlp
+    metricsExporter: otlp
+    protocol: grpc
+    endpoint: http://localhost:4317
+    serviceName: baml-agent-runner
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi

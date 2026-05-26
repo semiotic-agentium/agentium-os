@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentium-demo-agents
+  labels:
+    app.kubernetes.io/name: agentium-demo-agents
+    app.kubernetes.io/component: agents
+    app.kubernetes.io/part-of: agentium-observability-demo
+binaryData:
+  demo-agents.tar: {{ .Files.Get "files/demo-agents.tar" | b64enc | quote }}

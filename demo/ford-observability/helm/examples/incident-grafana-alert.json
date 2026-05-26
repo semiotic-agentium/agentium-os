@@ -1,0 +1,40 @@
+{
+  "receiver": "agentium-runner-webhook",
+  "status": "firing",
+  "orgId": 1,
+  "groupKey": "{}:{alertname=\"HighLatency\", service=\"checkout-api\"}",
+  "groupLabels": {
+    "alertname": "HighLatency",
+    "service": "checkout-api"
+  },
+  "commonLabels": {
+    "alertname": "HighLatency",
+    "service": "checkout-api",
+    "severity": "warning"
+  },
+  "commonAnnotations": {
+    "summary": "checkout-api p95 latency is high",
+    "description": "p95 latency exceeded 750ms in the recent window"
+  },
+  "externalURL": "http://grafana:3000/",
+  "version": "1",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "HighLatency",
+        "service": "checkout-api",
+        "severity": "warning"
+      },
+      "annotations": {
+        "summary": "checkout-api p95 latency is high",
+        "description": "p95 latency exceeded 750ms in the recent window"
+      },
+      "startsAt": "2026-05-25T12:00:00Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "fingerprint": "demo-high-latency-checkout-api",
+      "dashboardURL": "http://grafana:3000/d/agentium-demo-service-health/agentium-demo-service-health",
+      "panelURL": "http://grafana:3000/d/agentium-demo-service-health/agentium-demo-service-health?viewPanel=1"
+    }
+  ]
+}

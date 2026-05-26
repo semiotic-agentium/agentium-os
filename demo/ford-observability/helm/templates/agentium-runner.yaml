@@ -1,0 +1,174 @@
+{{- $secretName := default "agentium-demo-secrets" .Values.existingSecrets.name -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.agentiumRunner.service.name }}
+  labels:
+    app.kubernetes.io/name: agentium-runner
+    app.kubernetes.io/component: runner
+    app.kubernetes.io/part-of: agentium-observability-demo
+spec:
+  selector:
+    app.kubernetes.io/name: agentium-runner
+  ports:
+    - name: http
+      port: {{ .Values.agentiumRunner.service.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: agentium-runner
+  labels:
+    app.kubernetes.io/name: agentium-runner
+    app.kubernetes.io/component: runner
+    app.kubernetes.io/part-of: agentium-observability-demo
+spec:
+  serviceName: {{ .Values.agentiumRunner.service.name }}
+  replicas: {{ .Values.agentiumRunner.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agentium-runner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agentium-runner
+        app.kubernetes.io/component: runner
+        app.kubernetes.io/part-of: agentium-observability-demo
+      annotations:
+        checksum/agents: {{ include (print $.Template.BasePath "/agentium-agents-configmap.yaml") . | sha256sum }}
+    spec:
+      initContainers:
+        - name: unpack-demo-agents
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - mkdir -p /agents && tar -xf /agent-bundle/demo-agents.tar -C /agents --strip-components=1
+          volumeMounts:
+            - name: agent-bundle
+              mountPath: /agent-bundle
+              readOnly: true
+            - name: agents
+              mountPath: /agents
+      containers:
+        - name: runner
+          image: "{{ .Values.agentiumRunner.image.repository }}:{{ .Values.agentiumRunner.image.tag }}"
+          imagePullPolicy: {{ .Values.agentiumRunner.image.pullPolicy }}
+          args:
+            - --serve-http
+            - "0.0.0.0:{{ .Values.agentiumRunner.service.port }}"
+            - --repository-url
+            - "http://127.0.0.1:{{ .Values.agentiumRunner.service.port }}/repository"
+            - --state-dir
+            - /data/runner-state
+            - --repository-dir
+            - /data/repository
+            - --provenance-db
+            - /data/runner-state/provenance.db
+          ports:
+            - name: http
+              containerPort: {{ .Values.agentiumRunner.service.port }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: RUNNER_ENDPOINT
+              value: "http://$(POD_NAME).{{ .Values.agentiumRunner.service.name }}.{{ .Release.Namespace }}.svc:{{ .Values.agentiumRunner.service.port }}"
+            - name: RUNNER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .Values.existingSecrets.runnerTokenKey }}
+                  optional: true
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .Values.existingSecrets.openrouterApiKeyKey }}
+                  optional: false
+            - name: BAML_TEST_MODEL
+              value: {{ .Values.agentiumRunner.model | quote }}
+            - name: AGENTIUM_UI_BASE_URL
+              value: {{ .Values.agentiumRunner.uiBaseUrl | quote }}
+            - name: SLACK_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .Values.existingSecrets.slackBotTokenKey }}
+                  optional: true
+            - name: SLACK_USER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .Values.existingSecrets.slackUserTokenKey }}
+                  optional: true
+            - name: SLACK_NOTIFY_CHANNEL_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .Values.existingSecrets.slackNotifyChannelIdKey }}
+                  optional: true
+            - name: OTEL_TRACES_EXPORTER
+              value: {{ .Values.agentiumRunner.otel.tracesExporter | quote }}
+            - name: OTEL_METRICS_EXPORTER
+              value: {{ .Values.agentiumRunner.otel.metricsExporter | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: {{ .Values.agentiumRunner.otel.protocol | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.agentiumRunner.otel.endpoint | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .Values.agentiumRunner.otel.serviceName | quote }}
+            - name: RUST_LOG
+              value: {{ .Values.agentiumRunner.rustLog | quote }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+            - name: npm-cache
+              mountPath: /tmp/npm-cache
+            - name: agents
+              mountPath: /opt/agentium/demo-agents
+              readOnly: true
+          resources:
+{{ toYaml .Values.agentiumRunner.resources | indent 12 }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: npm-cache
+          emptyDir: {}
+        - name: agents
+          emptyDir: {}
+        - name: agent-bundle
+          configMap:
+            name: agentium-demo-agents
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.agentiumRunner.stateStorage }}

@@ -1,0 +1,64 @@
+{{- $repo := default (printf "%s/payments-api" .Values.images.registry) .Values.services.paymentsApi.image.repository -}}
+{{- $tag := default .Values.images.tag .Values.services.paymentsApi.image.tag -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: payments-api
+  labels:
+    app.kubernetes.io/name: payments-api
+    app.kubernetes.io/component: demo-service
+    app.kubernetes.io/part-of: agentium-observability-demo
+spec:
+  selector:
+    app.kubernetes.io/name: payments-api
+  ports:
+    - name: http
+      port: {{ .Values.services.paymentsApi.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments-api
+  labels:
+    app.kubernetes.io/name: payments-api
+    app.kubernetes.io/component: demo-service
+    app.kubernetes.io/part-of: agentium-observability-demo
+spec:
+  replicas: {{ .Values.services.paymentsApi.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payments-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: payments-api
+        app.kubernetes.io/component: demo-service
+        app.kubernetes.io/part-of: agentium-observability-demo
+    spec:
+      containers:
+        - name: payments-api
+          image: "{{ $repo }}:{{ $tag }}"
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: RUST_LOG
+              value: "info"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+{{ toYaml .Values.services.paymentsApi.resources | indent 12 }}

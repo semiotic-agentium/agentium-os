@@ -1,0 +1,66 @@
+{{- $repo := default (printf "%s/checkout-api" .Values.images.registry) .Values.services.checkoutApi.image.repository -}}
+{{- $tag := default .Values.images.tag .Values.services.checkoutApi.image.tag -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkout-api
+  labels:
+    app.kubernetes.io/name: checkout-api
+    app.kubernetes.io/component: demo-service
+    app.kubernetes.io/part-of: agentium-observability-demo
+spec:
+  selector:
+    app.kubernetes.io/name: checkout-api
+  ports:
+    - name: http
+      port: {{ .Values.services.checkoutApi.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout-api
+  labels:
+    app.kubernetes.io/name: checkout-api
+    app.kubernetes.io/component: demo-service
+    app.kubernetes.io/part-of: agentium-observability-demo
+spec:
+  replicas: {{ .Values.services.checkoutApi.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: checkout-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: checkout-api
+        app.kubernetes.io/component: demo-service
+        app.kubernetes.io/part-of: agentium-observability-demo
+    spec:
+      containers:
+        - name: checkout-api
+          image: "{{ $repo }}:{{ $tag }}"
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: PAYMENTS_URL
+              value: "http://payments-api:{{ .Values.services.paymentsApi.port }}"
+            - name: RUST_LOG
+              value: "info"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+{{ toYaml .Values.services.checkoutApi.resources | indent 12 }}

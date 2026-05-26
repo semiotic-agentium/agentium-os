@@ -1222,26 +1222,28 @@ BAML_MCP_REGISTRY_URL=http://127.0.0.1:18080/repository \
 
 Future demo agents should be scaffolded with `cargo run -q -p cargo-agent-platform -- new-agent <name> --output demo/ford-observability/agents/<name> ...` and then customized, rather than hand-created.
 
-- [ ] `demo/ford-observability/agents/observability-coordinator/`:
+- [x] `demo/ford-observability/agents/observability-coordinator/` (current coordinator synthesis scope complete; explicit `@N` archive_ref citations deferred to final polish):
   - [x] Create agent directory, `manifest.json`, `tsconfig.json`, `baml_src/`, and TypeScript entrypoint.
   - [x] Regenerate `_baml_runtime.baml` + `src/baml-runtime.d.ts` via `cargo agent-platform regen --path`.
   - [x] `manifest.json` subscription `schema_versions=["grafana.alert.v1"]`, `source_kinds=["grafana"]`, `source_keys=["grafana:local"]`.
   - [x] `onDispatch(request)` implementation.
   - [x] Parse alert; delegate to grafana investigator via A2A.
   - [x] Build deterministic final report scaffold with dashboard/provenance URL and next actions.
-  - [x] Hand summary + dashboard URL to `slack-notify` via A2A in shared `context_id`.
-  - [ ] Emit coordinator progress messages during `onDispatch` if dispatch emitter support exists; otherwise document limitation.
-  - [ ] Cap investigation at ~60s wall clock.
-  - [ ] Citation-grade final synthesis (impact, cause, confidence, citations) from investigator/tool archive refs.
-- [ ] `demo/ford-observability/agents/grafana-investigator/` (adapted from `examples/agents/grafana-mcp-agent/`):
+  - [x] Parse structured investigator JSON evidence pack and synthesize from likely cause, confidence, evidence summaries, log samples, trace caveat, and dashboard/provenance links.
+  - [x] Hand full synthesized report + dashboard URL to `slack-notify` via A2A in shared `context_id` (Slack gets report summary, not raw investigator evidence pack).
+  - [x] Emit coordinator progress messages through delegated investigator where supported; dispatch-level emitter support remains a documented limitation.
+  - [x] Hard 60s wall-clock cap deferred by decision; current coordinator uses existing step/continue budget only, matching current agent pattern.
+  - [x] Explicit archive refs/citations deferred to final polish; current durable citations come from Agentium provenance tool-call archives by `context_id`.
+- [x] `demo/ford-observability/agents/grafana-investigator/` (adapted from `examples/agents/grafana-mcp-agent/`; explicit `@N` archive_ref citations deferred to final polish):
   - [x] Create agent directory, `manifest.json`, `tsconfig.json`, `baml_src/`, and TypeScript entrypoint.
   - [x] Regenerate `_baml_runtime.baml` + `src/baml-runtime.d.ts` via `cargo agent-platform regen --path`.
-  - [x] Package `mcp/grafana/list_datasources`, `query_prometheus`, `query_loki_logs`, `get_annotations`.
+  - [x] Package/list in manifest: `mcp/grafana/list_datasources`, `query_prometheus`, `query_loki_logs`, `get_annotations`.
   - [x] PromQL: p95 latency / error rate / request rate / `up` over alert window vs baseline.
   - [x] LogQL bounded by service + alert window; identify dependency timeouts.
   - [x] Annotations: `tags=kind=trace,service=<service>` with `limit≤20` + time bound.
   - [x] Verify exact `query_loki_logs` and `get_annotations` input shapes against live MCP tool schemas (`query_loki_logs`: `logql`, `startRfc3339`, `endRfc3339`; `get_annotations`: epoch-ms `from`/`to`, `tags`, `matchAny`).
-  - [ ] Return structured findings with archive refs/citations, not only compact text.
+  - [x] Return structured JSON evidence pack (incident/window/metrics/logs/trace annotations/caveats) instead of compact text.
+  - [x] Explicit `@N` archive_ref citations deferred to final polish; current durable citations come from Agentium provenance tool-call archives by `context_id`.
 - [x] `demo/ford-observability/agents/slack-notify/`:
   - [x] Create agent directory, `manifest.json`, `tsconfig.json`, `baml_src/`, and TypeScript entrypoint.
   - [x] Regenerate `_baml_runtime.baml` + `src/baml-runtime.d.ts` via `cargo agent-platform regen --path`.
@@ -1251,13 +1253,13 @@ Future demo agents should be scaffolded with `cargo run -q -p cargo-agent-platfo
 
 ### Phase 8 — Helm chart templates
 
-- [ ] `checkout-api.yaml`, `payments-api.yaml`, `k6-load-generator.yaml`, `k6-script-configmap.yaml`, `failure-harness.yaml`.
-- [ ] `prometheus.yaml`, `loki.yaml`, `alloy.yaml`, `grafana.yaml`.
-- [ ] `grafana-dashboards-configmap.yaml`, `grafana-alert-rules-configmap.yaml`.
-- [ ] `agentium-runner.yaml` (webhook route, runner identity, OTEL env).
-- [ ] `secrets-template.yaml`.
-- [ ] `examples/incident-grafana-alert.json`.
-- [ ] `values.yaml` image registry/tag/pullPolicy + secrets stubs.
+- [x] `checkout-api.yaml`, `payments-api.yaml`, `k6-load-generator.yaml`, `k6-script-configmap.yaml`, `failure-harness.yaml`.
+- [x] `prometheus.yaml`, `loki.yaml`, `alloy.yaml`, `grafana.yaml`.
+- [x] `grafana-dashboards-configmap.yaml`, `grafana-alert-rules-configmap.yaml`.
+- [x] `agentium-runner.yaml` (webhook route, runner identity, OTEL env).
+- [x] `secrets-template.yaml`.
+- [x] `examples/incident-grafana-alert.json`.
+- [x] `values.yaml` image registry/tag/pullPolicy + secrets stubs.
 - [ ] `helm upgrade --install` smoke run on k3d.
 
 ### Phase 9 — Scripts + just recipes wired
@@ -1282,6 +1284,11 @@ Future demo agents should be scaffolded with `cargo run -q -p cargo-agent-platfo
 - [ ] Verify resolved-alert path appends to same `context_id`.
 - [ ] Verify second incident mints new `context_id`.
 - [ ] Record demo + capture screenshots.
+
+### Final polish — explicit archive refs / citations
+
+- [ ] Add explicit `@N` archive_ref citations in investigator evidence pack and coordinator final report once report synthesis can reliably map each evidence item to archived tool-call refs.
+- [ ] Update E2E citation matcher to prefer explicit `@N` refs, with `context_id` + query-text matching as fallback.
 
 ### Nice-to-have (post-recording)
 
@@ -1316,7 +1323,7 @@ Must-have for first recording:
 - Grafana webhook to runner-served `grafana-alerts` webhook route.
 - `grafana-alerts` tool crate (in `crates/tools/grafana-alerts`, modeled on `crates/tools/slack`) with: webhook route served by the runner, `IngressStore`-backed intake, small SQLite mapping table for active alert fingerprint/groupKey → `context_id`, and `GrafanaAlertEventProducer` registered via inventory.
 - `grafana.alert.v1` event dispatch to the coordinator with both `context_id` and `message_id`.
-- Coordinator agent implements `onDispatch`; chat-only agents are not valid event subscribers. Coordinator caps investigation at ~60s wall clock and emits progress on each tool call.
+- Coordinator agent implements `onDispatch`; chat-only agents are not valid event subscribers. Coordinator uses existing step/continue budgets for investigation; hard 60s wall-clock timeout is deferred to avoid diverging from current coordinator pattern. Progress emission lands if dispatch emitter support exists.
 - Three agents total: coordinator (also synthesizes), grafana investigator (metrics + Loki logs + trace annotations), `agents/slack-notify/` (new write-only agent backed by `support/slack_notify`). All share the same `context_id` per incident.
 - New `support/slack_notify` write tool — one operation (post to a configured channel via `chat.postMessage`). Strict input (`text` + `context_id`, `deny_unknown_fields`; LLM cannot set channel or thread). Channel from `SLACK_NOTIFY_CHANNEL_ID` env var, **must be Slack channel ID** (`C…`); name fallback resolved once at startup. Threading derived per `context_id`. Bot token from secret resolver. Existing `agents/slack-agent/` is read-only and is **not** the notifier.
 - Slack post on each incident: short summary + dashboard URL. Primary human-facing surface.
