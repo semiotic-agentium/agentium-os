@@ -639,13 +639,11 @@ scripts/meteo_mcp.sh review   # inspect registry state
 
 ### 11.5 Builder MCP subcommands
 
-`cargo agent-platform mcp ...` is the operator-friendly wrapper. The lower-level builder also exposes MCP commands directly:
+`cargo agent-platform mcp ...` calls the shared builder library directly. The lower-level builder exposes the same command for compatibility:
 
 ```bash
 baml-agent-builder mcp-registry-enable <server-id> [--config <path>] [--repository-url <url>] [--yes] [--runner-token <token>]
 ```
-
-Use the builder command directly for scripting or when bypassing the `cargo-agent-platform` wrapper. Set `BAML_AGENT_BUILDER=/path/to/baml-agent-builder` if the wrapper should invoke a specific binary.
 
 ### 11.6 MCP security and reproducibility notes
 

@@ -218,7 +218,7 @@ Snapshots are stored in the **embedded repository service** backing the runner. 
 | GET | `/mcp/servers/{id}/versions/{v}` | Specific version |
 | GET | `/mcp/tools?platform_tool_name=...` | Tool rows |
 
-Operator wrapper (delegates **`mcp-registry-enable`** to `baml-agent-builder`):
+Operator CLI (uses shared builder library; no `baml-agent-builder` subprocess):
 
 ```bash
 cargo agent-platform mcp enable <server-id> \

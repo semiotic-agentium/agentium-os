@@ -583,9 +583,9 @@ BAML_MCP_REGISTRY_URL=http://127.0.0.1:18080/repository \
   cargo agent-platform build --path examples/agents/meteo-mcp-agent
 ```
 
-The `cargo agent-platform mcp enable` command delegates to the lower-level `baml-agent-builder mcp-registry-enable` command. Set `BAML_AGENT_BUILDER=/path/to/baml-agent-builder` to force a specific builder binary; otherwise the CLI runs the workspace builder via Cargo.
+The `cargo agent-platform mcp enable` command uses the builder library directly. It does not require a separate `baml-agent-builder` binary.
 
-Lower-level builder command:
+Compatibility builder command:
 
 ```bash
 baml-agent-builder mcp-registry-enable <server-id> [--config <path>] [--repository-url <url>] [--yes] [--runner-token <token>]
