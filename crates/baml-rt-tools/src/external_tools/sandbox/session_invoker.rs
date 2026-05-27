@@ -97,7 +97,10 @@ struct LiveSession {
     /// queueing on the channel mutex.
     cancel: CancellationToken,
     /// Session start time, useful for span attributes / max-duration eviction.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "session start time reserved for span attributes / max-duration eviction"
+    )]
     started_at: Instant,
     tool_name: ToolName,
 }

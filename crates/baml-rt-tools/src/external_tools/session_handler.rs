@@ -175,7 +175,10 @@ impl ToolHandler for ExternalSessionToolHandler {
 /// `tool/session_*` RPC against the [`SessionToolInvoker`].
 ///
 pub struct ExternalSessionToolSession {
-    #[allow(dead_code)] // Phase 3 will use this for span attributes / classified errors.
+    #[expect(
+        dead_code,
+        reason = "reserved for span attributes / classified errors in a later phase"
+    )]
     tool_name: ToolName,
     invoker: Arc<dyn SessionToolInvoker>,
     session_id: String,

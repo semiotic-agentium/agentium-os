@@ -226,7 +226,10 @@ const SPAN_REDACT_KEYS: &[&str] = &[
     "db",
 ];
 
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "reserved for snapshot assertions in future span tests"
+)]
 fn spans_snapshot(spans: &[opentelemetry_sdk::export::trace::SpanData]) -> Value {
     let refs: Vec<_> = spans.iter().collect();
     spans_snapshot_impl(&refs, SPAN_REDACT_KEYS)
@@ -359,7 +362,7 @@ fn find_span<'a>(
 }
 
 /// Helper to find a span by attribute key/value; reserved for future span assertions.
-#[allow(dead_code)]
+#[expect(dead_code, reason = "reserved for span assertions in future tests")]
 fn find_span_with_attr<'a>(
     spans: &'a [opentelemetry_sdk::export::trace::SpanData],
     key: &str,
@@ -1019,20 +1022,20 @@ impl MockRegistry {
     }
 
     /// Builder helper for tests that assert 404/not-found; reserved for alternative test paths.
-    #[allow(dead_code)] // test-only builder path
+    #[expect(dead_code, reason = "test-only builder path")]
     fn with_handle_err_not_found(mut self, message: String) -> Self {
         self.handle_err_message = Some(message);
         self
     }
 
-    #[allow(dead_code)] // test-only builder path
+    #[expect(dead_code, reason = "test-only builder path")]
     fn with_dispatch_err_not_found(mut self, message: String) -> Self {
         self.dispatch_err_message = Some(message);
         self
     }
 
     /// Builder helper to assert which route key was used; reserved for alternative test paths.
-    #[allow(dead_code)] // test-only builder path
+    #[expect(dead_code, reason = "test-only builder path")]
     fn capture_key(
         mut self,
         cell: std::sync::Arc<std::sync::Mutex<Option<AgentRouteKey>>>,

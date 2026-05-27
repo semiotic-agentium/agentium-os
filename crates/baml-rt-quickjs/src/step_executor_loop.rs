@@ -83,7 +83,6 @@ impl StepStatus {
 
 /// Why did the session terminate?
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 enum TerminalReason {
     Finished,
     Aborted,
@@ -109,7 +108,10 @@ enum Phase {
         tool: ToolBinding,
         has_done: bool,
     },
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "Terminal outcome reserved for the step-loop termination path"
+    )]
     Terminal(TerminalReason),
 }
 
@@ -125,7 +127,10 @@ impl Phase {
         }
     }
 
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "tool_slug accessor reserved for step-loop diagnostics"
+    )]
     fn tool_slug(&self) -> Option<&ToolSlug> {
         match self {
             Self::Active { tool, .. } => Some(&tool.slug),

@@ -1006,7 +1006,10 @@ impl ToolFunctionMetadata {
     ///
     /// This helper consolidates the common pattern of building metadata
     /// from type information, reducing duplication across registration sites.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "constructor derives metadata from type parameters; the inputs have no natural grouping"
+    )]
     pub fn from_types<OpenInput, Input, Output>(
         name: ToolName,
         class_name: String,
@@ -2171,8 +2174,7 @@ impl<T: BamlTool> ToolHandler for ToolWrapper<T> {
 }
 
 struct MultiSendSession {
-    /// Reserved for session-scoped tracing/abort; not yet used. Revisit when adding session-scoped ops.
-    #[allow(dead_code)]
+    /// Session context; source of the execution classifier used by send/read ops.
     ctx: ToolSessionContext,
     executor: Box<dyn ToolExecutor>,
     last_send: Option<Value>,

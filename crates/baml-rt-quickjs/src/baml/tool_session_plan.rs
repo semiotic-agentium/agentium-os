@@ -176,7 +176,10 @@ impl BamlRuntimeManager {
     }
 
     // Distinct grep vs no-grep paths share one implementation; keep args explicit for FSM clarity.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "grep and no-grep paths share one impl; explicit args keep the FSM step readable"
+    )]
     async fn execute_archive_read_step(
         &self,
         scope: &context::RuntimeScope,

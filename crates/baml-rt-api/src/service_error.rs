@@ -32,7 +32,10 @@ impl Error for ServiceError {}
 ///
 /// Consolidates the `NotFound → 404, Unavailable → 501, Other → 500` pattern
 /// used across all provenance service handlers.
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "HttpApiProblem is the service error type shared across all provenance handlers"
+)]
 pub fn service_result_to_http<T: serde::Serialize>(
     route: &str,
     start: std::time::Instant,

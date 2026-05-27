@@ -50,7 +50,10 @@ pub enum MemoryError {
 #[derive(Debug)]
 struct MemoryFileLock {
     // Held to keep the OS file lock alive for the manager lifetime; Drop releases the lock.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "held to keep the OS file lock alive for the manager lifetime; released on Drop"
+    )]
     file: File,
 }
 
@@ -109,7 +112,10 @@ pub struct MemoryManager {
     graph: Arc<RwLock<MemoryGraph>>,
     file_path: PathBuf,
     // Held for RAII: dropping the manager releases the file lock via MemoryFileLock::Drop.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "held for RAII; dropping the manager releases the file lock via MemoryFileLock::Drop"
+    )]
     lock: MemoryFileLock,
     query_engine: QueryEngine,
     write_engine: WriteEngine,

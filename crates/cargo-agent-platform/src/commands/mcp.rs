@@ -281,7 +281,7 @@ fn percent_encode(input: &str) -> String {
     out
 }
 
-#[allow(dead_code)]
+#[expect(dead_code, reason = "reserved helper for MCP path normalization")]
 fn normalize_path(path: Option<&str>) -> Option<String> {
     path.map(|p| PathBuf::from(p).display().to_string())
 }

@@ -59,7 +59,7 @@ pub(crate) const ARCHIVE_READ_LIMIT: &str = "Max lines in this read window. Pref
 ///
 /// For **non-phase** BAML (classifiers, planners, synthesis), keep order: task lines →
 /// `{{ ctx.tags['conversation_transcript'] }}` when needed → `{{ ctx.output_format }}` last.
-#[allow(dead_code)] // Authoring reference for non-phase prompts.
+#[expect(dead_code, reason = "authoring reference for non-phase prompts")]
 pub(crate) const BAML_CONVERSATION_HISTORY_JINJA_BLOCK: &str = r#"{{ ctx.tags['conversation_transcript'] }}
 "#;
 

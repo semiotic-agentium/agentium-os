@@ -37,7 +37,10 @@
 //!       --ignored --nocapture
 
 #[cfg(test)]
-#[allow(clippy::module_inception)]
+#[expect(
+    clippy::module_inception,
+    reason = "test submodule deliberately shares the parent module name"
+)]
 mod cross_encoder_validation {
     use std::time::Instant;
 

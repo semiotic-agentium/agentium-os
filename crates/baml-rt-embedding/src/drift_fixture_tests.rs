@@ -10,7 +10,11 @@
 //! run. Execute with: `cargo test -p baml-rt-embedding -- drift_fixture --ignored`
 
 #[cfg(test)]
-#[allow(dead_code, clippy::collapsible_if)]
+#[expect(
+    dead_code,
+    clippy::collapsible_if,
+    reason = "fixture test module retains helpers and conditionals not exercised by every case"
+)]
 mod tests {
     use std::path::PathBuf;
 

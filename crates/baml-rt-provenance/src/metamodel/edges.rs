@@ -255,7 +255,6 @@ edge_witness!(CallbackDispatchWasScheduledFrom => WasGeneratedBy;
 // Suppress unused-import warnings for edge constants that are only
 // referenced indirectly via `SemanticEdge::as_rel_str`. Keeping the imports
 // asserts at compile-time that the metamodel constants still exist.
-#[allow(dead_code)]
 const _METAMODEL_EDGE_REFS: &[&str] = &[
     EDGE_WAS_USED_BY,
     EDGE_WAS_RECEIVED_BY,

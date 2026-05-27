@@ -154,11 +154,8 @@ fn prompt_to_message(prompt: &str) -> Message {
 // Suppress unused-import warnings for translator helpers that are only
 // referenced from `prompt_to_message` and the test module — keeping the
 // imports asserts at compile-time that the wire types still exist.
-#[allow(dead_code)]
 const _MESSAGE_REF_USES: Option<&MessageRef> = None;
-#[allow(dead_code)]
 const _CONTEXT_ID_USES: Option<&ContextId> = None;
-#[allow(dead_code)]
 const _MESSAGE_ID_USES: Option<&MessageId> = None;
 
 #[cfg(test)]

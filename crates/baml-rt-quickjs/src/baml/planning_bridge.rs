@@ -37,7 +37,10 @@ impl BamlRuntimeManager {
             .await
     }
 
-    #[allow(clippy::too_many_arguments)] // 9 distinct planning fields with no natural grouping at this layer
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "nine distinct planning fields with no natural grouping at this layer"
+    )]
     pub async fn emit_planning_step_status_changed(
         &self,
         scope: &context::RuntimeScope,

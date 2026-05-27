@@ -67,7 +67,10 @@ fn planner_state_telemetry(args: &Value) -> Option<(usize, bool, usize, Option<S
     Some((args_bytes, session_open, payload_bytes, token))
 }
 
-#[allow(dead_code)] // Reserved for URL normalization when wiring multi-endpoint clients.
+#[expect(
+    dead_code,
+    reason = "reserved for URL normalization when wiring multi-endpoint clients"
+)]
 fn derive_base_url(url: &str) -> Option<String> {
     for suffix in [
         "/chat/completions",
@@ -94,7 +97,10 @@ fn derive_base_url(url: &str) -> Option<String> {
 /// any API key — in that case the caller falls back to the normal BAML client
 /// resolution path (which may use env vars if they are present in the process).
 /// Prefer resolving secrets from the configured store when available.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "builds the session client registry from all resolved config inputs"
+)]
 async fn build_session_fsm_client_registry(
     runtime: &BamlRuntime,
     _scope: &context::RuntimeScope,
@@ -275,7 +281,10 @@ impl BamlExecutor {
 
     /// Execute a BAML function using the compiled IL.
     /// Returns `(value, Some(handle))` on success when the manager will run tool/plan execution;
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "public entrypoint threads the full BAML invocation context"
+    )]
     /// the manager must call `handle.complete(Success, None)` or `handle.complete(Failure, Some(reason))` after.
     pub async fn execute_function(
         &self,
@@ -754,7 +763,6 @@ impl BamlExecutor {
     }
 
     /// Convert JSON Value to BamlValue
-    #[allow(clippy::only_used_in_recursion)]
     fn json_to_baml_value(&self, value: &Value) -> Result<BamlValue> {
         match value {
             Value::String(s) => Ok(BamlValue::String(s.clone())),

@@ -13,9 +13,9 @@ struct AgentEntry {
     name: String,
     version: String,
     description: String,
-    #[allow(dead_code)] // Reserved for future verbose mode
+    #[expect(dead_code, reason = "reserved for a future verbose listing mode")]
     tools: Vec<String>,
-    #[allow(dead_code)] // Reserved for future verbose mode
+    #[expect(dead_code, reason = "reserved for a future verbose listing mode")]
     path: PathBuf,
     source: &'static str, // "agents" or "fixtures"
 }

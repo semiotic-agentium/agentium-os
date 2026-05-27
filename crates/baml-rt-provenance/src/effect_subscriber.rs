@@ -223,13 +223,14 @@ impl std::fmt::Display for StepTransitionError {
 
 /// A non-empty collection of plan steps. Constructor rejects empty input.
 ///
-/// The struct and several accessor methods are retained for the `EvidenceAnchor` borrowing
-/// machinery. `#[allow(dead_code)]` is a smell; remove these suppression once the
-/// evidence-anchor visualization path is wired to the drift reporting API.
-#[allow(dead_code)]
+/// Several accessor methods are retained for the `EvidenceAnchor` borrowing
+/// machinery, not yet wired to the drift reporting API.
 struct NonEmptySteps(Vec<StepState>);
 
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "accessors retained for the EvidenceAnchor borrowing machinery until the visualization path is wired"
+)]
 impl NonEmptySteps {
     fn new(steps: Vec<StepState>) -> Option<Self> {
         if steps.is_empty() {
@@ -285,9 +286,11 @@ struct CommittedPlanExecution {
     tracker: TaskDriftTracker,
     intent_description: String,
     /// Plan objective text from `PlanGenerated`. Retained for future drift-report
-    /// rendering; not yet read after construction. `#[allow(dead_code)]` is a smell;
-    /// remove this field or surface it in the episode text once the rendering path exists.
-    #[allow(dead_code)]
+    /// rendering; not yet read after construction.
+    #[expect(
+        dead_code,
+        reason = "plan objective retained for future drift-report rendering; surface it in the episode text once that path exists"
+    )]
     plan_objective: String,
     is_revised_plan: bool,
     steps: NonEmptySteps,
@@ -298,10 +301,11 @@ struct CommittedPlanExecution {
 /// All embedding references borrow from the `CommittedPlanExecution`.
 ///
 /// Reserved for step-attribution visualization; describes which plan step is
-/// currently driving LLM attribution. Not yet consumed by the drift reporting
-/// API. `#[allow(dead_code)]` is a smell; remove once the evidence anchor is
-/// wired to the provenance event or episode renderer.
-#[allow(dead_code)]
+/// currently driving LLM attribution. Not yet consumed by the drift reporting API.
+#[expect(
+    dead_code,
+    reason = "reserved for step-attribution visualization until the evidence anchor is wired to the provenance event or episode renderer"
+)]
 enum EvidenceAnchor<'a> {
     /// LLM call during an active step — infallible attribution.
     ActiveStep {
@@ -323,10 +327,12 @@ enum EvidenceAnchor<'a> {
     PostExecution,
 }
 
-/// `#[allow(dead_code)]` suppresses the lint on `evidence_anchor()`, which
-/// builds an `EvidenceAnchor` not yet consumed by the drift reporting API.
-/// Remove the suppression once `evidence_anchor` is wired downstream.
-#[allow(dead_code)]
+/// `evidence_anchor()` builds an `EvidenceAnchor` not yet consumed by the drift
+/// reporting API; the suppression self-clears once it is wired downstream.
+#[expect(
+    dead_code,
+    reason = "evidence_anchor() builds an EvidenceAnchor not yet consumed by the drift reporting API"
+)]
 impl CommittedPlanExecution {
     fn new(
         tracker: TaskDriftTracker,
@@ -572,7 +578,10 @@ impl TrackerPhase {
     ///
     /// `step_emb_and_desc` is `Some((embedding, description))` in PlanCommitted
     /// and `None` in pre-plan phases. Both are needed: embedding for cosine
-    #[allow(clippy::type_complexity)]
+    #[expect(
+        clippy::type_complexity,
+        reason = "return tuple bundles the scoring split that drift scoring consumes together"
+    )]
     /// similarity, description for the cross-encoder reranker call.
     fn scoring_split(
         &mut self,
@@ -929,7 +938,10 @@ impl ProvenanceEffectSubscriber {
 }
 
 impl ProvenanceEffectSubscriber {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "threads the full drift-scoring context; grouping would split related inputs"
+    )]
     async fn compute_drift(
         &self,
         function_name: &str,

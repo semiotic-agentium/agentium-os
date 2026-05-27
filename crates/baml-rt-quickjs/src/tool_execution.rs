@@ -123,7 +123,10 @@ pub(crate) struct ToolExecutionContext {
     pub interceptor_registry: Arc<TokioMutex<InterceptorRegistry>>,
     pub effect_emitter: Option<Arc<dyn EffectEmitter>>,
     pub execution_sessions: Arc<DashMap<String, crate::quickjs_bridge::ExecutionSession>>,
-    #[allow(dead_code)] // Carried for archive ref wiring; readers live on the session handle path.
+    #[expect(
+        dead_code,
+        reason = "carried for archive-ref wiring; readers live on the session-handle path"
+    )]
     pub archive_ref_tables: Arc<ContextRefTables>,
     /// When set (Surreal-backed agent), new archives allocate `@prefix/local` in the store.
     pub archive_ref_store: Option<Arc<baml_rt_provenance::SurrealProvenanceStore>>,

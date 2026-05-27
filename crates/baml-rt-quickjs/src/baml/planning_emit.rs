@@ -138,7 +138,10 @@ impl PlanningEmitEnv<'_> {
         emitter.emit(event).await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "forwards the full planning-step status event; the fields have no natural grouping"
+    )]
     pub(crate) async fn emit_step_status_changed(
         &self,
         scope: &context::RuntimeScope,

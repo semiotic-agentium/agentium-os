@@ -76,8 +76,7 @@ impl LiveResponseSender {
 /// Contract for "send chunk for this turn". Reserved for loop/middleware abstraction.
 /// Kept even though not consumed yet so future middleware adapters can share a typed sink.
 /// Allowed dead code: this trait is intentionally staged for upcoming middleware integration.
-#[allow(dead_code)]
-#[allow(async_fn_in_trait)]
+#[expect(dead_code, reason = "trait staged for upcoming middleware integration")]
 pub trait TurnResponseSink: Send + Sync {
     /// Send one chunk to the client for this turn.
     fn send_chunk(

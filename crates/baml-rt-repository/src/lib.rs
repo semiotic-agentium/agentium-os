@@ -49,9 +49,15 @@ pub mod http;
 pub mod router;
 
 // --- Observability (orthogonal) ---
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "observability scaffolding not yet wired into the repository surface"
+)]
 mod metrics;
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "observability scaffolding not yet wired into the repository surface"
+)]
 mod spans;
 
 // --- Re-exports for public API ---

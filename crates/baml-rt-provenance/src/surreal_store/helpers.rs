@@ -65,8 +65,6 @@ pub(super) fn has_meaningful_result(value: &Value) -> bool {
     }
 }
 
-/// Reserved for conversation_context tool metadata extraction.
-#[allow(dead_code)]
 pub(super) fn metadata_error(metadata: &Value) -> Option<Value> {
     let error = metadata.get("error")?;
     if has_meaningful_result(error) {

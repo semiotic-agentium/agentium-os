@@ -127,7 +127,10 @@ enum EntryState {
     },
     /// Reserved for cap reduction and operator eviction (§6.3). Wired in a
     /// follow-up alongside the eviction loop.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "Draining state reserved for the upcoming eviction-loop follow-up"
+    )]
     Draining,
 }
 

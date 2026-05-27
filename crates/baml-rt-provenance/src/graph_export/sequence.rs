@@ -868,7 +868,10 @@ fn turn_for_node(
 
 /// Order for emission: turn first (so replies appear before next user msg), then first user message,
 /// then event_order, then type priority, then id.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "comparator threads each ordering key explicitly to keep the sort readable"
+)]
 fn cmp_emission_order_with_turn(
     a_order: Option<u64>,
     a_id: &str,

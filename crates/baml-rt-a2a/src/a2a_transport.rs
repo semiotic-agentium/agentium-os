@@ -648,7 +648,10 @@ pub struct A2aAgent {
     runtime: Arc<RwLock<BamlRuntimeManager>>,
     bridge_handle: Arc<BridgeHandle>,
     task_store: Arc<dyn TaskStoreBackend>,
-    #[allow(dead_code)] // passed to router at build; clone does not use the field directly
+    #[expect(
+        dead_code,
+        reason = "passed to the router at build time; the clone does not read the field directly"
+    )]
     result_pipeline: Arc<dyn ResultStoragePipeline>,
     /// Inner pipeline (no dedup) used by live stream path so chunk application always persists.
     live_result_pipeline: Arc<dyn ResultStoragePipeline>,

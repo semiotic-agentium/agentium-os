@@ -1014,7 +1014,10 @@ mod tests {
     use super::*;
     use crate::vocabulary::semantic_labels;
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "test row builder takes each column explicitly to keep cases readable"
+    )]
     fn make_row(
         src_label: &str,
         src_id: &str,

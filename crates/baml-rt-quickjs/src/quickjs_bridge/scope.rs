@@ -74,7 +74,10 @@ impl InvocationContextRegistry {
 
     /// Return the runtime scope's context_id for this invocation id, if present.
     /// Superseded by [`get_scope`] for task-scoped teardown but kept for potential future use.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "superseded by get_scope for task-scoped teardown; retained for future use"
+    )]
     pub(crate) fn get_context_id(
         &self,
         id: &InvocationContextId,

@@ -219,7 +219,10 @@ impl StandaloneRunner {
     /// long-running adversarial tests so the assert payload stays bounded
     /// even when the runner has been booting for minutes under fault
     /// injection (T3 boots can run >5min with per-query latency).
-    #[allow(dead_code)] // T1/T4 use the full `log_text` (small logs); only T3 needs a tail.
+    #[expect(
+        dead_code,
+        reason = "T1/T4 use the full log_text; only the T3 path needs a tail"
+    )]
     fn log_tail(&self, lines: usize) -> String {
         let text = fs::read_to_string(&self.log_path).unwrap_or_default();
         let tail: Vec<&str> = text.lines().rev().take(lines).collect();

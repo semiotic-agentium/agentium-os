@@ -32,7 +32,10 @@ pub struct BufferDrain {
 impl QuickJSBridge {
     /// Current number of in-flight `__baml_invoke` / `__baml_stream` async bodies.
     /// Reserved for diagnostics and future effect-gated behaviour (e.g. optional backpressure).
-    #[allow(dead_code)] // reserved for diagnostics; not yet used in production path
+    #[expect(
+        dead_code,
+        reason = "reserved for diagnostics; not yet used on the production path"
+    )]
     pub(crate) fn in_flight_invoke_count(&self) -> u32 {
         self.in_flight_invoke_count.load(Ordering::Acquire)
     }
@@ -195,7 +198,10 @@ impl QuickJSBridge {
     ///
     /// Keep this separated from [`drain_yield_buffer`] to allow callers to control lock scope.
     /// Reserved for future use when a caller needs to advance without draining.
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "reserved for callers that advance without draining"
+    )]
     #[inline]
     pub(crate) fn advance_pending_jobs(&self) {
         self.runtime.exe_rt_task_in_event_loop(|rt| {

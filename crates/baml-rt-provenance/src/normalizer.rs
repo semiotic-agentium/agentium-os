@@ -2613,7 +2613,10 @@ fn ensure_task_entity(doc: &mut ProvDocument, task_id: &TaskId) -> ProvEntityId 
     id
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "threads the full activity-anchor context; grouping would split related fields"
+)]
 fn ensure_task_execution_activity(
     doc: &mut ProvDocument,
     task_id: &TaskId,
