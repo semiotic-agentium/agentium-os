@@ -696,7 +696,10 @@ pub struct DomainEvent {
 
 /// Payload emitted on the bus.
 #[derive(Debug, Clone)]
-#[allow(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Command variant dominates payload size; boxing would churn every bus call site"
+)]
 pub enum Payload {
     Command(Command),
     DomainEvent(DomainEvent),

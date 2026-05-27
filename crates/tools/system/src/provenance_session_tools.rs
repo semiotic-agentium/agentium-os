@@ -1,4 +1,7 @@
-#![allow(clippy::result_large_err)] // `ToolSessionError` is large by design; matches session tool patterns.
+#![expect(
+    clippy::result_large_err,
+    reason = "ToolSessionError is large by design; matches the session-tool patterns"
+)]
 
 use std::{collections::BTreeMap, sync::Arc};
 

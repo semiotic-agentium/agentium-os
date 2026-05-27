@@ -306,7 +306,10 @@ pub fn extract_context_from_http_request(
 /// and returns the decision. If blocked, returns an error.
 ///
 /// If a collector is provided, stores the effect token for later completion.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pre-execution hook threads all interceptor inputs; grouping would obscure the call site"
+)]
 pub async fn intercept_llm_call_pre_execution(
     runtime: &baml_runtime::BamlRuntime,
     scope: &context::RuntimeScope,

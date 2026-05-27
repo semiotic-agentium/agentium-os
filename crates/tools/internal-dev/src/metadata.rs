@@ -10,7 +10,10 @@ use crate::tools::{
     UppercaseInput, UppercaseOutput, WeatherInput, WeatherOutput,
 };
 
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "type exists only to register tool metadata via the baml_tool macro; it is never instantiated directly"
+)]
 #[baml_tool(
     name = "internal-dev/calculate",
     description = "Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division.",
@@ -23,7 +26,10 @@ use crate::tools::{
 )]
 pub struct InternalDevCalculate;
 
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "type exists only to register tool metadata via the baml_tool macro; it is never instantiated directly"
+)]
 #[baml_tool(
     name = "internal-dev/get_weather",
     description = "Gets the current weather for a specific location. Returns temperature, condition, and humidity.",
@@ -37,7 +43,10 @@ pub struct InternalDevCalculate;
 )]
 pub struct InternalDevGetWeather;
 
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "type exists only to register tool metadata via the baml_tool macro; it is never instantiated directly"
+)]
 #[baml_tool(
     name = "internal-dev/uppercase",
     description = "Converts a string to uppercase",
@@ -50,7 +59,10 @@ pub struct InternalDevGetWeather;
 )]
 pub struct InternalDevUppercase;
 
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "type exists only to register tool metadata via the baml_tool macro; it is never instantiated directly"
+)]
 #[baml_tool(
     name = "internal-dev/delayed_response",
     description = "Returns a response after a short delay (simulates async operation)",
@@ -63,7 +75,10 @@ pub struct InternalDevUppercase;
 )]
 pub struct InternalDevDelayedResponse;
 
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "type exists only to register tool metadata via the baml_tool macro; it is never instantiated directly"
+)]
 #[baml_tool(
     name = "internal-dev/a2a_relay",
     description = "Relays an A2A request to another in-memory agent.",

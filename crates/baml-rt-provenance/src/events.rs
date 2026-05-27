@@ -856,7 +856,10 @@ impl ProvEvent {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "event constructor mirrors the provenance event's full field set; a params struct would only duplicate the schema"
+    )]
     pub fn llm_call_completed_global(
         context_id: ContextId,
         message_id: MessageId,
@@ -886,7 +889,10 @@ impl ProvEvent {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "event constructor mirrors the provenance event's full field set; a params struct would only duplicate the schema"
+    )]
     pub fn llm_call_completed_global_with_drift(
         context_id: ContextId,
         message_id: MessageId,
@@ -927,7 +933,10 @@ impl ProvEvent {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "event constructor mirrors the provenance event's full field set; a params struct would only duplicate the schema"
+    )]
     pub fn llm_call_completed_task(
         context_id: ContextId,
         task_id: TaskId,
@@ -957,7 +966,10 @@ impl ProvEvent {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "event constructor mirrors the provenance event's full field set; a params struct would only duplicate the schema"
+    )]
     pub fn llm_call_completed_task_with_drift(
         context_id: ContextId,
         task_id: TaskId,
@@ -1001,7 +1013,10 @@ impl ProvEvent {
 
     /// Same as `llm_call_completed_task_with_drift` but also carries citation strings
     /// co-produced by the LLM call.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "event constructor mirrors the provenance event's full field set; a params struct would only duplicate the schema"
+    )]
     pub fn llm_call_completed_task_with_citations(
         context_id: ContextId,
         task_id: TaskId,
@@ -1123,7 +1138,10 @@ impl ProvEvent {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "event constructor mirrors the provenance event's full field set; a params struct would only duplicate the schema"
+    )]
     pub fn tool_call_completed_global(
         context_id: ContextId,
         message_id: MessageId,
@@ -1149,7 +1167,10 @@ impl ProvEvent {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "event constructor mirrors the provenance event's full field set; a params struct would only duplicate the schema"
+    )]
     pub fn tool_call_completed_global_with_id(
         id: impl Into<ActivityAnchorId>,
         context_id: ContextId,
@@ -1181,7 +1202,10 @@ impl ProvEvent {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "event constructor mirrors the provenance event's full field set; a params struct would only duplicate the schema"
+    )]
     pub fn tool_call_completed_task(
         context_id: ContextId,
         task_id: TaskId,
@@ -1207,7 +1231,10 @@ impl ProvEvent {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "event constructor mirrors the provenance event's full field set; a params struct would only duplicate the schema"
+    )]
     pub fn tool_call_completed_task_with_id(
         id: impl Into<ActivityAnchorId>,
         context_id: ContextId,
@@ -1607,7 +1634,10 @@ impl ProvEvent {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "event constructor mirrors the provenance event's full field set; a params struct would only duplicate the schema"
+    )]
     pub fn plan_step_status_changed(
         context_id: ContextId,
         task_id: TaskId,
@@ -1638,7 +1668,10 @@ impl ProvEvent {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "event constructor mirrors the provenance event's full field set; a params struct would only duplicate the schema"
+    )]
     pub fn message_received_task(
         context_id: ContextId,
         task_id: TaskId,
@@ -1689,7 +1722,10 @@ impl ProvEvent {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "event constructor mirrors the provenance event's full field set; a params struct would only duplicate the schema"
+    )]
     pub fn message_sent_task(
         context_id: ContextId,
         task_id: TaskId,
@@ -1717,7 +1753,10 @@ impl ProvEvent {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "event constructor mirrors the provenance event's full field set; a params struct would only duplicate the schema"
+    )]
     pub fn message_sent_global(
         context_id: ContextId,
         id: MessageId,

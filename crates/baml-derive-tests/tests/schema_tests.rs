@@ -1,5 +1,8 @@
 // Fixture types used only by the derive macro.
-#![allow(dead_code)]
+#![expect(
+    dead_code,
+    reason = "derive fixtures define types exercised only by the generated schema output"
+)]
 
 use std::collections::HashMap;
 

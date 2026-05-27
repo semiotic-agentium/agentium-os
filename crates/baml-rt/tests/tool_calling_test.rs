@@ -153,7 +153,6 @@ async fn test_llm_tool_calling_rust() {
 /// **Purpose:** Verify a BAML tool registered via the trait is visible in the QuickJS bridge
 /// (assert_tool_registered_in_js) and executable from Rust with scope; no LLM call.
 #[tokio::test]
-#[allow(unnameable_test_items)]
 async fn test_llm_tool_calling_js() {
     let baml_manager = setup_baml_runtime_default();
 

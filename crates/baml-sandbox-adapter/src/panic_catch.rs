@@ -72,7 +72,7 @@ mod tests {
     async fn falls_back_for_non_string_payload() {
         let err = catch_tool_panic(async {
             std::panic::panic_any(42u32);
-            #[allow(unreachable_code)]
+            #[expect(unreachable_code, reason = "panic_any above diverges; the unit tail only satisfies the closure return type")]
             ()
         })
         .await

@@ -64,7 +64,7 @@ fn agent_node(id: &str, agent_type: &str) -> ExportedNode {
     }
 }
 
-#[allow(dead_code)]
+#[expect(dead_code, reason = "benchmark helper retained for future bench cases")]
 fn llm_node(id: &str, model: &str, duration_ms: u64, order: Option<u64>) -> ExportedNode {
     let mut props = HashMap::new();
     props.insert(

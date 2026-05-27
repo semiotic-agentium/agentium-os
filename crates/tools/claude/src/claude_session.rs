@@ -1,7 +1,10 @@
 //! claude/dev tool: host-owned Claude session orchestration.
 
 // `ToolSessionError` carries rich context; `-D clippy::result_large_err` is not worth API churn here.
-#![allow(clippy::result_large_err)]
+#![expect(
+    clippy::result_large_err,
+    reason = "ToolSessionError is large by design; boxing would churn every session-tool signature"
+)]
 
 use std::{
     collections::{HashMap, VecDeque},

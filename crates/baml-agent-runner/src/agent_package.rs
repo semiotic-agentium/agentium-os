@@ -134,7 +134,10 @@ impl AgentPackage {
         Ok(SchemaLoaded { runtime_manager })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "registration phase threads all bundle inputs; grouping would obscure the wiring"
+    )]
     async fn register_tools_phase(
         &self,
         loaded: SchemaLoaded,

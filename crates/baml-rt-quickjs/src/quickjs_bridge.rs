@@ -418,7 +418,10 @@ impl QuickJSBridge {
     }
 
     /// Legacy: create token and register scope (used only for correlation map when needed).
-    #[allow(dead_code)] // reserved for legacy correlation/scope cleanup when re-enabled
+    #[expect(
+        dead_code,
+        reason = "reserved for legacy correlation/scope cleanup when re-enabled"
+    )]
     fn create_invocation_token(&mut self, scope: &InvocationScope) -> (InvocationToken, String) {
         let token = next_invocation_token();
         let prelude = format!(
@@ -436,7 +439,10 @@ impl QuickJSBridge {
 
     /// Remove an invocation token so it can no longer be used for scope lookup. Reserved for
     /// post-invocation cleanup of scope/correlation maps.
-    #[allow(dead_code)] // reserved for post-invocation scope/correlation cleanup when re-enabled
+    #[expect(
+        dead_code,
+        reason = "reserved for post-invocation scope/correlation cleanup when re-enabled"
+    )]
     fn remove_invocation_token(&mut self, token: &InvocationToken) {
         self.invocation_scope_by_token.remove(token);
         self.correlation_id_by_token.remove(token);

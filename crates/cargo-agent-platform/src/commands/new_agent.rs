@@ -65,7 +65,10 @@ impl AgentTemplate {
 }
 
 /// Run the `new-agent` command.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "CLI command maps each new-agent flag to a parameter; grouping would add indirection"
+)]
 pub fn run(
     name: &str,
     tools: Option<&str>,

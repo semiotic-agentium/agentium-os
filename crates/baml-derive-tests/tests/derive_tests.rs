@@ -1,5 +1,8 @@
 // Fixture types are used only by the derive macro; fields are serialized/deserialized by generated impls, not read in test code.
-#![allow(dead_code)]
+#![expect(
+    dead_code,
+    reason = "derive fixtures define types exercised only by the generated BamlType output"
+)]
 
 use std::collections::HashMap;
 

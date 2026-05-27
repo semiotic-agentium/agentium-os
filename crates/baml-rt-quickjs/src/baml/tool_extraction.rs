@@ -196,7 +196,6 @@ pub enum ToolSessionOp {
 
 impl ToolSessionOp {
     /// FSM op label for tracing and plan coercion (`Open`, `Send`, …).
-    #[allow(dead_code)] // Used by upcoming trace / coercion paths; kept when `baml` is split by module.
     pub(crate) fn op_name(&self) -> &'static str {
         match self {
             ToolSessionOp::Open { .. } => "Open",

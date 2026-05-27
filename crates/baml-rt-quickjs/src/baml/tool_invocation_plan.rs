@@ -19,7 +19,6 @@ use super::{
 
 /// Result of classifying a BAML function output for tool execution.
 #[derive(Debug)]
-#[allow(clippy::large_enum_variant)] // SessionPlan carries FSM payload; boxing would churn call sites.
 pub(crate) enum BamlToolInvocationPlan {
     /// No tool session plan and no extractable tool call — return payload unchanged.
     Passthrough(Value),

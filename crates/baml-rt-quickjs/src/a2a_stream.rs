@@ -55,7 +55,10 @@ pub struct A2aYieldSessionReady<'a> {
 
 /// Session after stream invoked; ready for collect.
 pub struct A2aYieldSessionComplete<'a> {
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "bridge handle retained for the session-complete lifetime; not read on this path"
+    )]
     bridge: &'a mut QuickJSBridge,
     pub session_id: StreamSessionId,
     pub yield_rx: UnboundedReceiver<Value>,
@@ -431,7 +434,10 @@ async fn run_tool_invoke_same_thread(
 /// Using `spawn_local` (not `tokio::spawn`) keeps the collect loop tied to the handover
 /// lane's LocalSet lifetime, avoiding cross-runtime cancellation that silently drops the
 /// stream before content is delivered.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "same-thread stream runner threads all channel/scope inputs explicitly"
+)]
 async fn run_stream_same_thread(
     bridge: Arc<Mutex<QuickJSBridge>>,
     scope: InvocationScope,
@@ -1060,7 +1066,10 @@ impl StreamCollectorContext {
     }
 }
 
-#[allow(clippy::too_many_arguments)] // stream collection requires all 8 independent channel/scope parameters
+#[expect(
+    clippy::too_many_arguments,
+    reason = "stream collection requires all eight independent channel/scope parameters"
+)]
 pub async fn collect_into_channel_owned(
     bridge: Arc<Mutex<QuickJSBridge>>,
     session_id: StreamSessionId,
@@ -1086,7 +1095,10 @@ pub async fn collect_into_channel_owned(
     .await
 }
 
-#[allow(clippy::too_many_arguments)] // each parameter is an independent owned resource; no meaningful grouping
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each parameter is an independent owned resource with no meaningful grouping"
+)]
 async fn collect_into_channel_owned_inner(
     bridge: Arc<Mutex<QuickJSBridge>>,
     session_id: StreamSessionId,

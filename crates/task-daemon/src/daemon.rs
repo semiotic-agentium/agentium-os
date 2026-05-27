@@ -800,7 +800,10 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)] // intentional: env-var mutex serialises test-only env mutation
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "env-var mutex intentionally serialises test-only env mutation across the await"
+    )]
     async fn does_not_persist_cursor_when_extraction_fails() {
         let _env = env_lock().lock().expect("lock env mutation");
         let _base = EnvVarGuard::set("TASK_DAEMON_LLM_BASE_URL", "http://127.0.0.1:9");

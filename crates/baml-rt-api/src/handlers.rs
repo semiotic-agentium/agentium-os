@@ -1512,7 +1512,10 @@ pub async fn get_episode_stream(
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }
 
-#[allow(clippy::result_large_err)] // HttpApiProblem is the HttpResult error type; boxing ripples through all handlers
+#[expect(
+    clippy::result_large_err,
+    reason = "HttpApiProblem is the HttpResult error type; boxing it would ripple through every handler signature"
+)]
 fn parse_conversation_history_request(
     context_id: &str,
     query: ConversationHistoryQueryParams,
@@ -1521,7 +1524,10 @@ fn parse_conversation_history_request(
         .map_err(|e: ConversationHistoryRequestParseError| bad_request_problem(e.to_string()))
 }
 
-#[allow(clippy::result_large_err)] // HttpApiProblem is the HttpResult error type; boxing ripples through all handlers
+#[expect(
+    clippy::result_large_err,
+    reason = "HttpApiProblem is the HttpResult error type; boxing it would ripple through every handler signature"
+)]
 fn parse_context_index_request(
     query: ContextIndexQueryParams,
 ) -> Result<ContextIndexRequest, HttpApiProblem> {

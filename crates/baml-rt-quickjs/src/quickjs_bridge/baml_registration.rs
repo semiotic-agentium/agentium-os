@@ -102,14 +102,20 @@ struct StepAbortEvent {
     scope: context::RuntimeScope,
     step_id: String,
     old_status: String,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "status-change reason retained for lineage records; not read on this path"
+    )]
     reason: String,
     epoch: LineageEpoch,
 }
 
 /// Typestate: invalid transitions are unrepresentable.
 #[derive(Debug, Clone)]
-#[allow(clippy::large_enum_variant)] // Executable is large by design; all fields are needed for step lifecycle
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Executable variant is large by design; all fields drive the step lifecycle"
+)]
 pub(crate) enum ExecutionSession {
     AwaitIntent(SessionBase),
     AwaitPlan {

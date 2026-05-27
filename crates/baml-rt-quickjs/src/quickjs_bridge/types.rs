@@ -51,13 +51,19 @@ impl std::fmt::Display for StreamSessionId {
 /// the session is removed from the map (drop). The context is exited in
 /// `finalize_a2a_stream_invocation` before removal.
 pub(crate) struct StreamInvocationSession {
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "session id retained for diagnostics; not read on this path"
+    )]
     pub(crate) id: StreamSessionId,
     pub(crate) scope: RuntimeScope,
     pub(crate) correlation_id: Option<baml_rt_core::ids::CorrelationId>,
     pub(crate) cancel: tokio_util::sync::CancellationToken,
     pub(crate) closed: std::sync::atomic::AtomicBool,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "permit held for its lifetime guard; not read after construction"
+    )]
     pub(crate) permit: Option<StreamPermit>,
     pub(crate) context_id: Option<InvocationContextId>,
     pub(crate) context_tags: Option<HashMap<String, baml_types::BamlValue>>,
@@ -99,7 +105,10 @@ pub(crate) struct EvalLifecycleGuard {
     pub(crate) eval_token: InvocationToken,
     pub(crate) context_id_to_exit: Option<InvocationContextId>,
     pub(crate) eval_slot_registered: bool,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "manager handle retained for fallback wiring; not read on this path"
+    )]
     pub(crate) baml_manager: Arc<RwLock<BamlRuntimeManager>>,
 }
 
@@ -157,7 +166,10 @@ pub(crate) struct BriefPollParams {
     pub(crate) effect_liveness: Option<Arc<dyn baml_rt_core::bus::EffectLiveness>>,
     pub(crate) idle_timeout_ms: u64,
     pub(crate) max_attempts_ms: u64,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "guard held for RAII; dropping it ends the eval lifecycle"
+    )]
     pub(crate) lifecycle_guard: EvalLifecycleGuard,
 }
 
