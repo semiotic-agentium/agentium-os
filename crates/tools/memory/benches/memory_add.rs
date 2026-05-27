@@ -8,10 +8,7 @@
 //!
 //! Run with `cargo bench -p baml-tools-memory`. Not part of the default test/nextest path.
 
-use std::{
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::path::{Path, PathBuf};
 
 use baml_tools_memory::{
     manager::MemoryManager,
@@ -52,29 +49,29 @@ fn bench_add(c: &mut Criterion) {
         .build()
         .expect("runtime");
     let dir = tempfile::tempdir().expect("tempdir");
-    let counter = AtomicU64::new(0);
 
     let mut group = c.benchmark_group("memory_add");
     for &node_count in &[100usize, 1_000, 10_000] {
         let template = build_template(&rt, dir.path(), node_count);
+        // One reusable working file per size. `PerIteration` guarantees the prior manager
+        // is dropped (file lock released) before the next setup overwrites it, so exactly
+        // one manager and one `.amem` copy ever exist at a time — no FD or disk pileup.
+        let work_path = dir.path().join(format!("bench-{node_count}.amem"));
         group.bench_with_input(
             BenchmarkId::from_parameter(node_count),
             &node_count,
             |b, _| {
                 b.iter_batched(
                     || {
-                        // Fresh copy of the N-node graph per iteration so each timed `add`
-                        // runs against the same starting size (untimed setup).
-                        let id = counter.fetch_add(1, Ordering::Relaxed);
-                        let fresh = dir.path().join(format!("bench-{node_count}-{id}.amem"));
-                        std::fs::copy(&template, &fresh).expect("copy template");
-                        MemoryManager::open_at(fresh).expect("open copy")
+                        // Restore the N-node graph for each timed `add` (untimed setup).
+                        std::fs::copy(&template, &work_path).expect("copy template");
+                        MemoryManager::open_at(work_path.clone()).expect("open copy")
                     },
                     |mgr| {
                         rt.block_on(mgr.add(one_fact("benchmark add".to_string())))
                             .expect("add");
                     },
-                    BatchSize::SmallInput,
+                    BatchSize::PerIteration,
                 );
             },
         );
