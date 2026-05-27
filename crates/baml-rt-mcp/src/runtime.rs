@@ -339,7 +339,7 @@ impl ClientHandler for RuntimeClientHandler {
                         event = "mcp.tools_list_failed",
                         "out-of-band tools/list failed after list_changed; marking connection stale",
                     );
-                    mark_drifted_and_persist(&server_id, &drifted, &cache_root);
+                    mark_drifted_and_persist(&server_id, &drifted, &cache_root).await;
                     return;
                 }
             };
@@ -354,7 +354,7 @@ impl ClientHandler for RuntimeClientHandler {
                         event = "mcp.tools_list_serialize_failed",
                         "failed to serialize live MCP tool schema after list_changed; marking connection stale",
                     );
-                    mark_drifted_and_persist(&server_id, &drifted, &cache_root);
+                    mark_drifted_and_persist(&server_id, &drifted, &cache_root).await;
                     return;
                 }
             };
@@ -378,7 +378,7 @@ impl ClientHandler for RuntimeClientHandler {
                 event = "mcp.tools_list_changed",
                 "MCP server tool set drifted at runtime (tools/list_changed); snapshot marked stale, in-flight calls will fail. Re-import via `agent-platform mcp enable` and redeploy."
             );
-            mark_drifted_and_persist(&server_id, &drifted, &cache_root);
+            mark_drifted_and_persist(&server_id, &drifted, &cache_root).await;
         }
     }
 }
@@ -405,22 +405,41 @@ fn digest_from_live_tools(
 }
 
 /// Flip the in-memory drift flag and best-effort persist `Stale` to disk so
-/// the runner refuses to bind this server on next startup. Disk failures
-/// are logged but do not block the runtime signal.
-fn mark_drifted_and_persist(server_id: &str, drifted: &AtomicBool, cache_root: &Path) {
+/// the runner refuses to bind this server on next startup.
+///
+/// The `drifted` `AtomicBool` fail-closes immediately, so on-disk persistence
+/// is durable best-effort work: it runs on a blocking thread via
+/// [`tokio::task::spawn_blocking`] so a slow or stalled cache volume cannot
+/// wedge a Tokio worker. Only the first caller (the one that flips the flag)
+/// persists; persistence and join failures are logged and never clear the
+/// in-memory drift flag.
+async fn mark_drifted_and_persist(server_id: &str, drifted: &AtomicBool, cache_root: &Path) {
     let already = drifted.swap(true, Ordering::SeqCst);
     if already {
         return;
     }
-    match mark_server_stale(cache_root, server_id) {
-        Ok(_prev) => {}
-        Err(err) => {
+    let cache_root = cache_root.to_path_buf();
+    let server = server_id.to_string();
+    let persisted =
+        tokio::task::spawn_blocking(move || mark_server_stale(&cache_root, &server)).await;
+    match persisted {
+        Ok(Ok(_prev)) => {}
+        Ok(Err(err)) => {
             tracing::warn!(
                 target: "mcp.drift",
                 mcp_server_id = %server_id,
                 error = %err,
                 event = "mcp.stale_persist_failed",
                 "failed to mark MCP server stale on disk; in-memory drift flag is set",
+            );
+        }
+        Err(join_err) => {
+            tracing::warn!(
+                target: "mcp.drift",
+                mcp_server_id = %server_id,
+                error = %join_err,
+                event = "mcp.stale_persist_join_failed",
+                "blocking task to mark MCP server stale failed to join; in-memory drift flag is set",
             );
         }
     }
@@ -826,7 +845,7 @@ async fn verify_startup_tools_digest(
             tool_count: Some(observed_tools.len()),
         },
     ) {
-        mark_drifted_and_persist(&launch.server_id, drifted, &launch.cache_root);
+        mark_drifted_and_persist(&launch.server_id, drifted, &launch.cache_root).await;
         signal_cancel(service).await;
         return Err(err);
     }
@@ -1042,5 +1061,34 @@ fn value_kind(value: &Value) -> &'static str {
         Value::String(_) => "string",
         Value::Array(_) => "array",
         Value::Object(_) => "object",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::mark_drifted_and_persist;
+
+    /// Drift fail-closes in memory, so a disk-persist failure must still leave
+    /// the in-memory flag set, and a second call must short-circuit on the
+    /// already-set flag. The persistence now runs on a blocking thread; this
+    /// also guards that an `Err` from that thread is absorbed without panicking.
+    #[tokio::test]
+    async fn drift_flag_stays_set_when_disk_persist_fails() {
+        let cache_root = tempfile::tempdir().expect("tempdir");
+        let drifted = AtomicBool::new(false);
+
+        // No server record exists under the cache root, so `mark_server_stale`
+        // returns `Err`; the flag must still flip to `true`.
+        mark_drifted_and_persist("missing-server", &drifted, cache_root.path()).await;
+        assert!(
+            drifted.load(Ordering::SeqCst),
+            "drift flag must be set even when disk persistence fails",
+        );
+
+        // Idempotent: the already-set flag short-circuits the second call.
+        mark_drifted_and_persist("missing-server", &drifted, cache_root.path()).await;
+        assert!(drifted.load(Ordering::SeqCst));
     }
 }
