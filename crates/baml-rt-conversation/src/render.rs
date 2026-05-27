@@ -537,6 +537,10 @@ mod tests {
     use baml_rt_core::ids::{AgentId, ContextId, ExternalId, TaskId, UuidId};
     use uuid::Uuid;
 
+    fn smoke_agent_id() -> AgentId {
+        AgentId::from_uuid(UuidId::new(Uuid::new_v4()))
+    }
+
     use super::{prefix_wire_citation, prefix_wire_citations_in_text, render_episode};
     use crate::episode::{
         Episode, EpisodeContent, EpisodeDuration, EpisodeEntry, EpisodeOutcome, EpisodeRefPrefix,
@@ -576,7 +580,7 @@ mod tests {
         let ep = Episode {
             task_id: task_id.clone(),
             context_id: ContextId::new(1, 1),
-            agent_id: AgentId::from_uuid(UuidId::new(Uuid::nil())),
+            agent_id: smoke_agent_id(),
             ref_prefix: EpisodeRefPrefix::from_task_id(&task_id),
             status: TerminalStatus::Completed,
             started_timestamp_ms: 100,
@@ -620,6 +624,7 @@ mod tests {
         };
         let txt = render_episode(&ep);
         assert!(txt.contains("## episode"));
+        assert!(txt.contains("agent_id:"));
         assert!(txt.contains("## transcript"));
         assert!(txt.contains("## outcome"));
         assert!(txt.contains("do the thing"));
@@ -636,7 +641,7 @@ mod tests {
         let ep = Episode {
             task_id: task_id.clone(),
             context_id: ContextId::new(1, 1),
-            agent_id: AgentId::from_uuid(UuidId::new(Uuid::nil())),
+            agent_id: smoke_agent_id(),
             ref_prefix: EpisodeRefPrefix::from_task_id(&task_id),
             status: TerminalStatus::Completed,
             started_timestamp_ms: 100,

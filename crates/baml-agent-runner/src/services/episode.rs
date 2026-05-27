@@ -29,8 +29,12 @@ impl baml_rt_api::EpisodeService for EpisodeServiceImpl {
         let reader = EpisodeReader::new(Arc::clone(&self.store));
         match reader.read_snapshot_by_task_id(&task_id_typed).await {
             Ok(episode) => Ok(episode.into()),
-            Err(baml_rt_provenance::ProvenanceError::InvalidEvent { .. }) => {
-                Err(baml_rt_api::EpisodeError::NotFound)
+            Err(
+                baml_rt_provenance::ProvenanceError::InvalidEvent { .. }
+                | baml_rt_provenance::ProvenanceError::EpisodeUnbound { .. },
+            ) => Err(baml_rt_api::EpisodeError::NotFound),
+            Err(baml_rt_provenance::ProvenanceError::EpisodeAgentResolutionTimedOut { .. }) => {
+                Err(baml_rt_api::EpisodeError::Unavailable)
             }
             Err(e) => Err(baml_rt_api::EpisodeError::Other(Box::new(e))),
         }
@@ -47,8 +51,12 @@ impl baml_rt_api::EpisodeService for EpisodeServiceImpl {
         let reader = EpisodeReader::new(Arc::clone(&self.store));
         match reader.read_snapshot_by_task_id(&task_id_typed).await {
             Ok(episode) => Ok(render_episode(&episode)),
-            Err(baml_rt_provenance::ProvenanceError::InvalidEvent { .. }) => {
-                Err(baml_rt_api::EpisodeError::NotFound)
+            Err(
+                baml_rt_provenance::ProvenanceError::InvalidEvent { .. }
+                | baml_rt_provenance::ProvenanceError::EpisodeUnbound { .. },
+            ) => Err(baml_rt_api::EpisodeError::NotFound),
+            Err(baml_rt_provenance::ProvenanceError::EpisodeAgentResolutionTimedOut { .. }) => {
+                Err(baml_rt_api::EpisodeError::Unavailable)
             }
             Err(e) => Err(baml_rt_api::EpisodeError::Other(Box::new(e))),
         }

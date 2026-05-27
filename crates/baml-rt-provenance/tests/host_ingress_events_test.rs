@@ -38,6 +38,10 @@ fn dispatch_target(package: &str, agent_id: AgentId) -> DispatchTarget {
     DispatchTarget::new(test_route(package), agent_id)
 }
 
+fn test_agent_id() -> AgentId {
+    AgentId::from_uuid(UuidId::new(Uuid::new_v4()))
+}
+
 async fn boot_test_agent(
     store: &SurrealProvenanceStore,
     agent_id: AgentId,
@@ -492,7 +496,14 @@ async fn record_source_poll_and_unit_prelude_emit_single_ingress_user_line() {
         .record_source_poll(&event)
         .await
         .expect("poll lineage");
-    let agent_id = AgentId::from_uuid(UuidId::new(Uuid::nil()));
+    let agent_id = test_agent_id();
+    boot_test_agent(
+        &store,
+        agent_id.clone(),
+        "clickup-agent",
+        "clickup-agent@1.0.0",
+    )
+    .await;
     let parent =
         RuntimeScope::message_scope(ctx.clone(), agent_id.clone(), MessageId::from("parent-msg"));
     let records: Vec<serde_json::Value> = batch
@@ -557,7 +568,8 @@ async fn with_task_prelude_is_idempotent_for_same_unit_key() {
     let recorder = HostIngressRecorderImpl::new(Arc::clone(&store));
     let ctx = ContextId::new(88, 99);
     let unit_key = "slack:C012:1735720111.000001";
-    let agent_id = AgentId::from_uuid(UuidId::new(Uuid::nil()));
+    let agent_id = test_agent_id();
+    boot_test_agent(&store, agent_id.clone(), "slack-agent", "slack-agent@1.0.0").await;
     let parent =
         RuntimeScope::message_scope(ctx.clone(), agent_id.clone(), MessageId::from("parent-msg"));
     let records = vec![json!({

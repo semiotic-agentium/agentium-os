@@ -17,7 +17,6 @@ use baml_rt_core::{
     },
 };
 use serde_json::Value;
-use uuid::Uuid;
 
 use crate::{
     document::ProvDocument,
@@ -43,6 +42,7 @@ use crate::{
         ToolCallActivityInput,
     },
     metamodel::TaskStatusKind,
+    task_agent_binding::is_unassigned_executing_agent,
     types::{
         Activity, Agent, Entity, ProvActivityId, ProvAgentId, ProvEntityId, ProvNodeRef,
         QualifiedGeneration, Used, WasAssociatedWith, WasDerivedFrom, WasGeneratedBy,
@@ -717,6 +717,7 @@ fn normalize_event_with_registry(
                 &activity_id,
                 &mut derived_relations,
                 &mut agent_labels,
+                &mut head_pointer_repoints,
                 context,
             )?;
         }
@@ -1037,6 +1038,7 @@ fn normalize_event_with_registry(
                 &activity_id,
                 &mut derived_relations,
                 &mut agent_labels,
+                &mut head_pointer_repoints,
                 context,
             )?;
         }
@@ -1151,6 +1153,7 @@ fn normalize_event_with_registry(
                 &activity_id,
                 &mut derived_relations,
                 &mut agent_labels,
+                &mut head_pointer_repoints,
                 context,
             )?;
         }
@@ -1263,6 +1266,7 @@ fn normalize_event_with_registry(
                 &activity_id,
                 &mut derived_relations,
                 &mut agent_labels,
+                &mut head_pointer_repoints,
                 context,
             )?;
         }
@@ -1435,6 +1439,7 @@ fn normalize_event_with_registry(
                 &activity_id,
                 &mut derived_relations,
                 &mut agent_labels,
+                &mut head_pointer_repoints,
                 context,
             )?;
         }
@@ -1602,13 +1607,14 @@ fn normalize_event_with_registry(
                 Some(prov_roles::EXECUTING_AGENT.to_string()),
             );
 
-            head_pointer_repoints.push(HeadPointerRepoint {
-                from_id: task_entity.as_str().to_string(),
-                from_label: GraphNodeLabel::Task.as_str().to_string(),
-                rel: HeadPointerRel::WasLastExecutedBy,
-                to_id: agent_instance_id.as_str().to_string(),
-                to_label: GraphNodeLabel::AgentRuntimeInstance.as_str().to_string(),
-            });
+            repoint_task_last_executed_by(
+                &mut head_pointer_repoints,
+                task_entity,
+                agent_id,
+                &doc,
+                &mut agent_labels,
+                "task_execution_started",
+            )?;
 
             let invoking_agent_id = runner_runtime_instance_id();
             ensure_runner_runtime_instance(&mut doc);
@@ -2237,6 +2243,18 @@ fn normalize_event_with_registry(
                     event.message_agent_id(),
                     context,
                 )?;
+                if let Some(agent_id) = event.message_agent_id()
+                    && !is_unassigned_executing_agent(agent_id)
+                {
+                    repoint_task_last_executed_by(
+                        &mut head_pointer_repoints,
+                        task_entity.clone(),
+                        agent_id,
+                        &doc,
+                        &mut agent_labels,
+                        "message_task_scope",
+                    )?;
+                }
                 if matches!(event.data(), ProvEventData::MessageReceived { .. }) {
                     insert_used(
                         &mut doc,
@@ -2387,10 +2405,18 @@ fn normalize_event_with_registry(
             );
             derived_relations.push(A2aDerivedRelation {
                 relation: A2aRelationType::CallbackDispatchScheduledFrom,
-                from: ProvNodeRef::Entity(dispatch_entity),
+                from: ProvNodeRef::Entity(dispatch_entity.clone()),
                 to: ProvNodeRef::Entity(scheduling_entity),
                 attributes: edge_attrs,
             });
+            repoint_task_last_executed_by(
+                &mut head_pointer_repoints,
+                dispatch_entity,
+                agent_id,
+                &doc,
+                &mut agent_labels,
+                "callback_dispatch_contexts_linked",
+            )?;
         }
         ProvEventData::HostSourcePollRecorded {
             source_kind,
@@ -3246,7 +3272,35 @@ fn insert_host_ingress_transcript_message(
 }
 
 fn is_unassigned_message_agent(agent_id: &AgentId) -> bool {
-    agent_id.as_str() == AgentId::from_uuid(UuidId::new(Uuid::nil())).as_str()
+    is_unassigned_executing_agent(agent_id)
+}
+
+fn repoint_task_last_executed_by(
+    head_pointer_repoints: &mut Vec<HeadPointerRepoint>,
+    task_entity: ProvEntityId,
+    agent_id: &AgentId,
+    doc: &ProvDocument,
+    agent_labels: &mut HashMap<String, String>,
+    defense_source: &str,
+) -> Result<()> {
+    if is_unassigned_executing_agent(agent_id) {
+        return Ok(());
+    }
+    let agent_instance_id = get_agent_runtime_instance(doc, agent_id, agent_labels)?;
+    head_pointer_repoints.push(HeadPointerRepoint {
+        from_id: task_entity.as_str().to_string(),
+        from_label: GraphNodeLabel::Task.as_str().to_string(),
+        rel: HeadPointerRel::WasLastExecutedBy,
+        to_id: agent_instance_id.as_str().to_string(),
+        to_label: GraphNodeLabel::AgentRuntimeInstance.as_str().to_string(),
+    });
+    tracing::debug!(
+        task_entity = task_entity.as_str(),
+        agent_id = agent_id.as_str(),
+        defense_source,
+        "repoint_task_last_executed_by"
+    );
+    Ok(())
 }
 
 fn link_host_dispatch_target(
@@ -3403,6 +3457,7 @@ fn attach_task_call_context(
     activity_id: &ProvActivityId,
     derived_relations: &mut Vec<A2aDerivedRelation>,
     agent_labels: &mut HashMap<String, String>,
+    head_pointer_repoints: &mut Vec<HeadPointerRepoint>,
     context: Option<&NormalizeContext>,
 ) -> Result<()> {
     let Some(task_id) = task_id_for_task_call_graph(event) else {
@@ -3425,7 +3480,7 @@ fn attach_task_call_context(
         _ => None,
     };
 
-    let _task_entity = ensure_task_entity(doc, &task_id);
+    let task_entity = ensure_task_entity(doc, &task_id);
 
     let task_execution = ensure_task_execution_activity(
         doc,
@@ -3437,14 +3492,22 @@ fn attach_task_call_context(
         None,
         context,
     )?;
-    associate_call_with_agent(
-        doc,
-        activity_id,
-        agent_id_from_metadata
-            .as_ref()
-            .or_else(|| context.and_then(|c| c.task_agent_id.as_ref())),
-        agent_labels,
-    )?;
+    let executing_agent = agent_id_from_metadata
+        .as_ref()
+        .or_else(|| context.and_then(|c| c.task_agent_id.as_ref()));
+    if let Some(agent_id) = executing_agent
+        && !is_unassigned_executing_agent(agent_id)
+    {
+        repoint_task_last_executed_by(
+            head_pointer_repoints,
+            task_entity,
+            agent_id,
+            doc,
+            agent_labels,
+            "attach_task_call_context",
+        )?;
+    }
+    associate_call_with_agent(doc, activity_id, executing_agent, agent_labels)?;
     derived_relations.push(A2aDerivedRelation {
         relation: A2aRelationType::TaskCall,
         from: ProvNodeRef::Activity(task_execution),

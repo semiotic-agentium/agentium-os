@@ -22,6 +22,7 @@ use crate::{
         activity_anchor_for_ingress_poll_user, activity_anchor_for_ingress_unit_user,
     },
     host_ingress_types::{HostDispatchFailureKind, HostDispatchRejectedSpec, HostIngressSourceRef},
+    task_agent_binding::{TaskAgentBinding, TaskAgentBindingSource},
 };
 
 /// Writes host ingress poll/unit user messages and lineage events to Surreal provenance.
@@ -206,6 +207,22 @@ impl HostIngressRecorder for HostIngressRecorderImpl {
             agent_id,
             unit.unit_key.0.as_str(),
         );
+        let task_id = scope
+            .task_id_opt()
+            .expect("dispatch unit scope must be task-scoped")
+            .clone();
+        let context_id = scope.context_id().clone();
+        let binding = TaskAgentBinding::new(
+            context_id,
+            task_id,
+            scope.agent_id().clone(),
+            TaskAgentBindingSource::HostWithTaskPrelude,
+        )
+        .map_err(|e| BamlRtError::InvalidArgument(e.to_string()))?;
+        self.store
+            .bind_task_executing_agent(binding)
+            .await
+            .map_err(|e| BamlRtError::InvalidArgument(e.to_string()))?;
         let prov_event = build_unit_user_message_event(&scope, unit.unit_key.0.as_str(), &body);
         self.store
             .add_event_with_logging(prov_event, "host ingress unit user message")

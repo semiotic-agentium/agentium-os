@@ -21,7 +21,7 @@ use baml_rt_core::{
 use baml_rt_observability::{metrics, spans};
 use baml_rt_provenance::{
     ProvEvent, ProvenanceContextReader, ProvenanceEffectSubscriber, ProvenanceInterceptor,
-    ProvenanceWriter, SurrealProvenanceStore,
+    ProvenanceWriter, SurrealProvenanceStore, TaskAgentBindingSource,
 };
 use baml_rt_quickjs::{
     BamlRuntimeManager, BridgeHandle, QuickJSBridge, QuickJSConfig,
@@ -150,20 +150,19 @@ impl SurrealRuntimeStore {
             )));
         }
         if let Some(ref tid) = task_id {
-            self.add_provenance_event_required(
-                ProvEvent::task_exists(context_id.clone(), tid.clone()),
-                "insert_message_with_scope task_exists",
-            )
-            .await?;
-            self.add_provenance_event_required(
-                ProvEvent::task_execution_started(
+            self.provenance
+                .bind_task_executing_agent_for(
                     context_id.clone(),
                     tid.clone(),
                     self.agent_id.clone(),
-                ),
-                "insert_message_with_scope task_execution_started",
-            )
-            .await?;
+                    TaskAgentBindingSource::A2aStreamBootstrap,
+                )
+                .await
+                .map_err(|source| BamlRtError::InvalidArgumentWithSource {
+                    message: "failed to bind task executing agent for insert_message_with_scope"
+                        .into(),
+                    source: Box::new(source),
+                })?;
         }
 
         let mut scoped = message.clone();
@@ -191,16 +190,18 @@ impl TaskRepository for SurrealRuntimeStore {
         let context_id = require_context_id(task.context_id.clone(), "task upsert")?;
         ensure_agent_id_in_metadata(&mut task.metadata, &self.agent_id);
         if let Some(task_id) = task.id.clone() {
-            self.add_provenance_event_required(
-                ProvEvent::task_exists(context_id.clone(), task_id.clone()),
-                "task upsert task_exists",
-            )
-            .await?;
-            self.add_provenance_event_required(
-                ProvEvent::task_execution_started(context_id, task_id, self.agent_id.clone()),
-                "task upsert task_execution_started",
-            )
-            .await?;
+            self.provenance
+                .bind_task_executing_agent_for(
+                    context_id,
+                    task_id,
+                    self.agent_id.clone(),
+                    TaskAgentBindingSource::A2aStreamBootstrap,
+                )
+                .await
+                .map_err(|source| BamlRtError::InvalidArgumentWithSource {
+                    message: "failed to bind task executing agent for task upsert".into(),
+                    source: Box::new(source),
+                })?;
         }
         let out = self.task_store.upsert(task).await?;
         record_task_store_metrics("upsert", "success", start);
@@ -305,16 +306,18 @@ impl TaskChunkApplier for SurrealRuntimeStore {
         let events = self.task_store.apply_task_chunk(chunk).await?;
         record_task_store_metrics("apply_task_chunk", "success", start);
         if let Some((task_id, context_id)) = new_task_prov {
-            self.add_provenance_event_required(
-                ProvEvent::task_exists(context_id.clone(), task_id.clone()),
-                "apply_task_chunk task_exists",
-            )
-            .await?;
-            self.add_provenance_event_required(
-                ProvEvent::task_execution_started(context_id, task_id, self.agent_id.clone()),
-                "apply_task_chunk task_execution_started",
-            )
-            .await?;
+            self.provenance
+                .bind_task_executing_agent_for(
+                    context_id,
+                    task_id,
+                    self.agent_id.clone(),
+                    TaskAgentBindingSource::A2aStreamBootstrap,
+                )
+                .await
+                .map_err(|source| BamlRtError::InvalidArgumentWithSource {
+                    message: "failed to bind task executing agent for apply_task_chunk".into(),
+                    source: Box::new(source),
+                })?;
         }
         if let Some(message) = message_for_prov {
             self.emit_message_lifecycle_event(&message, "apply_task_chunk")
@@ -922,6 +925,20 @@ impl A2aAgent {
             dispatch_context = ?request.context_id.as_ref().map(|c| c.as_str()),
             "A2aAgent::handle_dispatch envelope"
         );
+        if let (Some(context_id), Some(task_id)) = (&request.context_id, &request.task_id) {
+            self.provenance_writer()
+                .bind_task_executing_agent_for(
+                    context_id.clone(),
+                    task_id.clone(),
+                    self.agent_id().clone(),
+                    TaskAgentBindingSource::HostDispatchInvocation,
+                )
+                .await
+                .map_err(|source| BamlRtError::InvalidArgumentWithSource {
+                    message: "failed to bind task executing agent for handle_dispatch".into(),
+                    source: Box::new(source),
+                })?;
+        }
         let invocation_scope =
             invocation_scope_for_agent_dispatch(self.agent_id().clone(), &request);
         let js_payload = serde_json::to_value(&request).map_err(BamlRtError::Json)?;

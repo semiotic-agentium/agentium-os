@@ -165,8 +165,8 @@ pub fn render_sequence_diagram(graph: &ExportedGraph) -> String {
         let _ = writeln!(
             out,
             "    participant {} as \"{}\"",
-            sanitize_participant(agent),
-            escape_sequence_text(&agent_display_label(agent))
+            agent.sanitized_id(),
+            escape_sequence_text(&agent.label)
         );
     }
     for llm in &participants.llms {
@@ -581,14 +581,19 @@ fn task_rect_note_span(participants: &Participants) -> Option<(String, String)> 
         participants
             .agents
             .first()
-            .map(|a| sanitize_participant(a))?
+            .map(AgentParticipant::sanitized_id)?
     };
     let last = participants
         .tools
         .last()
-        .or(participants.llms.last())
-        .or(participants.agents.last())
         .map(|s| sanitize_participant(s))
+        .or_else(|| participants.llms.last().map(|s| sanitize_participant(s)))
+        .or_else(|| {
+            participants
+                .agents
+                .last()
+                .map(AgentParticipant::sanitized_id)
+        })
         .unwrap_or_else(|| first.clone());
     Some((first, last))
 }
@@ -656,7 +661,12 @@ fn build_task_rect_spans(
         } else {
             agents.first().cloned()
         }
-        .or_else(|| participants.agents.first().map(|a| sanitize_participant(a)))
+        .or_else(|| {
+            participants
+                .agents
+                .first()
+                .map(AgentParticipant::sanitized_id)
+        })
         .unwrap_or_else(|| "User".into());
         // Last = tools/llms of this agent, or the agent itself. Never span to a different agent.
         // When multiple agents share a task_id (e.g. coordinator+worker), span only the first.
@@ -1458,13 +1468,27 @@ fn edge_relation_matches(edge_relation: &str, expected: &str) -> bool {
 
 // ── Participant extraction ──────────────────────────────────────────────────
 
+/// One agent lifeline: stable id from `a2a:archive_path`, label from boot metadata.
+struct AgentParticipant {
+    /// Content-addressable archive path (`manifest.signature` at boot).
+    id: String,
+    /// Operator-facing lifeline title (`a2a:agent_type`, not signature semver).
+    label: String,
+}
+
+impl AgentParticipant {
+    fn sanitized_id(&self) -> String {
+        sanitize_participant(&self.id)
+    }
+}
+
 /// Identified participants for the sequence diagram.
 struct Participants {
     has_user: bool,
     /// Host ingress rows (`role=host`) appear on this participant.
     has_host: bool,
-    /// Agent display names from the graph: AgentRuntimeInstance → AgentBoot → AgentArchive (a2a:archive_path).
-    agents: Vec<String>,
+    /// Boot-complete agents keyed by archive path; labels from `a2a:agent_type`.
+    agents: Vec<AgentParticipant>,
     /// LLM participants: "LLM {model}" per unique model.
     llms: Vec<String>,
     /// Tool short names (prefix-stripped, deduplicated).
@@ -1481,7 +1505,7 @@ fn extract_participants(
 ) -> Participants {
     let mut has_user = false;
     let mut has_host = false;
-    let mut agents: Vec<String> = Vec::new();
+    let mut agents: Vec<AgentParticipant> = Vec::new();
     let mut seen_agents: HashSet<String> = HashSet::new();
     let mut agent_first_order: HashMap<String, u64> = HashMap::new();
     let mut llms: Vec<String> = Vec::new();
@@ -1523,7 +1547,10 @@ fn extract_participants(
                 if let Some(archive_path) = prop_str(node, a2a::ARCHIVE_PATH)
                     && seen_agents.insert(archive_path.clone())
                 {
-                    agents.push(archive_path);
+                    agents.push(AgentParticipant {
+                        id: archive_path,
+                        label: agent_participant_label(node),
+                    });
                 }
             }
             Some(GraphNodeLabel::LlmCall) => {
@@ -1577,13 +1604,13 @@ fn extract_participants(
     }
 
     agents.sort_by(|a, b| {
-        let a_order = agent_first_order.get(a);
-        let b_order = agent_first_order.get(b);
+        let a_order = agent_first_order.get(&a.id);
+        let b_order = agent_first_order.get(&b.id);
         match (a_order, b_order) {
-            (Some(x), Some(y)) => x.cmp(y).then_with(|| a.cmp(b)),
+            (Some(x), Some(y)) => x.cmp(y).then_with(|| a.id.cmp(&b.id)),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => a.cmp(b),
+            (None, None) => a.id.cmp(&b.id),
         }
     });
     llms.sort_by(|a, b| {
@@ -1849,8 +1876,9 @@ fn humanize_identifier(raw: &str) -> String {
         .join(" ")
 }
 
-fn agent_display_label(raw: &str) -> String {
-    humanize_identifier(raw)
+fn agent_participant_label(node: &ExportedNode) -> String {
+    let agent_type = prop_str(node, a2a::AGENT_TYPE).unwrap_or_else(|| "agent".to_string());
+    humanize_identifier(&agent_type)
 }
 
 fn llm_display_label(raw: &str) -> String {
@@ -3139,6 +3167,16 @@ mod tests {
             .collect();
         // Only 2 trailing digits (len == 3 but first word "model" is not all-digit)
         assert_eq!(trim_trailing_version_words(&words), &words[..]);
+    }
+
+    #[test]
+    fn agent_participant_label_uses_agent_type_not_archive_signature() {
+        let mut node = agent_node("a1", "clickup-agent");
+        node.properties.insert(
+            a2a::ARCHIVE_PATH.to_string(),
+            serde_json::Value::String("clickup-agent@1.0.0".to_string()),
+        );
+        assert_eq!(agent_participant_label(&node), "Clickup Agent");
     }
 
     #[test]

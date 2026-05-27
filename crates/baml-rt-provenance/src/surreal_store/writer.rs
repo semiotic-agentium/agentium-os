@@ -14,8 +14,9 @@ use crate::{
     normalizer::{NormalizeContext, validate_event},
     payload_record::StorageKind,
     payload_storage,
-    store::ProvenanceWriter,
+    store::{ProvenanceWriter, TaskAgentResolution},
     surreal_write_batch::call_activity_id_from_normalized,
+    task_agent_binding::event_local_executing_agent_id,
 };
 
 #[async_trait]
@@ -29,15 +30,19 @@ impl ProvenanceWriter for SurrealProvenanceStore {
         let mut context = match event.task_id() {
             Some(tid) => {
                 let resolution = self.get_task_agent_id(tid).await?;
-                if matches!(resolution, crate::store::TaskAgentResolution::TimedOut) {
+                if matches!(resolution, TaskAgentResolution::TimedOut) {
                     tracing::warn!(
                         task_id = tid.as_str(),
                         event_id = event.id().as_str(),
                         "agent-scoped normalization skipped: get_task_agent_id timed out"
                     );
                 }
+                let mut task_agent_id = resolution.for_normalization();
+                if task_agent_id.is_none() {
+                    task_agent_id = event_local_executing_agent_id(&event);
+                }
                 NormalizeContext {
-                    task_agent_id: resolution.into_option(),
+                    task_agent_id,
                     linked_llm_call_scope_ordinal: None,
                 }
             }

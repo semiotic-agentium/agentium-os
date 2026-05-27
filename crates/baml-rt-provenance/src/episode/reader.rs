@@ -19,7 +19,7 @@ use baml_rt_conversation::{
 };
 use baml_rt_core::{
     clock_events,
-    ids::{AgentId, ContextId, TaskId, UuidId},
+    ids::{ContextId, TaskId},
 };
 use baml_rt_tools::{
     archive_read::{PageLimit, RenderedContent, format_session_read_body_from_rendered},
@@ -28,7 +28,6 @@ use baml_rt_tools::{
     tools::ToolRegistry,
 };
 use serde_json::Value as JsonValue;
-use uuid::Uuid;
 
 use super::{
     ArtifactSummary, Episode, EpisodeContent, EpisodeEntry, EpisodeOutcome, EpisodeRefPrefix,
@@ -215,9 +214,7 @@ impl EpisodeReader {
             .unwrap_or(terminal_ts);
 
         let ref_prefix = EpisodeRefPrefix::from_task_id(task_id);
-        let agent_id = agent_id_resolution
-            .into_option()
-            .unwrap_or_else(|| AgentId::from_uuid(UuidId::new(Uuid::nil())));
+        let agent_id = agent_id_resolution.require_for_episode(task_id)?;
 
         items.sort_by_key(|i| i.timestamp_ms);
 

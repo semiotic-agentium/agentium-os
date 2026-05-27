@@ -156,6 +156,28 @@ The raw poll batch is often not the work unit; the work unit is one conversation
 
 The coordinator is still downstream of this flow. It is not the universal raw-event sink.
 
+## Task executing-agent binding
+
+Every task scope that will carry agent-attributed work (LLM calls, tool sessions, episode headers) must bind the task to its **booted executing agent** before attribution. Binding is the write-side ceremony:
+
+1. `TaskExists` (idempotent)
+2. `TaskExecutionStarted` → repoints `WAS_LAST_EXECUTED_BY` on the `Task` entity to the live `AgentRuntimeInstance`
+
+Reads resolve task→agent via that single head pointer (`get_task_agent_id`). There is no read-side multi-hop fallback.
+
+| Scope establishment path | Emits binding? |
+| --- | --- |
+| A2A chat (`insert_message_with_scope`, task upsert, stream chunk) | Yes — `bind_task_executing_agent_for` |
+| `withTask` prelude | Yes — before unit `MessageReceived` |
+| `handle_dispatch` when `context_id` + `task_id` present | Yes — before `onDispatch` |
+| `CallbackDispatchContextsLinked` | Yes — normalizer repoints dispatch task head |
+| Tool/LLM on minted task scope (metadata carries `agent_id`) | Defense-in-depth — normalizer repoints in same batch |
+| Poll ingress (task-scoped, nil host agent) | **No** — poll speaker is not an executing agent |
+
+**Invariants:** head pointer is never bound to the nil UUID sentinel; episode API returns 404 for unbound tasks (poll ingress, `task_exists`-only) — use observation/ops surfaces instead.
+
+Implementation: [`crates/baml-rt-provenance/src/task_agent_binding.rs`](../crates/baml-rt-provenance/src/task_agent_binding.rs).
+
 ## Adding a New Event Source
 
 1. **Declare `event_sources`** on the tool:

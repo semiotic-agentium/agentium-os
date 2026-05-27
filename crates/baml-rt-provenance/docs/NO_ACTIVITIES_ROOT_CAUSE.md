@@ -153,6 +153,6 @@ Since we can traverse the graph (e.g. MessageProcessing -[WAS_EXECUTED_BY]-> Age
 
 **Graph enrichment:** After parsing the export result, `enrich_derived_properties` derives `task_id`, `context_id`, and `agent_id` by id parsing and edge traversal. Nodes that lack these properties get them filled in before `filter_scope` runs.
 
-**agent_id removed from write path:** Task, AgentBoot, and AgentRuntimeInstance no longer store `a2a:agent_id`. `get_task_agent_id` uses traversal: Task -[WAS_CREATED_BY]-> TaskExecution -[WAS_EXECUTED_BY]-> AgentRuntimeInstance, parsing agent_id from the instance id.
+**Task→agent identity (head pointer):** `get_task_agent_id` resolves via a single hop: `Task` -[`WAS_LAST_EXECUTED_BY`]-> `AgentRuntimeInstance` → `a2a_agent_id`. That head pointer is written by `TaskExecutionStarted` (or defense-in-depth repoint when the first non-nil agent attribution lands in the same normalize batch). Scope-establishment paths (`withTask`, `handle_dispatch`, A2A chat bootstrap) must emit binding via `TaskAgentBinding` / `bind_task_executing_agent` — see `task_agent_binding.rs` and `docs/host-to-agent-event-delivery.md`.
 
 **context_id and task_id retained:** Message and ToolCall must have `a2a:context_id` for `context_messages` and `conversation_context` read queries. Task-scoped nodes need `a2a:task_id` for `export_by_task`. Enrichment fills gaps for nodes reached by traversal (e.g. AgentRuntimeInstance).

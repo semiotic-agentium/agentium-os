@@ -79,6 +79,7 @@ pub(crate) mod surreal_sql;
 pub mod surreal_store;
 pub(crate) mod surreal_tables;
 pub(crate) mod surreal_write_batch;
+pub mod task_agent_binding;
 pub mod task_graph_reader;
 pub mod tool_index;
 pub mod types;
@@ -133,12 +134,16 @@ pub use store::{
     ProvenanceContextReader, ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest,
     ProvenanceOpsQueryResponse, ProvenanceOpsResource, ProvenanceOutcomeSegment,
     ProvenancePlanningQuery, ProvenanceQueryApi, ProvenanceReadIntent, ProvenanceResponseProfile,
-    ProvenanceWriter,
+    ProvenanceWriter, TaskAgentResolution,
 };
 pub use surreal_config::SurrealStoreConfig;
 pub use surreal_store::{
     ContextPickerIndexRow, RemoteConfig, RemoteCredentials, SurrealBackend, SurrealProvenanceStore,
     SurrealStoreBuilder, hydrate_ref_table, prepare_ref_table_for_projection,
+};
+pub use task_agent_binding::{
+    TaskAgentBinding, TaskAgentBindingSource, event_local_executing_agent_id,
+    is_unassigned_executing_agent,
 };
 pub use task_graph_reader::{
     ArtifactRef, HydratedTask, MessageRef, ReplayError, TaskGraphReader, TaskReplayCursor,

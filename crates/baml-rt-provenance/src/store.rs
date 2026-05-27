@@ -67,7 +67,11 @@ use baml_rt_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::{error::Result, events::ProvEvent};
+use crate::{
+    error::{ProvenanceError, Result},
+    events::ProvEvent,
+    task_agent_binding::{TaskAgentBinding, TaskAgentBindingSource},
+};
 
 /// Outcome of resolving the agent that owns a task via graph traversal.
 ///
@@ -82,10 +86,24 @@ pub enum TaskAgentResolution {
 }
 
 impl TaskAgentResolution {
-    pub fn into_option(self) -> Option<AgentId> {
+    /// Write path only — agent-scoped normalization may proceed without a resolved head.
+    pub fn for_normalization(self) -> Option<AgentId> {
         match self {
             Self::Resolved(id) => Some(id),
             Self::NotLinked | Self::TimedOut => None,
+        }
+    }
+
+    /// Episode assembly gate — unbound tasks are not episodes.
+    pub fn require_for_episode(self, task_id: &TaskId) -> Result<AgentId> {
+        match self {
+            Self::Resolved(id) => Ok(id),
+            Self::NotLinked => Err(ProvenanceError::EpisodeUnbound {
+                task_id: task_id.clone(),
+            }),
+            Self::TimedOut => Err(ProvenanceError::EpisodeAgentResolutionTimedOut {
+                task_id: task_id.clone(),
+            }),
         }
     }
 }
@@ -105,6 +123,37 @@ pub trait ProvenanceWriter: ProvenanceContextReader + Send + Sync {
         if let Err(e) = self.add_event(event).await {
             tracing::warn!(error = ?e, context = context, "Failed to record provenance event");
         }
+    }
+
+    /// Idempotent: ensures `TaskExists` + `TaskExecutionStarted` → `WAS_LAST_EXECUTED_BY`.
+    async fn bind_task_executing_agent(&self, binding: TaskAgentBinding) -> Result<()> {
+        tracing::debug!(
+            task_id = binding.task_id.as_str(),
+            agent_id = binding.executing_agent_id.as_str(),
+            source = ?binding.source,
+            "bind_task_executing_agent"
+        );
+        for event in binding.into_events() {
+            self.add_event(event).await?;
+        }
+        Ok(())
+    }
+
+    /// Convenience wrapper for A2A chat bootstrap paths.
+    async fn bind_task_executing_agent_for(
+        &self,
+        context_id: ContextId,
+        task_id: TaskId,
+        executing_agent_id: AgentId,
+        source: TaskAgentBindingSource,
+    ) -> Result<()> {
+        self.bind_task_executing_agent(TaskAgentBinding::new(
+            context_id,
+            task_id,
+            executing_agent_id,
+            source,
+        )?)
+        .await
     }
 }
 

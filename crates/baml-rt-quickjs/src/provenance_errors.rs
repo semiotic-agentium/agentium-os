@@ -50,5 +50,9 @@ pub(crate) fn map_archive_provenance_err(e: ProvenanceError) -> BamlRtError {
             "archive ref provenance message anchor conflict {activity_anchor} in {context_id}: \
              existing node {existing_node_id}, expected {expected_entity_id}"
         )),
+        ProvenanceError::EpisodeUnbound { .. }
+        | ProvenanceError::EpisodeAgentResolutionTimedOut { .. } => {
+            BamlRtError::InvalidArgument(format!("archive ref provenance episode gate: {e}"))
+        }
     }
 }
