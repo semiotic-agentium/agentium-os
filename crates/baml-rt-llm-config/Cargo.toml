@@ -17,5 +17,5 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 serde_yaml = "0.9"
-fnox = "0.1"
+fnox-core = "1"
 tokio = { workspace = true }

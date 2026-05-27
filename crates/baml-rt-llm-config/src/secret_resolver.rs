@@ -11,7 +11,7 @@
 
 use std::{borrow::Borrow, collections::HashMap, path::Path, sync::Arc};
 
-use fnox::config::Config;
+use fnox_core::config::Config;
 use serde::{Deserialize, Serialize};
 
 /// Key that exists in the secret store (e.g. fnox) with a value. Used for cache keys in the
@@ -296,9 +296,7 @@ impl FnoxFileSecretResolver {
 
     /// Load fnox Config and resolve all secrets for the default profile; return key→value map.
     /// Must be called from a thread that is NOT inside a tokio runtime (e.g. from spawn_blocking).
-    fn load_and_resolve(
-        path: &Path,
-    ) -> Result<HashMap<StoreKey, SecretValue>, fnox::error::FnoxError> {
+    fn load_and_resolve(path: &Path) -> anyhow::Result<HashMap<StoreKey, SecretValue>> {
         let config = if path == Path::new("fnox.toml") {
             Config::load_smart(path)?
         } else {
@@ -306,21 +304,18 @@ impl FnoxFileSecretResolver {
         };
         let profile = Config::get_profile(None);
         let secrets = config.get_secrets(&profile)?;
-        let age_key_file = config.age_key_file.as_deref();
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
-            .build()
-            .map_err(|e| fnox::error::FnoxError::Config(e.to_string()))?;
+            .build()?;
 
         let mut cache = HashMap::new();
         for (key, secret_config) in secrets.iter() {
-            match rt.block_on(fnox::secret_resolver::resolve_secret(
+            match rt.block_on(fnox_core::secret_resolver::resolve_secret(
                 &config,
                 &profile,
                 key,
                 secret_config,
-                age_key_file,
             )) {
                 Ok(Some(value)) => {
                     cache.insert(StoreKey::new(key.as_str()), SecretValue::new(value));
