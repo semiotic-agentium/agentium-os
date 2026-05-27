@@ -9,9 +9,18 @@
 | Event Console | `?view=events` | `events/EventConsole.vue`, `useEventConsole.ts` |
 | Settings | `?view=settings` | `SettingsView.vue`, `Config*.vue`, `DeploymentPanel.vue` |
 
-Shared URL params: `agentPackage`, `agentInstance`, `contextId` (where applicable).
+Shared URL param: `view`. Scoped agent/context params (do not mix views):
 
-Event Console also syncs route via `writeEventConsoleRoute()` in `useEventConsole.ts`.
+| View | URL params |
+|------|------------|
+| Chat | `chatAgentPackage`, `chatAgentInstance`, `chatContextId` |
+| Event Console | `eventAgentPackage`, `eventAgentInstance`, `eventContextId` |
+
+Legacy `agentPackage` / `agentInstance` / `contextId` are read as fallback for the **active** view only.
+
+**App shell:** `OperatorAgentSelector` below the navbar — label switches between Chat agent and Compose agent. Chat toolbar and Event compose modal do not duplicate agent pickers.
+
+Event Console syncs route via `writeEventConsoleRoute()` → `writeEventConsoleRouteToUrl()` in `events/operatorRoute.ts`.
 
 ## ProvenancePane tabs
 

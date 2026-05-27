@@ -404,29 +404,34 @@ impl SurrealProvenanceStore {
         let task_exec_node = crate::id_semantics::task_execution_activity_id_string(task_id);
         let scoped = context_scope::SCOPED_TO;
         let task_call = crate::vocabulary::a2a_relations::TASK_CALL;
-        let query = format!(
-            "SELECT node_id FROM {TBL_NODE} \
-             WHERE (label = 'LlmCall' OR label = 'ToolCall') \
-               AND node_id IN (SELECT VALUE from_id FROM {TBL_EDGE} \
-                 WHERE to_id = $ctx_node AND rel_type = '{scoped}') \
-               AND node_id IN (SELECT VALUE to_id FROM {TBL_EDGE} \
-                 WHERE from_id = $task_exec_node AND rel_type = '{task_call}') \
-               AND props.a2a_plan_id = $plan_id \
-               AND props.a2a_step_id = $step_id \
-               AND props.a2a_activity_outcome = 'Success' \
-             LIMIT 1"
-        );
-        let response = self
-            .db
-            .query(&query)
-            .bind(("ctx_node", ctx_node_id))
-            .bind(("task_exec_node", task_exec_node))
-            .bind(("plan_id", plan_id.to_string()))
-            .bind(("step_id", step_id.to_string()))
-            .await
-            .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
-        Ok(!rows.is_empty())
+        for label in ["LlmCall", "ToolCall"] {
+            let query = format!(
+                "SELECT node_id FROM {TBL_NODE} \
+                 WHERE label = '{label}' \
+                   AND node_id IN (SELECT VALUE from_id FROM {TBL_EDGE} \
+                     WHERE to_id = $ctx_node AND rel_type = '{scoped}') \
+                   AND node_id IN (SELECT VALUE to_id FROM {TBL_EDGE} \
+                     WHERE from_id = $task_exec_node AND rel_type = '{task_call}') \
+                   AND props.a2a_plan_id = $plan_id \
+                   AND props.a2a_step_id = $step_id \
+                   AND props.a2a_activity_outcome = 'Success' \
+                 LIMIT 1"
+            );
+            let response = self
+                .db
+                .query(&query)
+                .bind(("ctx_node", ctx_node_id.clone()))
+                .bind(("task_exec_node", task_exec_node.clone()))
+                .bind(("plan_id", plan_id.to_string()))
+                .bind(("step_id", step_id.to_string()))
+                .await
+                .map_err(map_surreal_error)?;
+            let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
+            if !rows.is_empty() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     // -----------------------------------------------------------------------

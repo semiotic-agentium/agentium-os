@@ -331,10 +331,11 @@ mod tests {
             CallbackDispatchContextsLinked::RUNTIME_KIND,
             HostSourcePollRecorded::RUNTIME_KIND,
             HostDispatchAccepted::RUNTIME_KIND,
+            HostDispatchRejected::RUNTIME_KIND,
         );
 
         // Reflective check: typed markers must equal the runtime list of EventGraphKind variants.
-        assert_eq!(ALL_EVENT_KINDS.len(), 22);
+        assert_eq!(ALL_EVENT_KINDS.len(), 23);
     }
 
     #[test]

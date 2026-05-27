@@ -311,6 +311,7 @@ async fn init_store_in_namespace(
         archive_local_serializers: dashmap::DashMap::new(),
         archive_anchor_serializers: dashmap::DashMap::new(),
         ref_table_cache: std::sync::RwLock::new(None),
+        agent_runtime_index_cache: std::sync::RwLock::new(None),
     };
     Ok(Arc::new(store))
 }

@@ -230,7 +230,8 @@ export function buildIngressWireUserMessage(records: unknown[]): ChatMessage {
 }
 
 /**
- * Optimistic transcript rows after publish until provenance conversation-history hydrates.
+ * Optimistic ingress wire preview until provenance conversation-history hydrates.
+ * Publish outcome is shown via timeline milestone + status strip, not chat bubbles.
  */
 export function buildEventConsoleLocalTranscript(input: {
   previewProducedEvent: unknown;
@@ -242,31 +243,11 @@ export function buildEventConsoleLocalTranscript(input: {
   envelope: DerivedDispatchEnvelope | null;
   sampleLabel?: string;
 }): ChatMessage[] {
-  const rows: ChatMessage[] = [];
   const records = recordsFromPreviewBatch(input.previewProducedEvent);
-  if (records.length > 0) {
-    rows.push(buildIngressWireUserMessage(records));
+  if (records.length === 0) {
+    return [];
   }
-
-  const summaryRows = buildOperatorPublishTraceMessages({
-    agentPackage: input.agentPackage,
-    agentInstanceId: input.agentInstanceId,
-    messageShape: input.messageShape,
-    envelope: input.envelope,
-    sampleLabel: input.sampleLabel,
-    outcome: input.outcome,
-    publishError: input.publishError,
-  });
-  for (const row of summaryRows) {
-    if (row.role === "user" && records.length > 0) {
-      continue;
-    }
-    rows.push({
-      ...row,
-      id: `event-console-local-${row.id}`,
-    });
-  }
-  return rows;
+  return [buildIngressWireUserMessage(records)];
 }
 
 export function localTranscriptMatchesScope(
@@ -284,74 +265,39 @@ export function mergeEventConsoleTranscript(
 ): ChatMessage[] {
   if (local.length === 0) return provenance;
 
-  const hasIngress = transcriptHasIngressUserRows(provenance);
-  let retainedLocal = local;
-  if (hasIngress) {
-    retainedLocal = local.filter(
-      (m) => !(m.role === "user" && m.speakerKind === "ingress"),
-    );
+  const byKey = new Map<string, ChatMessage>();
+  for (const message of local) {
+    if (message.role === "user" && message.speakerKind === "ingress") {
+      byKey.set("row:ingress-wire", message);
+    } else if (!message.id.includes("publish-trace")) {
+      byKey.set(message.id, message);
+    }
   }
 
-  const outcomeRow = retainedLocal.find((m) => m.id.includes("publish-trace-outcome"));
-  if (outcomeRow && provenanceHasPublishOutcomeEquivalent(provenance, outcomeRow)) {
-    retainedLocal = retainedLocal.filter((m) => m !== outcomeRow);
-  }
-
-  if (retainedLocal.length === 0) return provenance;
-  if (provenance.length === 0) return retainedLocal;
-
-  const localIds = new Set(retainedLocal.map((m) => m.id));
-  const tail = provenance.filter((m) => !localIds.has(m.id));
-  return [...retainedLocal, ...tail];
-}
-
-function provenanceHasPublishOutcomeEquivalent(
-  provenance: ChatMessage[],
-  localOutcome: ChatMessage,
-): boolean {
-  const failureLines = parsePublishFailureLines(localOutcome.text ?? "");
-  if (failureLines.length === 0) return false;
-  const operational = provenance.flatMap((m) =>
-    (m.contentBlocks ?? []).filter(
-      (b): b is import("../types/a2a").OperationalContentBlock =>
-        b.type === "operational" &&
-        (b.kind === "dispatch_rejected" || b.kind === "dispatch_transport_error"),
-    ),
-  );
-  if (operational.length === 0) return false;
-  return failureLines.every((failure) =>
-    operational.some(
-      (op) =>
-        op.agentPackage === failure.agentPackage &&
-        op.agentInstanceId === failure.agentInstanceId &&
-        (op.detail?.includes(failure.detail) ?? op.summary.includes(failure.detail)),
-    ),
-  );
-}
-
-function parsePublishFailureLines(text: string): Array<{
-  agentPackage: string;
-  agentInstanceId: string;
-  detail: string;
-}> {
-  const lines = text.split("\n");
-  const failures: Array<{ agentPackage: string; agentInstanceId: string; detail: string }> = [];
-  let inFailures = false;
-  for (const line of lines) {
-    if (line.trim() === "Failures:") {
-      inFailures = true;
+  for (const message of provenance) {
+    const isIngress =
+      message.role === "user" &&
+      (message.speakerKind === "ingress" ||
+        message.id.includes("ingress-poll-user") ||
+        message.id.includes("ingress-unit-user") ||
+        message.text?.includes("host.source-records.v1"));
+    if (isIngress) {
+      byKey.set("row:ingress-wire", message);
       continue;
     }
-    if (!inFailures) continue;
-    const match = line.match(/^- ([^/]+)\/([^:]+):\s*(.+)$/);
-    if (!match) continue;
-    failures.push({
-      agentPackage: match[1]!,
-      agentInstanceId: match[2]!,
-      detail: match[3]!.trim(),
-    });
+    if (!byKey.has(message.id)) {
+      byKey.set(message.id, message);
+    }
   }
-  return failures;
+
+  const merged = Array.from(byKey.values());
+  merged.sort((a, b) => {
+    const ta = a.timestamp.getTime();
+    const tb = b.timestamp.getTime();
+    if (ta !== tb) return ta - tb;
+    return a.id.localeCompare(b.id);
+  });
+  return merged;
 }
 
 /** True when transcript includes host-written ingress poll/unit user rows. */

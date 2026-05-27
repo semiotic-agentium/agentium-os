@@ -22,7 +22,7 @@ use axum::{
 use baml_rt_a2a::RegistryDispatchPort;
 use baml_rt_core::{
     A2aWireRequest, AgentDispatchRequest, AgentInstanceId, AgentPackageName, AgentRouteKey,
-    BamlRtError, DeploymentContentHash, DeploymentStatus, ProducedEvent,
+    BamlRtError, DeploymentContentHash, DeploymentStatus, DispatchTarget, ProducedEvent,
     ids::{AgentId, ContextId, TaskId},
     join_error_message,
     publish_to_subscribers,
@@ -1398,18 +1398,19 @@ pub async fn post_events_publish(
         Ok(outcome) => {
             if let Some(recorder) = state.host_ingress_recorder.as_ref() {
                 for (route, failure) in &outcome.failures {
-                    let transport = matches!(
-                        failure,
-                        baml_rt_core::SubscriberDeliveryFailure::Dispatch { .. }
-                    );
+                    // Agent rejections are recorded by the runner dispatch boundary; publish
+                    // only records transport failures where dispatch never returned an ack.
+                    let baml_rt_core::SubscriberDeliveryFailure::Dispatch { detail } = failure
+                    else {
+                        continue;
+                    };
+                    let agent_id = state
+                        .deployed_agent_lookup
+                        .as_ref()
+                        .and_then(|lookup| lookup.agent_id_for_route(route));
+                    let target = DispatchTarget::with_optional_agent(route.clone(), agent_id);
                     if let Err(err) = recorder
-                        .record_dispatch_rejected(
-                            &dispatch_request,
-                            route.agent_package.as_str(),
-                            route.agent_instance_id.as_str(),
-                            &failure.detail(),
-                            transport,
-                        )
+                        .record_dispatch_rejected(&dispatch_request, target, detail, true)
                         .await
                     {
                         tracing::warn!(
@@ -1626,7 +1627,8 @@ fn parse_context_index_request(
         ("agentPackage" = Option<String>, Query, description = "Optional agent package filter"),
         ("limit" = Option<u32>, Query, description = "Page size in range [1, 200], default 50"),
         ("cursor" = Option<String>, Query, description = "Opaque pagination cursor"),
-        ("eventOnly" = Option<bool>, Query, description = "When true, only host ingress / event dispatch contexts")
+        ("eventOnly" = Option<bool>, Query, description = "When true, only host ingress / event dispatch contexts"),
+        ("chatOnly" = Option<bool>, Query, description = "When true, only conversational contexts without host ingress (Chat picker)")
     ),
     responses(
         (status = 200, description = "Context picker page", body = ContextPickerPageDto),
@@ -1848,6 +1850,7 @@ pub async fn get_conversation_history_stream(
                     latest.max_event_order = page.max_event_order.max(latest.max_event_order);
                     latest.awaiting_input = page.awaiting_input;
                     latest.input_required_prompt = page.input_required_prompt.clone();
+                    latest.llm_call_count = page.llm_call_count;
                     latest.version = page.version.clone();
                     last_event_order = latest.max_event_order;
                     let serialize_start = Instant::now();

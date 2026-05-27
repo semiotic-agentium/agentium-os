@@ -16,6 +16,8 @@ export type ObservationSource = "picker" | "publish" | "draft";
 export interface EventObservationState {
   contextId: string | null;
   source: ObservationSource;
+  /** Dispatch-unit task id resolved for provenance/episode scoping (picker deep-links). */
+  taskId?: string | null;
 }
 
 export interface ResolvedObservationIds {

@@ -2,7 +2,10 @@
 import { ref, computed, nextTick, watch } from "vue";
 import type { AgentDiscoveryEntry, ChatMessage, HistoryHydrateState } from "../types/a2a";
 import type { TraceObserveState } from "../composables/useEventObservation";
+import type { EventRunMeta } from "../events/eventTranscriptModel";
+import { normalizeEventTranscriptRows } from "../events/eventTranscriptModel";
 import MessageBubble from "./MessageBubble.vue";
+import EventTranscriptRow from "./events/EventTranscriptRow.vue";
 
 export type TranscriptHydrateState = HistoryHydrateState | TraceObserveState;
 
@@ -20,6 +23,8 @@ const props = withDefaults(
     waitingForIngress?: boolean;
     /** Event: a publish completed for the current scope */
     hasPublishedRun?: boolean;
+    /** Event Console run metadata for timeline rows + skeletons */
+    eventRunMeta?: EventRunMeta | null;
   }>(),
   {
     hydrateState: "idle",
@@ -28,11 +33,11 @@ const props = withDefaults(
     agents: () => [],
     waitingForIngress: false,
     hasPublishedRun: false,
+    eventRunMeta: null,
   },
 );
 
 const emit = defineEmits<{
-  "select-agent": [agent: AgentDiscoveryEntry];
   "open-settings": [];
   "compose-event": [];
   "focus-event-run": [];
@@ -62,8 +67,30 @@ function onMessagesScroll() {
 
 const hydrate = computed(() => props.hydrateState ?? "idle");
 
-/** Context restore: scroll to top after bulk hydrate (chat + event history pick). */
+const showEventSkeleton = computed(() => {
+  if (props.variant !== "event" || !props.eventRunMeta) return false;
+  if (props.messages.length > 0) return false;
+  const h = props.eventRunMeta.hydrateState;
+  return (
+    props.eventRunMeta.hasPublishedRun &&
+    (h === "loading" || h === "waiting")
+  );
+});
+
+const eventTranscriptRows = computed(() => {
+  if (props.variant !== "event" || !props.eventRunMeta) return [];
+  return normalizeEventTranscriptRows(props.messages, props.eventRunMeta, {
+    includeSkeletons: showEventSkeleton.value,
+  });
+});
+
+const useEventTimeline = computed(
+  () => props.variant === "event" && props.eventRunMeta != null,
+);
+
+/** Context restore: scroll to top after bulk hydrate (chat only). */
 watch(hydrate, async (next, prev) => {
+  if (props.variant === "event") return;
   if (next === "loading") {
     userAtBottom.value = false;
   }
@@ -154,6 +181,7 @@ defineExpose({
     <div
       ref="messagesContainer"
       class="messages"
+      :class="{ 'event-transcript': useEventTimeline }"
       role="log"
       aria-live="polite"
       :aria-labelledby="variant === 'event' ? 'event-console-transcript-heading' : undefined"
@@ -163,24 +191,9 @@ defineExpose({
       <template v-if="variant === 'chat'">
         <div
           v-if="messages.length === 0 && disabled && agents.length > 0"
-          class="empty-state empty-state--picker"
+          class="empty-state"
         >
-          <span class="empty-state-text">Pick an agent to start</span>
-          <div class="agent-picker-grid">
-            <button
-              v-for="agent in agents"
-              :key="agent.agent_package + '/' + agent.agent_instance_id"
-              type="button"
-              class="agent-picker-card"
-              @click="emit('select-agent', agent)"
-            >
-              <span class="agent-picker-card__name">{{ agent.name }}</span>
-              <span
-                v-if="agent.agent_card.description"
-                class="agent-picker-card__desc"
-              >{{ agent.agent_card.description }}</span>
-            </button>
-          </div>
+          <span class="empty-state-text">Select a chat agent above to start</span>
         </div>
         <div
           v-else-if="messages.length === 0 && disabled && agents.length === 0"
@@ -208,9 +221,14 @@ defineExpose({
           <span class="empty-state-text">{{ emptyStateTitle }}</span>
           <span v-if="emptyStateSubtitle" class="empty-state-subtitle">{{ emptyStateSubtitle }}</span>
         </div>
+        <MessageBubble
+          v-for="(msg, i) in messages"
+          :key="msg.id ?? `chat-msg-${i}`"
+          :message="msg"
+        />
       </template>
 
-      <template v-else>
+      <template v-else-if="useEventTimeline">
         <div
           v-if="messages.length === 0 && showEventOnboarding"
           class="empty-state empty-state--event-onboarding"
@@ -230,7 +248,10 @@ defineExpose({
             </button>
           </div>
         </div>
-        <div v-else-if="messages.length === 0" class="empty-state">
+        <div
+          v-else-if="eventTranscriptRows.length === 0 && !showEventSkeleton"
+          class="empty-state"
+        >
           <svg
             class="empty-state-icon"
             xmlns="http://www.w3.org/2000/svg"
@@ -257,17 +278,16 @@ defineExpose({
             Publish Event
           </button>
         </div>
+        <EventTranscriptRow
+          v-for="row in eventTranscriptRows"
+          :key="row.key"
+          :row="row"
+        />
       </template>
-
-      <MessageBubble
-        v-for="(msg, i) in messages"
-        :key="msg.id ?? `msg-${i}`"
-        :message="msg"
-      />
     </div>
 
     <div
-      v-if="variant === 'event' && isStreaming"
+      v-if="variant === 'chat' && isStreaming"
       class="working-indicator"
       role="status"
       aria-live="polite"

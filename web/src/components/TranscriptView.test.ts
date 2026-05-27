@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import TranscriptView from "./TranscriptView.vue";
+import type { EventRunMeta } from "../events/eventTranscriptModel";
+
+function idleEventMeta(overrides: Partial<EventRunMeta> = {}): EventRunMeta {
+  return {
+    dispatchPhase: "empty",
+    hydrateState: "idle",
+    lastPublishOutcome: null,
+    publishError: null,
+    waitingForIngress: false,
+    hasPublishedRun: false,
+    ...overrides,
+  };
+}
 
 describe("TranscriptView event variant", () => {
   it("renders onboarding panel when no context and idle", () => {
@@ -10,6 +23,7 @@ describe("TranscriptView event variant", () => {
         variant: "event",
         hydrateState: "idle",
         selectedContextId: null,
+        eventRunMeta: idleEventMeta(),
       },
     });
     expect(wrapper.text()).toContain("Observe an Event Run");
@@ -24,6 +38,7 @@ describe("TranscriptView event variant", () => {
         variant: "event",
         hydrateState: "idle",
         selectedContextId: null,
+        eventRunMeta: idleEventMeta(),
       },
     });
     await wrapper.get(".empty-state-action--primary").trigger("click");
@@ -37,6 +52,7 @@ describe("TranscriptView event variant", () => {
         variant: "event",
         hydrateState: "idle",
         selectedContextId: null,
+        eventRunMeta: idleEventMeta(),
       },
     });
     const buttons = wrapper.findAll(".empty-state-action");
@@ -44,5 +60,23 @@ describe("TranscriptView event variant", () => {
     expect(pickRun).toBeDefined();
     await pickRun!.trigger("click");
     expect(wrapper.emitted("focus-event-run")).toHaveLength(1);
+  });
+
+  it("shows skeleton timeline rows while provenance loads after publish", () => {
+    const wrapper = mount(TranscriptView, {
+      props: {
+        messages: [],
+        variant: "event",
+        hydrateState: "loading",
+        selectedContextId: "ctx-1",
+        hasPublishedRun: true,
+        eventRunMeta: idleEventMeta({
+          hydrateState: "loading",
+          hasPublishedRun: true,
+          waitingForIngress: true,
+        }),
+      },
+    });
+    expect(wrapper.findAll(".event-lane-card--skeleton").length).toBeGreaterThan(0);
   });
 });

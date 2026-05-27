@@ -16,8 +16,8 @@ use baml_rt_api::RuntimeProgressMeter;
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
     AgentDispatchRequest, AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey,
-    BamlRtError, ConversationHistoryUpdate, DeploymentContentHash, DeploymentManager,
-    DeploymentRecord, DeploymentStatus, Result, UndeployResult,
+    BamlRtError, ConversationHistoryUpdate, DeployedAgentLookup, DeploymentContentHash,
+    DeploymentManager, DeploymentRecord, DeploymentStatus, DispatchTarget, Result, UndeployResult,
     bus::BusStream,
     callback_scheduling_scopes_differ_from_dispatch, context,
     ids::{AgentId, ContextId, TaskId},
@@ -636,18 +636,13 @@ impl AgentRunner {
             })?
         };
         let link_event = callback_dispatch_context_link_event(&request, routed_agent.agent_id());
-        let agent_package = key.agent_package.as_str().to_string();
-        let agent_instance = key.agent_instance_id.as_str().to_string();
+        let dispatch_target = DispatchTarget::new(key.clone(), routed_agent.agent_id().clone());
         let dispatch_snapshot = request.clone();
         let ack = routed_agent.handle_dispatch(request).await?;
         if ack.accepted {
             if let Err(err) = self
                 .host_ingress_recorder
-                .record_dispatch_accepted(
-                    &dispatch_snapshot,
-                    agent_package.as_str(),
-                    agent_instance.as_str(),
-                )
+                .record_dispatch_accepted(&dispatch_snapshot, dispatch_target.clone())
                 .await
             {
                 tracing::warn!(error = %err, "host dispatch accepted provenance write failed");
@@ -662,8 +657,7 @@ impl AgentRunner {
             .host_ingress_recorder
             .record_dispatch_rejected(
                 &dispatch_snapshot,
-                agent_package.as_str(),
-                agent_instance.as_str(),
+                dispatch_target,
                 ack.detail.as_deref().unwrap_or("rejected"),
                 false,
             )
@@ -1105,5 +1099,14 @@ impl DeploymentManager for AgentRunner {
 
     async fn list_deployments(&self) -> Result<Vec<DeploymentRecord>> {
         self.deployment_state.list_deployments().await
+    }
+}
+
+impl DeployedAgentLookup for AgentRunner {
+    fn agent_id_for_route(&self, route: &AgentRouteKey) -> Option<AgentId> {
+        let routed_agents = self.routed_agents.read().expect("RwLock poison");
+        routed_agents
+            .get(route)
+            .map(|agent| agent.agent_id().clone())
     }
 }

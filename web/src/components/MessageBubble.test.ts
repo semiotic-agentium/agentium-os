@@ -14,6 +14,36 @@ function ingressMessage(text: string): ChatMessage {
   };
 }
 
+describe("MessageBubble operational cards", () => {
+  it("does not repeat detail when summary already embeds the agent reason", () => {
+    const wrapper = mount(MessageBubble, {
+      props: {
+        message: {
+          id: "op-1",
+          role: "agent",
+          speakerKind: "host",
+          text: "",
+          timestamp: new Date(),
+          contentBlocks: [
+            {
+              type: "operational",
+              kind: "dispatch_rejected",
+              severity: "error",
+              summary:
+                "Host dispatch rejected: event:intake → slack-agent/default — clarify channel",
+              detail: "clarify channel",
+              agentPackage: "slack-agent",
+              agentInstanceId: "default",
+            },
+          ],
+        },
+      },
+    });
+    expect(wrapper.findAll(".operational-card__detail")).toHaveLength(0);
+    expect(wrapper.text()).toContain("clarify channel");
+  });
+});
+
 describe("MessageBubble ingress wire", () => {
   it("renders full-width ingress card with readable code block (not user bubble)", () => {
     const payload = `${INGRESS_WIRE_BODY_DELIMITER}\n{"records":[{"text":"hello"}]}`;

@@ -688,7 +688,8 @@ fn build_graph_fragment(normalized: &NormalizedProv, context_id: Option<&str>) -
             | A2aRelationType::TaskStatusTransition
             | A2aRelationType::MessageCall
             | A2aRelationType::InformedByObservation
-            | A2aRelationType::LifecycleStopInformedByBoot => {
+            | A2aRelationType::LifecycleStopInformedByBoot
+            | A2aRelationType::HostDispatchTarget => {
                 let from_label = label_for_prov_node_ref(
                     &relation.from,
                     &entity_labels,

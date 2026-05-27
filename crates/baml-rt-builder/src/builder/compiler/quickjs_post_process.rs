@@ -60,6 +60,9 @@ fn strip_export_keywords_for_quickjs(content: &str) -> String {
             let trimmed = line.trim_start();
             if trimmed == "export {};" || trimmed == "export {}" {
                 String::new()
+            } else if trimmed.starts_with("export {") && !trimmed.contains(" from ") {
+                // Named re-exports without a value binding are dropped after sibling inlining.
+                String::new()
             } else if trimmed.starts_with("export ") {
                 line.replacen("export ", "", 1)
             } else {
@@ -71,14 +74,30 @@ fn strip_export_keywords_for_quickjs(content: &str) -> String {
 }
 
 fn parse_relative_import_spec(line: &str) -> Option<&str> {
+    parse_relative_module_spec(line, "import ")
+}
+
+/// `export { ... } from "./sibling"` — inline sibling and drop the re-export line.
+fn parse_relative_reexport_from_spec(line: &str) -> Option<&str> {
     let trimmed = line.trim();
-    if !trimmed.starts_with("import ") {
+    if !trimmed.starts_with("export {") {
+        return None;
+    }
+    parse_relative_module_spec(line, "export {")
+}
+
+fn parse_relative_module_spec<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with(prefix) {
         return None;
     }
     let from_idx = trimmed.find(" from ")?;
     let spec = trimmed[from_idx + " from ".len()..].trim();
     let spec = spec.strip_suffix(';').unwrap_or(spec).trim();
-    let spec = spec.strip_prefix('"')?.strip_suffix('"')?;
+    let spec = spec
+        .strip_prefix('"')
+        .or_else(|| spec.strip_prefix('\''))
+        .and_then(|s| s.strip_suffix('"').or_else(|| s.strip_suffix('\'')))?;
     spec.starts_with("./").then_some(spec)
 }
 
@@ -102,7 +121,9 @@ pub fn inline_local_imports_for_quickjs(
     let mut body = String::new();
 
     for line in content.lines() {
-        if let Some(spec) = parse_relative_import_spec(line) {
+        let reexport_or_import =
+            parse_relative_import_spec(line).or_else(|| parse_relative_reexport_from_spec(line));
+        if let Some(spec) = reexport_or_import {
             let dep_path = resolve_relative_import(spec, dist_dir);
             if dep_path.is_file() && visiting.insert(dep_path.clone()) {
                 let dep_content = fs::read_to_string(&dep_path)?;
@@ -225,6 +246,23 @@ mod tests {
         let s = "a();\nexport {};\n";
         let out = post_process_js_chunk_for_quickjs(s);
         assert_eq!(out, "a();");
+    }
+
+    #[test]
+    fn post_process_index_inlines_export_reexport_from_sibling() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("workflow.js"),
+            "export const PKG = \"clickup-execute\";\n",
+        )
+        .expect("write workflow");
+        let index = "export { PKG } from \"./workflow\";\nrun();\n";
+        let out =
+            post_process_js_index_for_quickjs(index, "// shim", dir.path()).expect("post-process");
+        assert!(out.contains("const PKG = \"clickup-execute\""));
+        assert!(out.contains("run();"));
+        assert!(!out.contains(" from \"./workflow\""));
+        assert!(!out.contains("{ PKG } from"));
     }
 
     #[test]

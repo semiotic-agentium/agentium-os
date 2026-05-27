@@ -5,10 +5,13 @@
 //! Episode service trait and response DTOs.
 
 use async_trait::async_trait;
-use baml_rt_conversation::episode::{
-    ArtifactSummary, Episode, EpisodeContent, EpisodeDriftCall, EpisodeDriftSummary,
-    EpisodeDuration, EpisodeEntry, EpisodeOutcome, IntentRevision, PlanRevision, PlanStepEntry,
-    SessionHistoryLine, StepType, TerminalStatus, TokenSummary,
+use baml_rt_conversation::{
+    episode::{
+        ArtifactSummary, Episode, EpisodeContent, EpisodeDriftCall, EpisodeDriftSummary,
+        EpisodeDuration, EpisodeEntry, EpisodeOutcome, IntentRevision, PlanRevision, PlanStepEntry,
+        SessionHistoryLine, StepType, TerminalStatus, TokenSummary,
+    },
+    operational::{OperationalEventContent, OperationalEventKind, OperationalEventSeverity},
 };
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -74,6 +77,7 @@ pub enum StepTypeDto {
     PlanRevision,
     StatusTransition,
     ArtifactEmitted,
+    OperationalEvent,
 }
 
 /// Episode entry content for UI display.
@@ -106,6 +110,25 @@ pub enum EpisodeContentDto {
         name: String,
         media_type: Option<String>,
         size_bytes: Option<usize>,
+    },
+    Operational {
+        kind: String,
+        severity: String,
+        summary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_package: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_instance_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure_class: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        failure_evidence: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        old_status: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        new_status: Option<String>,
     },
 }
 
@@ -348,7 +371,43 @@ impl From<StepType> for StepTypeDto {
             StepType::PlanRevision => Self::PlanRevision,
             StepType::StatusTransition => Self::StatusTransition,
             StepType::ArtifactEmitted => Self::ArtifactEmitted,
+            StepType::OperationalEvent => Self::OperationalEvent,
         }
+    }
+}
+
+fn operational_kind_to_str(kind: OperationalEventKind) -> &'static str {
+    match kind {
+        OperationalEventKind::DispatchRejected => "dispatch_rejected",
+        OperationalEventKind::DispatchTransportError => "dispatch_transport_error",
+        OperationalEventKind::DispatchAccepted => "dispatch_accepted",
+        OperationalEventKind::SourcePollRecorded => "source_poll_recorded",
+        OperationalEventKind::LlmCallFailed => "llm_call_failed",
+        OperationalEventKind::PromptRejected => "prompt_rejected",
+        OperationalEventKind::TaskStatusChanged => "task_status_changed",
+    }
+}
+
+fn operational_severity_to_str(severity: OperationalEventSeverity) -> &'static str {
+    match severity {
+        OperationalEventSeverity::Info => "info",
+        OperationalEventSeverity::Warning => "warning",
+        OperationalEventSeverity::Error => "error",
+    }
+}
+
+fn operational_event_to_dto(op: OperationalEventContent) -> EpisodeContentDto {
+    EpisodeContentDto::Operational {
+        kind: operational_kind_to_str(op.kind).to_string(),
+        severity: operational_severity_to_str(op.severity).to_string(),
+        summary: op.summary,
+        detail: op.detail,
+        agent_package: op.agent_package,
+        agent_instance_id: op.agent_instance_id,
+        failure_class: op.failure_class,
+        failure_evidence: op.failure_evidence,
+        old_status: op.old_status,
+        new_status: op.new_status,
     }
 }
 
@@ -389,6 +448,7 @@ impl From<EpisodeContent> for EpisodeContentDto {
                 media_type,
                 size_bytes,
             },
+            EpisodeContent::Operational(op) => operational_event_to_dto(op),
         }
     }
 }

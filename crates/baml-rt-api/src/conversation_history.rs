@@ -13,12 +13,13 @@ use std::{
     collections::{HashSet, hash_map::DefaultHasher},
     error::Error,
     fmt,
-    hash::{Hash, Hasher},
+    hash::Hash,
 };
 
 use async_trait::async_trait;
 use baml_rt_conversation::{
     operational::{OperationalEventContent, OperationalEventKind, OperationalEventSeverity},
+    planning::{PlanningEventContent, PlanningEventKind},
     view::{
         ConversationItemContent, ProvenanceConversationContextItem, ToolOutcome, ToolSessionPhase,
     },
@@ -330,6 +331,13 @@ pub struct ConversationHistoryPageDto {
     /// treat absence as unknown rather than as a signal.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_required_prompt: Option<String>,
+    /// Task-scoped LLM count via `A2A_TASK_CALL` (observation fingerprint input).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub llm_call_count: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// One completed LLM call’s prompt telemetry (for UI / SSE merge).
@@ -396,6 +404,22 @@ pub enum ConversationHistoryContentDto {
         failure_class: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         failure_evidence: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        old_status: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        new_status: Option<String>,
+    },
+    PlanningEvent {
+        kind: String,
+        summary: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        intent_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        plan_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        step_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         old_status: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -507,6 +531,28 @@ fn operational_severity_wire(severity: OperationalEventSeverity) -> String {
         .unwrap_or_else(|| "info".to_string())
 }
 
+fn planning_kind_wire(kind: PlanningEventKind) -> String {
+    serde_json::to_value(kind)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+impl From<PlanningEventContent> for ConversationHistoryContentDto {
+    fn from(value: PlanningEventContent) -> Self {
+        Self::PlanningEvent {
+            kind: planning_kind_wire(value.kind),
+            summary: value.summary,
+            detail: value.detail,
+            intent_id: value.intent_id,
+            plan_id: value.plan_id,
+            step_id: value.step_id,
+            old_status: value.old_status,
+            new_status: value.new_status,
+        }
+    }
+}
+
 impl From<OperationalEventContent> for ConversationHistoryContentDto {
     fn from(value: OperationalEventContent) -> Self {
         Self::OperationalEvent {
@@ -551,6 +597,7 @@ impl From<ConversationItemContent> for ConversationHistoryContentDto {
                 read_replay_lines: session_step.read_replay_lines,
             },
             ConversationItemContent::Operational(op) => op.into(),
+            ConversationItemContent::Planning(plan) => plan.into(),
         }
     }
 }
@@ -611,6 +658,7 @@ pub async fn merge_conversation_history_pages(
                 page.prompt_message_chars_session_current,
                 page.awaiting_input,
                 page.input_required_prompt.as_deref(),
+                page.llm_call_count,
             );
             return Ok(page);
         };
@@ -650,8 +698,10 @@ pub fn page_version(
     prompt_message_chars_session_current: Option<u64>,
     awaiting_input: bool,
     input_required_prompt: Option<&str>,
+    llm_call_count: u32,
 ) -> String {
     let mut hasher = DefaultHasher::new();
+    llm_call_count.hash(&mut hasher);
     for item in items {
         item.timestamp_ms.hash(&mut hasher);
         item.activity_anchor.hash(&mut hasher);
@@ -659,17 +709,30 @@ pub fn page_version(
         let content = serde_json::to_string(&item.content).unwrap_or_default();
         content.hash(&mut hasher);
     }
-    for op in llm_prompt_operations {
-        op.activity_anchor.hash(&mut hasher);
-        op.event_order.hash(&mut hasher);
-        op.prompt_context_bytes_current.hash(&mut hasher);
-        op.prompt_message_chars_current.hash(&mut hasher);
-    }
-    prompt_context_bytes_session_current.hash(&mut hasher);
-    prompt_message_chars_session_current.hash(&mut hasher);
-    awaiting_input.hash(&mut hasher);
-    input_required_prompt.hash(&mut hasher);
-    format!("v1:{:x}", hasher.finish())
+    let prompt_ops: Vec<baml_rt_provenance::PromptOpsVersionRow<'_>> = llm_prompt_operations
+        .iter()
+        .map(|op| baml_rt_provenance::PromptOpsVersionRow {
+            activity_anchor: &op.activity_anchor,
+            event_order: op.event_order,
+            prompt_context_bytes_current: op.prompt_context_bytes_current,
+            prompt_message_chars_current: op.prompt_message_chars_current,
+        })
+        .collect();
+    baml_rt_provenance::hash_page_envelope(
+        &mut hasher,
+        baml_rt_provenance::PageVersionEnvelope {
+            prompt_ops: &prompt_ops,
+            prompt_context_bytes_session_current,
+            prompt_message_chars_session_current,
+            resume: baml_rt_provenance::ResumeVersionHints {
+                awaiting_input,
+                input_required_prompt,
+            },
+        },
+    );
+    baml_rt_provenance::observation_version_from_hasher(hasher)
+        .as_str()
+        .to_string()
 }
 
 pub trait ConversationHistoryEventService: Send + Sync {
@@ -679,12 +742,9 @@ pub trait ConversationHistoryEventService: Send + Sync {
 pub fn paginate_items(
     mut rows: Vec<ProvenanceConversationContextItem>,
     request: &ConversationHistoryRequest,
+    llm_call_count: u32,
 ) -> Result<ConversationHistoryPageDto, ConversationHistoryError> {
-    rows.sort_by(|a, b| {
-        a.timestamp_ms
-            .cmp(&b.timestamp_ms)
-            .then_with(|| a.activity_anchor.as_str().cmp(b.activity_anchor.as_str()))
-    });
+    baml_rt_provenance::sort_transcript_items(&mut rows);
 
     let start = request
         .offset_from_cursor()
@@ -711,7 +771,7 @@ pub fn paginate_items(
     };
     let items: Vec<ConversationHistoryItemDto> = page_rows.into_iter().map(Into::into).collect();
     let max_event_order = items.last().map(|item| item.timestamp_ms).unwrap_or(0);
-    let version = page_version(&items, &[], None, None, false, None);
+    let version = page_version(&items, &[], None, None, false, None, llm_call_count);
 
     Ok(ConversationHistoryPageDto {
         context_id: request.context_id.as_str().to_string(),
@@ -725,7 +785,22 @@ pub fn paginate_items(
         llm_prompt_operations: Vec::new(),
         awaiting_input: false,
         input_required_prompt: None,
+        llm_call_count,
     })
+}
+
+pub fn apply_conversation_history_profile(
+    items: Vec<ConversationHistoryItemDto>,
+    profile: ConversationHistoryProfile,
+) -> Vec<ConversationHistoryItemDto> {
+    if matches!(profile, ConversationHistoryProfile::Full) {
+        return items;
+    }
+    items
+        .into_iter()
+        .filter(|item| include_in_conversation_history_profile(item, profile))
+        .map(|item| profile_filter(item, profile))
+        .collect()
 }
 
 pub fn include_in_conversation_history_profile(
@@ -737,6 +812,7 @@ pub fn include_in_conversation_history_profile(
         ConversationHistoryProfile::Compact => !matches!(
             item.content,
             ConversationHistoryContentDto::OperationalEvent { .. }
+                | ConversationHistoryContentDto::PlanningEvent { .. }
         ),
     }
 }

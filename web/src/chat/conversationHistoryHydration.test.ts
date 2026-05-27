@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { ref } from "vue";
 import type { ChatMessage, ConversationHistoryPage } from "../types/a2a";
-import { applyConversationHistoryPage } from "./conversationHistoryHydration";
+import {
+  applyConversationHistoryDelta,
+  applyConversationHistoryPage,
+  ConversationHistoryDeltaApplyMode,
+} from "./conversationHistoryHydration";
 
 describe("applyConversationHistoryPage user speaker kind", () => {
   it("maps API userSpeakerKind onto ChatMessage.speakerKind", () => {
@@ -107,5 +111,42 @@ describe("applyConversationHistoryPage user speaker kind", () => {
     applyConversationHistoryPage(messages, page);
     expect(messages.value[0]?.speakerKind).toBe("host");
     expect(messages.value[0]?.contentBlocks?.[0]?.type).toBe("operational");
+  });
+
+  it("upserts operational_event rows when the same delta is applied twice", () => {
+    const messages = ref<ChatMessage[]>([]);
+    const page: ConversationHistoryPage = {
+      contextId: "ctx-1",
+      version: "v1",
+      maxEventOrder: 1,
+      items: [
+        {
+          timestampMs: 1,
+          activityAnchor: "host-ingress:op-dedupe",
+          role: "host",
+          content: {
+            type: "operational_event",
+            kind: "dispatch_rejected",
+            severity: "error",
+            summary: "Host dispatch rejected",
+            detail: "rejected",
+            agent_package: "pkg",
+            agent_instance_id: "default",
+          },
+        },
+      ],
+    };
+    applyConversationHistoryDelta(
+      messages,
+      page,
+      ConversationHistoryDeltaApplyMode.Full,
+    );
+    applyConversationHistoryDelta(
+      messages,
+      page,
+      ConversationHistoryDeltaApplyMode.Full,
+    );
+    expect(messages.value).toHaveLength(1);
+    expect(messages.value[0]?.id).toBe("prov-op-host-ingress:op-dedupe");
   });
 });

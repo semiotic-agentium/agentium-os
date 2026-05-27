@@ -862,7 +862,21 @@ fn conv_item_to_entries(
                 )
             }
         },
-        ConversationItemContent::Operational(_) => return Ok(Vec::new()),
+        ConversationItemContent::Operational(op) => {
+            *seq += 1;
+            return Ok(vec![EpisodeEntry {
+                seq: *seq,
+                step_type: StepType::OperationalEvent,
+                role: item.role.clone(),
+                elapsed_ms,
+                content: EpisodeContent::Operational(op.clone()),
+                activity_anchor: anchor,
+                citation_strings: Vec::new(),
+            }]);
+        }
+        ConversationItemContent::Planning(_) => {
+            return Ok(Vec::new());
+        }
     };
 
     *seq += 1;

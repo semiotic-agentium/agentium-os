@@ -1,12 +1,12 @@
 /// <reference path="./baml-runtime.d.ts" />
 import type { ClickUpIntent, RunContext, SessionResult } from "./baml-runtime";
 import {
-  executeClickUpPlan,
   isClickUpIntent,
   isNeedClarification,
   isNotRelevant,
   onClickupSourceDispatch,
   parseClickUpStructuredPlanFromPlanning,
+  runClickUpStructuredPlan,
   textReply,
   validateClickUpPlanForExecution,
 } from "./clickupExecution";
@@ -60,8 +60,8 @@ __chat_register({
       };
     }
 
-    return executeClickUpPlan(
-      ctx,
+    return runClickUpStructuredPlan(
+      `clickup-chat-${Date.now()}`,
       structured,
       resolvedIntent.intent,
       resolvedIntent.operation_kind,

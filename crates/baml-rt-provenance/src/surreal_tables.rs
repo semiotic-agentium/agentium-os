@@ -17,6 +17,10 @@ pub(crate) const TBL_ARCHIVE_BODY: &str = "archive_body";
 pub(crate) const TBL_HISTORY_REF_REGISTRY: &str = "history_ref_registry";
 /// Monotonic per-context ref counter shared by `#N` and flat `@N` (`prefix = 1`) slots.
 pub(crate) const TBL_SESSION_REF_COUNTER: &str = "session_ref_counter";
+/// Write-maintained agent package → runtime instance node id registry.
+pub(crate) const TBL_AGENT_PACKAGE_INSTANCE: &str = "agent_package_instance";
+/// Materialized context picker rows (latest message per context).
+pub(crate) const TBL_CONTEXT_PICKER_INDEX: &str = "context_picker_index";
 
 /// Column list for `PayloadRecord` round-trip SELECTs (must match serde fields).
 pub(crate) const PAYLOAD_ROW_SELECT: &str = "payload_id, activity_anchor_id, activity_id, payload_kind, payload_json, content_hash, storage_kind, file_key, search_text";

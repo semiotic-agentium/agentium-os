@@ -1,23 +1,12 @@
 //! Host dispatch ingress natives: unit task scope push/pop around `withTask` preludes.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 use baml_rt_core::{BamlRtError, Result, dispatch_ingress::DispatchWorkUnit};
 use quickjs_runtime::values::JsValueFacade;
 use serde_json::{Value, json};
 
-use super::{
-    QuickJSBridge,
-    scope::{InvocationContextId, resolve_scope_from_active_context},
-    types::InFlightGuard,
-};
-
-static DISPATCH_UNIT_FRAME_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn next_dispatch_unit_frame_id() -> InvocationContextId {
-    let n = DISPATCH_UNIT_FRAME_COUNTER.fetch_add(1, Ordering::Relaxed);
-    InvocationContextId(format!("dispatch-unit-frame-{n}"))
-}
+use super::{QuickJSBridge, scope::resolve_scope_from_active_context, types::InFlightGuard};
 
 fn js_err(message: impl std::fmt::Display) -> quickjs_runtime::jsutils::JsError {
     quickjs_runtime::jsutils::JsError::new_str(&message.to_string())
@@ -108,12 +97,11 @@ pub(super) async fn register_dispatch_ingress_helpers(bridge: &QuickJSBridge) ->
                         .with_task_prelude(&parent_scope, agent_id, unit)
                         .await
                         .map_err(rt_err)?;
-                    let frame_id = next_dispatch_unit_frame_id();
                     {
                         let mut guard = registry.lock().map_err(|_| {
                             js_err("invocation context registry lock poisoned")
                         })?;
-                        guard.enter(prelude.scope.clone(), None);
+                        let frame_id = guard.enter(prelude.scope.clone(), None);
                         let mut frames = unit_frames.lock().map_err(|_| {
                             js_err("dispatch unit frame stack lock poisoned")
                         })?;

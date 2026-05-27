@@ -291,6 +291,19 @@ fn dedup_agents_by_type<'a>(
         if nodes.len() <= 1 {
             continue;
         }
+        let boot_complete = nodes
+            .iter()
+            .filter(|n| {
+                n.properties
+                    .get(a2a::ARCHIVE_PATH)
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.is_empty())
+            })
+            .count();
+        // Never merge boot-complete instances with route stubs or headless nodes.
+        if boot_complete > 0 && boot_complete < nodes.len() {
+            continue;
+        }
         // Keep the first node (stable: nodes are sorted by id in ExportedGraph).
         let kept = nodes[0];
         for dup in &nodes[1..] {

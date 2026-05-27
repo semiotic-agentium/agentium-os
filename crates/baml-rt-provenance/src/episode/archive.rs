@@ -270,6 +270,7 @@ pub(crate) fn absorb_episode_entry_into_ref_table(
                 summary.as_str(),
             );
         }
+        EpisodeContent::Operational(_) => {}
     }
 }
 

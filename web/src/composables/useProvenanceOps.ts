@@ -20,6 +20,8 @@ export interface ProvenanceQueryState {
   previousCursors: string[];
 }
 
+const PROVENANCE_OPS_FETCH_TIMEOUT_MS = 20_000;
+
 interface AutoRefreshOptions {
   activeRef?: Ref<boolean>;
   activeIntervalMs?: number;
@@ -175,6 +177,10 @@ export function useProvenanceOps() {
     async function executeQuery(params: ProvenanceQueryParams) {
       abortController?.abort();
       abortController = new AbortController();
+      const timeout = setTimeout(
+        () => abortController?.abort(),
+        PROVENANCE_OPS_FETCH_TIMEOUT_MS,
+      );
 
       state.value.loading = true;
       state.value.error = null;
@@ -198,10 +204,16 @@ export function useProvenanceOps() {
         state.value.response = mergeResponse(state.value.response, payload);
         state.value.lastUpdatedAt = Date.now();
       } catch (error) {
-        if ((error as Error).name !== "AbortError") {
+        if ((error as Error).name === "AbortError") {
+          if (abortController?.signal.aborted) {
+            state.value.error =
+              "Provenance query timed out — try narrowing scope (task) or refresh.";
+          }
+        } else {
           state.value.error = (error as Error).message;
         }
       } finally {
+        clearTimeout(timeout);
         state.value.loading = false;
       }
     }

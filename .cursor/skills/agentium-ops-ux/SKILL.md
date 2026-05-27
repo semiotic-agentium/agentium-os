@@ -77,7 +77,7 @@ CI-style control shell + linear transcript + central compose modal:
 2. **Status banner** (`EventRunStatusBanner`) — Fleet publish outcome, failures list, waiting-for-ingress, in-flight progress
 3. **Transcript** (primary, `flex: 2`) — `TranscriptView` + `MessageBubble` (same stack as Chat); ingress wire JSON in full-width card
 4. **Traces** — `ProvenancePane` `surface="event"`; collapsed until `context_id`; `prefer-open` after publish or run pick
-5. **Compose modal** (`EventComposeModal`, Teleport) — Agent, source payload, scope segments, batch editor, Validate + Publish event
+5. **Compose modal** (`EventComposeModal`, Teleport) — Source payload, scope, batch editor, Validate + Publish (compose agent in app shell, read-only in modal)
 
 **Flow**: New event → modal → Validate → Publish → banner + transcript hydrate from `GET /contexts/{id}/conversation-history`. Sticky observed run until user picks another or publishes.
 

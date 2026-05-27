@@ -71,4 +71,25 @@ describe("eventConsoleState", () => {
       source: "draft",
     });
   });
+
+  it("resolveObservedScopeIds prefers observation.taskId from dispatch-unit resolution", () => {
+    const input = buildObservationScopeResolveInput({
+      lastPublishedScope: null,
+      draft: {
+        agent_package: "clickup-agent",
+        agent_instance_id: "default",
+        messages: [],
+        scope: { kind: "new_context" },
+        message_id: "",
+        metadata: {},
+      },
+      observation: {
+        contextId: "ctx-1",
+        source: "picker",
+        taskId: "dispatch-unit-abc",
+      },
+      validation: null,
+    });
+    expect(resolveObservedScopeIds(input).taskId).toBe("dispatch-unit-abc");
+  });
 });

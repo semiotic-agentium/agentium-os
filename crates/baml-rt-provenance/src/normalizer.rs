@@ -17,12 +17,15 @@ use baml_rt_core::{
     },
 };
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::{
     document::ProvDocument,
     error::{ProvenanceError, Result},
     events::{CallScope, ProvEvent, ProvEventData, ToolSessionStepOpKind},
     graph_model::GraphNodeLabel,
+    host_ingress_identity::host_ingress_message_id,
+    host_ingress_types::{HostDispatchFailureKind, HostIngressKind},
     id_semantics::{
         AgentBootActivityId, AgentBootActivityInput, AgentRuntimeInstanceId,
         AgentRuntimeInstanceInput, AgentStopActivityId, AgentStopActivityInput, ArchiveEntityId,
@@ -151,6 +154,20 @@ pub struct NormalizeContext {
     /// Agent id stored on the task entity (from TaskExecutionStarted). Used when normalizing
     /// MessageReceived/MessageSent so we emit WAS_EXECUTED_BY to the task's agent.
     pub task_agent_id: Option<AgentId>,
+    /// When `PromptRejected` follows `LlmCallCompleted` in a separate `add_event`, the in-session
+    /// ordinal map may be empty; the writer resolves scope from the persisted graph.
+    pub linked_llm_call_scope_ordinal: Option<(String, u64)>,
+}
+
+pub(crate) fn scope_key_from_display_str(raw: &str) -> Option<ScopeKey> {
+    let segs: Vec<&str> = raw.split(':').collect();
+    if segs.len() < 3 {
+        return None;
+    }
+    let ctx = segs[0].to_string();
+    let agent = segs[segs.len() - 1].to_string();
+    let scope = segs[1..segs.len() - 1].join(":");
+    Some(ScopeKey { ctx, scope, agent })
 }
 
 pub trait ProvNormalizer: Send + Sync {
@@ -279,6 +296,8 @@ pub enum A2aRelationType {
     /// Agent lifecycle: stop activity informed by boot activity (direct link
     /// survives restarts where the agent runtime instance is a bare placeholder).
     LifecycleStopInformedByBoot,
+    /// Host ingress dispatch outcome Message → target AgentRuntimeInstance.
+    HostDispatchTarget,
 }
 
 impl A2aRelationType {
@@ -312,6 +331,7 @@ impl A2aRelationType {
             A2aRelationType::HasPlan => semantic_labels::HAS_PLAN,
             A2aRelationType::CallbackDispatchScheduledFrom => semantic_labels::WAS_SCHEDULED_FROM,
             A2aRelationType::LifecycleStopInformedByBoot => semantic_labels::WAS_INFORMED_BY,
+            A2aRelationType::HostDispatchTarget => a2a_relations::HOST_DISPATCH_TARGET,
         }
     }
 }
@@ -1025,16 +1045,31 @@ fn normalize_event_with_registry(
             llm_call_activity_anchor,
             reason,
         } => {
-            let (scope_key, ordinal) = call_state
+            let (scope_key, ordinal) = if let Some(entry) = call_state
                 .llm_event_to_scope_ordinal
                 .get(llm_call_activity_anchor.as_str())
-                .ok_or_else(|| ProvenanceError::InvalidEvent {
+            {
+                entry.clone()
+            } else if let Some((scope_key_str, ordinal)) =
+                context.and_then(|ctx| ctx.linked_llm_call_scope_ordinal.as_ref())
+            {
+                let scope_key = scope_key_from_display_str(scope_key_str).ok_or_else(|| {
+                    ProvenanceError::InvalidEvent {
+                        activity_anchor: event.id().as_str().to_string(),
+                        reason: format!(
+                            "PromptRejected linked llm call scope invalid: {scope_key_str}"
+                        ),
+                    }
+                })?;
+                (scope_key, *ordinal)
+            } else {
+                return Err(ProvenanceError::InvalidEvent {
                     activity_anchor: event.id().as_str().to_string(),
                     reason:
-                        "PromptRejected requires prior LlmCallCompleted in same normalizer session"
+                        "PromptRejected requires prior LlmCallCompleted in same normalizer session or persisted graph link"
                             .to_string(),
-                })?
-                .clone();
+                });
+            };
             let scope_key_str = scope_key.to_string();
             let activity_id = prompt_rejected_activity_id(&scope_key_str, ordinal);
             let mut attrs = base_attrs(event);
@@ -2103,9 +2138,11 @@ fn normalize_event_with_registry(
                 },
             );
 
-            // A message is always sent to/from an agent; agent_id is required on the event.
+            // Host poll ingress uses a sentinel agent id; execution attribution stays on Runner.
             let agent_id_for_processing = event.message_agent_id().cloned();
-            if let Some(agent_id) = agent_id_for_processing.as_ref() {
+            if let Some(agent_id) = agent_id_for_processing.as_ref()
+                && !is_unassigned_message_agent(agent_id)
+            {
                 let executing_agent_id =
                     get_agent_runtime_instance(&doc, agent_id, &mut agent_labels)?;
                 insert_was_associated_with(
@@ -2399,6 +2436,7 @@ fn normalize_event_with_registry(
             target_instance,
             source_kind,
             source_key,
+            target_agent_id,
         } => {
             use crate::host_ingress_transcript::format_dispatch_accepted_summary;
             let summary = format_dispatch_accepted_summary(
@@ -2430,13 +2468,22 @@ fn normalize_event_with_registry(
                 a2a::HOST_INGRESS_SOURCE_KEY.to_string(),
                 Value::String(source_key.clone()),
             );
-            insert_host_ingress_transcript_message(
+            let message_entity = insert_host_ingress_transcript_message(
                 &mut doc,
                 event,
                 "dispatch_accepted",
                 summary,
                 extra,
             );
+            if let Some(agent_id) = target_agent_id {
+                link_host_dispatch_target(
+                    message_entity,
+                    agent_id,
+                    agent_registry,
+                    &mut agent_labels,
+                    &mut derived_relations,
+                )?;
+            }
         }
         ProvEventData::HostDispatchRejected {
             routing_key,
@@ -2446,20 +2493,18 @@ fn normalize_event_with_registry(
             source_kind: _,
             source_key: _,
             detail,
-            transport_failure,
+            failure_kind,
+            target_agent_id,
         } => {
             use crate::host_ingress_transcript::format_dispatch_rejected_summary;
-            let ingress_kind = if *transport_failure {
-                "dispatch_transport_error"
-            } else {
-                "dispatch_rejected"
-            };
+            let transport = matches!(*failure_kind, HostDispatchFailureKind::TransportError);
+            let ingress_kind = HostIngressKind::from_dispatch_failure(*failure_kind).as_wire_str();
             let summary = format_dispatch_rejected_summary(
                 routing_key,
                 target_package,
                 target_instance,
                 detail,
-                *transport_failure,
+                transport,
             );
             let mut extra = HashMap::new();
             extra.insert(
@@ -2475,7 +2520,22 @@ fn normalize_event_with_registry(
                 Value::String(target_instance.clone()),
             );
             extra.insert(a2a::REASON.to_string(), Value::String(detail.clone()));
-            insert_host_ingress_transcript_message(&mut doc, event, ingress_kind, summary, extra);
+            let message_entity = insert_host_ingress_transcript_message(
+                &mut doc,
+                event,
+                ingress_kind,
+                summary,
+                extra,
+            );
+            if let Some(agent_id) = target_agent_id {
+                link_host_dispatch_target(
+                    message_entity,
+                    agent_id,
+                    agent_registry,
+                    &mut agent_labels,
+                    &mut derived_relations,
+                )?;
+            }
         }
     }
 
@@ -3147,20 +3207,13 @@ fn message_entity_id(context_id: &ContextId, message_id: &MessageId) -> ProvEnti
     })
 }
 
-fn host_ingress_message_id(event: &ProvEvent) -> MessageId {
-    MessageId::from_external(ExternalId::new(format!(
-        "host-ingress:{}",
-        event.id().as_str()
-    )))
-}
-
 fn insert_host_ingress_transcript_message(
     doc: &mut ProvDocument,
     event: &ProvEvent,
     ingress_kind: &str,
     summary: String,
     extra: HashMap<String, Value>,
-) {
+) -> ProvEntityId {
     let message_id = host_ingress_message_id(event);
     let entity_id = message_entity_id(event.context_id(), &message_id);
     let mut attrs = base_attrs(event);
@@ -3183,12 +3236,46 @@ fn insert_host_ingress_transcript_message(
     );
     attrs.extend(extra);
     doc.insert_entity(
-        entity_id,
+        entity_id.clone(),
         Entity {
             prov_type: Some(prov_type::<MessageEntityId>()),
             attributes: attrs,
         },
     );
+    entity_id
+}
+
+fn is_unassigned_message_agent(agent_id: &AgentId) -> bool {
+    agent_id.as_str() == AgentId::from_uuid(UuidId::new(Uuid::nil())).as_str()
+}
+
+fn link_host_dispatch_target(
+    message_entity: ProvEntityId,
+    target_agent_id: &AgentId,
+    agent_registry: &std::collections::HashSet<String>,
+    agent_labels: &mut HashMap<String, String>,
+    derived_relations: &mut Vec<A2aDerivedRelation>,
+) -> Result<()> {
+    if !agent_registry.contains(target_agent_id.as_str()) {
+        return Err(ProvenanceError::InvalidEvent {
+            activity_anchor: "host_dispatch_target".to_string(),
+            reason: format!(
+                "target agent {} is not booted (missing from agent registry)",
+                target_agent_id.as_str()
+            ),
+        });
+    }
+    let instance_id = agent_runtime_instance_id(target_agent_id);
+    agent_labels
+        .entry(instance_id.as_str().to_string())
+        .or_insert_with(|| "AgentRuntimeInstance".to_string());
+    derived_relations.push(A2aDerivedRelation {
+        relation: A2aRelationType::HostDispatchTarget,
+        from: ProvNodeRef::Entity(message_entity),
+        to: ProvNodeRef::Agent(instance_id),
+        attributes: HashMap::new(),
+    });
+    Ok(())
 }
 
 /// Message processing activity id: derived from `(ContextId, MessageId)`.

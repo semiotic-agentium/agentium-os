@@ -9,6 +9,8 @@ use baml_rt_embedding::DriftSeverity;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::operational::OperationalEventContent;
+
 /// First four hex digits of `sha256(task_id)` — episode ref namespace (e.g. `e5a3`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EpisodeRefPrefix(String);
@@ -131,6 +133,8 @@ pub enum StepType {
     PlanRevision,
     StatusTransition,
     ArtifactEmitted,
+    /// Host/system operational row (dispatch failures, poll records, LLM errors).
+    OperationalEvent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +180,8 @@ pub enum EpisodeContent {
         media_type: Option<String>,
         size_bytes: Option<usize>,
     },
+    /// Host/system operational provenance (dispatch failures, poll records, LLM errors).
+    Operational(OperationalEventContent),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

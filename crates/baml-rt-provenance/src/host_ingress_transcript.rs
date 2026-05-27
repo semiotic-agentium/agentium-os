@@ -162,7 +162,8 @@ pub fn operational_from_host_message(
     } else {
         text.to_string()
     };
-    let detail = prop_str(props, a2a::REASON);
+    // Message `a2a_content` for dispatch outcomes already embeds `a2a:reason` in the summary line.
+    let detail = prop_str(props, a2a::REASON).filter(|reason| !summary.contains(reason));
     let agent_package = prop_str(props, a2a::HOST_INGRESS_TARGET_PACKAGE);
     let agent_instance = prop_str(props, a2a::HOST_INGRESS_TARGET_INSTANCE);
     Some(OperationalEventContent {
@@ -181,6 +182,8 @@ pub fn operational_from_host_message(
 
 #[cfg(test)]
 mod tests {
+    use serde_json::{Map, Value};
+
     use super::*;
 
     #[test]
@@ -194,5 +197,28 @@ mod tests {
         );
         assert!(s.contains("Host source poll"));
         assert!(s.contains("2 record(s)"));
+    }
+
+    #[test]
+    fn dispatch_rejected_detail_omitted_when_summary_already_contains_reason() {
+        let detail = "slack-agent cannot clarify during dispatch";
+        let summary = format_dispatch_rejected_summary(
+            "event:intake",
+            "slack-agent",
+            "default",
+            detail,
+            false,
+        );
+        let mut props = Map::new();
+        props.insert(
+            a2a::HOST_INGRESS_KIND.replace(':', "_"),
+            Value::String("dispatch_rejected".into()),
+        );
+        props.insert(a2a::REASON.replace(':', "_"), Value::String(detail.into()));
+        let op = operational_from_host_message(&summary, &props).expect("operational row");
+        assert!(
+            op.detail.is_none(),
+            "detail must not repeat summary: {op:?}"
+        );
     }
 }

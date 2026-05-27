@@ -436,7 +436,7 @@ impl ConversationHistoryService for RealConversationHistory {
             )
             .await
             .map_err(|e| ConversationHistoryError::Other(Box::new(e)))?;
-        let mut page = baml_rt_api::paginate_items(rows, request)?;
+        let mut page = baml_rt_api::paginate_items(rows, request, 0)?;
         if matches!(request.profile, ConversationHistoryProfile::Compact) {
             page.items = page
                 .items
@@ -478,7 +478,7 @@ impl ConversationHistoryService for RealConversationHistory {
             .map(|item| item.timestamp_ms)
             .max()
             .unwrap_or(0);
-        let version = baml_rt_api::page_version(&items, &[], None, None, false, None);
+        let version = baml_rt_api::page_version(&items, &[], None, None, false, None, 0);
         Ok(ConversationHistoryPageDto {
             context_id: request.context_id.as_str().to_string(),
             task_id: request.task_id.as_ref().map(|id| id.as_str().to_string()),
@@ -491,6 +491,7 @@ impl ConversationHistoryService for RealConversationHistory {
             llm_prompt_operations: Vec::new(),
             awaiting_input: false,
             input_required_prompt: None,
+            llm_call_count: 0,
         })
     }
 }
@@ -750,7 +751,7 @@ impl ContextIndexService for MockContextIndex {
                 baml_rt_api::ContextIndexCursorToken::encode_v1(
                     end,
                     request.agent_package.as_deref(),
-                    Some(request.event_only),
+                    request.ingress_filter,
                 )
                 .0,
             )
@@ -2341,7 +2342,12 @@ async fn get_context_index_cursor_scope_mismatch_returns_400() {
     )
     .await;
 
-    let cursor = baml_rt_api::ContextIndexCursorToken::encode_v1(1, Some("pkg-a"), None).0;
+    let cursor = baml_rt_api::ContextIndexCursorToken::encode_v1(
+        1,
+        Some("pkg-a"),
+        baml_rt_api::ContextPickerIngressFilter::All,
+    )
+    .0;
     let response = app
         .oneshot(
             Request::builder()
@@ -3119,20 +3125,22 @@ async fn conversation_history_includes_ingress_poll_user_message_rows() {
         "revision": 1,
         "snapshot": { "name": "Investigate publish ingress", "status": "normal" }
     })]);
+    use baml_rt_provenance::host_ingress_identity::activity_anchor_for_ingress_poll_user;
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert(
+        "user_speaker_kind".to_string(),
+        baml_rt_vocabulary::vocabulary::user_speaker_kinds::INGRESS.to_string(),
+    );
     store
         .add_event(ProvEvent::Global(baml_rt_provenance::events::GlobalEvent {
-            id: ActivityAnchorId::from(format!(
-                "ingress-poll-user:{}:{}",
-                context_id.as_str(),
-                message_id.as_str()
-            )),
+            id: activity_anchor_for_ingress_poll_user(&context_id, message_id.as_str()),
             context_id: context_id.clone(),
             timestamp_ms: 1,
             data: baml_rt_provenance::events::ProvEventData::MessageReceived {
                 id: message_id.clone(),
                 role: "user".to_string(),
                 content: vec![wire_body.0],
-                metadata: None,
+                metadata: Some(metadata),
                 agent_id: AgentId::from_uuid(
                     UuidId::parse_str("00000000-0000-0000-0000-000000000000").expect("nil uuid"),
                 ),

@@ -4,13 +4,10 @@
 
 //! Planning and intent/plan history service.
 
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
-use baml_rt_provenance::{
-    ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest, ProvenanceOpsResource,
-    ProvenancePlanningQuery,
-};
+use baml_rt_provenance::{ProvenancePlanningQuery, task_ids_for_context};
 
 pub(crate) struct PlanningServiceImpl {
     store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
@@ -19,31 +16,6 @@ pub(crate) struct PlanningServiceImpl {
 impl PlanningServiceImpl {
     pub(crate) fn new(store: Arc<baml_rt_provenance::SurrealProvenanceStore>) -> Self {
         Self { store }
-    }
-
-    fn summarize_steps(
-        plan: Option<&baml_rt_provenance::PlanningPlanRecord>,
-    ) -> baml_rt_api::PlanningStepSummary {
-        let mut summary = baml_rt_api::PlanningStepSummary {
-            total: 0,
-            completed: 0,
-            failed: 0,
-            in_progress: 0,
-            pending: 0,
-        };
-        let Some(plan) = plan else {
-            return summary;
-        };
-        for step in &plan.steps {
-            summary.total += 1;
-            match step.status.to_ascii_lowercase().as_str() {
-                "completed" => summary.completed += 1,
-                "failed" => summary.failed += 1,
-                "running" | "in_progress" => summary.in_progress += 1,
-                _ => summary.pending += 1,
-            }
-        }
-        summary
     }
 
     async fn aggregate_drift(
@@ -96,36 +68,9 @@ impl baml_rt_api::PlanningService for PlanningServiceImpl {
         &self,
         context_id: &str,
     ) -> std::result::Result<baml_rt_api::ContextPlanningResponse, baml_rt_api::PlanningError> {
-        let report = self
-            .store
-            .query_ops(ProvenanceOpsQueryRequest {
-                resource: ProvenanceOpsResource::Messages,
-                filters: ProvenanceOpsFilters {
-                    context_id: Some(ContextId::from(context_id)),
-                    ..Default::default()
-                },
-                page_size: Some(500),
-                sort_by: Some("timestamp_ms".to_string()),
-                sort_dir: Some("asc".to_string()),
-                ..Default::default()
-            })
+        let task_ids = task_ids_for_context(&self.store, context_id)
             .await
             .map_err(|e| baml_rt_api::PlanningError::Other(Box::new(std::io::Error::other(e))))?;
-
-        let mut seen = HashSet::new();
-        let mut task_ids = Vec::new();
-        for row in report.rows {
-            let Some(row_obj) = row.as_object() else {
-                continue;
-            };
-            let Some(task_id) = row_obj.get("task_id").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            if seen.insert(task_id.to_string()) {
-                task_ids.push(task_id.to_string());
-            }
-        }
-
         let all_task_ids = task_ids.clone();
 
         if task_ids.is_empty() {
@@ -172,7 +117,7 @@ impl baml_rt_api::PlanningService for PlanningServiceImpl {
                 continue;
             }
 
-            let step_summary = Self::summarize_steps(current_plan.as_ref());
+            let step_summary = baml_rt_api::summarize_plan_steps(current_plan.as_ref());
             let drift = Self::aggregate_drift(&self.store, context_id, &task_id_raw).await;
             tasks.push(baml_rt_api::TaskPlanningSnapshot {
                 task_id: task_id_raw,

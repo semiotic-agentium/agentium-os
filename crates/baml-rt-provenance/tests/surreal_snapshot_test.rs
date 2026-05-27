@@ -298,6 +298,13 @@ fn normalize_context_item(
             false,
             false,
         ),
+        ConversationItemContent::Planning(_) => (
+            vec!["summary".to_string(), "kind".to_string()],
+            None,
+            None,
+            false,
+            false,
+        ),
     };
 
     NormalizedContextItem {

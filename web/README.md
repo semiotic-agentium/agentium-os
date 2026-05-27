@@ -17,7 +17,7 @@ Landing view (`Dashboard.vue` + `dashboard/*` sections). Narrative layout: **Run
 Multi-tab chat surface for conversations with deployed agents.
 
 - **Tabs and history** — `ChatTabs.vue` keeps independent A2A clients per tab; `ConversationHistorySelector.vue` lists prior contexts/tasks for an agent and reloads them.
-- **Agent picker** — `AgentSelector.vue` lists everything published under `GET /agents`; switching agents prompts before clearing the transcript.
+- **Agent picker** — `OperatorAgentSelector.vue` in the app shell (chat vs compose agent per view); switching chat agents prompts before clearing the transcript.
 - **Conversation** — `ChatWindow.vue` renders the streaming transcript via `MessageBubble.vue`, surfaces `INPUT_REQUIRED` prompts (`awaitInput`), and shows `WorkflowProgress.vue` while a task is running.
 - **Tool / reasoning visibility** — `ToolNotificationCard.vue` and `tool-card/*` render the host's tool-session FSM (Open / Send / Read / Finish / Abort) inline; `ReasoningPane.vue` exposes model reasoning when the provider returns it.
 - **Provenance side pane** — `ProvenancePane.vue` mounts next to the chat and tabs through five views over the live context's provenance:

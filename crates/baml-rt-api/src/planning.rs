@@ -161,6 +161,33 @@ pub struct ContextPlanningResponse {
     pub tasks: Vec<TaskPlanningSnapshot>,
 }
 
+/// Summarize plan step counts for API responses.
+#[must_use]
+pub fn summarize_plan_steps(
+    plan: Option<&baml_rt_provenance::PlanningPlanRecord>,
+) -> PlanningStepSummary {
+    let mut summary = PlanningStepSummary {
+        total: 0,
+        completed: 0,
+        failed: 0,
+        in_progress: 0,
+        pending: 0,
+    };
+    let Some(plan) = plan else {
+        return summary;
+    };
+    for step in &plan.steps {
+        summary.total += 1;
+        match step.status.to_ascii_lowercase().as_str() {
+            "completed" => summary.completed += 1,
+            "failed" => summary.failed += 1,
+            "running" | "in_progress" => summary.in_progress += 1,
+            _ => summary.pending += 1,
+        }
+    }
+    summary
+}
+
 #[async_trait::async_trait]
 pub trait PlanningService: Send + Sync {
     async fn planning_for_context(

@@ -581,6 +581,9 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             web_dir,
             webhook_intakes,
             host_ingress_recorder: Some(host_ingress_recorder),
+            deployed_agent_lookup: Some(
+                runner.clone() as Arc<dyn baml_rt_core::DeployedAgentLookup>
+            ),
             ..baml_rt_api::ApiServerConfig::empty(
                 tool_catalog,
                 config_service,

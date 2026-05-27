@@ -137,6 +137,17 @@ async fn provenance_hot_read_paths_and_explain_inventory() {
         convo.len()
     );
 
+    let t0_pkg = Instant::now();
+    let convo_pkg = store
+        .query_conversation_context(&context_id, None, Some(&task_id), Some("perf_agent"))
+        .await
+        .expect("conversation context with agent package");
+    let convo_pkg_ms = t0_pkg.elapsed().as_millis();
+    assert!(
+        !convo_pkg.is_empty(),
+        "agent package filter should return seeded rows"
+    );
+
     let t1 = Instant::now();
     let _episode = EpisodeReader::new(Arc::clone(&store))
         .read_snapshot_by_task_id(&task_id)
@@ -188,6 +199,17 @@ async fn provenance_hot_read_paths_and_explain_inventory() {
         "context node sort EXPLAIN: {nodes_explain}"
     );
 
+    let plan_step_sql = "SELECT node_id FROM prov_node WHERE label = 'PlanStep' \
+         AND props.a2a_plan_id = 'plan-1' AND props.a2a_step_id = 'step-1' LIMIT 1"
+        .to_string();
+    let plan_step_explain = explain_smoke(&store, &plan_step_sql).await;
+    assert!(
+        plan_step_explain.contains("idx_node_label_plan_step")
+            || plan_step_explain.contains("IndexScan")
+            || plan_step_explain.contains("TableScan"),
+        "plan step EXPLAIN: {plan_step_explain}"
+    );
+
     let head_sql = "SELECT from_id, to_id FROM prov_edge WHERE from_id IN ['x'] AND rel_type = 'WAS_LAST_TRANSITIONED_TO'";
     let head_explain = explain_smoke(&store, head_sql).await;
     assert!(
@@ -200,6 +222,7 @@ async fn provenance_hot_read_paths_and_explain_inventory() {
 
     tracing::info!(
         convo_ms,
+        convo_pkg_ms,
         episode_ms,
         export_ms,
         metrics_ms,
@@ -231,10 +254,31 @@ async fn schema_defines_performance_indexes() {
         "idx_node_label_event_order",
         "idx_node_label_prov_time",
         "idx_node_label_activity_anchor",
+        "idx_node_label_agent_type",
+        "idx_node_label_plan_step",
     ] {
         assert!(
             node_info.contains(name),
             "missing prov_node index {name}: {node_info}"
+        );
+    }
+
+    let registry_info = table_info(&store, "agent_package_instance").await;
+    for name in [
+        "idx_agent_pkg_instance_node",
+        "idx_agent_pkg_instance_package",
+    ] {
+        assert!(
+            registry_info.contains(name),
+            "missing agent_package_instance index {name}: {registry_info}"
+        );
+    }
+
+    let picker_info = table_info(&store, "context_picker_index").await;
+    for name in ["idx_context_picker_ctx", "idx_context_picker_latest"] {
+        assert!(
+            picker_info.contains(name),
+            "missing context_picker_index index {name}: {picker_info}"
         );
     }
 }

@@ -1,14 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import ProvenancePane from "../ProvenancePane.vue";
 import TranscriptView from "../TranscriptView.vue";
 import EventComposeModal from "./EventComposeModal.vue";
 import EventRunHeader from "./EventRunHeader.vue";
-import EventRunStatusBanner from "./EventRunStatusBanner.vue";
+import EventRunStatusStrip from "./EventRunStatusStrip.vue";
 import {
   buildEventConsoleLocalTranscript,
   localTranscriptMatchesScope,
-  mergeEventConsoleTranscript,
   transcriptHasHostIngress,
 } from "../../events/dispatchObserve";
 import {
@@ -26,6 +25,7 @@ import {
   formatPublishAcceptanceSummary,
   publishHadNoEffectiveWork,
 } from "../../events/publishOutcome";
+import type { EventRunMeta } from "../../events/eventTranscriptModel";
 import {
   changeDraftScopeKind,
   isEventDispatchScopeKind,
@@ -34,7 +34,7 @@ import {
 } from "../../events/eventConsoleState";
 import { parseMermaidBlocks } from "../../utils/parseMermaid";
 import { looksLikeMermaidDiagram } from "../../utils/mermaidDiagram";
-import type { AgentDiscoveryEntry, ConversationHistoryOption } from "../../types/a2a";
+import type { ConversationHistoryOption } from "../../types/a2a";
 import type { DraftPayloadRecord, EventDispatchScopeKind } from "../../types/events";
 
 const toast = useToast();
@@ -71,7 +71,6 @@ const {
   fetchMessageShapes,
   applyRouteFromUrl,
   selectContextFromPicker,
-  selectAgent,
   selectSubscriptionEvent,
   applySample,
   addMessage,
@@ -135,11 +134,6 @@ function onSelectMessageShape(messageShapeId: string): void {
   selectSubscriptionEvent(messageShapeId, selection.value.subscriptionIndex);
 }
 
-async function onSelectDeliveryAgent(agent: AgentDiscoveryEntry): Promise<void> {
-  selectAgent(agent);
-  void fetchHistory();
-}
-
 async function loadAgentsAndShapes(): Promise<void> {
   agentsLoading.value = true;
   try {
@@ -184,14 +178,28 @@ const localTranscriptRows = computed(() => {
   });
 });
 
-const displayTranscriptMessages = computed(() =>
-  mergeEventConsoleTranscript(observation.messages.value, localTranscriptRows.value),
+watch(
+  localTranscriptRows,
+  (rows) => {
+    observation.setLocalOverlay(rows);
+  },
+  { immediate: true },
+);
+
+const transcriptShowsDispatchFailures = computed(() =>
+  observation.transcriptMessages.value.some((m) =>
+    (m.contentBlocks ?? []).some(
+      (b) =>
+        b.type === "operational" &&
+        (b.kind === "dispatch_rejected" || b.kind === "dispatch_transport_error"),
+    ),
+  ),
 );
 
 const waitingForIngress = computed(() => {
   if (!lastPublishOutcome.value) return false;
   if ((lastPublishOutcome.value.subscribers_accepted ?? 0) === 0) return false;
-  if (transcriptHasHostIngress(displayTranscriptMessages.value)) return false;
+  if (transcriptHasHostIngress(observation.transcriptMessages.value)) return false;
   const hydrate = observation.hydrateState.value;
   if (hydrate === "empty" || hydrate === "error") return false;
   return (
@@ -204,25 +212,48 @@ const waitingForIngress = computed(() => {
 const hasPublishedRun = computed(
   () =>
     Boolean(lastPublishOutcome.value) &&
-    displayTranscriptMessages.value.length === 0 &&
+    observation.transcriptMessages.value.length === 0 &&
     (observation.hydrateState.value === "empty" ||
       observation.hydrateState.value === "waiting"),
 );
+
+function publishObservationActive(): boolean {
+  return (
+    Boolean(lastPublishOutcome.value) &&
+    localTranscriptMatchesScope(lastPublishedScope.value, observeIds.value.contextId)
+  );
+}
+
+/** Avoid empty/skeleton flicker while optimistic ingress rows are on screen. */
+const transcriptHydrateState = computed(() => {
+  const raw = observation.hydrateState.value;
+  if (
+    observation.transcriptMessages.value.length > 0 &&
+    (raw === "waiting" || raw === "empty" || raw === "loading")
+  ) {
+    return "ready";
+  }
+  return raw;
+});
 
 const provenancePaneStreaming = computed(() =>
   isEventDispatchProvenanceStreaming(dispatchPhase.value),
 );
 
-const transcriptStreaming = computed(
-  () => isEventDispatchInFlight(dispatchPhase.value) || provenancePaneStreaming.value,
-);
-
-const transcriptMessages = computed(() => displayTranscriptMessages.value);
-const transcriptHydrateState = computed(() => observation.hydrateState.value);
+const transcriptMessages = observation.transcriptMessages;
 const traceRefreshTick = computed(() => observation.traceRefreshGeneration.value);
 
+const eventRunMeta = computed((): EventRunMeta => ({
+  dispatchPhase: dispatchPhase.value,
+  hydrateState: transcriptHydrateState.value,
+  lastPublishOutcome: lastPublishOutcome.value,
+  publishError: publishError.value,
+  waitingForIngress: waitingForIngress.value,
+  hasPublishedRun: hasPublishedRun.value,
+}));
+
 function updateDispatchPhaseFromObservation(): void {
-  const state = observation.hydrateState.value;
+  const state = transcriptHydrateState.value;
   if (dispatchPhase.value === "failed" || dispatchPhase.value === "validating") {
     return;
   }
@@ -235,7 +266,7 @@ function updateDispatchPhaseFromObservation(): void {
     return;
   }
   if (state === "empty" && lastPublishOutcome.value) {
-    const hasIngress = transcriptHasHostIngress(displayTranscriptMessages.value);
+    const hasIngress = transcriptHasHostIngress(observation.transcriptMessages.value);
     dispatchPhase.value = hasIngress || localTranscriptRows.value.length > 0 ? "live" : "empty";
     if (hasIngress) {
       provenanceExternalFocus.value = { nonce: Date.now(), tab: "live" };
@@ -274,12 +305,13 @@ async function refreshObservation(options?: { preserveTranscript?: boolean }): P
     return;
   }
 
+  const preserve = options?.preserveTranscript ?? publishObservationActive();
   const resolvedTask = taskId?.trim() ? taskId : null;
   const loadKey = `${contextId}:${resolvedTask ?? ""}`;
   if (
     loadKey === lastObservationLoadKey &&
     observation.messages.value.length > 0 &&
-    !options?.preserveTranscript
+    !preserve
   ) {
     observation.bumpTraceRefresh();
     updateDispatchPhaseFromObservation();
@@ -292,7 +324,7 @@ async function refreshObservation(options?: { preserveTranscript?: boolean }): P
     contextId,
     resolvedTask,
     observationLoadOptions(
-      options?.preserveTranscript ? { preserveMessagesUntilTranscript: true } : undefined,
+      preserve ? { preserveMessagesUntilTranscript: true } : undefined,
     ),
   );
   updateDispatchPhaseFromObservation();
@@ -352,18 +384,16 @@ async function onPublish(): Promise<void> {
   const { contextId, taskId } = observeIds.value;
   if (!contextId) return;
 
-  void (async () => {
-    const resolvedTask = taskId?.trim() ? taskId : null;
-    await observation.loadContext(
-      contextId,
-      resolvedTask,
-      observationLoadOptions({ preserveMessagesUntilTranscript: true }),
-    );
-    updateDispatchPhaseFromObservation();
-    requestAnimationFrame(() => {
-      transcriptViewRef.value?.getScrollContainer()?.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-  })();
+  lastObservationLoadKey = `${contextId}:${taskId?.trim() ? taskId : ""}`;
+  await observation.loadContext(
+    contextId,
+    taskId?.trim() ? taskId : null,
+    observationLoadOptions({ preserveMessagesUntilTranscript: true }),
+  );
+  updateDispatchPhaseFromObservation();
+  requestAnimationFrame(() => {
+    transcriptViewRef.value?.getScrollContainer()?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
 }
 
 function openComposeFromQuery(): void {
@@ -377,22 +407,15 @@ function openComposeFromQuery(): void {
   }
 }
 
-function onRoutePopState(): void {
-  applyRouteFromUrl();
-}
-
 onMounted(async () => {
-  await loadAgentsAndShapes();
+  if (deployedAgents.value.length === 0) {
+    await loadAgentsAndShapes();
+  }
   applyRouteFromUrl();
   openComposeFromQuery();
   if (!draft.value.agent_package) {
     await fetchHistory();
   }
-  window.addEventListener("popstate", onRoutePopState);
-});
-
-onUnmounted(() => {
-  window.removeEventListener("popstate", onRoutePopState);
 });
 
 watch(
@@ -413,15 +436,9 @@ watch(
   () => observeIds.value.taskId,
   (taskId, prev) => {
     if (taskId === prev || !observeIds.value.contextId) return;
-    void refreshObservation();
+    void refreshObservation({ preserveTranscript: publishObservationActive() });
   },
 );
-
-watch(lastPublishOutcome, () => {
-  if (!lastPublishOutcome.value || !observeIds.value.contextId) return;
-  provenancePreferOpen.value = true;
-  void refreshObservation({ preserveTranscript: true });
-});
 
 watch(
   () => observation.hydrateState.value,
@@ -455,11 +472,14 @@ function focusEventRunFromTranscript(): void {
       @new-event="composeModalOpen = true"
     />
 
-    <EventRunStatusBanner
+    <EventRunStatusStrip
       :dispatch-phase="dispatchPhase"
+      :hydrate-state="transcriptHydrateState"
+      :context-id="observeIds.contextId"
       :last-publish-outcome="lastPublishOutcome"
       :publish-error="publishError"
       :waiting-for-ingress="waitingForIngress"
+      :transcript-shows-dispatch-failures="transcriptShowsDispatchFailures"
     />
 
     <div class="events-body app-body">
@@ -473,10 +493,11 @@ function focusEventRunFromTranscript(): void {
           variant="event"
           :messages="transcriptMessages"
           :hydrate-state="transcriptHydrateState"
-          :is-streaming="transcriptStreaming"
+          :is-streaming="false"
           :selected-context-id="observeIds.contextId"
           :waiting-for-ingress="waitingForIngress"
           :has-published-run="hasPublishedRun"
+          :event-run-meta="eventRunMeta"
           @compose-event="composeModalOpen = true"
           @focus-event-run="focusEventRunFromTranscript"
         />
@@ -488,7 +509,7 @@ function focusEventRunFromTranscript(): void {
         :prefer-open="provenancePreferOpen"
         :context-id="observeIds.contextId ?? undefined"
         :task-id="observeIds.taskId ?? undefined"
-        :selected-agent-id="draft.agent_package || undefined"
+        :selected-agent-package="draft.agent_package || undefined"
         :is-streaming="provenancePaneStreaming"
         :diagrams="provenancePaneDiagrams"
         :trace-refresh-tick="traceRefreshTick"
@@ -522,7 +543,6 @@ function focusEventRunFromTranscript(): void {
       @close="composeModalOpen = false"
       @publish="onPublish()"
       @validate="onValidate()"
-      @select-agent="onSelectDeliveryAgent"
       @select-message-shape="onSelectMessageShape"
       @apply-observed-scope="applyObservedContextToDraftScope()"
       @apply-sample="applySample"

@@ -19,6 +19,7 @@ pub mod context;
 pub mod conversation_history;
 pub mod correlation;
 pub mod deferred;
+pub mod deployed_agent_lookup;
 pub mod deployment;
 pub mod dispatch;
 pub mod dispatch_ingress;
@@ -54,7 +55,7 @@ pub use a2a_sse::{A2aSseDecoder, A2aSseParseError, parse_a2a_sse_json_rpc_chunks
 pub use a2a_wire::{A2aStreamChunk, A2aWireRequest};
 pub use agent_routing::{
     AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey,
-    route_key_from_request,
+    DispatchTarget, route_key_from_request,
 };
 pub use backoff::ExponentialBackoff;
 pub use baml_rt_citation::Citation;
@@ -75,6 +76,7 @@ pub use context::{
 };
 pub use conversation_history::ConversationHistoryUpdate;
 pub use deferred::DeferredHolder;
+pub use deployed_agent_lookup::DeployedAgentLookup;
 pub use deployment::{
     DeployResult, DeploymentContentHash, DeploymentManager, DeploymentRecord, DeploymentStatus,
     UndeployResult,

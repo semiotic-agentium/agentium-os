@@ -1,9 +1,12 @@
 import { computed, ref, watch } from "vue";
 import type { AgentDiscoveryEntry, ContextPickerPage, ConversationHistoryOption } from "../types/a2a";
+import {
+  readEventConsoleRouteFromUrl,
+  writeEventConsoleRouteToUrl,
+} from "../events/operatorRoute";
 import type {
   AgentDeliverableMessageShape,
   DerivedDispatchEnvelope,
-  EventConsoleRoute,
   EventConsoleSelection,
   EventDispatchPhase,
   EventDispatchScope,
@@ -14,7 +17,7 @@ import type {
   MessageShapeSample,
   ResolvedObservationIds,
 } from "../types/events";
-import { scopeFromRecord, type PublishedScope } from "../events/dispatchObserve";
+import { resolveDispatchUnitTaskId, scopeFromRecord, type PublishedScope } from "../events/dispatchObserve";
 import {
   buildObservationScopeResolveInput,
   createInitialObservation,
@@ -147,44 +150,10 @@ export function mergeContextPickerItems(
   return merged.sort((a, b) => b.latestTimestampMs - a.latestTimestampMs);
 }
 
-export function readEventConsoleRoute(): EventConsoleRoute {
-  const params = new URLSearchParams(window.location.search);
-  return {
-    agentPackage: params.get("agentPackage"),
-    agentInstance: params.get("agentInstance"),
-    contextId: params.get("contextId"),
-  };
-}
-
-/** Keep the events deep link in sync when the operator changes agent or context in the UI. */
-export function writeEventConsoleRoute(
-  patch: Partial<EventConsoleRoute> & { contextId?: string | null },
-): void {
-  if (typeof window === "undefined") return;
-  const url = new URL(window.location.href);
-  if (patch.agentPackage !== undefined) {
-    if (patch.agentPackage) {
-      url.searchParams.set("agentPackage", patch.agentPackage);
-    } else {
-      url.searchParams.delete("agentPackage");
-    }
-  }
-  if (patch.agentInstance !== undefined) {
-    if (patch.agentInstance) {
-      url.searchParams.set("agentInstance", patch.agentInstance);
-    } else {
-      url.searchParams.delete("agentInstance");
-    }
-  }
-  if (patch.contextId !== undefined) {
-    if (patch.contextId) {
-      url.searchParams.set("contextId", patch.contextId);
-    } else {
-      url.searchParams.delete("contextId");
-    }
-  }
-  window.history.replaceState(window.history.state, "", url.toString());
-}
+export {
+  readEventConsoleRouteFromUrl as readEventConsoleRoute,
+  writeEventConsoleRouteToUrl as writeEventConsoleRoute,
+} from "../events/operatorRoute";
 
 export function resolveAgentFromRoute(
   agents: AgentDiscoveryEntry[],
@@ -230,7 +199,18 @@ function draftFingerprint(
   });
 }
 
-export function useEventConsole() {
+export type EventConsoleApi = ReturnType<typeof createEventConsoleState>;
+
+let sharedEventConsole: EventConsoleApi | null = null;
+
+export function useEventConsole(): EventConsoleApi {
+  if (!sharedEventConsole) {
+    sharedEventConsole = createEventConsoleState();
+  }
+  return sharedEventConsole;
+}
+
+function createEventConsoleState() {
   const agents = ref<AgentDiscoveryEntry[]>([]);
   const messageShapes = ref<AgentDeliverableMessageShape[]>([]);
   const draft = ref<EventPayloadDraft>(emptyDraft());
@@ -364,7 +344,7 @@ export function useEventConsole() {
   }
 
   function syncEventConsoleRoute(): void {
-    writeEventConsoleRoute({
+    writeEventConsoleRouteToUrl({
       agentPackage: draft.value.agent_package,
       agentInstance: draft.value.agent_instance_id,
       contextId: observation.value.contextId,
@@ -373,7 +353,7 @@ export function useEventConsole() {
 
   /** Apply agent/context from the URL (initial load or browser back/forward only). */
   function applyRouteFromUrl(): void {
-    const { agentPackage, agentInstance, contextId } = readEventConsoleRoute();
+    const { agentPackage, agentInstance, contextId } = readEventConsoleRouteFromUrl();
     if (agentPackage) {
       const match = resolveAgentFromRoute(agents.value, agentPackage, agentInstance);
       if (match) {
@@ -656,8 +636,16 @@ export function useEventConsole() {
           : null) ??
         (outcome.context_id ? scopeFromRecord({ context_id: outcome.context_id }) : null);
       if (scope) {
-        lastPublishedScope.value = scope;
-        observation.value = { contextId: scope.contextId, source: "publish" };
+        const unitTaskId = await resolveDispatchUnitTaskId(scope.contextId);
+        lastPublishedScope.value = {
+          ...scope,
+          taskId: unitTaskId ?? scope.taskId ?? null,
+        };
+        observation.value = {
+          contextId: scope.contextId,
+          source: "publish",
+          taskId: unitTaskId ?? scope.taskId ?? null,
+        };
         const label =
           selectedMessageShape.value?.display_name ?? "Operator publish";
         rememberRecentDispatchContext(
@@ -735,7 +723,15 @@ export function useEventConsole() {
     option: ConversationHistoryOption,
     options?: { syncRoute?: boolean },
   ): void {
-    observation.value = { contextId: option.contextId, source: "picker" };
+    observation.value = {
+      contextId: option.contextId,
+      source: "picker",
+      taskId: null,
+    };
+    void resolveDispatchUnitTaskId(option.contextId).then((taskId) => {
+      if (observation.value.contextId !== option.contextId) return;
+      observation.value = { ...observation.value, taskId };
+    });
     if (options?.syncRoute !== false) {
       syncEventConsoleRoute();
     }

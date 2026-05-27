@@ -1,23 +1,29 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import type { AgentDiscoveryEntry } from "../../types/a2a";
+import type { AgentDiscoveryEntry } from "../types/a2a";
 
 const props = withDefaults(
   defineProps<{
+    variant: "chat" | "event";
     agents: AgentDiscoveryEntry[];
-    subscribedAgents: AgentDiscoveryEntry[];
+    subscribedAgents?: AgentDiscoveryEntry[];
     selected: AgentDiscoveryEntry | null;
     loading?: boolean;
-    /** Field label (modal uses "Agent"). */
-    label?: string;
-    selectId?: string;
   }>(),
-  { label: "Deliver to", selectId: "event-console-deliver-agent" },
+  { subscribedAgents: () => [], loading: false },
 );
 
 const emit = defineEmits<{
   select: [agent: AgentDiscoveryEntry];
 }>();
+
+const label = computed(() =>
+  props.variant === "chat" ? "Chat agent" : "Compose agent",
+);
+
+const selectId = computed(() =>
+  props.variant === "chat" ? "operator-shell-chat-agent" : "operator-shell-event-agent",
+);
 
 function agentKey(agent: AgentDiscoveryEntry): string {
   return `${agent.agent_package}/${agent.agent_instance_id}`;
@@ -32,7 +38,14 @@ const chatOnlyAgents = computed(() =>
 );
 
 function onChange(event: Event): void {
-  const key = (event.target as HTMLSelectElement).value;
+  const target = event.target as HTMLSelectElement;
+  if (props.variant === "chat") {
+    const idx = parseInt(target.value, 10);
+    const agent = props.agents[idx];
+    if (agent) emit("select", agent);
+    return;
+  }
+  const key = target.value;
   if (!key) return;
   const agent = props.agents.find((a) => agentKey(a) === key);
   if (agent) emit("select", agent);
@@ -40,11 +53,33 @@ function onChange(event: Event): void {
 </script>
 
 <template>
-  <div class="event-agent-selector agent-selector">
-    <label class="event-agent-selector-label" :for="props.selectId">{{ props.label }}</label>
+  <div class="operator-agent-shell agent-selector">
+    <label class="operator-agent-shell__label" :for="selectId">{{ label }}</label>
+    <span v-if="variant === 'chat' && agents.length > 0" class="status-dot" aria-hidden="true" />
     <select
-      :id="props.selectId"
-      name="event-deliver-agent"
+      v-if="variant === 'chat'"
+      :id="selectId"
+      name="operator-chat-agent"
+      :disabled="loading || agents.length === 0"
+      @change="onChange"
+    >
+      <option v-if="agents.length === 0" disabled value="">
+        {{ loading ? "Loading agents…" : "No agents" }}
+      </option>
+      <option
+        v-for="(agent, idx) in agents"
+        :key="agentKey(agent)"
+        :value="idx"
+        :selected="selected?.agent_package === agent.agent_package &&
+          selected?.agent_instance_id === agent.agent_instance_id"
+      >
+        {{ agent.name }} v{{ agent.version }}
+      </option>
+    </select>
+    <select
+      v-else
+      :id="selectId"
+      name="operator-event-agent"
       :disabled="loading || agents.length === 0"
       :value="selectedKey"
       @change="onChange"
@@ -81,15 +116,17 @@ function onChange(event: Event): void {
 </template>
 
 <style scoped>
-.event-agent-selector {
+.operator-agent-shell {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  flex-shrink: 0;
+  gap: 0.375rem;
+  flex: 1;
+  min-width: 10rem;
+  max-width: 28rem;
 }
 
-.event-agent-selector-label {
-  font-size: 0.75rem;
+.operator-agent-shell__label {
+  font-size: 0.6875rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
@@ -97,12 +134,15 @@ function onChange(event: Event): void {
   white-space: nowrap;
 }
 
-.event-agent-selector select {
-  min-width: 11rem;
-  max-width: 18rem;
+.operator-agent-shell select {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+  font-size: 12px;
+  padding: 2px 4px;
 }
 
-.event-agent-selector select:focus-visible {
+.operator-agent-shell select:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
 }

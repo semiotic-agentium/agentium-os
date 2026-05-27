@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 
 use crate::{
-    AgentDispatchRequest, ProducedEvent, Result,
+    AgentDispatchRequest, DispatchTarget, ProducedEvent, Result,
     context::RuntimeScope,
     dispatch_ingress::{DispatchWorkUnit, WithTaskPrelude},
     host_source_records_body::IngressPollBody,
@@ -42,16 +42,14 @@ pub trait HostIngressRecorder: Send + Sync {
     async fn record_dispatch_accepted(
         &self,
         request: &AgentDispatchRequest,
-        agent_package: &str,
-        agent_instance: &str,
+        target: DispatchTarget,
     ) -> Result<()>;
 
     /// Persist dispatch rejection or transport failure after fan-out.
     async fn record_dispatch_rejected(
         &self,
         request: &AgentDispatchRequest,
-        agent_package: &str,
-        agent_instance: &str,
+        target: DispatchTarget,
         detail: &str,
         transport_failure: bool,
     ) -> Result<()>;

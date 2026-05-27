@@ -130,6 +130,8 @@ pub struct ApiState {
     pub runtime_progress: Arc<RuntimeProgressMeter>,
     /// DB-first host ingress provenance (publish + dispatch accept).
     pub host_ingress_recorder: Option<Arc<dyn baml_rt_core::HostIngressRecorder>>,
+    /// Resolve deployed routes to live booted [`AgentId`] for dispatch provenance.
+    pub deployed_agent_lookup: Option<Arc<dyn baml_rt_core::DeployedAgentLookup>>,
 }
 
 async fn serve_openapi_json(
@@ -313,6 +315,7 @@ pub struct ApiServerConfig {
     /// runner-token auth layer applied to the operator route group.
     pub webhook_intakes: Vec<Arc<dyn baml_rt_tools::WebhookIntake>>,
     pub host_ingress_recorder: Option<Arc<dyn baml_rt_core::HostIngressRecorder>>,
+    pub deployed_agent_lookup: Option<Arc<dyn baml_rt_core::DeployedAgentLookup>>,
 }
 
 impl ApiServerConfig {
@@ -348,6 +351,7 @@ impl ApiServerConfig {
             web_dir: None,
             webhook_intakes: Vec::new(),
             host_ingress_recorder: None,
+            deployed_agent_lookup: None,
         }
     }
 }
@@ -615,6 +619,7 @@ pub fn api_router_with_services_and_deploy(
         cluster,
         runtime_progress,
         host_ingress_recorder: config.host_ingress_recorder,
+        deployed_agent_lookup: config.deployed_agent_lookup,
     });
 
     let mut router = api_router

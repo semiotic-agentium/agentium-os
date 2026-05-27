@@ -56,14 +56,21 @@ function pushOperationalHistoryRow(
   ts: Date,
 ): void {
   if (item.content.type !== "operational_event") return;
-  rebuilt.push({
-    id: `prov-op-${item.activityAnchor}`,
+  const id = `prov-op-${item.activityAnchor}`;
+  const row: ChatMessage = {
+    id,
     role: "agent",
     text: "",
     timestamp: ts,
     speakerKind: item.role === "host" ? "host" : "system",
     contentBlocks: [operationalBlockFromHistoryContent(item.content)],
-  });
+  };
+  const existing = rebuilt.findIndex((m) => m.id === id);
+  if (existing >= 0) {
+    rebuilt[existing] = row;
+  } else {
+    rebuilt.push(row);
+  }
 }
 
 function speakerKindFromHistoryItem(item: ConversationHistoryItem): UserSpeakerKind {
@@ -222,7 +229,11 @@ export function applyConversationHistoryPage(
       );
     }
   };
-  const sorted = [...page.items].sort((a, b) => a.timestampMs - b.timestampMs);
+  const sorted = [...page.items].sort(
+    (a, b) =>
+      a.timestampMs - b.timestampMs ||
+      a.activityAnchor.localeCompare(b.activityAnchor),
+  );
   const rebuilt: ChatMessage[] = [];
   let turnOrdinal = 0;
   let activeAgentMsg: ChatMessage | null = null;
@@ -391,7 +402,11 @@ export function applyConversationHistoryDelta(
   applyMode: ConversationHistoryDeltaApplyMode = ConversationHistoryDeltaApplyMode.Full,
 ): void {
   if (Array.isArray(page.items) && page.items.length > 0) {
-    const sorted = [...page.items].sort((a, b) => a.timestampMs - b.timestampMs);
+    const sorted = [...page.items].sort(
+    (a, b) =>
+      a.timestampMs - b.timestampMs ||
+      a.activityAnchor.localeCompare(b.activityAnchor),
+  );
     for (const item of sorted) {
       const isUser = item.role.toLowerCase() === "user";
       const ts = new Date(normalizeEpochMs(item.timestampMs));

@@ -41,7 +41,8 @@ pub use cluster_deploy::{ClusterDeployResponseDto, ClusterDeployRunnerResultDto}
 pub use cluster_heartbeat::{ClusterHeartbeatHealth, HeartbeatStatus};
 pub use context_index::{
     ContextIndexCursorToken, ContextIndexError, ContextIndexQueryParams, ContextIndexRequest,
-    ContextIndexRequestParseError, ContextIndexService, ContextPickerItemDto, ContextPickerPageDto,
+    ContextIndexRequestParseError, ContextIndexService, ContextPickerIngressFilter,
+    ContextPickerItemDto, ContextPickerPageDto,
 };
 pub use context_metrics::{
     ContextMetricsError, ContextMetricsResponseDto, ContextMetricsService,
@@ -54,8 +55,8 @@ pub use conversation_history::{
     ConversationHistoryQueryParams, ConversationHistoryRequest,
     ConversationHistoryRequestParseError, ConversationHistoryService, ConversationHistoryUpdate,
     CursorToken, DEFAULT_CONVERSATION_HISTORY_LIMIT, LlmPromptOperationDto, SessionStepOpDto,
-    ToolOutcomeDto, include_in_conversation_history_profile, merge_conversation_history_pages,
-    page_version, paginate_items, profile_filter,
+    ToolOutcomeDto, apply_conversation_history_profile, include_in_conversation_history_profile,
+    merge_conversation_history_pages, page_version, paginate_items, profile_filter,
 };
 pub use episode::{
     ArtifactSummaryDto, EpisodeContentDto, EpisodeDurationDto, EpisodeEntryDto, EpisodeError,
@@ -65,7 +66,7 @@ pub use episode::{
 pub use mermaid::{MermaidError, MermaidService};
 pub use planning::{
     CitationDetail, ContextPlanningResponse, DriftedCallDetail, PlanningError, PlanningService,
-    PlanningStepSummary, TaskPlanDriftSummary, TaskPlanningSnapshot,
+    PlanningStepSummary, TaskPlanDriftSummary, TaskPlanningSnapshot, summarize_plan_steps,
 };
 pub use provenance_ops::{ProvenanceOpsError, ProvenanceOpsService};
 pub use router::{

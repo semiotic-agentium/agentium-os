@@ -4,8 +4,6 @@ import { mount } from "@vue/test-utils";
 import { useEventObservation } from "./useEventObservation";
 import type { ConversationHistoryPage } from "../types/a2a";
 
-const TRACE_DEBOUNCE_MS = 300;
-
 type Listener = (ev: MessageEvent<string>) => void;
 
 class MockEventSource {
@@ -23,10 +21,10 @@ class MockEventSource {
     this.listeners.set(type, fn);
   }
 
-  emit(type: string, data: unknown): void {
+  emit(type: string, data?: unknown): void {
     const fn = this.listeners.get(type);
     if (!fn) return;
-    fn({ data: JSON.stringify(data) } as MessageEvent<string>);
+    fn({ data: JSON.stringify(data ?? {}) } as MessageEvent<string>);
   }
 
   close(): void {
@@ -35,18 +33,18 @@ class MockEventSource {
 }
 
 const emptyHistoryPage: ConversationHistoryPage = {
-  contextId: "ctx-debounce",
-  version: "1",
+  contextId: "ctx-observe",
+  version: "obs-v1:0",
   maxEventOrder: 0,
   items: [],
 };
 
-describe("useEventObservation SSE trace refresh debounce", () => {
+describe("useEventObservation transcript reconcile", () => {
   let obs: ReturnType<typeof useEventObservation>;
 
   beforeEach(() => {
-    MockEventSource.instances = [];
     vi.useFakeTimers();
+    MockEventSource.instances = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -78,8 +76,8 @@ describe("useEventObservation SSE trace refresh debounce", () => {
 
   it("skips redundant SSE snapshots with the same version when transcript is loaded", async () => {
     const pageWithItem: ConversationHistoryPage = {
-      contextId: "ctx-debounce",
-      version: "v1",
+      contextId: "ctx-observe",
+      version: "obs-v1:abc",
       maxEventOrder: 1,
       items: [
         {
@@ -90,42 +88,88 @@ describe("useEventObservation SSE trace refresh debounce", () => {
         },
       ],
     };
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes("/conversation-history?")) {
-        return { ok: true, json: async () => pageWithItem };
-      }
-      if (url.includes("/mermaid")) {
-        return { ok: true, text: async () => "" };
-      }
-      return { ok: false };
-    });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/conversation-history?")) {
+          return { ok: true, json: async () => pageWithItem };
+        }
+        if (url.includes("/mermaid")) {
+          return { ok: true, text: async () => "" };
+        }
+        return { ok: false };
+      }),
+    );
 
-    await obs.loadContext("ctx-debounce", null);
-    await vi.advanceTimersByTimeAsync(TRACE_DEBOUNCE_MS);
+    await obs.loadContext("ctx-observe", null);
     expect(obs.messages.value).toHaveLength(1);
-
-    const stream = MockEventSource.instances[MockEventSource.instances.length - 1]!;
-    stream.emit("snapshot", pageWithItem);
-    await vi.advanceTimersByTimeAsync(TRACE_DEBOUNCE_MS);
-    expect(obs.messages.value).toHaveLength(1);
-  });
-
-  it("coalesces rapid SSE snapshot events into one trace refresh bump", async () => {
-    await obs.loadContext("ctx-debounce", null);
-    await vi.advanceTimersByTimeAsync(TRACE_DEBOUNCE_MS);
     const before = obs.traceRefreshGeneration.value;
 
     const stream = MockEventSource.instances[MockEventSource.instances.length - 1]!;
-    stream.emit("snapshot", emptyHistoryPage);
-    stream.emit("snapshot", emptyHistoryPage);
-    stream.emit("snapshot", emptyHistoryPage);
-
-    await vi.advanceTimersByTimeAsync(TRACE_DEBOUNCE_MS - 1);
+    stream.emit("snapshot", pageWithItem);
+    expect(obs.messages.value).toHaveLength(1);
     expect(obs.traceRefreshGeneration.value).toBe(before);
+  });
 
-    await vi.advanceTimersByTimeAsync(1);
-    expect(obs.traceRefreshGeneration.value).toBe(before + 1);
+  it("bumps trace refresh on each applied SSE snapshot with a new version", async () => {
+    await obs.loadContext("ctx-observe", null);
+    const before = obs.traceRefreshGeneration.value;
+
+    const stream = MockEventSource.instances[MockEventSource.instances.length - 1]!;
+    stream.emit("snapshot", { ...emptyHistoryPage, version: "obs-v1:1" });
+    stream.emit("snapshot", { ...emptyHistoryPage, version: "obs-v1:2" });
+    stream.emit("snapshot", { ...emptyHistoryPage, version: "obs-v1:3" });
+
+    expect(obs.traceRefreshGeneration.value).toBe(before + 3);
+  });
+
+  it("reconciles SSE delta via authoritative GET merge (same path as reload)", async () => {
+    const pageWithItem: ConversationHistoryPage = {
+      contextId: "ctx-observe",
+      version: "obs-v1:live",
+      maxEventOrder: 2,
+      items: [
+        {
+          activityAnchor: "ingress-1",
+          role: "user",
+          timestampMs: 1,
+          content: { type: "message", text: "wire" },
+        },
+        {
+          activityAnchor: "agent-1",
+          role: "agent",
+          timestampMs: 2,
+          content: { type: "message", text: "ack" },
+        },
+      ],
+    };
+
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/conversation-history?")) {
+          fetchCalls += 1;
+          return { ok: true, json: async () => (fetchCalls === 1 ? emptyHistoryPage : pageWithItem) };
+        }
+        if (url.includes("/mermaid")) {
+          return { ok: true, text: async () => "" };
+        }
+        return { ok: false };
+      }),
+    );
+
+    await obs.loadContext("ctx-observe", null);
+    expect(obs.messages.value).toHaveLength(0);
+
+    const stream = MockEventSource.instances[MockEventSource.instances.length - 1]!;
+    stream.emit("delta");
+    await vi.advanceTimersByTimeAsync(80);
+
+    expect(fetchCalls).toBeGreaterThanOrEqual(2);
+    expect(obs.messages.value).toHaveLength(2);
+    expect(obs.messages.value.map((m) => m.role)).toEqual(["user", "agent"]);
   });
 });

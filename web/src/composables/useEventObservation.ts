@@ -1,17 +1,28 @@
-import { onUnmounted, ref } from "vue";
-import type { ChatMessage, ConversationHistoryPage } from "../types/a2a";
+import { computed, onUnmounted, ref } from "vue";
+import type { ChatMessage, ConversationHistoryPage, HistoryHydrateState } from "../types/a2a";
+import { fetchMergedConversationHistoryPage } from "../chat/fetchConversationHistoryPage";
 import {
-  applyConversationHistoryDelta,
-  applyConversationHistoryPage,
-  ConversationHistoryDeltaApplyMode,
-} from "../chat/conversationHistoryHydration";
+  applyConversationHistoryIngress,
+  type ConversationHistoryIngressDeps,
+} from "../chat/conversationHistorySync";
 import { fetchContextMermaidDiagram } from "../utils/mermaidDiagram";
+import {
+  mergeEventConsoleTranscript,
+  transcriptHasHostIngress,
+} from "../events/dispatchObserve";
+import {
+  observationScopeKey,
+  observationScopeQueryParams,
+  type ObservationScope,
+} from "./useObservationScope";
+import { useTraceRefreshGeneration, bumpTraceRefreshOnHistoryIngress } from "./useTraceRefreshGeneration";
 
 const HISTORY_PAGE_SIZE = 50;
 const HISTORY_FETCH_TIMEOUT_MS = 12_000;
-const TRACE_REFRESH_DEBOUNCE_MS = 300;
 /** One-shot transcript retry after ack-only dispatch (no interval polling). */
 const PRESERVE_TRANSCRIPT_RETRY_MS = 2_000;
+/** Coalesce SSE delta notifications into one authoritative GET reconcile. */
+const DELTA_RECONCILE_MS = 80;
 
 export interface LoadContextOptions {
   /** When set, do not clear existing messages until a non-empty transcript arrives. */
@@ -22,24 +33,84 @@ export interface LoadContextOptions {
 
 export type TraceObserveState = "idle" | "loading" | "waiting" | "ready" | "empty" | "error";
 
+function mapHydrateState(state: HistoryHydrateState): TraceObserveState {
+  if (state === "skipped") return "waiting";
+  return state;
+}
+
 /** Load provenance-backed transcript for an event run context (no A2A chat). */
 export function useEventObservation() {
   const messages = ref<ChatMessage[]>([]);
+  const localOverlay = ref<ChatMessage[]>([]);
   const contextId = ref<string | null>(null);
   const taskId = ref<string | null>(null);
   const provenanceDiagram = ref("");
-  const traceRefreshGeneration = ref(0);
   const hydrateState = ref<TraceObserveState>("idle");
 
   let historyStream: EventSource | null = null;
   let historyStreamKey = "";
-  let traceRefreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   let preserveRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let deltaReconcileTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconcileSeq = 0;
   let diagramFetchSeq = 0;
   let observeCtx = "";
   /** Skip redundant full reloads when context/task/agent unchanged. */
   let loadedObserveKey = "";
-  let lastSnapshotVersion = "";
+
+  const transcriptMessages = computed(() =>
+    mergeEventConsoleTranscript(messages.value, localOverlay.value),
+  );
+
+  const traceRefresh = useTraceRefreshGeneration({
+    onBump: () => {
+      if (observeCtx) {
+        void fetchDiagram(observeCtx);
+      }
+    },
+  });
+
+  function ingressDeps(): ConversationHistoryIngressDeps {
+    return {
+      messages,
+      getHistoryVersion: traceRefresh.getHistoryVersion,
+      setHistoryVersion: traceRefresh.setHistoryVersion,
+      setHydrateState: (state: HistoryHydrateState) => {
+        hydrateState.value = mapHydrateState(state);
+      },
+      setSelectedContextId: () => {},
+      setTaskId: (id: string | null) => {
+        taskId.value = id;
+      },
+      replaceLlmFromPage: () => {},
+      extendLlmFromPage: () => {},
+    };
+  }
+
+  function pruneLocalOverlay(): void {
+    if (!transcriptHasHostIngress(messages.value)) return;
+    localOverlay.value = localOverlay.value.filter(
+      (m) => !(m.role === "user" && m.speakerKind === "ingress"),
+    );
+  }
+
+  function applyFullConversationPage(
+    page: ConversationHistoryPage,
+    options?: { respectDuplicateVersion?: boolean },
+  ): void {
+    const effect = applyConversationHistoryIngress(ingressDeps(), {
+      kind: "full",
+      mode: "evented",
+      page,
+      respectDuplicateVersion: options?.respectDuplicateVersion ?? false,
+      syncTaskIdFromPageBeforeDefer: true,
+    });
+    bumpTraceRefreshOnHistoryIngress(traceRefresh, effect);
+    pruneLocalOverlay();
+    if (messages.value.length > 0) {
+      hydrateState.value = "ready";
+      stopPreserveRetry();
+    }
+  }
 
   function closeHistoryStream(): void {
     if (historyStream) {
@@ -56,83 +127,61 @@ export function useEventObservation() {
     }
   }
 
-  function bumpTraceRefresh(): void {
-    traceRefreshGeneration.value += 1;
-  }
-
-  function scheduleTraceRefreshBump(): void {
-    if (!observeCtx) return;
-    if (traceRefreshDebounceTimer !== null) {
-      clearTimeout(traceRefreshDebounceTimer);
+  function stopDeltaReconcile(): void {
+    if (deltaReconcileTimer !== null) {
+      clearTimeout(deltaReconcileTimer);
+      deltaReconcileTimer = null;
     }
-    traceRefreshDebounceTimer = setTimeout(() => {
-      traceRefreshDebounceTimer = null;
-      bumpTraceRefresh();
-      void fetchDiagram(observeCtx);
-    }, TRACE_REFRESH_DEBOUNCE_MS);
   }
 
-  function historyQueryParams(
-    task?: string | null,
-    agentPackage?: string | null,
-  ): URLSearchParams {
-    const params = new URLSearchParams();
+  function bumpTraceRefresh(): void {
+    traceRefresh.bumpTraceRefresh();
+  }
+
+  function streamQueryParams(scope: ObservationScope): URLSearchParams {
+    const params = observationScopeQueryParams(scope);
     params.set("limit", String(HISTORY_PAGE_SIZE));
-    if (task) params.set("taskId", task);
-    if (agentPackage) params.set("agentPackage", agentPackage);
+    params.set("profile", "full");
     return params;
   }
 
-  function ensureHistoryStream(
-    ctx: string,
-    task?: string | null,
-    agentPackage?: string | null,
-  ): void {
-    const key = `${ctx}:${task ?? ""}:${agentPackage ?? ""}`;
+  function scheduleDeltaReconcile(scope: ObservationScope): void {
+    stopDeltaReconcile();
+    deltaReconcileTimer = setTimeout(() => {
+      deltaReconcileTimer = null;
+      void reconcileFullTranscript(scope);
+    }, DELTA_RECONCILE_MS);
+  }
+
+  async function reconcileFullTranscript(scope: ObservationScope): Promise<void> {
+    const seq = ++reconcileSeq;
+    const page = await fetchMergedConversationHistoryPage(scope);
+    if (!page || seq !== reconcileSeq) return;
+    applyFullConversationPage(page, { respectDuplicateVersion: false });
+  }
+
+  function ensureHistoryStream(scope: ObservationScope): void {
+    const key = observationScopeKey(scope);
     if (historyStreamKey === key && historyStream) return;
 
     closeHistoryStream();
-    const params = historyQueryParams(task, agentPackage);
-    const url = `/contexts/${ctx}/conversation-history/stream?${params.toString()}`;
+    const params = streamQueryParams(scope);
+    const url = `/contexts/${scope.contextId}/conversation-history/stream?${params.toString()}`;
     const stream = new EventSource(url);
 
     stream.addEventListener("snapshot", (ev) => {
       try {
         const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
-        const sameVersion =
-          page.version === lastSnapshotVersion && messages.value.length > 0;
-        if (!sameVersion) {
-          applyConversationHistoryPage(messages, page);
-          lastSnapshotVersion = page.version;
-        }
-        if (messages.value.length > 0) {
-          hydrateState.value = "ready";
-          stopPreserveRetry();
-        }
-        scheduleTraceRefreshBump();
+        applyFullConversationPage(page, { respectDuplicateVersion: true });
       } catch {
         // ignore malformed payloads
       }
     });
-    stream.addEventListener("delta", (ev) => {
-      try {
-        const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
-        applyConversationHistoryDelta(
-          messages,
-          page,
-          ConversationHistoryDeltaApplyMode.Full,
-        );
-        if (messages.value.length > 0) {
-          hydrateState.value = "ready";
-          stopPreserveRetry();
-        }
-        scheduleTraceRefreshBump();
-      } catch {
-        // ignore malformed payloads
-      }
+    stream.addEventListener("delta", () => {
+      scheduleDeltaReconcile(scope);
     });
     stream.addEventListener("done", () => {
-      scheduleTraceRefreshBump();
+      bumpTraceRefresh();
       if (historyStream === stream) {
         stream.close();
         historyStream = null;
@@ -159,7 +208,7 @@ export function useEventObservation() {
     stopPreserveRetry();
     preserveRetryTimer = setTimeout(() => {
       preserveRetryTimer = null;
-      void refreshHistoryPage(ctx, task, agentPackage, { bumpTrace: true }).then(() => {
+      void refreshHistoryPage(observeScope(ctx, task, agentPackage), { bumpTrace: true }).then(() => {
         if (messages.value.length > 0) {
           hydrateState.value = "ready";
         } else if (hydrateState.value === "waiting") {
@@ -170,48 +219,21 @@ export function useEventObservation() {
   }
 
   async function refreshHistoryPage(
-    ctx: string,
-    task?: string | null,
-    agentPackage?: string | null,
+    scope: ObservationScope,
     options?: { bumpTrace?: boolean },
   ): Promise<void> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), HISTORY_FETCH_TIMEOUT_MS);
     try {
-      const allItems: ConversationHistoryPage["items"] = [];
-      let cursor: string | undefined;
-      let lastPage: ConversationHistoryPage | null = null;
-      let maxEventOrder = 0;
-
-      for (;;) {
-        const params = historyQueryParams(task, agentPackage);
-        if (cursor) params.set("cursor", cursor);
-        const res = await fetch(`/contexts/${ctx}/conversation-history?${params.toString()}`, {
-          signal: controller.signal,
-        });
-        if (!res.ok) return;
-        const page = (await res.json()) as ConversationHistoryPage;
-        if (!Array.isArray(page.items)) return;
-        allItems.push(...page.items);
-        maxEventOrder = Math.max(maxEventOrder, page.maxEventOrder);
-        lastPage = page;
-        if (!page.nextCursor) break;
-        cursor = page.nextCursor;
-      }
-
-      if (!lastPage) return;
-
-      const merged: ConversationHistoryPage = {
-        ...lastPage,
-        items: allItems,
-        maxEventOrder,
-        nextCursor: null,
-      };
-      applyConversationHistoryPage(messages, merged);
-      lastSnapshotVersion = merged.version;
-      await fetchDiagram(ctx);
+      const page = await fetchMergedConversationHistoryPage(scope, {
+        signal: controller.signal,
+        pageSize: HISTORY_PAGE_SIZE,
+      });
+      if (!page) return;
+      applyFullConversationPage(page, { respectDuplicateVersion: false });
+      await fetchDiagram(scope.contextId);
       if (options?.bumpTrace) {
-        scheduleTraceRefreshBump();
+        bumpTraceRefresh();
       }
     } catch {
       // timeout or network — observation may stay empty; operator summary still shown
@@ -227,12 +249,24 @@ export function useEventObservation() {
     provenanceDiagram.value = text;
   }
 
+  function observeScope(
+    ctx: string,
+    task?: string | null,
+    agentPackage?: string | null,
+  ): ObservationScope {
+    return { contextId: ctx, taskId: task ?? null, agentPackage: agentPackage ?? null };
+  }
+
   function observeKey(
     ctx: string,
     task?: string | null,
     agentPackage?: string | null,
   ): string {
-    return `${ctx}:${task ?? ""}:${agentPackage ?? ""}`;
+    return observationScopeKey(observeScope(ctx, task, agentPackage));
+  }
+
+  function setLocalOverlay(rows: ChatMessage[]): void {
+    localOverlay.value = rows;
   }
 
   async function loadContext(
@@ -243,40 +277,57 @@ export function useEventObservation() {
     const preserve = options?.preserveMessagesUntilTranscript ?? false;
     const agentPackage = options?.agentPackage ?? null;
     const key = observeKey(ctx, task, agentPackage);
-    const sameObserveTarget = key === loadedObserveKey && messages.value.length > 0;
+    const scope = observeScope(ctx, task, agentPackage);
+    const sameObserveTarget = key === loadedObserveKey;
 
     observeCtx = ctx;
     contextId.value = ctx;
     taskId.value = task ?? null;
 
     if (sameObserveTarget && !preserve) {
-      scheduleTraceRefreshBump();
-      return;
+      if (messages.value.length > 0) {
+        bumpTraceRefresh();
+        return;
+      }
+    }
+
+    if (preserve && sameObserveTarget) {
+      try {
+        await refreshHistoryPage(scope);
+        if (messages.value.length > 0) {
+          hydrateState.value = "ready";
+          stopPreserveRetry();
+        } else {
+          hydrateState.value = "waiting";
+          schedulePreserveTranscriptRetry(ctx, task, agentPackage);
+        }
+        ensureHistoryStream(scope);
+        bumpTraceRefresh();
+        return;
+      } catch {
+        hydrateState.value = "error";
+        return;
+      }
     }
 
     loadedObserveKey = key;
-    lastSnapshotVersion = "";
+    traceRefresh.resetHistoryVersion();
+    stopDeltaReconcile();
     if (!preserve) {
       provenanceDiagram.value = "";
       diagramFetchSeq += 1;
       messages.value = [];
+      localOverlay.value = [];
       hydrateState.value = "loading";
     }
     stopPreserveRetry();
     closeHistoryStream();
-    if (traceRefreshDebounceTimer !== null) {
-      clearTimeout(traceRefreshDebounceTimer);
-      traceRefreshDebounceTimer = null;
-    }
     try {
-      await refreshHistoryPage(ctx, task, agentPackage);
-      if (messages.value.length > 0) {
-        lastSnapshotVersion = "";
-      }
+      await refreshHistoryPage(scope);
       if (messages.value.length > 0) {
         hydrateState.value = "ready";
-        ensureHistoryStream(ctx, task, agentPackage);
-        scheduleTraceRefreshBump();
+        ensureHistoryStream(scope);
+        bumpTraceRefresh();
         return;
       }
       if (preserve) {
@@ -285,8 +336,8 @@ export function useEventObservation() {
       } else {
         hydrateState.value = "empty";
       }
-      ensureHistoryStream(ctx, task, agentPackage);
-      scheduleTraceRefreshBump();
+      ensureHistoryStream(scope);
+      bumpTraceRefresh();
     } catch {
       hydrateState.value = "error";
     }
@@ -302,15 +353,13 @@ export function useEventObservation() {
 
   function clear(): void {
     stopPreserveRetry();
+    stopDeltaReconcile();
     closeHistoryStream();
-    if (traceRefreshDebounceTimer !== null) {
-      clearTimeout(traceRefreshDebounceTimer);
-      traceRefreshDebounceTimer = null;
-    }
     observeCtx = "";
     loadedObserveKey = "";
-    lastSnapshotVersion = "";
+    traceRefresh.resetHistoryVersion();
     messages.value = [];
+    localOverlay.value = [];
     contextId.value = null;
     taskId.value = null;
     provenanceDiagram.value = "";
@@ -324,12 +373,15 @@ export function useEventObservation() {
 
   return {
     messages,
+    transcriptMessages,
+    localOverlay,
     contextId,
     taskId,
     provenanceDiagram,
-    traceRefreshGeneration,
+    traceRefreshGeneration: traceRefresh.traceRefreshGeneration,
     hydrateState,
     loadContext,
+    setLocalOverlay,
     setDemoMessages,
     clear,
     bumpTraceRefresh,

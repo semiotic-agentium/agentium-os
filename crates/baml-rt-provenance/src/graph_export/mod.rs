@@ -132,21 +132,19 @@ impl GraphExporter {
         let scoped_to = context_scope::SCOPED_TO;
         let ctx_node_id = context_entity_id_string(context_id);
 
-        // Use subqueries to avoid binding Vec<String> which SurrealDB's bind API
-        // does not support for IN clauses. The scoped_ids subquery is reused
-        // as a building block for nodes and edges.
-        let scoped_ids_subquery = format!(
-            "(SELECT VALUE from_id FROM prov_edge WHERE to_id = '{ctx_node_id}' AND rel_type = '{scoped_to}')"
-        );
-
-        // Fetch all nodes scoped to this context
+        let scoped_edge_sql =
+            "SELECT VALUE from_id FROM prov_edge WHERE to_id = $ctx_node_id AND rel_type = $scoped_to"
+                .to_string();
         let node_query = format!(
-            "SELECT node_id, label, props OMIT id FROM prov_node WHERE node_id IN {scoped_ids_subquery}"
+            "SELECT node_id, label, props OMIT id FROM prov_node \
+             WHERE node_id IN ({scoped_edge_sql})"
         );
         let node_response = self
             .store
             .db()
             .query(&node_query)
+            .bind(("ctx_node_id", ctx_node_id.clone()))
+            .bind(("scoped_to", scoped_to.to_string()))
             .await
             .map_err(map_surreal_error)?;
         let node_rows: Vec<Value> = check_and_take_zero(node_response, map_surreal_error)?;
@@ -160,20 +158,25 @@ impl GraphExporter {
             });
         }
 
-        let scoped_ids: HashSet<String> = node_rows
+        let scoped_ids: Vec<String> = node_rows
             .iter()
             .filter_map(|r| r.get("node_id").and_then(Value::as_str).map(String::from))
             .collect();
+        let scoped_id_set: HashSet<String> = scoped_ids.iter().cloned().collect();
 
-        // Fetch all edges where from_id is in the scoped set
-        let edge_query = format!(
+        let edge_query =
             "SELECT from_id, from_label, to_id, to_label, rel_type, props OMIT id FROM prov_edge \
-             WHERE from_id IN {scoped_ids_subquery} AND rel_type != '{scoped_to}'"
-        );
+             WHERE from_id IN $scoped_ids AND rel_type != $scoped_to"
+                .to_string();
         let edge_response = self
             .store
             .db()
             .query(&edge_query)
+            .bind((
+                "scoped_ids",
+                Value::Array(scoped_ids.iter().cloned().map(Value::String).collect()),
+            ))
+            .bind(("scoped_to", scoped_to.to_string()))
             .await
             .map_err(map_surreal_error)?;
         let edge_rows: Vec<Value> = check_and_take_zero(edge_response, map_surreal_error)?;
@@ -182,7 +185,7 @@ impl GraphExporter {
         let extra_ids: HashSet<String> = edge_rows
             .iter()
             .filter_map(|r| r.get("to_id").and_then(Value::as_str).map(String::from))
-            .filter(|id| !scoped_ids.contains(id))
+            .filter(|id| !scoped_id_set.contains(id))
             .collect();
 
         let extra_node_rows: Vec<Value> = if extra_ids.is_empty() {

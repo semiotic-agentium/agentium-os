@@ -5,10 +5,15 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useTheme } from "../composables/useTheme";
+import { useToast } from "../composables/useToast";
 import { useMermaidRenderer } from "../composables/useMermaidRenderer";
 import { useProvenanceOps } from "../composables/useProvenanceOps";
+import {
+  provenanceQueryFromScope,
+  useObservationScope,
+} from "../composables/useObservationScope";
 import type {
   ContextPlanningResponse,
   ContextPlanningTaskSnapshot,
@@ -50,6 +55,8 @@ const props = defineProps<{
   contextId?: string;
   taskId?: string;
   selectedAgentId?: string;
+  /** Filter ops queries by agent package (Event Console compose agent). */
+  selectedAgentPackage?: string;
   isStreaming: boolean;
   diagrams?: string[];
   /** Bumps when evented provenance signals new rows; edge-triggers Live refresh */
@@ -82,6 +89,7 @@ const emptyStateCopy = computed(() => {
 const activeTab = ref<"live" | "failures" | "anomalies" | "drift" | "explore">("live");
 
 const { theme } = useTheme();
+const toast = useToast();
 const sources = computed(() => props.diagrams ?? []);
 const { rendered } = useMermaidRenderer(sources, theme);
 const expandedIdx = ref<number | null>(null);
@@ -125,6 +133,7 @@ const exploreTabRef = ref<InstanceType<typeof ExploreTab> | null>(null);
 
 const isExploreTab = computed(() => activeTab.value === "explore");
 const pollInFlight = ref(false);
+let pollPending = false;
 const planningState = ref<{
   loading: boolean;
   error: string | null;
@@ -135,15 +144,25 @@ const planningState = ref<{
   response: null,
 });
 
-function baseScope(): Pick<ProvenanceQueryParams, "contextId" | "agentId"> {
-  return {
-    contextId: props.contextId,
-    agentId: props.selectedAgentId,
-  };
+const observationScope = useObservationScope(
+  () => props.contextId,
+  () => props.taskId,
+  () => props.selectedAgentPackage,
+);
+
+function baseScope(): Pick<
+  ProvenanceQueryParams,
+  "contextId" | "taskId" | "agentId" | "agentPackage"
+> {
+  return provenanceQueryFromScope(observationScope.value, props.selectedAgentId);
 }
 
 async function refreshForActiveTab() {
-  if (!props.contextId || pollInFlight.value) return;
+  if (!props.contextId) return;
+  if (pollInFlight.value) {
+    pollPending = true;
+    return;
+  }
   pollInFlight.value = true;
   try {
     const scope = baseScope();
@@ -170,6 +189,10 @@ async function refreshForActiveTab() {
     }
   } finally {
     pollInFlight.value = false;
+    if (pollPending) {
+      pollPending = false;
+      void refreshForActiveTab();
+    }
   }
 }
 
@@ -262,9 +285,31 @@ function onDrillToDriftCalls(taskId: string) {
 // ── Episode download ───────────────────────────────────────────────────────
 
 async function downloadEpisodeText(taskId: string) {
-  const response = await fetch(`/tasks/${taskId}/episode/text`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  let response: Response;
+  try {
+    response = await fetch(`/tasks/${encodeURIComponent(taskId)}/episode/text`, {
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if ((error as Error).name === "AbortError") {
+      toast.error("Episode download timed out — the task graph may still be populating.");
+    } else {
+      toast.error("Episode download failed — check the runner and try again.");
+    }
+    return;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!response.ok) {
-    console.error("episode/text fetch failed:", response.status);
+    if (response.status === 404) {
+      toast.error(
+        "No episode transcript yet for this task — wait for dispatch to finish, then retry.",
+      );
+    } else {
+      toast.error(`Episode download failed (${response.status}).`);
+    }
     return;
   }
   const blob = await response.blob();
@@ -334,34 +379,15 @@ watch(
   () => {
     if (!props.contextId || isExploreTab.value) return;
     void refreshForActiveTab();
-    if (activeTab.value === "live" || activeTab.value === "drift") {
-      void refreshPlanning();
-    }
   },
   { immediate: true },
 );
-
-const TRACE_TAB_REFRESH_DEBOUNCE_MS = 300;
-let traceTabRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-
-function scheduleRefreshForActiveTab(): void {
-  if (!props.contextId || isExploreTab.value) return;
-  if (traceTabRefreshTimer !== null) clearTimeout(traceTabRefreshTimer);
-  traceTabRefreshTimer = setTimeout(() => {
-    traceTabRefreshTimer = null;
-    void refreshForActiveTab();
-  }, TRACE_TAB_REFRESH_DEBOUNCE_MS);
-}
-
-onUnmounted(() => {
-  if (traceTabRefreshTimer !== null) clearTimeout(traceTabRefreshTimer);
-});
 
 watch(
   () => props.traceRefreshTick ?? 0,
   (tick, prev) => {
     if (tick === prev) return;
-    scheduleRefreshForActiveTab();
+    void refreshForActiveTab();
   },
 );
 

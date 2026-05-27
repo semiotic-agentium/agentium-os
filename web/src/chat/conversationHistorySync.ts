@@ -6,7 +6,7 @@
  * Single ingress policy for provenance-backed transcript rows (GET merged pages + SSE snapshot/delta).
  *
  * - **full**: HTTP paginated merge or SSE `snapshot` → [`applyConversationHistoryPage`].
- * - **delta**: SSE `delta` only → [`applyConversationHistoryDelta`] (incremental `items`; do not run lag heuristic meant for merged pages). While the tail agent is streaming, apply **structural** rows only (`tool_*`, `session_step`) so Primary matches Observe without double-applying assistant `message` text from provenance.
+ * - **delta**: SSE `delta` only → [`applyConversationHistoryDelta`] (incremental `items`; do not run lag heuristic meant for merged pages). While the tail agent is streaming, apply **structural** rows only (`tool_*`, `session_step`) so Primary matches Observe without double-applying assistant `message` text from provenance. Event Console does **not** apply deltas incrementally — it schedules a full paginated GET reconcile instead.
  *
  * **Modes**
  * - `explicit_restore`: context picker / URL restore — defer sets `skipped` + optional retry.

@@ -687,6 +687,35 @@ impl ProvDerivedIdTemplate for MessageEntityId {
     }
 }
 
+/// Derived message id for one host ingress transcript row (poll or dispatch outcome).
+pub struct HostIngressTranscriptId;
+impl DerivedConstructible for HostIngressTranscriptId {}
+impl ProvIdSemantics for HostIngressTranscriptId {
+    const KIND: ProvKind = ProvKind::Entity;
+}
+impl ProvEntitySemantics for HostIngressTranscriptId {}
+impl ProvDerivedEntitySemantics for HostIngressTranscriptId {}
+impl ProvVocabularyType for HostIngressTranscriptId {
+    const VOCAB_TYPE: &'static str = a2a_types::MESSAGE;
+}
+
+pub struct HostIngressTranscriptInput<'a> {
+    pub context_id: &'a ContextId,
+    pub kind: &'a str,
+    pub components: &'a [&'a str],
+}
+
+impl ProvDerivedIdTemplate for HostIngressTranscriptId {
+    type Input<'a> = HostIngressTranscriptInput<'a>;
+
+    fn build<'a>(input: Self::Input<'a>) -> DerivedId {
+        let parts = std::iter::once(input.context_id.as_str())
+            .chain(std::iter::once(input.kind))
+            .chain(input.components.iter().copied());
+        DerivedId::from_parts("host_ingress_transcript", parts)
+    }
+}
+
 /// Activity representing message processing.
 pub struct MessageProcessingActivityId;
 impl DerivedConstructible for MessageProcessingActivityId {}

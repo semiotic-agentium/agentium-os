@@ -14,7 +14,7 @@ use baml_rt_core::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::operational::OperationalEventContent;
+use crate::{operational::OperationalEventContent, planning::PlanningEventContent};
 
 /// Re-export: session step op in conversation history (same as core bus wire).
 pub type SessionStepOp = baml_rt_core::bus::SessionStepOp;
@@ -89,6 +89,8 @@ pub enum ConversationItemContent {
     SessionStep(SessionStepContent),
     /// Host dispatch, LLM/tool failure classification, or task status (operator transcript only).
     Operational(OperationalEventContent),
+    /// Intent, plan, and step lifecycle (operator transcript only).
+    Planning(PlanningEventContent),
 }
 
 impl ConversationItemContent {
@@ -101,6 +103,7 @@ impl ConversationItemContent {
             Self::ToolResult(tr) => !matches!(tr.outcome, ToolOutcome::StatusOnly),
             Self::SessionStep(_) => true,
             Self::Operational(op) => op.is_meaningful(),
+            Self::Planning(plan) => plan.is_meaningful(),
         }
     }
 }
@@ -148,6 +151,12 @@ pub fn classify_user_speaker_kind(
         return None;
     }
     let anchor = activity_anchor.as_str();
+    if let Some(meta) = metadata
+        && let Some(raw) = meta.get("user_speaker_kind").map(String::as_str)
+        && let Some(kind) = UserSpeakerKind::from_wire_str(raw)
+    {
+        return Some(kind);
+    }
     if anchor.starts_with("ingress-poll-user:") || anchor.starts_with("ingress-unit-user:") {
         return Some(UserSpeakerKind::Ingress);
     }
@@ -210,6 +219,7 @@ impl ProvenanceConversationContextItem {
             ConversationItemContent::ToolResult(_) => "tool_result",
             ConversationItemContent::SessionStep(_) => "session_step",
             ConversationItemContent::Operational(_) => "operational_event",
+            ConversationItemContent::Planning(_) => "planning_event",
         }
     }
 }
@@ -280,6 +290,19 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+
+    #[test]
+    fn classify_ingress_from_metadata() {
+        let ctx = ContextId::new(1, 2);
+        let anchor = ActivityAnchorId::from("derived-host-ingress-anchor");
+        let mut meta = HashMap::new();
+        meta.insert(
+            "user_speaker_kind".to_string(),
+            baml_rt_vocabulary::vocabulary::user_speaker_kinds::INGRESS.to_string(),
+        );
+        let kind = classify_user_speaker_kind(&ctx, &anchor, Some(&meta), "user").expect("user");
+        assert_eq!(kind, UserSpeakerKind::Ingress);
+    }
 
     #[test]
     fn classify_ingress_poll_anchor() {

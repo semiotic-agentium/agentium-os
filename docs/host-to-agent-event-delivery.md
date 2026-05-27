@@ -74,7 +74,18 @@ The agent responds with `AgentDispatchAck { accepted: bool, detail: Option<Strin
 
 **HTTP endpoint**: `POST /agents/{pkg}/{inst}/dispatch` (single-agent delivery; programmatic and callback paths).
 
-**Publish ingress**: `POST /events/publish` accepts a `ProducedEvent`, records `HostSourcePollRecorded` in provenance, matches all deployed agent subscriptions, and fans out dispatch to each subscriber (recording `HostDispatchAccepted` per accept and `HostDispatchRejected` per reject or transport failure). This is the same path **task-daemon** and the **Event Console** use.
+**Publish ingress**: `POST /events/publish` accepts a `ProducedEvent`, records `HostSourcePollRecorded` in provenance, matches all deployed agent subscriptions, and fans out dispatch to each subscriber. **Write ownership (single-writer):**
+
+| Outcome | Writer |
+| --- | --- |
+| `HostSourcePollRecorded` | Publish handler (`record_source_poll`) |
+| `HostDispatchAccepted` | Runner dispatch boundary (`record_dispatch_accepted`) |
+| `HostDispatchRejected` (agent `accepted: false`) | Runner dispatch boundary (`record_dispatch_rejected`, `failure_kind: rejected`) |
+| `HostDispatchRejected` / transport (`dispatch_transport_error`) | Publish handler only when fan-out returns `SubscriberDeliveryFailure::Dispatch` (transport; dispatch never reached an agent ack) |
+
+Each row uses content-addressable identity (`HostIngressPollKey`, `HostIngressDispatchOutcomeKey`) so re-emits UPSERT one graph `Message` node. **`HOST_DISPATCH_TARGET` edges resolve to the live booted `AgentRuntimeInstance`** identified by `target_agent_id` on the dispatch event (via [`DispatchTarget`](crates/baml-rt-core/src/agent_routing/dispatch_target.rs) at write time). Route `(package, instance)` remains on the message for transcript idempotency and ops; it is not used to mint stub agent nodes. When no agent is deployed, transport rejects may omit `target_agent_id` and write the operational row only.
+
+Host poll ingress user messages attach processing to the runner control-plane instance (`RunnerRuntimeInstance`); they do not mint `WAS_EXECUTED_BY` edges to a nil agent id.
 
 See `crates/baml-rt-core/src/dispatch.rs` for types and `crates/baml-rt-api/src/handlers.rs` for the HTTP handlers.
 
@@ -104,14 +115,14 @@ The runtime wires `onDispatch` onto `globalThis`. When a dispatch request arrive
 
 - **`dispatch-echo`** (`tests/fixtures/agents/dispatch-echo/`): Minimal dispatch handler that echoes routing key and message count.
 - **`slack-agent`** (`agents/slack-agent/`): Subscribes to `host.source-records.v1` / `slack`; semantic ingress may delegate PM work via `system/internal_a2a`.
-- **`clickup-agent`** (`agents/clickup-agent/`): Subscribes to `host.source-records.v1` / `clickup`; `onDispatch` parses `ClickupSourceRecordsBatch` lifecycle rows and reuses the same BAML rail as chat (`InferClickUpIntent` → `PlanClickUpWork` → `ChooseClickUpAction`).
+- **`clickup-agent`** (`agents/clickup-agent/`): Subscribes to `host.source-records.v1` / `clickup`; `onDispatch` groups lifecycle rows per unit, runs `withTask` (unit-scoped ingress `#1` + task scope), then `InferClickUpIntent({})` (transcript from the unit prelude) → `PlanClickUpWork` → `runClickUpStructuredPlan` with `openA2aExecutionSession` so **intent/plan/step** provenance matches chat. Clarification during dispatch is rejected (same as slack-agent).
 - **`task-lifecycle-demo`** (`tests/fixtures/agents/task-lifecycle-demo/`): Full conversational lifecycle with both `run` and `onDispatch`.
 
 ## Provenance
 
 `HostSourcePollRecorded`, `HostDispatchAccepted`, and `HostDispatchRejected` emit **event-level lineage** (ops/Mermaid) and project to **`operational_event` conversation-history rows** (`role: host`, kinds such as `source_poll_recorded`, `dispatch_accepted`, `dispatch_rejected`, `dispatch_transport_error`). These rows appear in HTTP `profile=full` only; `profile=compact` strips them. They are **not** included in BAML `conversation_transcript` projection.
 
-For `host.source-records.v1`, actionable ingress text is **also** written per dispatch unit in each `withTask` prelude (task-scoped `ingress-unit-user` `Message` with `user_speaker_kind: ingress`); publish does **not** also emit a global poll-batch `user` line. Each `withTask` prelude injects the unit’s `records[]` slice as **wire JSON** (delimiter `--- host.source-records.v1 ---` + pretty-printed `{ "records": [...] }`) — the same fields the agent receives in dispatch `messages[0]`; the host does **not** rewrite records into title/description summaries. Agents own interpretation in `onDispatch` / BAML. Dispatch requests carry optional `context_id`, `task_id`, and `message_id`; scope is built via `invocation_scope_for_agent_dispatch` in `crates/baml-rt-core/src/dispatch.rs`.
+For `host.source-records.v1`, actionable ingress text is **also** written per dispatch unit in each `withTask` prelude (task-scoped ingress `user` `Message` with `user_speaker_kind: ingress` and derived activity anchor); publish does **not** also emit a global poll-batch `user` line. Each `withTask` prelude injects the unit’s `records[]` slice as **wire JSON** (delimiter `--- host.source-records.v1 ---` + pretty-printed `{ "records": [...] }`) — the same fields the agent receives in dispatch `messages[0]`; the host does **not** rewrite records into title/description summaries. Agents own interpretation in `onDispatch` / BAML. Dispatch requests carry optional `context_id`, `task_id`, and `message_id`; scope is built via `invocation_scope_for_agent_dispatch` in `crates/baml-rt-core/src/dispatch.rs`.
 
 Failed tool calls, LLM failures (`llm_call_failed`), prompt rejections (`prompt_rejected`), and terminal task status transitions (`task_status_changed`) also project as `operational_event` rows with `role: system` when present in the provenance graph.
 

@@ -94,6 +94,7 @@ edge (e.g. `Task -[HAS_LABEL]-> Label`) and exposed through
 ## Known fault lines (where bugs surface)
 
 - **Provenance write:** duplicate `Message` nodes or bad `event_order` → wrong order or repeated lines in the graph; fix the write path, not the projector.
+- **Host ingress identity:** one UPSERTed graph `Message` per `HostIngressPollKey` / `HostIngressDispatchOutcomeKey` / unit ingress anchor (`host_ingress_identity.rs`); dispatch rejections are written once at the runner boundary; publish records transport failures only. Conversation reads must not collapse duplicate rows — fix writes or rely on idempotent UPSERT.
 - **Ref churn (mitigated):** previously, `insert_history` allocated a new `#N` on every full pass, breaking intra-turn `Value` equality; now idempotent per `(activity_anchor, source)`.
 - **Builder preambles (mitigated for generated phase tools):** long `[OPEN]` / `[ACT]` / `[CONTINUE]` **lines** or pasted `Phase: SELECT|ACT|CONTINUE` cues in the parent IR template duplicated **PhaseOverlay** material; [`strip_phase_executor_ir_template`](../crates/baml-rt-builder/src/builder/baml_gen/session_from_ir/phase_prompt.rs) strips them when emitting `__entry` / `__active__*`. Hand-written BAML should still document FSM in `@@description` or comments rather than relying on stripping.
 - **Intra-turn async:** `LlmCompleted` can lag; the step executor supplement exists until the graph catches up; this is not non-monotonic *provenance*, but a composite read until sync.

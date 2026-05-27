@@ -1,5 +1,6 @@
 //! Operator-facing operational transcript rows (failures, dispatch, task status).
-//! Not projected into BAML `conversation_transcript`.
+//! Included in episode plain-text export and HTTP `profile=full` conversation-history;
+//! excluded from BAML `conversation_transcript` / `session_history` agent projection.
 
 use serde::{Deserialize, Serialize};
 

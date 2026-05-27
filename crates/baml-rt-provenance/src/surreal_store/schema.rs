@@ -10,8 +10,9 @@ use super::helpers::map_surreal_error;
 use crate::{
     error::Result,
     surreal_tables::{
-        TBL_ARCHIVE_BODY, TBL_ARCHIVE_LOCAL_COUNTER, TBL_ARCHIVE_PREFIX_REGISTRY, TBL_EDGE,
-        TBL_HISTORY_REF_REGISTRY, TBL_NODE, TBL_PAYLOAD, TBL_PAYLOAD_BLOB, TBL_SESSION_REF_COUNTER,
+        TBL_AGENT_PACKAGE_INSTANCE, TBL_ARCHIVE_BODY, TBL_ARCHIVE_LOCAL_COUNTER,
+        TBL_ARCHIVE_PREFIX_REGISTRY, TBL_CONTEXT_PICKER_INDEX, TBL_EDGE, TBL_HISTORY_REF_REGISTRY,
+        TBL_NODE, TBL_PAYLOAD, TBL_PAYLOAD_BLOB, TBL_SESSION_REF_COUNTER,
     },
 };
 
@@ -32,6 +33,12 @@ pub(super) async fn init_schema(db: &Surreal<Any>) -> Result<()> {
         format!("DEFINE INDEX IF NOT EXISTS idx_node_label_prov_time ON {TBL_NODE} FIELDS label, props.prov_time"),
         format!(
             "DEFINE INDEX IF NOT EXISTS idx_node_label_activity_anchor ON {TBL_NODE} FIELDS label, props.a2a_activity_anchor"
+        ),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_node_label_agent_type ON {TBL_NODE} FIELDS label, props.a2a_agent_type"
+        ),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_node_label_plan_step ON {TBL_NODE} FIELDS label, props.a2a_plan_id, props.a2a_step_id"
         ),
         // Edge table: composite + selective compound indexes (avoid redundant single-column idx).
         format!("REMOVE INDEX IF EXISTS idx_edge_from ON {TBL_EDGE}"),
@@ -87,6 +94,20 @@ pub(super) async fn init_schema(db: &Surreal<Any>) -> Result<()> {
         format!("DEFINE TABLE IF NOT EXISTS {TBL_SESSION_REF_COUNTER}"),
         format!(
             "DEFINE INDEX IF NOT EXISTS idx_session_ref_counter_ctx ON {TBL_SESSION_REF_COUNTER} FIELDS context_id UNIQUE"
+        ),
+        format!("DEFINE TABLE IF NOT EXISTS {TBL_AGENT_PACKAGE_INSTANCE}"),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_agent_pkg_instance_node ON {TBL_AGENT_PACKAGE_INSTANCE} FIELDS instance_node_id UNIQUE"
+        ),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_agent_pkg_instance_package ON {TBL_AGENT_PACKAGE_INSTANCE} FIELDS agent_package"
+        ),
+        format!("DEFINE TABLE IF NOT EXISTS {TBL_CONTEXT_PICKER_INDEX}"),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_context_picker_ctx ON {TBL_CONTEXT_PICKER_INDEX} FIELDS context_id UNIQUE"
+        ),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_context_picker_latest ON {TBL_CONTEXT_PICKER_INDEX} FIELDS latest_timestamp_ms"
         ),
         // Full-text search on denormalized search_text (blob-backed bodies are not indexed in-table)
         "DEFINE ANALYZER IF NOT EXISTS payload_analyzer TOKENIZERS blank, class FILTERS snowball(english)".to_string(),

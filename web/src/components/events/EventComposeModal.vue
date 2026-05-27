@@ -15,7 +15,6 @@ import {
   shouldOfferApplyObservedScope,
 } from "../../events/eventConsoleState";
 import { useFocusTrap } from "../../composables/useFocusTrap";
-import EventAgentSelector from "./EventAgentSelector.vue";
 import EventBatchEditor from "./EventBatchEditor.vue";
 
 const props = defineProps<{
@@ -47,7 +46,6 @@ const emit = defineEmits<{
   close: [];
   publish: [];
   validate: [];
-  "select-agent": [agent: AgentDiscoveryEntry];
   "select-message-shape": [messageShapeId: string];
   "apply-observed-scope": [];
   "scope-change": [kind: EventDispatchScopeKind];
@@ -82,9 +80,11 @@ const scopeSegments: { kind: EventDispatchScopeKind; label: string }[] = [
   { kind: "existing_task", label: "Existing task" },
 ];
 
-const agentsForSelector = computed(() =>
-  props.subscribedAgents.length > 0 ? props.subscribedAgents : props.agents,
-);
+const composeAgentLabel = computed(() => {
+  const a = props.selectedAgent;
+  if (!a) return null;
+  return `${a.agent_package}/${a.agent_instance_id}`;
+});
 
 function onOverlayClick(e: MouseEvent): void {
   if (e.target === e.currentTarget && canClose.value) emit("close");
@@ -126,16 +126,12 @@ function onMessageShapeChange(e: Event): void {
         </header>
 
         <div class="event-compose-modal-body">
-          <section class="compose-section">
-            <EventAgentSelector
-              :agents="agentsForSelector"
-              :subscribed-agents="subscribedAgents"
-              :selected="selectedAgent"
-              :loading="agentsLoading"
-              label="Agent"
-              select-id="event-compose-modal-agent"
-              @select="emit('select-agent', $event)"
-            />
+          <section class="compose-section compose-section--agent-readonly">
+            <p v-if="composeAgentLabel" class="compose-agent-readonly">
+              <span class="field-label">Compose agent</span>
+              <span class="compose-agent-readonly__value" translate="no">{{ composeAgentLabel }}</span>
+            </p>
+            <p v-else class="field-hint">Select a compose agent in the toolbar above.</p>
             <p v-if="selectedAgent && !agentAcceptsHostDispatch" class="field-hint field-hint--warn">
               This agent does not accept host dispatch.
             </p>
@@ -380,6 +376,20 @@ function onMessageShapeChange(e: Event): void {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
+}
+
+.compose-agent-readonly {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.75rem;
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.compose-agent-readonly__value {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--text);
 }
 
 .field-label {

@@ -295,6 +295,8 @@ pub mod a2a_relations {
     pub const TASK_CALL: &str = "A2A_TASK_CALL";
     pub const TASK_STATUS_TRANSITION: &str = "A2A_TASK_STATUS_TRANSITION";
     pub const MESSAGE_CALL: &str = "A2A_MESSAGE_CALL";
+    /// Host ingress dispatch outcome Message → target AgentRuntimeInstance.
+    pub const HOST_DISPATCH_TARGET: &str = "A2A_HOST_DISPATCH_TARGET";
     /// Reserved — `InformedByObservation` variant is not yet emitted;
     /// this value is used as the `prov_type` attribute on WAS_DERIVED_FROM edges when it is.
     pub const INFORMED_BY_OBSERVATION: &str = "A2A_INFORMED_BY_OBSERVATION";

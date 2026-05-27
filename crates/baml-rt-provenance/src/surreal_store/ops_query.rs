@@ -13,9 +13,9 @@ use serde_json::{Map, Value};
 
 use super::{
     SurrealProvenanceStore,
+    agent_runtime_index::normalize_agent_field_for_ops,
     helpers::{
-        check_and_take_zero, json_value_from_embedded_string, map_surreal_error,
-        normalize_payload_text_query, parse_json_object_field,
+        json_value_from_embedded_string, normalize_payload_text_query, parse_json_object_field,
     },
     payload::{
         ParsedArchiveRef, archive_payload_from_record, archive_ref_for_activity,
@@ -36,43 +36,6 @@ use crate::{
 };
 
 impl SurrealProvenanceStore {
-    /// Load agent identity map: agent_id -> (agent_package, agent_version).
-    /// Queries AgentRuntimeInstance nodes for package/version metadata.
-    /// Routed through the typed [`GraphQuery`] surface — no
-    /// `format!`-of-edge-labels or raw label literals leak into the SQL
-    /// builder.
-    async fn load_agent_identity_map(&self) -> Result<HashMap<String, (String, String)>> {
-        let (sql, binds) = GraphQuery::<labels::AgentRuntimeInstance, _>::new()
-            .all()
-            .into_surreal();
-        let rows = self.execute_typed_node_query(&sql, &binds).await?;
-
-        let mut out: HashMap<String, (String, String)> = HashMap::new();
-        for row in rows {
-            let Some(props) = row.get("props").and_then(Value::as_object) else {
-                continue;
-            };
-            let Some(agent_id) = props
-                .get("a2a_agent_id")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-            else {
-                continue;
-            };
-            let agent_id = agent_id.to_string();
-            let agent_package = normalize_agent_field(
-                props.get("a2a_agent_type").and_then(Value::as_str),
-                "unknown",
-            );
-            let agent_version = normalize_agent_field(
-                props.get("a2a_agent_version").and_then(Value::as_str),
-                "unknown",
-            );
-            out.insert(agent_id, (agent_package, agent_version));
-        }
-        Ok(out)
-    }
-
     /// Load failure classification for the given activity node ids only
     /// (failed LLM/tool rows). Traverses `WAS_CLASSIFIED_BY` →
     /// `FailureClassification` entity via the typed [`EdgeProjection`]
@@ -127,13 +90,13 @@ impl SurrealProvenanceStore {
                 continue;
             }
             let props = row.get("props").and_then(Value::as_object);
-            let class = normalize_agent_field(
+            let class = normalize_agent_field_for_ops(
                 props
                     .and_then(|p| p.get("a2a_failure_class"))
                     .and_then(Value::as_str),
                 "failed_graph_incomplete",
             );
-            let evidence = normalize_agent_field(
+            let evidence = normalize_agent_field_for_ops(
                 props
                     .and_then(|p| p.get("a2a_failure_evidence"))
                     .and_then(Value::as_str),
@@ -207,19 +170,6 @@ impl SurrealProvenanceStore {
             .into_surreal();
         let rows = self.execute_typed_node_query(&sql, &binds).await?;
         Ok(aggregate_duration_by_message(&rows))
-    }
-
-    /// Helper: bind the JSON object produced by [`GraphQuery::into_surreal`]
-    /// or [`EdgeProjection::into_surreal`] and execute the query.
-    async fn execute_typed_node_query(&self, sql: &str, binds: &Value) -> Result<Vec<Value>> {
-        let mut q = self.db.query(sql);
-        if let Some(obj) = binds.as_object() {
-            for (k, v) in obj {
-                q = q.bind((k.clone(), v.clone()));
-            }
-        }
-        let response = q.await.map_err(map_surreal_error)?;
-        check_and_take_zero(response, map_surreal_error)
     }
 }
 
@@ -349,14 +299,6 @@ fn parse_ops_group_by(raw: &[String]) -> Result<Vec<String>> {
 // ---------------------------------------------------------------------------
 // Row enrichment helpers (finalize_call_row, apply_agent_identity_fields)
 // ---------------------------------------------------------------------------
-
-/// Normalize agent field: trim, filter empty/null strings, use fallback.
-fn normalize_agent_field(raw: Option<&str>, fallback: &str) -> String {
-    raw.map(str::trim)
-        .filter(|s| !s.is_empty() && *s != "null")
-        .unwrap_or(fallback)
-        .to_string()
-}
 
 /// Parse a JSON-like string field from row props.
 fn parse_json_field(row: &Map<String, Value>, field: &str) -> Option<Value> {
@@ -678,26 +620,29 @@ fn provenance_ops_query_op_label(r: &ProvenanceOpsResource) -> &'static str {
 // at compile time.
 // ---------------------------------------------------------------------------
 
-fn build_messages_query(filters: &ProvenanceOpsFilters) -> (String, Value) {
+fn build_messages_query(
+    filters: &ProvenanceOpsFilters,
+    package_instances: Option<&[String]>,
+) -> (String, Value) {
     if let Some(ref ctx) = filters.context_id {
         let q = GraphQuery::<labels::Message, _>::new()
             .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
-        apply_message_filters(q, filters).into_surreal()
+        apply_message_filters(q, filters, package_instances).into_surreal()
     } else {
         let q = GraphQuery::<labels::Message, _>::new().all();
-        apply_message_filters(q, filters).into_surreal()
+        apply_message_filters(q, filters, package_instances).into_surreal()
     }
 }
 
 fn apply_message_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>(
     mut q: GraphQuery<labels::Message, S>,
     filters: &ProvenanceOpsFilters,
+    package_instances: Option<&[String]>,
 ) -> GraphQuery<labels::Message, S> {
     if let Some(ref agent_id) = filters.agent_id {
         q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
-    }
-    if let Some(ref agent_package) = filters.agent_package {
-        q = q.for_agent_package(AgentPackage::new(agent_package.clone()));
+    } else {
+        q = apply_agent_package_filter(q, filters, package_instances);
     }
     if let Some(ref task_id) = filters.task_id {
         q = q.for_task(TaskNodeId::for_task_id(task_id));
@@ -705,26 +650,29 @@ fn apply_message_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmit
     q
 }
 
-fn build_llm_query(filters: &ProvenanceOpsFilters) -> (String, Value) {
+fn build_llm_query(
+    filters: &ProvenanceOpsFilters,
+    package_instances: Option<&[String]>,
+) -> (String, Value) {
     if let Some(ref ctx) = filters.context_id {
         let q = GraphQuery::<labels::LlmCall, _>::new()
             .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
-        apply_llm_filters(q, filters).into_surreal()
+        apply_llm_filters(q, filters, package_instances).into_surreal()
     } else {
         let q = GraphQuery::<labels::LlmCall, _>::new().all();
-        apply_llm_filters(q, filters).into_surreal()
+        apply_llm_filters(q, filters, package_instances).into_surreal()
     }
 }
 
 fn apply_llm_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>(
     mut q: GraphQuery<labels::LlmCall, S>,
     filters: &ProvenanceOpsFilters,
+    package_instances: Option<&[String]>,
 ) -> GraphQuery<labels::LlmCall, S> {
     if let Some(ref agent_id) = filters.agent_id {
         q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
-    }
-    if let Some(ref agent_package) = filters.agent_package {
-        q = q.for_agent_package(AgentPackage::new(agent_package.clone()));
+    } else {
+        q = apply_agent_package_filter(q, filters, package_instances);
     }
     if let Some(ref task_id) = filters.task_id {
         q = q.for_task_execution(TaskExecutionNodeId::for_task_id(task_id));
@@ -738,26 +686,29 @@ fn apply_llm_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>
     q
 }
 
-fn build_tool_query(filters: &ProvenanceOpsFilters) -> (String, Value) {
+fn build_tool_query(
+    filters: &ProvenanceOpsFilters,
+    package_instances: Option<&[String]>,
+) -> (String, Value) {
     if let Some(ref ctx) = filters.context_id {
         let q = GraphQuery::<labels::ToolCall, _>::new()
             .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
-        apply_tool_filters(q, filters).into_surreal()
+        apply_tool_filters(q, filters, package_instances).into_surreal()
     } else {
         let q = GraphQuery::<labels::ToolCall, _>::new().all();
-        apply_tool_filters(q, filters).into_surreal()
+        apply_tool_filters(q, filters, package_instances).into_surreal()
     }
 }
 
 fn apply_tool_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>(
     mut q: GraphQuery<labels::ToolCall, S>,
     filters: &ProvenanceOpsFilters,
+    package_instances: Option<&[String]>,
 ) -> GraphQuery<labels::ToolCall, S> {
     if let Some(ref agent_id) = filters.agent_id {
         q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
-    }
-    if let Some(ref agent_package) = filters.agent_package {
-        q = q.for_agent_package(AgentPackage::new(agent_package.clone()));
+    } else {
+        q = apply_agent_package_filter(q, filters, package_instances);
     }
     if let Some(ref task_id) = filters.task_id {
         q = q.for_task_execution(TaskExecutionNodeId::for_task_id(task_id));
@@ -768,28 +719,126 @@ fn apply_tool_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter
     q
 }
 
-fn build_lifecycle_query(filters: &ProvenanceOpsFilters) -> (String, Value) {
+fn build_lifecycle_query(
+    filters: &ProvenanceOpsFilters,
+    package_instances: Option<&[String]>,
+) -> (String, Value) {
     if let Some(ref ctx) = filters.context_id {
         let q = GraphQuery::<labels::AgentStop, _>::new()
             .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
-        apply_lifecycle_filters(q, filters).into_surreal()
+        apply_lifecycle_filters(q, filters, package_instances).into_surreal()
     } else {
         let q = GraphQuery::<labels::AgentStop, _>::new().all();
-        apply_lifecycle_filters(q, filters).into_surreal()
+        apply_lifecycle_filters(q, filters, package_instances).into_surreal()
     }
 }
 
 fn apply_lifecycle_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>(
     mut q: GraphQuery<labels::AgentStop, S>,
     filters: &ProvenanceOpsFilters,
+    package_instances: Option<&[String]>,
 ) -> GraphQuery<labels::AgentStop, S> {
     if let Some(ref agent_id) = filters.agent_id {
         q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
-    }
-    if let Some(ref agent_package) = filters.agent_package {
-        q = q.for_agent_package(AgentPackage::new(agent_package.clone()));
+    } else {
+        q = apply_agent_package_filter(q, filters, package_instances);
     }
     q
+}
+
+trait AgentPackageFilterOps {
+    fn for_agent_package(self, package: AgentPackage) -> Self;
+    fn for_agent_instances(self, instance_node_ids: &[String]) -> Self;
+}
+
+impl<S: ScopeState> AgentPackageFilterOps for GraphQuery<labels::Message, S> {
+    fn for_agent_package(self, package: AgentPackage) -> Self {
+        GraphQuery::<labels::Message, S>::for_agent_package(self, package)
+    }
+    fn for_agent_instances(self, instance_node_ids: &[String]) -> Self {
+        GraphQuery::<labels::Message, S>::for_agent_instances(self, instance_node_ids)
+    }
+}
+
+impl<S: ScopeState> AgentPackageFilterOps for GraphQuery<labels::LlmCall, S> {
+    fn for_agent_package(self, package: AgentPackage) -> Self {
+        GraphQuery::<labels::LlmCall, S>::for_agent_package(self, package)
+    }
+    fn for_agent_instances(self, instance_node_ids: &[String]) -> Self {
+        GraphQuery::<labels::LlmCall, S>::for_agent_instances(self, instance_node_ids)
+    }
+}
+
+impl<S: ScopeState> AgentPackageFilterOps for GraphQuery<labels::ToolCall, S> {
+    fn for_agent_package(self, package: AgentPackage) -> Self {
+        GraphQuery::<labels::ToolCall, S>::for_agent_package(self, package)
+    }
+    fn for_agent_instances(self, instance_node_ids: &[String]) -> Self {
+        GraphQuery::<labels::ToolCall, S>::for_agent_instances(self, instance_node_ids)
+    }
+}
+
+impl<S: ScopeState> AgentPackageFilterOps for GraphQuery<labels::AgentStop, S> {
+    fn for_agent_package(self, package: AgentPackage) -> Self {
+        GraphQuery::<labels::AgentStop, S>::for_agent_package(self, package)
+    }
+    fn for_agent_instances(self, instance_node_ids: &[String]) -> Self {
+        GraphQuery::<labels::AgentStop, S>::for_agent_instances(self, instance_node_ids)
+    }
+}
+
+fn apply_agent_package_filter<Subject, S>(
+    q: GraphQuery<Subject, S>,
+    filters: &ProvenanceOpsFilters,
+    package_instances: Option<&[String]>,
+) -> GraphQuery<Subject, S>
+where
+    Subject: labels::NodeLabelTy,
+    S: ScopeState,
+    GraphQuery<Subject, S>: AgentPackageFilterOps,
+{
+    match (filters.agent_package.as_deref(), package_instances) {
+        (Some(_), Some(instances)) => q.for_agent_instances(instances),
+        (Some(pkg), None) => q.for_agent_package(AgentPackage::new(pkg.to_string())),
+        _ => q,
+    }
+}
+
+fn empty_ops_query_response(
+    request: &ProvenanceOpsQueryRequest,
+    page_size: usize,
+    page_cap: u32,
+    requested_page: u32,
+) -> ProvenanceOpsQueryResponse {
+    let mut summary = serde_json::json!({
+        "count": 0,
+        "failedCount": 0,
+        "durationMsTotal": 0,
+        "totalTokens": 0,
+        "promptTokensTotal": 0,
+        "completionTokensTotal": 0,
+        "latencyHotspots": { "p95": 0.0, "p99": 0.0 },
+        "tokenHotspots": { "p95": 0.0, "p99": 0.0 },
+    });
+    if matches!(
+        request.resource,
+        ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates
+    ) && let Some(obj) = summary.as_object_mut()
+    {
+        obj.insert("cachedInputTokensTotal".to_string(), Value::from(0));
+    }
+    ProvenanceOpsQueryResponse {
+        resource: request.resource.clone(),
+        rows: Vec::new(),
+        summary,
+        hotspot_groups: Vec::new(),
+        next_cursor: None,
+        truncated: requested_page > page_cap,
+        applied_caps: Map::from_iter([
+            ("pageSize".to_string(), Value::from(page_size)),
+            ("pageCap".to_string(), Value::from(page_cap)),
+        ]),
+    }
 }
 
 #[async_trait]
@@ -820,20 +869,42 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
 
         let compact_profile = matches!(profile, ProvenanceResponseProfile::ToolCompact);
 
-        // Load enrichment maps for row post-processing.
-        let identity_by_agent_id = self.load_agent_identity_map().await?;
+        let agent_runtime_index = self.load_agent_runtime_index().await?;
+        let identity_by_agent_id = agent_runtime_index.identity_by_agent_id.clone();
+        let resolved_package_instances = request
+            .filters
+            .agent_package
+            .as_deref()
+            .and_then(|pkg| agent_runtime_index.instance_node_ids_by_package.get(pkg).cloned());
+        let package_instances = resolved_package_instances.as_deref();
+        if request.filters.agent_package.is_some()
+            && package_instances.is_some_and(|instances| instances.is_empty())
+        {
+            return Ok(empty_ops_query_response(
+                &request,
+                page_size,
+                page_cap,
+                requested_page,
+            ));
+        }
 
         // Per-resource typed dispatch. Each `build_*_query` returns a
         // `(SQL, bindings)` pair from `GraphQuery::into_surreal()` — the
         // only legal SQL emitter for graph-targeted reads in this crate.
         // No `format!` of edge labels appears below.
         let (query, binds_value) = match request.resource {
-            ProvenanceOpsResource::Messages => build_messages_query(&request.filters),
-            ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates => {
-                build_llm_query(&request.filters)
+            ProvenanceOpsResource::Messages => {
+                build_messages_query(&request.filters, package_instances)
             }
-            ProvenanceOpsResource::ToolCalls => build_tool_query(&request.filters),
-            ProvenanceOpsResource::LifecycleEvents => build_lifecycle_query(&request.filters),
+            ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates => {
+                build_llm_query(&request.filters, package_instances)
+            }
+            ProvenanceOpsResource::ToolCalls => {
+                build_tool_query(&request.filters, package_instances)
+            }
+            ProvenanceOpsResource::LifecycleEvents => {
+                build_lifecycle_query(&request.filters, package_instances)
+            }
         };
         let rows = self.execute_typed_node_query(&query, &binds_value).await?;
 

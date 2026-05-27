@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
-import EventRunStatusBanner from "./EventRunStatusBanner.vue";
+import EventRunStatusStrip from "./EventRunStatusStrip.vue";
 
-describe("EventRunStatusBanner", () => {
-  it("shows failure banner with subscriber details", () => {
-    const wrapper = mount(EventRunStatusBanner, {
+describe("EventRunStatusStrip", () => {
+  it("shows failure strip with subscriber details", () => {
+    const wrapper = mount(EventRunStatusStrip, {
       props: {
         dispatchPhase: "failed",
+        hydrateState: "ready",
+        contextId: "ctx-1",
         publishError: null,
         waitingForIngress: false,
         lastPublishOutcome: {
@@ -22,15 +24,17 @@ describe("EventRunStatusBanner", () => {
         },
       },
     });
-    expect(wrapper.find(".status-banner--error").exists()).toBe(true);
+    expect(wrapper.find(".event-run-status-strip--error").exists()).toBe(true);
     expect(wrapper.text()).toContain("0 of 1");
     expect(wrapper.text()).toContain("CLICKUP_API_KEY");
   });
 
-  it("shows waiting for ingress banner", () => {
-    const wrapper = mount(EventRunStatusBanner, {
+  it("shows waiting for ingress message", () => {
+    const wrapper = mount(EventRunStatusStrip, {
       props: {
         dispatchPhase: "empty",
+        hydrateState: "waiting",
+        contextId: "ctx-1",
         publishError: null,
         waitingForIngress: true,
         lastPublishOutcome: {
@@ -48,5 +52,24 @@ describe("EventRunStatusBanner", () => {
       },
     });
     expect(wrapper.text()).toContain("Waiting for host ingress");
+  });
+
+  it("stays mounted on live without auto-dismiss", () => {
+    const wrapper = mount(EventRunStatusStrip, {
+      props: {
+        dispatchPhase: "live",
+        hydrateState: "ready",
+        contextId: "ctx-live",
+        publishError: null,
+        waitingForIngress: false,
+        lastPublishOutcome: {
+          subscribers_matched: 1,
+          subscribers_accepted: 1,
+          failures: [],
+        },
+      },
+    });
+    expect(wrapper.find(".event-run-status-strip").exists()).toBe(true);
+    expect(wrapper.text()).toContain("Live");
   });
 });

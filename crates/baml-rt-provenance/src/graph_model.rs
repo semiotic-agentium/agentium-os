@@ -410,7 +410,7 @@ const MAPPING_HOST_SOURCE_POLL_RECORDED: EventGraphMapping = EventGraphMapping {
 const MAPPING_HOST_DISPATCH_ACCEPTED: EventGraphMapping = EventGraphMapping {
     kind: EventGraphKind::HostDispatchAccepted,
     primary_node: GraphNodeLabel::Message,
-    expected_edges: &[],
+    expected_edges: &[a2a_relations::HOST_DISPATCH_TARGET],
     required_properties: &[
         a2a::CONTEXT_ID,
         a2a::ROLE,
@@ -424,7 +424,7 @@ const MAPPING_HOST_DISPATCH_ACCEPTED: EventGraphMapping = EventGraphMapping {
 const MAPPING_HOST_DISPATCH_REJECTED: EventGraphMapping = EventGraphMapping {
     kind: EventGraphKind::HostDispatchRejected,
     primary_node: GraphNodeLabel::Message,
-    expected_edges: &[],
+    expected_edges: &[a2a_relations::HOST_DISPATCH_TARGET],
     required_properties: &[
         a2a::CONTEXT_ID,
         a2a::ROLE,

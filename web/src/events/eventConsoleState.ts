@@ -95,7 +95,7 @@ export function resolveObservedScopeIds(
   }
   return {
     contextId: resolved.contextId,
-    taskId: resolved.taskId ?? null,
+    taskId: input.observation.taskId ?? resolved.taskId ?? null,
   };
 }
 

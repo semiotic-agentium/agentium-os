@@ -49,6 +49,7 @@ pub fn provenance_item_to_projection_item(
             ToolOutcome::StatusOnly => return None,
         },
         ConversationItemContent::Operational(_) => return None,
+        ConversationItemContent::Planning(_) => return None,
         ConversationItemContent::SessionStep(step) => {
             let projection_op = match step.op {
                 SessionStepOp::Open => SessionStepProjection::Open,

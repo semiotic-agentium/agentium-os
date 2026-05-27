@@ -44,6 +44,7 @@ function isDataBlock(block: ContentBlock): block is DataContentBlock {
 
 function operationalBadgeLabel(block: OperationalContentBlock): string {
   if (block.kind.startsWith("dispatch_")) return "Host";
+  if (block.kind === "llm_call_failed" || block.kind === "prompt_rejected") return "Error";
   return "System";
 }
 
@@ -51,6 +52,13 @@ function operationalSeverityClass(block: OperationalContentBlock): string {
   if (block.severity === "error") return "operational-card--error";
   if (block.severity === "warning") return "operational-card--warning";
   return "operational-card--info";
+}
+
+/** Avoid repeating agent reason when the summary line already embeds it from provenance. */
+function showOperationalDetail(block: OperationalContentBlock): boolean {
+  const detail = block.detail?.trim();
+  if (!detail) return false;
+  return !block.summary.includes(detail);
 }
 
 function formatStructuredBody(mediaType: string, data: unknown): string {
@@ -195,7 +203,9 @@ const ingressWireDisplay = computed(() => {
             </span>
           </header>
           <p class="operational-card__summary">{{ block.summary }}</p>
-          <p v-if="block.detail" class="operational-card__detail">{{ block.detail }}</p>
+          <p v-if="showOperationalDetail(block)" class="operational-card__detail">
+            {{ block.detail }}
+          </p>
           <p v-if="block.failureClass" class="operational-card__chip">{{ block.failureClass }}</p>
           <p
             v-if="block.oldStatus && block.newStatus"
@@ -283,7 +293,9 @@ const ingressWireDisplay = computed(() => {
               }}</span>
             </header>
             <p class="operational-card__summary">{{ block.summary }}</p>
-            <p v-if="block.detail" class="operational-card__detail">{{ block.detail }}</p>
+            <p v-if="showOperationalDetail(block)" class="operational-card__detail">
+            {{ block.detail }}
+          </p>
           </article>
           <div
             v-else-if="isDataBlock(block)"
@@ -471,53 +483,6 @@ const ingressWireDisplay = computed(() => {
   border: 1px solid var(--code-border);
   white-space: pre-wrap;
   word-break: break-word;
-  font-variant-numeric: tabular-nums;
-}
-
-.ingress-wire-card {
-  width: 100%;
-  max-width: 100%;
-  padding: 0;
-  border: 1px solid var(--ingress-border);
-  border-radius: var(--radius-md);
-  background: var(--ingress-surface);
-  box-shadow: var(--shadow-sm);
-  overflow: hidden;
-}
-
-.ingress-wire-card__header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem 0.75rem;
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid var(--ingress-border);
-  background: var(--ingress-header-bg);
-}
-
-.ingress-wire-card__schema {
-  margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: var(--text-secondary);
-}
-
-.ingress-wire-pre {
-  margin: 0;
-  padding: 0.85rem 1rem;
-  max-height: min(28rem, 55vh);
-  overflow: auto;
-  overscroll-behavior: contain;
-  font-family: var(--font-mono);
-  font-size: 0.8125rem;
-  line-height: 1.55;
-  color: var(--code-text);
-  background: var(--code-bg);
-  white-space: pre;
-  word-break: normal;
-  tab-size: 2;
   font-variant-numeric: tabular-nums;
 }
 

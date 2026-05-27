@@ -33,7 +33,6 @@ const props = withDefaults(
 const emit = defineEmits<{
   send: [text: string];
   cancel: [];
-  "select-agent": [agent: AgentDiscoveryEntry];
   "open-settings": [];
 }>();
 
@@ -142,7 +141,6 @@ watch(
       :disabled="disabled"
       :agents="agents"
       :selected-context-id="selectedContextId"
-      @select-agent="emit('select-agent', $event)"
       @open-settings="emit('open-settings')"
     />
     <div v-if="streamBusy" class="working-indicator" role="status" aria-live="polite">

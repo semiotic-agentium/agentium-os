@@ -75,14 +75,17 @@ describe("mergeContextPickerItems", () => {
 });
 
 describe("writeEventConsoleRoute", () => {
-  it("updates agent query params without navigation", () => {
+  it("updates event-scoped query params without navigation", () => {
     const original = window.location.href;
     writeEventConsoleRoute({
       agentPackage: "coordinator-agent",
       agentInstance: "default",
     });
-    expect(window.location.search).toContain("agentPackage=coordinator-agent");
-    expect(window.location.search).toContain("agentInstance=default");
+    const params = new URLSearchParams(window.location.search);
+    expect(params.get("view")).toBe("events");
+    expect(params.get("eventAgentPackage")).toBe("coordinator-agent");
+    expect(params.get("eventAgentInstance")).toBe("default");
+    expect(params.get("agentPackage")).toBeNull();
     window.history.replaceState(null, "", original);
   });
 });
@@ -327,7 +330,7 @@ describe("resolveDispatchUnitTaskId", () => {
 });
 
 describe("buildEventConsoleLocalTranscript", () => {
-  it("includes wire ingress and publish summary", () => {
+  it("includes only optimistic ingress wire preview", () => {
     const rows = buildEventConsoleLocalTranscript({
       previewProducedEvent: {
         context_id: "ctx-1",
@@ -344,13 +347,14 @@ describe("buildEventConsoleLocalTranscript", () => {
       messageShape: undefined,
       envelope: null,
     });
-    expect(rows.some((m) => m.speakerKind === "ingress")).toBe(true);
-    expect(rows.some((m) => m.role === "agent" && m.text?.includes("Published"))).toBe(true);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.speakerKind).toBe("ingress");
+    expect(rows.some((m) => m.role === "agent" && m.text?.includes("Published"))).toBe(false);
   });
 });
 
 describe("mergeEventConsoleTranscript", () => {
-  it("drops local rows once provenance ingress exists", () => {
+  it("replaces local ingress in place when provenance lands", () => {
     const local = [buildIngressWireUserMessage([{ x: 1 }])];
     const provenance = [
       {
@@ -365,7 +369,7 @@ describe("mergeEventConsoleTranscript", () => {
     expect(merged[0]?.id).toContain("ingress-unit-user");
   });
 
-  it("retains publish outcome failures until provenance operational rows land", () => {
+  it("drops local publish trace rows when provenance operational failures exist", () => {
     const local = [
       {
         id: "event-console-local-operator-publish-trace-outcome",
@@ -374,7 +378,7 @@ describe("mergeEventConsoleTranscript", () => {
         timestamp: new Date(),
       },
     ];
-    const provenance = [
+    const provenanceWithOperational = [
       {
         id: "prov-user-ingress-unit-user:ctx:unit",
         role: "user" as const,
@@ -382,12 +386,6 @@ describe("mergeEventConsoleTranscript", () => {
         text: "wire",
         timestamp: new Date(),
       },
-    ];
-    const merged = mergeEventConsoleTranscript(provenance, local);
-    expect(merged.some((m) => m.id.includes("publish-trace-outcome"))).toBe(true);
-
-    const provenanceWithOperational = [
-      ...provenance,
       {
         id: "prov-op-1",
         role: "agent" as const,
@@ -407,8 +405,9 @@ describe("mergeEventConsoleTranscript", () => {
         ],
       },
     ];
-    const mergedAfterOp = mergeEventConsoleTranscript(provenanceWithOperational, local);
-    expect(mergedAfterOp.some((m) => m.id.includes("publish-trace-outcome"))).toBe(false);
+    const merged = mergeEventConsoleTranscript(provenanceWithOperational, local);
+    expect(merged.some((m) => m.id.includes("publish-trace-outcome"))).toBe(false);
+    expect(merged.some((m) => m.id.includes("ingress-unit-user"))).toBe(true);
   });
 });
 
