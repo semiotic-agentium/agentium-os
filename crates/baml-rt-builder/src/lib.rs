@@ -1,6 +1,7 @@
 //! Agent builder utilities.
 
 pub mod builder;
+pub mod mcp_registry;
 
 use std::path::Path;
 

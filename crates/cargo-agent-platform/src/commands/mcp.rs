@@ -1,54 +1,13 @@
 //! MCP registry operator commands.
 
-use std::{path::PathBuf, process::Command};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
+use baml_rt_builder::mcp_registry::{McpRegistryEnableOptions, enable_mcp_registry_server};
 use console::style;
 use serde_json::Value;
 
 use super::utils::RunnerToken;
-
-fn builder_command() -> Command {
-    if let Ok(path) = std::env::var("BAML_AGENT_BUILDER")
-        && !path.trim().is_empty()
-    {
-        return Command::new(path);
-    }
-
-    let mut cmd = Command::new("cargo");
-    cmd.args([
-        "run",
-        "-q",
-        "-p",
-        "baml-rt-builder",
-        "--bin",
-        "baml-agent-builder",
-        "--",
-    ]);
-    cmd
-}
-
-fn run_builder(args: &[String]) -> Result<()> {
-    let mut cmd = builder_command();
-    cmd.args(args);
-    eprintln!(
-        "{} {}",
-        style("Running baml-agent-builder:").dim(),
-        display_command(&cmd)
-    );
-    let status = cmd.status().context("failed to start baml-agent-builder")?;
-    if !status.success() {
-        bail!("baml-agent-builder exited with {status}");
-    }
-    Ok(())
-}
-
-fn display_command(cmd: &Command) -> String {
-    let mut parts = Vec::new();
-    parts.push(cmd.get_program().to_string_lossy().to_string());
-    parts.extend(cmd.get_args().map(|arg| arg.to_string_lossy().to_string()));
-    parts.join(" ")
-}
 
 pub fn list(repository_url: &str, json: bool) -> Result<()> {
     let body = get_json(repository_url, "/mcp/servers")?;
@@ -85,24 +44,15 @@ pub fn enable(
     yes: bool,
     runner_token: Option<RunnerToken>,
 ) -> Result<()> {
-    let mut args = vec![
-        "mcp-registry-enable".to_string(),
-        server_id.to_string(),
-        "--repository-url".to_string(),
-        repository_url.to_string(),
-    ];
-    if let Some(config) = config {
-        args.push("--config".to_string());
-        args.push(config.to_string());
-    }
-    if yes {
-        args.push("--yes".to_string());
-    }
-    if let Some(token) = runner_token {
-        args.push("--runner-token".to_string());
-        args.push(token.as_str().to_string());
-    }
-    run_builder(&args)
+    let config_path = config.map(PathBuf::from);
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(enable_mcp_registry_server(McpRegistryEnableOptions {
+        server_id,
+        config_path: config_path.as_deref(),
+        repository_url,
+        skip_prompt: yes,
+        runner_token: runner_token.as_ref().map(RunnerToken::as_str),
+    }))
 }
 
 pub fn server(

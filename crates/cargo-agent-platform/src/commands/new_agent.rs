@@ -1,9 +1,6 @@
 //! `new-agent` subcommand — create a new agent package.
 
-use std::{
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use baml_rt_core::{EventSchemaVersion, EventSourceKind, EventSubscription};
@@ -248,7 +245,7 @@ pub fn run(
     );
     println!(
         "  3. Run {} to package the agent",
-        style("cargo run -p baml-rt-builder --bin baml-agent-builder").dim()
+        style("cargo agent-platform build --path <agent-dir>").dim()
     );
 
     Ok(())
@@ -693,59 +690,9 @@ fn run_type_generation(output_dir: &Path) -> Result<()> {
         sync_generated_baml_files(&build_dir, &agent_dir.baml_src())
     });
 
-    if let Err(err) = generate_result {
-        let msg = err.to_string();
-        if msg.contains("Tool metadata missing for:") {
-            println!(
-                "{} Missing in-process tool metadata; falling back to workspace-local regen...",
-                style("Note:").yellow()
-            );
-            run_local_regen_fallback(output_dir)?;
-            return Ok(());
-        }
-        return Err(err);
-    }
+    generate_result?;
 
     Ok(())
-}
-
-fn run_local_regen_fallback(output_dir: &Path) -> Result<()> {
-    let workspace_root = find_workspace_root()?;
-    let agents_root = workspace_root.join("agents");
-
-    // Prefer targeted regen when output_dir is workspace/agents/<name>.
-    let mut cmd = Command::new("cargo");
-    cmd.current_dir(&workspace_root)
-        .arg("run")
-        .arg("-p")
-        .arg("cargo-agent-platform")
-        .arg("--")
-        .arg("regen");
-
-    let target_name = output_dir
-        .strip_prefix(&agents_root)
-        .ok()
-        .and_then(|p| p.components().next())
-        .and_then(|c| c.as_os_str().to_str())
-        .filter(|name| !name.is_empty())
-        .map(|name| name.to_string());
-
-    if let Some(name) = target_name {
-        cmd.arg(name);
-    }
-
-    let status = cmd.status().context(
-        "Failed to launch local `cargo run -p cargo-agent-platform -- regen` fallback command",
-    )?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        bail!(
-            "Fallback regen command failed with status {status}. \
-Hint: run `cargo run -p cargo-agent-platform -- regen` manually from the workspace root."
-        )
-    }
 }
 
 #[cfg(test)]
