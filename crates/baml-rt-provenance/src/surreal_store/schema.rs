@@ -11,9 +11,9 @@ use crate::{
     error::Result,
     surreal_tables::{
         TBL_AGENT_PACKAGE_INSTANCE, TBL_ARCHIVE_BODY, TBL_ARCHIVE_LOCAL_COUNTER,
-        TBL_ARCHIVE_PREFIX_REGISTRY, TBL_CONTEXT_PICKER_INDEX, TBL_CONTEXT_TRANSCRIPT_INDEX,
-        TBL_EDGE, TBL_HISTORY_REF_REGISTRY, TBL_NODE, TBL_PAYLOAD, TBL_PAYLOAD_BLOB,
-        TBL_SESSION_REF_COUNTER,
+        TBL_ARCHIVE_PREFIX_REGISTRY, TBL_CONTEXT_PICKER_INDEX, TBL_CONTEXT_PLANNING_INDEX,
+        TBL_CONTEXT_TRANSCRIPT_INDEX, TBL_EDGE, TBL_HISTORY_REF_REGISTRY, TBL_NODE, TBL_PAYLOAD,
+        TBL_PAYLOAD_BLOB, TBL_SESSION_REF_COUNTER,
     },
 };
 
@@ -116,6 +116,13 @@ pub(super) async fn init_schema(db: &Surreal<Any>) -> Result<()> {
         ),
         format!(
             "DEFINE INDEX IF NOT EXISTS idx_transcript_ctx_node ON {TBL_CONTEXT_TRANSCRIPT_INDEX} FIELDS context_id, node_id UNIQUE"
+        ),
+        format!("DEFINE TABLE IF NOT EXISTS {TBL_CONTEXT_PLANNING_INDEX}"),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_context_planning_ctx_task ON {TBL_CONTEXT_PLANNING_INDEX} FIELDS context_id, task_id UNIQUE"
+        ),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_context_planning_ctx_order ON {TBL_CONTEXT_PLANNING_INDEX} FIELDS context_id, latest_planning_event_order"
         ),
         // Full-text search on denormalized search_text (blob-backed bodies are not indexed in-table)
         "DEFINE ANALYZER IF NOT EXISTS payload_analyzer TOKENIZERS blank, class FILTERS snowball(english)".to_string(),

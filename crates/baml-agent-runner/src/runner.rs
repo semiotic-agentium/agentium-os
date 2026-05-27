@@ -16,8 +16,8 @@ use baml_rt_api::RuntimeProgressMeter;
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
     AgentDispatchRequest, AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey,
-    BamlRtError, ConversationHistoryUpdate, DeployedAgentLookup, DeploymentContentHash,
-    DeploymentManager, DeploymentRecord, DeploymentStatus, DispatchTarget, Result, UndeployResult,
+    BamlRtError, DeployedAgentLookup, DeploymentContentHash, DeploymentManager, DeploymentRecord,
+    DeploymentStatus, DispatchTarget, ObservationUpdate, Result, UndeployResult,
     bus::BusStream,
     callback_scheduling_scopes_differ_from_dispatch, context,
     ids::{AgentId, ContextId, TaskId},
@@ -89,7 +89,7 @@ pub(crate) struct AgentRunnerConfig {
     pub(crate) external_tools_dirs: Vec<std::path::PathBuf>,
     pub(crate) sandbox_bind_roots: Vec<std::path::PathBuf>,
     pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
-    pub(crate) conversation_history_notify: Option<broadcast::Sender<ConversationHistoryUpdate>>,
+    pub(crate) observation_notify: Option<broadcast::Sender<ObservationUpdate>>,
 }
 
 /// Agent runner host: manages agents and composes the tool catalogue at startup.
@@ -117,7 +117,7 @@ pub(crate) struct AgentRunner {
     /// JS-event-loop probe), not just on the tokio runtime.
     pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
     /// When set, wrapped provenance writes notify the operator `/conversation-history` stream after commit.
-    pub(crate) conversation_history_notify: Option<broadcast::Sender<ConversationHistoryUpdate>>,
+    pub(crate) observation_notify: Option<broadcast::Sender<ObservationUpdate>>,
     pub(crate) host_ingress_recorder: Arc<dyn baml_rt_core::HostIngressRecorder>,
 }
 
@@ -143,7 +143,7 @@ impl AgentRunner {
             external_tools_dirs: config.external_tools_dirs,
             sandbox_bind_roots: config.sandbox_bind_roots,
             runtime_progress: config.runtime_progress,
-            conversation_history_notify: config.conversation_history_notify,
+            observation_notify: config.observation_notify,
             host_ingress_recorder: Arc::new(crate::services::HostIngressRecorderImpl::new(
                 provenance_store,
             )),
@@ -162,10 +162,8 @@ impl AgentRunner {
         &self.sandbox_bind_roots
     }
 
-    pub(crate) fn conversation_history_notify_tx(
-        &self,
-    ) -> Option<broadcast::Sender<ConversationHistoryUpdate>> {
-        self.conversation_history_notify.clone()
+    pub(crate) fn observation_notify_tx(&self) -> Option<broadcast::Sender<ObservationUpdate>> {
+        self.observation_notify.clone()
     }
 
     pub(crate) fn deployment_state(&self) -> &Arc<crate::deployment_state::DeploymentStateStore> {
@@ -439,7 +437,7 @@ impl AgentRunner {
                 external_tools_dirs: self.external_tools_dirs(),
                 sandbox_bind_roots: self.sandbox_bind_roots(),
                 runtime_progress: self.runtime_progress.clone(),
-                conversation_history_notify: self.conversation_history_notify_tx(),
+                observation_notify: self.observation_notify_tx(),
             })
             .await?;
         let manifest = package.manifest().clone();

@@ -135,6 +135,7 @@ impl ProvenanceWriter for SurrealProvenanceStore {
             .await?;
         }
         self.update_context_picker_index(&event).await?;
+        self.update_context_planning_index(&event).await?;
 
         if let (Some(cache), Some(ctx)) = (&self.mermaid_cache, context_id_opt.as_deref()) {
             cache.invalidate(ctx);

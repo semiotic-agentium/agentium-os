@@ -16,7 +16,6 @@ pub(crate) mod bus_spans;
 pub mod callback_store;
 pub mod clock_events;
 pub mod context;
-pub mod conversation_history;
 pub mod correlation;
 pub mod deferred;
 pub mod deployed_agent_lookup;
@@ -37,6 +36,7 @@ pub mod host_wire;
 pub mod ids;
 pub mod ingress_store;
 pub mod json;
+pub mod observation;
 pub mod package;
 pub mod progress_probe;
 pub mod retry_after;
@@ -74,7 +74,6 @@ pub use context::{
     InvocationContext, InvocationScope, OutcomeInvocationContext, RequestScope, RuntimeScope,
     Scoped,
 };
-pub use conversation_history::ConversationHistoryUpdate;
 pub use deferred::DeferredHolder;
 pub use deployed_agent_lookup::DeployedAgentLookup;
 pub use deployment::{
@@ -125,6 +124,7 @@ pub use ids::{
 };
 pub use ingress_store::{IngressId, IngressItem, IngressStore, ingress_store_not_installed};
 pub use json::to_json_value;
+pub use observation::{ObservationUpdate, kinds as ObservationKinds};
 pub use package::AgentManifest;
 pub use progress_probe::{ProgressProbe, ProgressProbeRegistry, register_progress_probe};
 pub use retry_after::{RetryAfter, parse_retry_after};

@@ -7,8 +7,13 @@
 
 use std::{error::Error, fmt};
 
-use baml_rt_provenance::{PlanningIntentRecord, PlanningPlanRecord};
+use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
+use baml_rt_provenance::{
+    PlanningIntentRecord, PlanningPlanRecord, surreal_store::PlanningScopeQuery,
+};
 use serde::{Deserialize, Serialize};
+
+pub const DEFAULT_PLANNING_HISTORY_LIMIT: u32 = 20;
 
 #[derive(Debug)]
 pub enum PlanningError {
@@ -188,10 +193,60 @@ pub fn summarize_plan_steps(
     summary
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanningScopeRequest {
+    pub context_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_package: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<baml_rt_core::ids::AgentId>,
+    #[serde(default)]
+    pub include_drift: bool,
+    #[serde(default = "default_history_limit")]
+    pub history_limit: u32,
+}
+
+fn default_history_limit() -> u32 {
+    DEFAULT_PLANNING_HISTORY_LIMIT
+}
+
+impl PlanningScopeRequest {
+    #[must_use]
+    pub fn from_observation(obs: &crate::ObservationRequest) -> Self {
+        Self {
+            context_id: obs.context_id.as_str().to_string(),
+            task_id: obs.task_id.as_ref().map(|t| t.as_str().to_string()),
+            agent_package: obs.agent_package.clone(),
+            agent_id: obs.agent_id.clone(),
+            include_drift: obs.include.drift,
+            history_limit: obs.planning_history_limit,
+        }
+    }
+}
+
+impl From<&PlanningScopeRequest> for PlanningScopeQuery {
+    fn from(request: &PlanningScopeRequest) -> Self {
+        Self {
+            context_id: ContextId::from(request.context_id.as_str()),
+            task_id: request
+                .task_id
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(|s| TaskId::from_external(ExternalId::new(s.to_string()))),
+            agent_package: request.agent_package.clone(),
+            agent_id: request.agent_id.clone(),
+            history_limit: request.history_limit.max(1) as usize,
+        }
+    }
+}
+
 #[async_trait::async_trait]
 pub trait PlanningService: Send + Sync {
-    async fn planning_for_context(
+    async fn planning_for_scope(
         &self,
-        context_id: &str,
+        request: PlanningScopeRequest,
     ) -> Result<ContextPlanningResponse, PlanningError>;
 }

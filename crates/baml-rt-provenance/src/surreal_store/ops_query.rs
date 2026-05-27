@@ -28,6 +28,8 @@ use crate::{
         AgentPackage, AgentRuntimeInstanceNodeId, ContextNodeId, EdgeProjection, FilterOp,
         GraphQuery, ScopeState, SemanticEdge, TaskExecutionNodeId, TaskNodeId, keys, labels,
     },
+    observation::ops::build_ops_summary,
+    ops_types::{ProvenanceOpsAppliedCaps, ProvenanceOpsHotspotGroup, ProvenanceOpsRow},
     store::{
         ArchiveRef, ProvenanceArchiveRecord, ProvenanceOpsFilters, ProvenanceOpsQuery,
         ProvenanceOpsQueryRequest, ProvenanceOpsQueryResponse, ProvenanceOpsResource,
@@ -514,7 +516,9 @@ fn build_hotspot_groups(
     rows: &[Map<String, Value>],
     group_dims: &[String],
     top_k: usize,
-) -> Vec<Value> {
+) -> Vec<ProvenanceOpsHotspotGroup> {
+    use crate::ops_types::ProvenanceOpsHotspotGroup;
+
     type HotspotAggregate = (Vec<Option<String>>, u64, u64, u64, u64);
     if rows.is_empty() {
         return Vec::new();
@@ -551,7 +555,7 @@ fn build_hotspot_groups(
         entry.4 += tokens;
     }
 
-    let mut out: Vec<Value> = groups
+    let mut out: Vec<ProvenanceOpsHotspotGroup> = groups
         .into_iter()
         .map(
             |(_k, (group_values, count, failed, duration_sum, token_sum))| {
@@ -570,29 +574,27 @@ fn build_hotspot_groups(
                     .map(|v| v.clone().unwrap_or_default())
                     .collect::<Vec<_>>()
                     .join("|");
-                serde_json::json!({
-                    "groupKey": group_key,
-                    "groupValues": group_values,
-                    "groupDimensions": group_dims,
-                    "count": count,
-                    "failed": failed,
-                    "failureRate": if count == 0 { 0.0 } else { failed as f64 / count as f64 },
-                    "avgDurationMs": avg_duration,
-                    "avgTotalTokens": avg_tokens
-                })
+                ProvenanceOpsHotspotGroup {
+                    group_key,
+                    group_values,
+                    group_dimensions: group_dims.to_vec(),
+                    count,
+                    failed,
+                    failure_rate: if count == 0 {
+                        0.0
+                    } else {
+                        failed as f64 / count as f64
+                    },
+                    avg_duration_ms: avg_duration,
+                    avg_total_tokens: avg_tokens,
+                }
             },
         )
         .collect();
     out.sort_by(|a, b| {
-        let ad = a
-            .get("avgDurationMs")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
-        let bd = b
-            .get("avgDurationMs")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
-        bd.partial_cmp(&ad).unwrap_or(std::cmp::Ordering::Equal)
+        b.avg_duration_ms
+            .partial_cmp(&a.avg_duration_ms)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
     out.truncate(top_k);
     out
@@ -623,14 +625,27 @@ fn provenance_ops_query_op_label(r: &ProvenanceOpsResource) -> &'static str {
 fn build_messages_query(
     filters: &ProvenanceOpsFilters,
     package_instances: Option<&[String]>,
+    sql_page: Option<(u64, u64, bool)>,
 ) -> (String, Value) {
     if let Some(ref ctx) = filters.context_id {
         let q = GraphQuery::<labels::Message, _>::new()
             .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
-        apply_message_filters(q, filters, package_instances).into_surreal()
+        let q = apply_message_filters(q, filters, package_instances);
+        match sql_page {
+            Some((offset, limit, sort_desc)) => {
+                apply_sql_page(q, offset, limit, sort_desc).into_surreal()
+            }
+            None => q.into_surreal(),
+        }
     } else {
         let q = GraphQuery::<labels::Message, _>::new().all();
-        apply_message_filters(q, filters, package_instances).into_surreal()
+        let q = apply_message_filters(q, filters, package_instances);
+        match sql_page {
+            Some((offset, limit, sort_desc)) => {
+                apply_sql_page(q, offset, limit, sort_desc).into_surreal()
+            }
+            None => q.into_surreal(),
+        }
     }
 }
 
@@ -653,14 +668,27 @@ fn apply_message_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmit
 fn build_llm_query(
     filters: &ProvenanceOpsFilters,
     package_instances: Option<&[String]>,
+    sql_page: Option<(u64, u64, bool)>,
 ) -> (String, Value) {
     if let Some(ref ctx) = filters.context_id {
         let q = GraphQuery::<labels::LlmCall, _>::new()
             .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
-        apply_llm_filters(q, filters, package_instances).into_surreal()
+        let q = apply_llm_filters(q, filters, package_instances);
+        match sql_page {
+            Some((offset, limit, sort_desc)) => {
+                apply_sql_page(q, offset, limit, sort_desc).into_surreal()
+            }
+            None => q.into_surreal(),
+        }
     } else {
         let q = GraphQuery::<labels::LlmCall, _>::new().all();
-        apply_llm_filters(q, filters, package_instances).into_surreal()
+        let q = apply_llm_filters(q, filters, package_instances);
+        match sql_page {
+            Some((offset, limit, sort_desc)) => {
+                apply_sql_page(q, offset, limit, sort_desc).into_surreal()
+            }
+            None => q.into_surreal(),
+        }
     }
 }
 
@@ -689,14 +717,27 @@ fn apply_llm_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>
 fn build_tool_query(
     filters: &ProvenanceOpsFilters,
     package_instances: Option<&[String]>,
+    sql_page: Option<(u64, u64, bool)>,
 ) -> (String, Value) {
     if let Some(ref ctx) = filters.context_id {
         let q = GraphQuery::<labels::ToolCall, _>::new()
             .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
-        apply_tool_filters(q, filters, package_instances).into_surreal()
+        let q = apply_tool_filters(q, filters, package_instances);
+        match sql_page {
+            Some((offset, limit, sort_desc)) => {
+                apply_sql_page(q, offset, limit, sort_desc).into_surreal()
+            }
+            None => q.into_surreal(),
+        }
     } else {
         let q = GraphQuery::<labels::ToolCall, _>::new().all();
-        apply_tool_filters(q, filters, package_instances).into_surreal()
+        let q = apply_tool_filters(q, filters, package_instances);
+        match sql_page {
+            Some((offset, limit, sort_desc)) => {
+                apply_sql_page(q, offset, limit, sort_desc).into_surreal()
+            }
+            None => q.into_surreal(),
+        }
     }
 }
 
@@ -722,14 +763,27 @@ fn apply_tool_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter
 fn build_lifecycle_query(
     filters: &ProvenanceOpsFilters,
     package_instances: Option<&[String]>,
+    sql_page: Option<(u64, u64, bool)>,
 ) -> (String, Value) {
     if let Some(ref ctx) = filters.context_id {
         let q = GraphQuery::<labels::AgentStop, _>::new()
             .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
-        apply_lifecycle_filters(q, filters, package_instances).into_surreal()
+        let q = apply_lifecycle_filters(q, filters, package_instances);
+        match sql_page {
+            Some((offset, limit, sort_desc)) => {
+                apply_sql_page(q, offset, limit, sort_desc).into_surreal()
+            }
+            None => q.into_surreal(),
+        }
     } else {
         let q = GraphQuery::<labels::AgentStop, _>::new().all();
-        apply_lifecycle_filters(q, filters, package_instances).into_surreal()
+        let q = apply_lifecycle_filters(q, filters, package_instances);
+        match sql_page {
+            Some((offset, limit, sort_desc)) => {
+                apply_sql_page(q, offset, limit, sort_desc).into_surreal()
+            }
+            None => q.into_surreal(),
+        }
     }
 }
 
@@ -804,28 +858,42 @@ where
     }
 }
 
+fn apply_sql_page<Subject, S>(
+    q: GraphQuery<Subject, S>,
+    offset: u64,
+    limit: u64,
+    sort_desc: bool,
+) -> GraphQuery<Subject, S>
+where
+    Subject: labels::NodeLabelTy,
+    S: ScopeState + crate::metamodel::query::ScopeQueryEmitter,
+{
+    use crate::metamodel::query::{SortDir, SortKey};
+    q.order_by(
+        SortKey::EventOrder,
+        if sort_desc {
+            SortDir::Desc
+        } else {
+            SortDir::Asc
+        },
+    )
+    .paginate(offset, limit)
+}
+
 fn empty_ops_query_response(
     request: &ProvenanceOpsQueryRequest,
     page_size: usize,
     page_cap: u32,
     requested_page: u32,
 ) -> ProvenanceOpsQueryResponse {
-    let mut summary = serde_json::json!({
-        "count": 0,
-        "failedCount": 0,
-        "durationMsTotal": 0,
-        "totalTokens": 0,
-        "promptTokensTotal": 0,
-        "completionTokensTotal": 0,
-        "latencyHotspots": { "p95": 0.0, "p99": 0.0 },
-        "tokenHotspots": { "p95": 0.0, "p99": 0.0 },
-    });
+    use crate::ops_types::ProvenanceOpsSummary;
+
+    let mut summary = ProvenanceOpsSummary::empty();
     if matches!(
         request.resource,
         ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates
-    ) && let Some(obj) = summary.as_object_mut()
-    {
-        obj.insert("cachedInputTokensTotal".to_string(), Value::from(0));
+    ) {
+        summary.cached_input_tokens_total = Some(0);
     }
     ProvenanceOpsQueryResponse {
         resource: request.resource.clone(),
@@ -834,10 +902,11 @@ fn empty_ops_query_response(
         hotspot_groups: Vec::new(),
         next_cursor: None,
         truncated: requested_page > page_cap,
-        applied_caps: Map::from_iter([
-            ("pageSize".to_string(), Value::from(page_size)),
-            ("pageCap".to_string(), Value::from(page_cap)),
-        ]),
+        applied_caps: ProvenanceOpsAppliedCaps {
+            page_size: page_size as u32,
+            max_page_size: page_cap,
+            top_k: request.top_k.unwrap_or(10),
+        },
     }
 }
 
@@ -872,28 +941,33 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
         request.page_size = Some(page_size as u32);
 
         let compact_profile = matches!(profile, ProvenanceResponseProfile::ToolCompact);
+        let sort_desc = parse_ops_sort_dir(request.sort_dir.as_deref())?;
+        let sql_paginated = request.group_by.is_empty() || request.paginate_rows_in_sql;
+        let sql_page = if sql_paginated {
+            Some((
+                offset as u64,
+                page_size.saturating_add(1) as u64,
+                sort_desc,
+            ))
+        } else if request.budget_mode {
+            Some((0, page_size.saturating_mul(25).clamp(500, 2000) as u64, sort_desc))
+        } else {
+            None
+        };
 
         let agent_runtime_index = self.load_agent_runtime_index().await?;
         let identity_by_agent_id = agent_runtime_index.identity_by_agent_id.clone();
-        // Context-scoped reads use `GraphQuery::for_agent_package` inside `scoped_to_ctx`;
-        // the global instance registry IN-list is only for unscoped ops queries.
-        let resolved_package_instances = if request.filters.context_id.is_some() {
-            None
-        } else {
-            request
-                .filters
-                .agent_package
-                .as_deref()
-                .and_then(|pkg| {
-                    agent_runtime_index
-                        .instance_node_ids_by_package
-                        .get(pkg)
-                        .cloned()
-                })
-        };
+        // Resolve agent package → instance node ids from the registry cache for
+        // all ops queries (context-scoped and global). Avoids the expensive
+        // archive/bootstrap graph subquery in `for_agent_package`.
+        let resolved_package_instances = request.filters.agent_package.as_deref().and_then(|pkg| {
+            agent_runtime_index
+                .instance_node_ids_by_package
+                .get(pkg)
+                .cloned()
+        });
         let package_instances = resolved_package_instances.as_deref();
         if request.filters.agent_package.is_some()
-            && request.filters.context_id.is_none()
             && package_instances.is_some_and(|instances| instances.is_empty())
         {
             return Ok(empty_ops_query_response(
@@ -910,16 +984,16 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
         // No `format!` of edge labels appears below.
         let (query, binds_value) = match request.resource {
             ProvenanceOpsResource::Messages => {
-                build_messages_query(&request.filters, package_instances)
+                build_messages_query(&request.filters, package_instances, sql_page)
             }
             ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates => {
-                build_llm_query(&request.filters, package_instances)
+                build_llm_query(&request.filters, package_instances, sql_page)
             }
             ProvenanceOpsResource::ToolCalls => {
-                build_tool_query(&request.filters, package_instances)
+                build_tool_query(&request.filters, package_instances, sql_page)
             }
             ProvenanceOpsResource::LifecycleEvents => {
-                build_lifecycle_query(&request.filters, package_instances)
+                build_lifecycle_query(&request.filters, package_instances, sql_page)
             }
         };
         let rows = self.execute_typed_node_query(&query, &binds_value).await?;
@@ -1520,42 +1594,78 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
             }
         });
 
-        // Validate and apply sort parameters.
-        let sort_by = parse_ops_sort_by(request.sort_by.as_deref())?;
-        let sort_desc = parse_ops_sort_dir(request.sort_dir.as_deref())?;
-        ops_rows.sort_by(|a, b| {
-            let av = a.get(sort_by).cloned().unwrap_or(Value::Null);
-            let bv = b.get(sort_by).cloned().unwrap_or(Value::Null);
-            let ord = match (&av, &bv) {
-                (Value::Number(an), Value::Number(bn)) => an
-                    .as_f64()
-                    .partial_cmp(&bn.as_f64())
-                    .unwrap_or(std::cmp::Ordering::Equal),
-                (Value::String(as_), Value::String(bs_)) => as_.cmp(bs_),
-                _ => std::cmp::Ordering::Equal,
-            };
-            let ord = if ord == std::cmp::Ordering::Equal {
-                let aid = a
-                    .get("activity_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let bid = b
-                    .get("activity_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                aid.cmp(bid)
-            } else {
-                ord
-            };
-            if sort_desc { ord.reverse() } else { ord }
-        });
+        let effective_group_by = parse_ops_group_by(&request.group_by)?;
+        let mut sql_budget_truncated = false;
+        if sql_page.is_some() && !sql_paginated {
+            let cap = sql_page.map(|(_, limit, _)| limit as usize).unwrap_or(0);
+            if cap > 0 && ops_rows.len() > cap {
+                sql_budget_truncated = true;
+                ops_rows.truncate(cap);
+            }
+        }
 
-        let mut durations: Vec<f64> = ops_rows
+        let (page_rows, next_cursor, summary_rows) = if sql_paginated {
+            let has_more = ops_rows.len() > page_size;
+            if has_more {
+                ops_rows.truncate(page_size);
+            }
+            let next = if has_more {
+                Some((offset + page_size).to_string())
+            } else {
+                None
+            };
+            let rows = ops_rows.clone();
+            (rows, next, ops_rows)
+        } else {
+            let sort_by = parse_ops_sort_by(request.sort_by.as_deref())?;
+            let sort_desc = parse_ops_sort_dir(request.sort_dir.as_deref())?;
+            ops_rows.sort_by(|a, b| {
+                let av = a.get(sort_by).cloned().unwrap_or(Value::Null);
+                let bv = b.get(sort_by).cloned().unwrap_or(Value::Null);
+                let ord = match (&av, &bv) {
+                    (Value::Number(an), Value::Number(bn)) => an
+                        .as_f64()
+                        .partial_cmp(&bn.as_f64())
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                    (Value::String(as_), Value::String(bs_)) => as_.cmp(bs_),
+                    _ => std::cmp::Ordering::Equal,
+                };
+                let ord = if ord == std::cmp::Ordering::Equal {
+                    let aid = a
+                        .get("activity_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let bid = b
+                        .get("activity_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    aid.cmp(bid)
+                } else {
+                    ord
+                };
+                if sort_desc { ord.reverse() } else { ord }
+            });
+            let total_rows = ops_rows.len();
+            let page_end = std::cmp::min(offset.saturating_add(page_size), total_rows);
+            let page_rows = if offset < total_rows {
+                ops_rows[offset..page_end].to_vec()
+            } else {
+                Vec::new()
+            };
+            let next_cursor = if page_end < total_rows {
+                Some(page_end.to_string())
+            } else {
+                None
+            };
+            (page_rows, next_cursor, ops_rows)
+        };
+
+        let mut durations: Vec<f64> = summary_rows
             .iter()
             .filter_map(|r| r.get("duration_ms").and_then(Value::as_f64))
             .collect();
         durations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let mut tokens: Vec<f64> = ops_rows
+        let mut tokens: Vec<f64> = summary_rows
             .iter()
             .filter_map(|r| r.get("total_tokens").and_then(Value::as_f64))
             .collect();
@@ -1565,101 +1675,44 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
         let token_p95 = percentile(&tokens, 0.95);
         let token_p99 = percentile(&tokens, 0.99);
 
-        let total_rows = ops_rows.len();
-        let page_end = std::cmp::min(offset.saturating_add(page_size), total_rows);
-        let page_rows = if offset < total_rows {
-            ops_rows[offset..page_end].to_vec()
-        } else {
-            Vec::new()
-        };
-        let next_cursor = if page_end < total_rows {
-            Some(page_end.to_string())
-        } else {
-            None
-        };
-
+        let total_rows = summary_rows.len();
         let top_k = request.top_k.unwrap_or(10) as usize;
-        // Validate group_by.
-        let effective_group_by = parse_ops_group_by(&request.group_by)?;
-        let hotspot_groups = build_hotspot_groups(&ops_rows, &effective_group_by, top_k);
-        let failed_count = ops_rows.iter().filter(|r| ops_row_is_failed(r)).count();
-        let total_tokens_sum: u64 = ops_rows
-            .iter()
-            .map(|r| r.get("total_tokens").and_then(Value::as_u64).unwrap_or(0))
-            .sum();
-        let prompt_tokens_sum: u64 = ops_rows
-            .iter()
-            .map(|r| r.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0))
-            .sum();
-        let completion_tokens_sum: u64 = ops_rows
-            .iter()
-            .map(|r| {
-                r.get("completion_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0)
-            })
-            .sum();
-        let cached_input_tokens_sum: u64 = ops_rows
-            .iter()
-            .map(|r| {
-                r.get("cached_input_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0)
-            })
-            .sum();
-        let total_duration_sum: u64 = ops_rows
-            .iter()
-            .map(|r| r.get("duration_ms").and_then(Value::as_u64).unwrap_or(0))
-            .sum();
-
-        let mut summary = serde_json::json!({
-            "count": total_rows,
-            "failedCount": failed_count,
-            "durationMsTotal": total_duration_sum,
-            "totalTokens": total_tokens_sum,
-            "promptTokensTotal": prompt_tokens_sum,
-            "completionTokensTotal": completion_tokens_sum,
-            "latencyHotspots": {
-                "p95": duration_p95,
-                "p99": duration_p99
-            },
-            "tokenHotspots": {
-                "p95": token_p95,
-                "p99": token_p99
-            }
-        });
-        if matches!(
+        let hotspot_groups = build_hotspot_groups(&summary_rows, &effective_group_by, top_k);
+        let has_more_page = next_cursor.is_some();
+        let failed_count = summary_rows.iter().filter(|r| ops_row_is_failed(r)).count() as u64;
+        let include_cached = matches!(
             request.resource,
             ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates
-        ) && let Some(obj) = summary.as_object_mut()
-        {
-            obj.insert(
-                "cachedInputTokensTotal".to_string(),
-                Value::from(cached_input_tokens_sum),
-            );
-        }
+        );
+        let mut summary = build_ops_summary(
+            &summary_rows,
+            include_cached,
+            duration_p95,
+            duration_p99,
+            token_p95,
+            token_p99,
+        );
+        summary.count = total_rows as u64;
+        summary.failed_count = failed_count;
 
         Ok(ProvenanceOpsQueryResponse {
             resource: request.resource,
-            rows: page_rows.into_iter().map(Value::Object).collect(),
+            rows: page_rows
+                .into_iter()
+                .map(ProvenanceOpsRow::from_map)
+                .collect(),
             summary,
             hotspot_groups,
             next_cursor,
-            truncated: total_rows > page_size || requested_page > page_cap,
-            applied_caps: Map::from_iter([
-                (
-                    "page_size".to_string(),
-                    Value::Number((page_size as u64).into()),
-                ),
-                (
-                    "max_page_size".to_string(),
-                    Value::Number((page_cap as u64).into()),
-                ),
-                (
-                    "top_k".to_string(),
-                    Value::Number((request.top_k.unwrap_or(10) as u64).into()),
-                ),
-            ]),
+            truncated: sql_budget_truncated
+                || has_more_page
+                || total_rows > page_size
+                || requested_page > page_cap,
+            applied_caps: ProvenanceOpsAppliedCaps {
+                page_size: page_size as u32,
+                max_page_size: page_cap,
+                top_k: request.top_k.unwrap_or(10),
+            },
         })
         }.await;
         let result_label = match &result {

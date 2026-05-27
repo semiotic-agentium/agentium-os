@@ -1,10 +1,15 @@
 //! Agent runtime index registry behavior.
 
 use baml_rt_core::{
-    AgentInstanceId, AgentPackageName, AgentRouteKey, DispatchTarget,
-    ids::{AgentId, ContextId, UuidId},
+    AgentInstanceId, AgentPackageName, AgentRouteKey, DispatchTarget, Outcome,
+    ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
-use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, SurrealStoreBuilder};
+use baml_rt_provenance::{
+    AgentType, LlmUsage, ProvEvent, ProvenanceWriter, SurrealStoreBuilder,
+    store::{
+        ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest, ProvenanceOpsResource,
+    },
+};
 use uuid::Uuid;
 
 #[tokio::test]
@@ -77,5 +82,103 @@ async fn dispatch_without_boot_does_not_index_route_stub() {
     assert!(
         rows.is_empty(),
         "non-boot dispatch must not upsert registry rows: {rows:?}"
+    );
+}
+
+#[tokio::test]
+async fn context_scoped_llm_ops_uses_registry_for_agent_package_filter() {
+    let store = SurrealStoreBuilder::in_memory_isolated()
+        .build()
+        .await
+        .expect("store");
+    let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
+    let context_id = ContextId::new(1_789_916_123_818, 1);
+    let task_id = TaskId::from_external(ExternalId::new("dispatch-unit-test"));
+    let message_id = MessageId::from("msg-1");
+
+    store
+        .add_event(ProvEvent::agent_booted(
+            agent_id.clone(),
+            AgentType::new("slack-agent").expect("type"),
+            "1.0.0".to_string(),
+            "slack-agent@1.0.0".to_string(),
+        ))
+        .await
+        .expect("boot");
+    store
+        .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+        .await
+        .expect("task");
+    store
+        .add_event(ProvEvent::task_execution_started(
+            context_id.clone(),
+            task_id.clone(),
+            agent_id.clone(),
+        ))
+        .await
+        .expect("task execution");
+    store
+        .add_event(ProvEvent::message_received_task(
+            context_id.clone(),
+            task_id.clone(),
+            message_id.clone(),
+            "user".to_string(),
+            vec!["hello".to_string()],
+            None,
+            agent_id.clone(),
+            1_789_916_123_818,
+        ))
+        .await
+        .expect("message");
+    store
+        .add_event(ProvEvent::llm_call_completed_task(
+            context_id.clone(),
+            task_id.clone(),
+            "DefaultClient".to_string(),
+            "openai-generic".to_string(),
+            "Chat".to_string(),
+            serde_json::json!({"messages": [{"role": "user", "content": "hello"}]}),
+            serde_json::json!({
+                "agent_id": agent_id.as_str(),
+                "task_id": task_id.as_str(),
+                "message_id": message_id.as_str(),
+            }),
+            LlmUsage::Known {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                cached_input_tokens: None,
+            },
+            100,
+            Outcome::Success,
+        ))
+        .await
+        .expect("llm");
+
+    let response = store
+        .query_ops(ProvenanceOpsQueryRequest {
+            resource: ProvenanceOpsResource::LlmCalls,
+            filters: ProvenanceOpsFilters {
+                context_id: Some(context_id),
+                task_id: Some(task_id),
+                agent_package: Some("slack-agent".to_string()),
+                ..Default::default()
+            },
+            group_by: vec![
+                "agent_id".to_string(),
+                "agent_package".to_string(),
+                "agent_version".to_string(),
+                "model".to_string(),
+            ],
+            ..Default::default()
+        })
+        .await
+        .expect("context-scoped llm ops with agent package");
+
+    assert_eq!(
+        response.rows.len(),
+        1,
+        "registry-backed agent package filter must return seeded LLM row: {:?}",
+        response.rows
     );
 }

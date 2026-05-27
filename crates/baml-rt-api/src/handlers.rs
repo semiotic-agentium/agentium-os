@@ -50,12 +50,16 @@ use crate::{
     episode::EpisodeSnapshotDto,
     mermaid::MermaidError,
     metrics,
+    observation::{
+        ObservationBundleDto, ObservationQueryParams, ObservationRequest,
+        ObservationRequestParseError, update_affects_include, update_matches_request,
+    },
     openapi::{
         AgentDiscoveryEntryDto, DeployRequestDto, DeployResponseDto, DeploymentRecordDto,
         MigrateRequestDto, MigrateResponseDto, UndeployRequestDto, UndeployResponseDto,
     },
     otel_middleware::IngressServiceInstanceId,
-    planning::{ContextPlanningResponse, PlanningError},
+    planning::{ContextPlanningResponse, PlanningError, PlanningScopeRequest},
     provenance_ops::ProvenanceOpsError,
     service_error::service_result_to_http,
     spans,
@@ -919,7 +923,11 @@ pub async fn get_context_metrics(
     path = "/contexts/{context_id}/planning",
     tag = "provenance",
     params(
-        ("context_id" = String, Path, description = "A2A context id")
+        ("context_id" = String, Path, description = "A2A context id"),
+        ("taskId" = Option<String>, Query, description = "Optional task scope"),
+        ("agentPackage" = Option<String>, Query, description = "Optional agent package filter"),
+        ("agentId" = Option<String>, Query, description = "Optional agent id filter"),
+        ("includeDrift" = Option<bool>, Query, description = "Include drift aggregation (default false)")
     ),
     responses(
         (status = 200, description = "Context planning snapshot (`tasks` empty when no provenance messages exist for this context)", body = Value),
@@ -931,6 +939,7 @@ pub async fn get_context_metrics(
 pub async fn get_context_planning(
     State(state): State<Arc<ApiState>>,
     axum::extract::Path(context_id): axum::extract::Path<String>,
+    Query(query): Query<ObservationQueryParams>,
 ) -> HttpResult<Json<ContextPlanningResponse>> {
     let span = spans::get_context_planning(&context_id);
     let _guard = span.enter();
@@ -943,7 +952,16 @@ pub async fn get_context_planning(
             "Planning service not configured",
         ));
     };
-    match svc.planning_for_context(&context_id).await {
+    let scope = parse_observation_request(&context_id, query)
+        .map_err(|e| bad_request_problem(e.to_string()))?;
+    match svc
+        .planning_for_scope({
+            let mut planning = PlanningScopeRequest::from_observation(&scope);
+            planning.include_drift = scope.include.drift;
+            planning
+        })
+        .await
+    {
         Ok(resp) => {
             metrics::record_request("get_context_planning", "success", start.elapsed());
             Ok(Json(resp))
@@ -969,6 +987,153 @@ pub async fn get_context_planning(
             Err(problem(500, "Internal Server Error", e.to_string()))
         }
     }
+}
+
+#[utoipa::path(
+    get,
+    path = "/contexts/{context_id}/observe",
+    tag = "provenance",
+    params(
+        ("context_id" = String, Path, description = "Provenance context id"),
+        ("taskId" = Option<String>, Query, description = "Optional task scope"),
+        ("agentPackage" = Option<String>, Query, description = "Optional agent package filter"),
+        ("agentId" = Option<String>, Query, description = "Optional agent id filter"),
+        ("include" = Option<String>, Query, description = "Comma-separated: planning, llmOps, toolOps, drift, all"),
+        ("includeDrift" = Option<bool>, Query, description = "Include drift in planning slice"),
+        ("opsPageSize" = Option<u32>, Query, description = "Ops page size in range [1, 50], default 20")
+    ),
+    responses(
+        (status = 200, description = "Unified observation bundle", body = Value),
+        (status = 400, description = "Invalid scope"),
+        (status = 501, description = "Observation service not configured"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn get_context_observe(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(context_id): axum::extract::Path<String>,
+    Query(query): Query<ObservationQueryParams>,
+) -> HttpResult<Json<ObservationBundleDto>> {
+    let start = Instant::now();
+    let Some(svc) = &state.observation else {
+        metrics::record_request("get_context_observe", "unavailable", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Observation service not configured",
+        ));
+    };
+    let request = parse_observation_request(&context_id, query)
+        .map_err(|e| bad_request_problem(e.to_string()))?;
+    match svc.bundle(request).await {
+        Ok(bundle) => {
+            metrics::record_request("get_context_observe", "success", start.elapsed());
+            Ok(Json(bundle))
+        }
+        Err(e) => {
+            metrics::record_request("get_context_observe", "internal", start.elapsed());
+            Err(problem(500, "Internal Server Error", e.to_string()))
+        }
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/contexts/{context_id}/observe/stream",
+    tag = "provenance",
+    params(
+        ("context_id" = String, Path, description = "Provenance context id"),
+        ("taskId" = Option<String>, Query, description = "Optional task scope"),
+        ("agentPackage" = Option<String>, Query, description = "Optional agent package filter"),
+        ("agentId" = Option<String>, Query, description = "Optional agent id filter"),
+        ("include" = Option<String>, Query, description = "Comma-separated resource slices"),
+        ("includeDrift" = Option<bool>, Query, description = "Include drift in planning slice"),
+        ("opsPageSize" = Option<u32>, Query, description = "Ops page size in range [1, 50], default 20")
+    ),
+    responses(
+        (status = 200, description = "SSE stream of observation bundles", content_type = "text/event-stream"),
+        (status = 400, description = "Invalid scope"),
+        (status = 501, description = "Observation service not configured"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn get_context_observe_stream(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(context_id): axum::extract::Path<String>,
+    Query(query): Query<ObservationQueryParams>,
+) -> HttpResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+    let start = Instant::now();
+    let request = parse_observation_request(&context_id, query)
+        .map_err(|e| bad_request_problem(e.to_string()))?;
+    let Some(svc) = &state.observation else {
+        metrics::record_request("get_context_observe_stream", "unavailable", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Observation service not configured",
+        ));
+    };
+    let Some(event_svc) = &state.observation_events else {
+        metrics::record_request("get_context_observe_stream", "unavailable", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Observation event service not configured",
+        ));
+    };
+    let initial = svc
+        .bundle(request.clone())
+        .await
+        .map_err(|e| problem(500, "Internal Server Error", e.to_string()))?;
+    let svc = Arc::clone(svc);
+    let include = request.include;
+    let mut updates = event_svc.subscribe_updates();
+    let stream = async_stream::stream! {
+        let mut last_version = initial.version.clone();
+        let data = serde_json::to_string(&initial).unwrap_or_else(|_| "{}".into());
+        yield Ok::<_, Infallible>(Event::default().event("snapshot").data(data));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(600);
+        loop {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                yield Ok::<_, Infallible>(Event::default().event("done").data("{}"));
+                break;
+            }
+            let wait_budget = deadline.saturating_duration_since(now);
+            let should_refresh = match tokio::time::timeout(wait_budget, updates.recv()).await {
+                Ok(Ok(update)) => {
+                    update_matches_request(&update, &request)
+                        && update_affects_include(&update, include)
+                }
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => true,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                    yield Ok::<_, Infallible>(Event::default().event("done").data("{}"));
+                    break;
+                }
+                Err(_) => {
+                    yield Ok::<_, Infallible>(Event::default().event("done").data("{}"));
+                    break;
+                }
+            };
+            if !should_refresh {
+                continue;
+            }
+            match svc.bundle(request.clone()).await {
+                Ok(bundle) if bundle.version != last_version => {
+                    last_version = bundle.version.clone();
+                    let data = serde_json::to_string(&bundle).unwrap_or_else(|_| "{}".into());
+                    yield Ok::<_, Infallible>(Event::default().event("bundle").data(data));
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "observe stream bundle refresh failed");
+                }
+            }
+        }
+    };
+    metrics::record_request("get_context_observe_stream", "success", start.elapsed());
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -1049,6 +1214,7 @@ fn to_ops_request(
         outcome: Some(parse_outcome(q.outcome.as_deref())),
         response_profile: Some(parse_profile(q.response_profile.as_deref())),
         budget_mode: true,
+        paginate_rows_in_sql: false,
     }
 }
 
@@ -1609,6 +1775,18 @@ fn parse_conversation_history_request(
     clippy::result_large_err,
     reason = "HttpApiProblem is the HttpResult error type; boxing it would ripple through every handler signature"
 )]
+fn parse_observation_request(
+    context_id: &str,
+    query: ObservationQueryParams,
+) -> Result<ObservationRequest, HttpApiProblem> {
+    ObservationRequest::from_parts(context_id, query)
+        .map_err(|e: ObservationRequestParseError| bad_request_problem(e.to_string()))
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "HttpApiProblem is the HttpResult error type; boxing it would ripple through every handler signature"
+)]
 fn parse_context_index_request(
     query: ContextIndexQueryParams,
 ) -> Result<ContextIndexRequest, HttpApiProblem> {
@@ -1743,7 +1921,7 @@ pub async fn get_conversation_history_stream(
             "Conversation history service not configured",
         ));
     };
-    let Some(event_svc) = &state.conversation_history_events else {
+    let Some(event_svc) = &state.observation_events else {
         metrics::record_request(
             "get_conversation_history_stream",
             "unavailable",
@@ -1752,7 +1930,7 @@ pub async fn get_conversation_history_stream(
         return Err(problem(
             501,
             "Not Implemented",
-            "Conversation history event service not configured",
+            "Observation event service not configured",
         ));
     };
     let initial_query_start = Instant::now();
@@ -1792,7 +1970,9 @@ pub async fn get_conversation_history_stream(
             let wait_budget = deadline.saturating_duration_since(now);
             let should_refresh = match tokio::time::timeout(wait_budget, updates.recv()).await {
                 Ok(Ok(update)) => {
-                    if update.context_id != request.context_id.as_str() {
+                    if !update.affects_transcript()
+                        || update.context_id != request.context_id.as_str()
+                    {
                         false
                     } else if let Some(req_task_id) = request.task_id.as_ref().map(TaskId::as_str) {
                         update.task_id.as_deref() == Some(req_task_id)

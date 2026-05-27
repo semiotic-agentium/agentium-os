@@ -101,3 +101,31 @@ pub fn observation_version_page(
     hash_page_envelope(&mut hasher, envelope);
     observation_version_from_hasher(hasher)
 }
+
+/// Hash planning + ops bundle slices for `/observe` SSE invalidation.
+#[must_use]
+pub fn observation_version_from_bundle(
+    planning: &Option<super::types::LoadedPlanningSlice>,
+    llm: &Option<crate::store::ProvenanceOpsQueryResponse>,
+    tool: &Option<crate::store::ProvenanceOpsQueryResponse>,
+) -> ObservationVersion {
+    let mut hasher = DefaultHasher::new();
+    if let Some(p) = planning {
+        p.all_task_ids.len().hash(&mut hasher);
+        p.tasks.len().hash(&mut hasher);
+        for task in &p.tasks {
+            task.task_id.hash(&mut hasher);
+        }
+    }
+    if let Some(llm) = llm {
+        llm.rows.len().hash(&mut hasher);
+        llm.summary.count.hash(&mut hasher);
+        llm.summary.failed_count.hash(&mut hasher);
+    }
+    if let Some(tool) = tool {
+        tool.rows.len().hash(&mut hasher);
+        tool.summary.count.hash(&mut hasher);
+        tool.summary.failed_count.hash(&mut hasher);
+    }
+    observation_version_from_hasher(hasher)
+}

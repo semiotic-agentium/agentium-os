@@ -6,7 +6,10 @@ use baml_rt_conversation::view::ProvenanceConversationContextItem;
 use super::{
     fingerprint::observation_version_from_loaded,
     ops::project_ops_llm_summary_count,
-    types::{LoadedObservation, ObservationScope, ObservationVersion, OpsQueryMode},
+    types::{
+        LoadedObservation, LoadedObservationBundle, ObservationBundleRequest, ObservationScope,
+        ObservationVersion, OpsQueryMode,
+    },
 };
 use crate::{
     error::Result,
@@ -26,6 +29,8 @@ pub trait ObservationLoader: Send + Sync {
     ) -> Result<(LoadedObservation, Vec<ProvenanceConversationContextItem>)>;
 
     async fn query_ops(&self, mode: OpsQueryMode) -> Result<ProvenanceOpsQueryResponse>;
+
+    async fn bundle(&self, request: ObservationBundleRequest) -> Result<LoadedObservationBundle>;
 
     fn version(&self, obs: &LoadedObservation) -> ObservationVersion {
         observation_version_from_loaded(obs)
@@ -67,5 +72,9 @@ impl ObservationLoader for SurrealProvenanceStore {
                 Ok(response)
             }
         }
+    }
+
+    async fn bundle(&self, request: ObservationBundleRequest) -> Result<LoadedObservationBundle> {
+        self.load_observation_bundle(request).await
     }
 }

@@ -24,7 +24,7 @@ use crate::{
     error::{ProvenanceError, Result},
     events::ProvEventData,
     id_semantics::context_entity_id_string,
-    metamodel::{EdgeProjection, SemanticEdge},
+    metamodel::SemanticEdge,
     normalizer::{plan_entity_id_string, task_entity_id_string},
     read::PlanningReader,
     store::{
@@ -239,30 +239,14 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
 }
 
 impl SurrealProvenanceStore {
-    async fn planning_head_node_id(
-        &self,
-        task_id: &TaskId,
-        edge: SemanticEdge,
-    ) -> Result<Option<String>> {
-        let task_node_id = task_entity_id_string(task_id);
-        let (sql, binds) = EdgeProjection::for_edge(edge)
-            .from_id_in(&[task_node_id])
-            .into_surreal();
-        let mut q = self.db.query(sql);
-        if let Some(obj) = binds.as_object() {
-            for (k, v) in obj {
-                q = q.bind((k.clone(), v.clone()));
-            }
-        }
-        let mut response = q.await.map_err(map_surreal_error)?;
-        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
-        Ok(rows
-            .first()
-            .and_then(|r| r.get("to_id").and_then(Value::as_str))
-            .map(str::to_string))
-    }
+    // -----------------------------------------------------------------------
+    // Graph traversal helpers
+    // -----------------------------------------------------------------------
 
-    async fn hydrate_intent_node(&self, node_id: &str) -> Result<Option<PlanningIntentRecord>> {
+    pub(super) async fn hydrate_intent_node(
+        &self,
+        node_id: &str,
+    ) -> Result<Option<PlanningIntentRecord>> {
         let query = format!(
             "SELECT props, props.a2a_event_order AS event_order FROM {TBL_NODE} \
              WHERE node_id = $node_id LIMIT 1"
@@ -315,7 +299,7 @@ impl SurrealProvenanceStore {
         }))
     }
 
-    async fn hydrate_plan_node(
+    pub(super) async fn hydrate_plan_node(
         &self,
         task_id: &TaskId,
         node_id: &str,
@@ -614,7 +598,7 @@ impl SurrealProvenanceStore {
     // Planning query helpers
     // -----------------------------------------------------------------------
 
-    async fn query_plan_steps_for_plans(
+    pub(super) async fn query_plan_steps_for_plans(
         &self,
         task_id: &TaskId,
         plan_ids: &[String],

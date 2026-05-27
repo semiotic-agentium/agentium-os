@@ -75,6 +75,15 @@ export interface ProvenanceQueryResponse {
   appliedCaps: Record<string, unknown>;
 }
 
+/** Unified operator bundle from `GET /contexts/{id}/observe`. */
+export interface ObservationBundle {
+  contextId: string;
+  version: string;
+  planning: ContextPlanningResponse | null;
+  llmOps: ProvenanceQueryResponse | null;
+  toolOps: ProvenanceQueryResponse | null;
+}
+
 export interface PlanningStepView {
   step_id: string;
   description: string;

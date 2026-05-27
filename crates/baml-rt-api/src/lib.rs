@@ -20,6 +20,7 @@ pub mod event_console;
 mod handlers;
 mod mermaid;
 mod metrics;
+mod observation;
 mod openapi;
 mod otel_middleware;
 mod planning;
@@ -31,7 +32,7 @@ pub mod service_error;
 mod spans;
 pub mod webhook_mount;
 
-pub use baml_rt_core::HeartbeatErrorKind;
+pub use baml_rt_core::{HeartbeatErrorKind, ObservationUpdate};
 pub use cluster_agents::{
     ClusterAgentPlacementDto, ClusterAgentRowDto, ClusterAgentsResponseDto, ClusterDirectoryError,
     ClusterDirectoryService, ClusterPlacementInfo, ClusterRunnerInfo, ClusterRunnerStatusDto,
@@ -50,10 +51,9 @@ pub use context_metrics::{
 };
 pub use conversation_history::{
     ConversationHistoryContentDto, ConversationHistoryDeltaRequest, ConversationHistoryError,
-    ConversationHistoryEventService, ConversationHistoryFormat, ConversationHistoryItemDto,
-    ConversationHistoryPageDto, ConversationHistoryPageRequest, ConversationHistoryProfile,
-    ConversationHistoryQueryParams, ConversationHistoryRequest,
-    ConversationHistoryRequestParseError, ConversationHistoryService, ConversationHistoryUpdate,
+    ConversationHistoryFormat, ConversationHistoryItemDto, ConversationHistoryPageDto,
+    ConversationHistoryPageRequest, ConversationHistoryProfile, ConversationHistoryQueryParams,
+    ConversationHistoryRequest, ConversationHistoryRequestParseError, ConversationHistoryService,
     CursorToken, DEFAULT_CONVERSATION_HISTORY_LIMIT, LlmPromptOperationDto, SessionStepOpDto,
     ToolOutcomeDto, apply_conversation_history_profile, include_in_conversation_history_profile,
     page_from_transcript_slice, page_version, profile_filter,
@@ -64,9 +64,15 @@ pub use episode::{
     PlanStepEntryDto, StepTypeDto, TerminalStatusDto, TokenSummaryDto,
 };
 pub use mermaid::{MermaidError, MermaidService};
+pub use observation::{
+    ObservationBundleDto, ObservationError, ObservationEventService, ObservationInclude,
+    ObservationQueryParams, ObservationRequest, ObservationRequestParseError, ObservationService,
+    update_affects_include, update_matches_request,
+};
 pub use planning::{
-    CitationDetail, ContextPlanningResponse, DriftedCallDetail, PlanningError, PlanningService,
-    PlanningStepSummary, TaskPlanDriftSummary, TaskPlanningSnapshot, summarize_plan_steps,
+    CitationDetail, ContextPlanningResponse, DEFAULT_PLANNING_HISTORY_LIMIT, DriftedCallDetail,
+    PlanningError, PlanningScopeRequest, PlanningService, PlanningStepSummary,
+    TaskPlanDriftSummary, TaskPlanningSnapshot, summarize_plan_steps,
 };
 pub use provenance_ops::{ProvenanceOpsError, ProvenanceOpsService};
 pub use router::{

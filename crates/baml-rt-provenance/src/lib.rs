@@ -68,6 +68,7 @@ pub mod mermaid_cache;
 pub mod metamodel;
 pub mod normalizer;
 pub mod observation;
+pub mod ops_types;
 pub(crate) mod payload_id;
 pub(crate) mod payload_record;
 pub(crate) mod payload_storage;
@@ -121,13 +122,14 @@ pub use normalizer::{
     ProvNormalizer, normalize_event, plan_entity_id_string, task_entity_id_string, validate_event,
 };
 pub use observation::{
-    EventOrder, LoadedObservation, ObservationLoader, ObservationScope, ObservationVersion,
+    EventOrder, LoadedObservation, LoadedObservationBundle, LoadedPlanningSlice,
+    ObservationBundleRequest, ObservationLoader, ObservationScope, ObservationVersion,
     OpsQueryMode, PageVersionEnvelope, PromptOpsVersionRow, ResumeVersionHints,
     TaskObservationMetrics, TaskObservationScope, TemporalBound, cmp_transcript_items,
     hash_page_envelope, observation_scope_from_history, observation_scope_from_ops_filters,
-    observation_version_from_hasher, observation_version_from_loaded, observation_version_page,
-    observation_version_transcript, sort_transcript_items, task_ids_for_context,
-    task_ids_for_scope, transcript_delta_rows,
+    observation_version_from_bundle, observation_version_from_hasher,
+    observation_version_from_loaded, observation_version_page, observation_version_transcript,
+    sort_transcript_items, task_ids_for_context, task_ids_for_scope, transcript_delta_rows,
 };
 pub use read::{OpsPageSpec, OpsReader, PlanningReader, TranscriptSlice, TranscriptSliceSpec};
 pub use store::{
@@ -153,3 +155,8 @@ pub use task_graph_reader::{
 };
 pub use tool_index::{ToolIndexConfig, index_tools};
 pub use types::{ProvActivityId, ProvAgentId, ProvEntityId, ProvNodeRef};
+
+pub use crate::ops_types::{
+    OpsPercentileHotspots, ProvenanceOpsAppliedCaps, ProvenanceOpsHotspotGroup, ProvenanceOpsRow,
+    ProvenanceOpsSummary,
+};

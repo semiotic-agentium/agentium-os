@@ -34,7 +34,10 @@ struct ContextAggregate {
     has_host_ingress: bool,
 }
 
-fn is_host_ingress_activity_anchor(activity_id: &str, row: &Value) -> bool {
+fn is_host_ingress_activity_anchor(
+    activity_id: &str,
+    row: &baml_rt_provenance::ProvenanceOpsRow,
+) -> bool {
     if activity_id.starts_with("ingress-poll-user:")
         || activity_id.starts_with("ingress-unit-user:")
     {
@@ -292,27 +295,32 @@ impl ContextIndexServiceImpl {
 
 #[cfg(test)]
 mod tests {
+    use baml_rt_provenance::ProvenanceOpsRow;
     use serde_json::json;
 
     use super::is_host_ingress_activity_anchor;
+
+    fn ingress_row(value: serde_json::Value) -> ProvenanceOpsRow {
+        ProvenanceOpsRow::from_map(value.as_object().cloned().unwrap_or_default())
+    }
 
     #[test]
     fn host_ingress_activity_anchors() {
         assert!(is_host_ingress_activity_anchor(
             "ingress-poll-user:ctx-1:msg-1",
-            &json!({}),
+            &ingress_row(json!({})),
         ));
         assert!(is_host_ingress_activity_anchor(
             "ingress-unit-user:ctx-1:unit-1",
-            &json!({}),
+            &ingress_row(json!({})),
         ));
         assert!(is_host_ingress_activity_anchor(
             "derived-host-ingress-anchor",
-            &json!({"a2a_user_speaker_kind": "ingress"}),
+            &ingress_row(json!({"a2a_user_speaker_kind": "ingress"})),
         ));
         assert!(!is_host_ingress_activity_anchor(
             "a2a:user-turn:1",
-            &json!({}),
+            &ingress_row(json!({})),
         ));
     }
 }

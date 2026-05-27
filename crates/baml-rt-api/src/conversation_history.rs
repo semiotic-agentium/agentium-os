@@ -43,8 +43,6 @@ pub const DEFAULT_CONVERSATION_HISTORY_LIMIT: u32 = 50;
 /// Service errors for conversation-history reads.
 pub type ConversationHistoryError = crate::service_error::ServiceError;
 
-pub use baml_rt_core::ConversationHistoryUpdate;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConversationHistoryProfile {
     Full,
@@ -739,11 +737,6 @@ pub fn page_version(
         .as_str()
         .to_string()
 }
-
-pub trait ConversationHistoryEventService: Send + Sync {
-    fn subscribe_updates(&self) -> tokio::sync::broadcast::Receiver<ConversationHistoryUpdate>;
-}
-
 pub fn page_from_transcript_slice(
     items: Vec<ProvenanceConversationContextItem>,
     request: &ConversationHistoryRequest,

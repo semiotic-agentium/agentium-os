@@ -196,11 +196,7 @@ async fn observation_slice_symmetry() {
         })
         .await
         .expect("ops");
-    let ops_count = ops
-        .summary
-        .get("count")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let ops_count = ops.summary.count;
     assert_eq!(ops_count, 5, "ops summary aligned with slice LLM count");
 
     let episode = EpisodeReader::new(Arc::clone(&store))

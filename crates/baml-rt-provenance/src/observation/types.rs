@@ -1,8 +1,10 @@
 //! Typed operator observation scope and loaded graph slice.
 
 use baml_rt_conversation::view::ProvenanceConversationContextItem;
-use baml_rt_core::ids::{ContextId, TaskId};
+use baml_rt_core::ids::{AgentId, ContextId, TaskId};
 use serde::{Deserialize, Serialize};
+
+use crate::{store::ProvenanceOpsQueryResponse, surreal_store::TaskPlanningBatchRow};
 
 /// Event ordering key (`a2a_event_order` on graph nodes). Named explicitly — not wall-clock time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -153,4 +155,36 @@ pub enum OpsQueryMode {
         scope: ObservationScope,
         request: crate::store::ProvenanceOpsQueryRequest,
     },
+}
+
+/// Operator bundle load request (store boundary — mirrors HTTP observe intent).
+#[derive(Debug, Clone)]
+pub struct ObservationBundleRequest {
+    pub context_id: ContextId,
+    pub task_id: Option<TaskId>,
+    pub agent_package: Option<String>,
+    pub agent_id: Option<AgentId>,
+    pub include_planning: bool,
+    pub include_drift: bool,
+    pub include_llm_ops: bool,
+    pub include_tool_ops: bool,
+    pub ops_page_size: u32,
+    pub planning_history_limit: u32,
+}
+
+/// Planning slice from index-backed batch read.
+#[derive(Debug, Clone)]
+pub struct LoadedPlanningSlice {
+    pub all_task_ids: Vec<String>,
+    pub tasks: Vec<TaskPlanningBatchRow>,
+}
+
+/// Loaded operator bundle (planning + ops projections).
+#[derive(Debug, Clone)]
+pub struct LoadedObservationBundle {
+    pub context_id: ContextId,
+    pub version: ObservationVersion,
+    pub planning: Option<LoadedPlanningSlice>,
+    pub llm_ops: Option<ProvenanceOpsQueryResponse>,
+    pub tool_ops: Option<ProvenanceOpsQueryResponse>,
 }

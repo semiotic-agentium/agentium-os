@@ -65,7 +65,6 @@ use baml_rt_core::{
     ids::{ActivityAnchorId, AgentId, ContextId, TaskId},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
 
 use crate::{
     error::{ProvenanceError, Result},
@@ -379,12 +378,12 @@ pub struct ProvenanceOpsFilters {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<AgentId>,
     /// Filter rows by the owning agent's *package* identifier (the value
-    /// written to `AgentArchive.props.a2a_agent_type`). For Messages this is
-    /// resolved by traversing the two-hop edge chain
-    /// `Message ↔ A2AMessageProcessing -[:WAS_EXECUTED_BY]-> AgentRuntimeInstance -[:WAS_SPAWNED_BY]-> AgentBoot -[:WAS_BOOTSTRAPPED_BY]-> AgentArchive`,
-    /// matching `AgentArchive.props.a2a_agent_type = $package`. For
-    /// LlmCalls/ToolCalls the same chain is followed via the activity's
-    /// `WAS_EXECUTED_BY` edge to AgentRuntimeInstance.
+    /// written to `AgentArchive.props.a2a_agent_type`). When the
+    /// `agent_package_instance` registry is populated, ops queries resolve
+    /// package → instance node ids once and filter via `for_agent_instances`
+    /// instead of the nested archive/bootstrap subquery in
+    /// `for_agent_package`. Without registry rows, the same two-hop edge
+    /// chain is followed via graph traversal.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_package: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -427,6 +426,9 @@ pub struct ProvenanceOpsQueryRequest {
     pub response_profile: Option<ProvenanceResponseProfile>,
     #[serde(default = "default_true")]
     pub budget_mode: bool,
+    /// When true, row fetch uses SQL LIMIT/OFFSET even when `group_by` is set (hotspots still computed on fetched rows).
+    #[serde(default)]
+    pub paginate_rows_in_sql: bool,
 }
 
 fn default_true() -> bool {
@@ -447,6 +449,7 @@ impl Default for ProvenanceOpsQueryRequest {
             outcome: Some(ProvenanceOutcomeSegment::Both),
             response_profile: Some(ProvenanceResponseProfile::UiFull),
             budget_mode: true,
+            paginate_rows_in_sql: false,
         }
     }
 }
@@ -455,13 +458,13 @@ impl Default for ProvenanceOpsQueryRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ProvenanceOpsQueryResponse {
     pub resource: ProvenanceOpsResource,
-    pub rows: Vec<Value>,
-    pub summary: Value,
-    pub hotspot_groups: Vec<Value>,
+    pub rows: Vec<crate::ops_types::ProvenanceOpsRow>,
+    pub summary: crate::ops_types::ProvenanceOpsSummary,
+    pub hotspot_groups: Vec<crate::ops_types::ProvenanceOpsHotspotGroup>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
     pub truncated: bool,
-    pub applied_caps: Map<String, Value>,
+    pub applied_caps: crate::ops_types::ProvenanceOpsAppliedCaps,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

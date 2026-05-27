@@ -3137,10 +3137,7 @@ async fn conversation_history_includes_ingress_poll_user_message_rows() {
     })]);
     use baml_rt_provenance::host_ingress_identity::activity_anchor_for_ingress_poll_user;
     let mut metadata = std::collections::HashMap::new();
-    metadata.insert(
-        "user_speaker_kind".to_string(),
-        baml_rt_vocabulary::vocabulary::user_speaker_kinds::INGRESS.to_string(),
-    );
+    metadata.insert("user_speaker_kind".to_string(), "ingress".to_string());
     store
         .add_event(ProvEvent::Global(baml_rt_provenance::events::GlobalEvent {
             id: activity_anchor_for_ingress_poll_user(&context_id, message_id.as_str()),

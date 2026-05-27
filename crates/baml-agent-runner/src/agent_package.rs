@@ -105,8 +105,8 @@ pub(crate) struct AgentPackageBootArgs<'a> {
     pub(crate) sandbox_bind_roots: &'a [PathBuf],
     /// Meter to register the agent's JS-event-loop progress probe with.
     pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
-    pub(crate) conversation_history_notify:
-        Option<tokio::sync::broadcast::Sender<baml_rt_core::ConversationHistoryUpdate>>,
+    pub(crate) observation_notify:
+        Option<tokio::sync::broadcast::Sender<baml_rt_core::ObservationUpdate>>,
 }
 
 impl AgentPackage {
@@ -281,9 +281,7 @@ impl AgentPackage {
         registered: ToolsRegistered,
         provenance_config: &ProvenanceConfig,
         stream_idle_secs: Option<u64>,
-        conversation_history_notify: Option<
-            tokio::sync::broadcast::Sender<baml_rt_core::ConversationHistoryUpdate>,
-        >,
+        observation_notify: Option<tokio::sync::broadcast::Sender<baml_rt_core::ObservationUpdate>>,
     ) -> Result<JsInitialized> {
         use baml_rt_quickjs::QuickJSConfig;
 
@@ -349,8 +347,8 @@ impl AgentPackage {
             .with_baml_helpers(true)
             .with_agent_identity(agent_package, agent_instance_id)
             .with_surreal_store(store);
-        if let Some(tx) = conversation_history_notify.clone() {
-            agent_builder = agent_builder.with_conversation_history_notify(tx);
+        if let Some(tx) = observation_notify.clone() {
+            agent_builder = agent_builder.with_observation_notify(tx);
         }
         let agent_builder =
             agent_builder.with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()));
@@ -427,7 +425,7 @@ impl AgentPackage {
                     registered,
                     args.provenance_config,
                     args.stream_idle_secs,
-                    args.conversation_history_notify.clone(),
+                    args.observation_notify.clone(),
                 )
                 .await?;
             // Register before `initialize_js_phase`: a CPU-bound JS top-level

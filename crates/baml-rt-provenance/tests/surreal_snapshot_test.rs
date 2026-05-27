@@ -158,7 +158,7 @@ struct NormalizedOpsRow {
     total_tokens: Option<u64>,
 }
 
-fn normalize_ops_row(row: &Value) -> NormalizedOpsRow {
+fn normalize_ops_row(row: &baml_rt_provenance::ProvenanceOpsRow) -> NormalizedOpsRow {
     NormalizedOpsRow {
         activity_id: row
             .get("activity_id")

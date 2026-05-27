@@ -10,6 +10,7 @@ import { useTheme } from "../composables/useTheme";
 import { useToast } from "../composables/useToast";
 import { useMermaidRenderer } from "../composables/useMermaidRenderer";
 import { useProvenanceOps } from "../composables/useProvenanceOps";
+import { useContextObserve } from "../composables/useContextObserve";
 import {
   provenanceQueryFromScope,
   useObservationScope,
@@ -18,6 +19,7 @@ import type {
   ContextPlanningResponse,
   ContextPlanningTaskSnapshot,
   ProvenanceQueryParams,
+  ProvenanceQueryResponse,
 } from "../types/provenance";
 import ProvenanceLiveTab from "./provenance/ProvenanceLiveTab.vue";
 import type { HotspotDrilldownParams } from "./provenance/ProvenanceLiveTab.vue";
@@ -140,7 +142,53 @@ const failedToolQuery = createQuery("tool_calls", {
 
 const exploreTabRef = ref<InstanceType<typeof ExploreTab> | null>(null);
 
-// ── Polling & planning ─────────────────────────────────────────────────────
+// ── Unified observe bundle (Live + Drift planning) ─────────────────────────
+
+const observationScope = useObservationScope(
+  () => props.contextId,
+  () => props.taskId,
+  () => props.selectedAgentPackage,
+);
+
+const includeDriftInObserve = computed(() => activeTab.value === "drift");
+
+const {
+  bundle: observeBundle,
+  loading: observeLoading,
+  error: observeError,
+  refresh: refreshObserve,
+} = useContextObserve({
+  contextId: computed(() => props.contextId),
+  taskId: computed(() => props.taskId),
+  agentPackage: computed(() => props.selectedAgentPackage),
+  agentId: computed(() => props.selectedAgentId),
+  includeDrift: includeDriftInObserve,
+  active: traceActive,
+});
+
+function syncObserveToLiveState() {
+  const bundle = observeBundle.value;
+  planningState.value.loading = observeLoading.value;
+  planningState.value.error = observeError.value;
+  if (!bundle) {
+    liveLlm.state.value.response = null;
+    liveTool.state.value.response = null;
+    planningState.value.response = null;
+    return;
+  }
+  liveLlm.state.value.response = (bundle.llmOps as ProvenanceQueryResponse | null) ?? null;
+  liveTool.state.value.response = (bundle.toolOps as ProvenanceQueryResponse | null) ?? null;
+  planningState.value.response = bundle.planning;
+  liveLlm.state.value.lastUpdatedAt = Date.now();
+  liveTool.state.value.lastUpdatedAt = Date.now();
+}
+
+watch([observeBundle, observeLoading, observeError], syncObserveToLiveState, {
+  immediate: true,
+  deep: true,
+});
+
+// ── Polling (Failures / Anomalies only) ────────────────────────────────────
 
 const isExploreTab = computed(() => activeTab.value === "explore");
 const pollInFlight = ref(false);
@@ -155,12 +203,6 @@ const planningState = ref<{
   response: null,
 });
 
-const observationScope = useObservationScope(
-  () => props.contextId,
-  () => props.taskId,
-  () => props.selectedAgentPackage,
-);
-
 function baseScope(): Pick<
   ProvenanceQueryParams,
   "contextId" | "taskId" | "agentId" | "agentPackage"
@@ -170,6 +212,10 @@ function baseScope(): Pick<
 
 async function refreshForActiveTab() {
   if (!props.contextId) return;
+  if (activeTab.value === "live" || activeTab.value === "drift") {
+    refreshObserve();
+    return;
+  }
   if (pollInFlight.value) {
     pollPending = true;
     return;
@@ -177,10 +223,6 @@ async function refreshForActiveTab() {
   pollInFlight.value = true;
   try {
     const scope = baseScope();
-    if (activeTab.value === "live") {
-      await Promise.all([liveLlm.run(scope), liveTool.run(scope), refreshPlanning()]);
-      return;
-    }
     if (activeTab.value === "failures") {
       await Promise.all([
         failedLlmQuery.run({ ...scope, outcome: "failed_only" }),
@@ -193,10 +235,6 @@ async function refreshForActiveTab() {
         ...scope,
         outcome: "both",
       });
-      return;
-    }
-    if (activeTab.value === "drift") {
-      await refreshPlanning();
     }
   } finally {
     pollInFlight.value = false;
@@ -204,27 +242,6 @@ async function refreshForActiveTab() {
       pollPending = false;
       void refreshForActiveTab();
     }
-  }
-}
-
-async function refreshPlanning() {
-  if (!props.contextId) return;
-  planningState.value.loading = true;
-  planningState.value.error = null;
-  try {
-    const response = await fetch(`/contexts/${props.contextId}/planning`);
-    if (!response.ok) {
-      if (response.status === 404) {
-        planningState.value.response = null;
-        return;
-      }
-      throw new Error(`Planning request failed: ${response.status}`);
-    }
-    planningState.value.response = (await response.json()) as ContextPlanningResponse;
-  } catch (error) {
-    planningState.value.error = (error as Error).message;
-  } finally {
-    planningState.value.loading = false;
   }
 }
 
@@ -398,6 +415,10 @@ watch(
   () => props.traceRefreshTick ?? 0,
   (tick, prev) => {
     if (tick === prev) return;
+    if (activeTab.value === "live" || activeTab.value === "drift") {
+      refreshObserve();
+      return;
+    }
     void refreshForActiveTab();
   },
 );
