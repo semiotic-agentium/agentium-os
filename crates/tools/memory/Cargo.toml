@@ -24,3 +24,8 @@ libc = "0.2"
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+criterion = "0.5"
+
+[[bench]]
+name = "memory_add"
+harness = false
