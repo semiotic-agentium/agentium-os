@@ -102,6 +102,10 @@ pub enum SemanticEdge {
     /// hop. Re-pointed atomically by the normalizer on every
     /// `TaskExecutionStarted`.
     WasLastExecutedBy,
+    /// `WAS_LAST_RESOLVED_TO` — head-pointer edge `A2ATask → Intent`.
+    WasLastResolvedTo,
+    /// `WAS_LAST_PLANNED_TO` — head-pointer edge `A2ATask → Plan`.
+    WasLastPlannedTo,
     /// `SCOPED_TO` — context-scope edge written by the normalizer for
     /// every node that lives inside a `Context` (Task, Message,
     /// Artifact, ...). Read-only at this surface: scope-ed reads
@@ -139,6 +143,8 @@ impl SemanticEdge {
             Self::A2aTaskArtifact => a2a_relations::TASK_ARTIFACT,
             Self::WasLastTransitionedTo => semantic_labels::WAS_LAST_TRANSITIONED_TO,
             Self::WasLastExecutedBy => semantic_labels::WAS_LAST_EXECUTED_BY,
+            Self::WasLastResolvedTo => semantic_labels::WAS_LAST_RESOLVED_TO,
+            Self::WasLastPlannedTo => semantic_labels::WAS_LAST_PLANNED_TO,
             Self::ScopedTo => crate::vocabulary::context_scope::SCOPED_TO,
         }
     }

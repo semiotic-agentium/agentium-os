@@ -21,7 +21,11 @@ function runnerProxy(): ProxyOptions {
       proxy.on("proxyReq", (proxyReq, req) => {
         const url = req.url ?? "";
         // `/agents/.../a2a` does not contain "sse" — still needs identity encoding for streaming bodies.
-        if (url.startsWith("/agents") || url.includes("sse")) {
+        if (
+          url.startsWith("/agents") ||
+          url.includes("sse") ||
+          url.includes("/conversation-history/stream")
+        ) {
           proxyReq.setHeader("accept-encoding", "identity");
         }
       });

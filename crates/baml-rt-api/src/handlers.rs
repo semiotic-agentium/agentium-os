@@ -45,7 +45,7 @@ use crate::{
     conversation_history::{
         ConversationHistoryDeltaRequest, ConversationHistoryPageDto,
         ConversationHistoryQueryParams, ConversationHistoryRequest,
-        ConversationHistoryRequestParseError, merge_conversation_history_pages,
+        ConversationHistoryRequestParseError,
     },
     episode::EpisodeSnapshotDto,
     mermaid::MermaidError,
@@ -1756,14 +1756,12 @@ pub async fn get_conversation_history_stream(
         ));
     };
     let initial_query_start = Instant::now();
-    let initial = match service_result_to_http(
-        "get_conversation_history_stream",
-        start,
-        merge_conversation_history_pages(svc.as_ref(), &req).await,
-    ) {
-        Ok(axum::Json(s)) => s,
-        Err(e) => return Err(e),
-    };
+    let initial_result = svc.page(&req).await;
+    let initial =
+        match service_result_to_http("get_conversation_history_stream", start, initial_result) {
+            Ok(axum::Json(s)) => s,
+            Err(e) => return Err(e),
+        };
     metrics::record_conversation_history_phase_duration(
         "initial_query",
         initial_query_start.elapsed(),

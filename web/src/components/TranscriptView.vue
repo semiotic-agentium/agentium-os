@@ -286,16 +286,6 @@ defineExpose({
       </template>
     </div>
 
-    <div
-      v-if="variant === 'chat' && isStreaming"
-      class="working-indicator"
-      role="status"
-      aria-live="polite"
-    >
-      <span class="working-dots" aria-hidden="true"><span></span><span></span><span></span></span>
-      <span class="working-text">Recording provenance…</span>
-    </div>
-
     <slot name="footer" />
   </div>
 </template>

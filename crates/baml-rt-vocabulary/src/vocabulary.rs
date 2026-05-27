@@ -96,6 +96,12 @@ pub mod a2a {
     pub const TIMESTAMP_MS: &str = "a2a:timestamp_ms";
     /// Monotonic event counter parsed from the activity anchor at write time.
     pub const EVENT_ORDER: &str = "a2a:event_order";
+    /// Wall-clock ordering key mirrored from the write event (`prov_time` on `prov_node`).
+    pub const PROV_TIME: &str = "prov_time";
+    /// Supersession relation written on the source revision at normalize time (`replaced_by` | `refined_by`).
+    pub const SUPERSEDED_BY_NEXT: &str = "a2a_superseded_by_next";
+    /// Supersession relation written on the target revision at normalize time.
+    pub const SUPERSESSION_FROM_PREVIOUS: &str = "a2a_supersession_from_previous";
     /// Host ingress transcript discriminator (`source_poll_recorded` | `dispatch_accepted`).
     pub const HOST_INGRESS_KIND: &str = "a2a:host_ingress_kind";
     /// Host dispatch target (`HostDispatchAccepted`).
@@ -231,6 +237,10 @@ pub mod semantic_labels {
     /// from a multi-hop traversal to a single indexed edge hop and
     /// obsoletes the application-level `task_agent_id_cache`.
     pub const WAS_LAST_EXECUTED_BY: &str = "WAS_LAST_EXECUTED_BY";
+    /// Head-pointer edge `Task -> Intent` naming the current resolved intent for the task.
+    pub const WAS_LAST_RESOLVED_TO: &str = "WAS_LAST_RESOLVED_TO";
+    /// Head-pointer edge `Task -> Plan` naming the current committed plan for the task.
+    pub const WAS_LAST_PLANNED_TO: &str = "WAS_LAST_PLANNED_TO";
     /// Archive / observation citation lineage (contrast `prov_relations::WAS_DERIVED_FROM` for `#N` intent history).
     pub const WAS_INFORMED_BY: &str = "WAS_INFORMED_BY";
     pub const WAS_REPLACED_BY: &str = "WAS_REPLACED_BY";

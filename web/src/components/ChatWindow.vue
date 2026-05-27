@@ -10,10 +10,10 @@ import type {
   AgentDiscoveryEntry,
   ChatMessage,
   HistoryHydrateState,
-  WorkflowProgressState,
 } from "../types/a2a";
+import type { OperatorRunStatus } from "../operator/runStatus";
 import TranscriptView from "./TranscriptView.vue";
-import WorkflowProgress from "./WorkflowProgress.vue";
+import RunStatusIndicator from "./RunStatusIndicator.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -22,7 +22,7 @@ const props = withDefaults(
     disabled: boolean;
     awaitingInput?: boolean;
     inputRequiredPrompt?: string;
-    workflowProgress?: WorkflowProgressState;
+    runStatus: OperatorRunStatus;
     historyHydrateState?: HistoryHydrateState;
     selectedContextId?: string | null;
     agents?: AgentDiscoveryEntry[];
@@ -53,6 +53,8 @@ function handleSend() {
 }
 
 const streamBusy = computed(() => props.isLoading && !props.awaitingInput);
+
+const showRunStatus = computed(() => props.runStatus.phase !== "idle");
 
 const inputPlaceholder = computed(() => {
   if (props.awaitingInput) {
@@ -127,12 +129,6 @@ watch(
 
 <template>
   <div ref="chatWindowEl" class="chat-window">
-    <WorkflowProgress
-      v-if="
-        workflowProgress && workflowProgress.phase !== 'idle' && workflowProgress.pipelineActive
-      "
-      :progress="workflowProgress"
-    />
     <TranscriptView
       ref="transcriptRef"
       variant="chat"
@@ -141,12 +137,15 @@ watch(
       :disabled="disabled"
       :agents="agents"
       :selected-context-id="selectedContextId"
+      :is-streaming="runStatus.active"
       @open-settings="emit('open-settings')"
     />
-    <div v-if="streamBusy" class="working-indicator" role="status" aria-live="polite">
-      <span class="working-dots" aria-hidden="true"><span></span><span></span><span></span></span>
-      <span class="working-text">Agent is responding…</span>
-    </div>
+    <RunStatusIndicator
+      v-if="showRunStatus"
+      variant="banner"
+      :status="runStatus"
+      :context-id="selectedContextId"
+    />
     <form ref="inputBarEl" class="input-bar" @submit.prevent="handleSend">
       <div
         v-if="awaitingInput"

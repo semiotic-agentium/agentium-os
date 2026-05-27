@@ -75,12 +75,14 @@ mod helpers;
 mod history_ref;
 mod llm_call_scope;
 mod ops_query;
+mod ops_reader;
 mod payload;
 mod planning_query;
 mod ref_table_hydrator;
 mod schema;
 mod task_graph_reader_impl;
 mod transcript_extension;
+mod transcript_reader;
 mod writer;
 
 use std::{
@@ -97,6 +99,7 @@ pub use ref_table_hydrator::{hydrate_ref_table, prepare_ref_table_for_projection
 use serde_json::Value;
 use surrealdb::{Surreal, engine::any::Any};
 
+pub use crate::read::{OpsReader, PlanningReader, TranscriptReader};
 use crate::{
     error::{ProvenanceError, Result},
     id_semantics::{MessageEntityId, MessageEntityInput},

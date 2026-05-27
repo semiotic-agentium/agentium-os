@@ -74,6 +74,10 @@ pub enum HeadPointerRel {
     /// a `Task → TaskExecution → AgentRuntimeInstance` two-hop traversal
     /// to a single indexed edge hop.
     WasLastExecutedBy,
+    /// `Task → Intent` head-pointer, re-pointed on every `IntentResolved`.
+    WasLastResolvedTo,
+    /// `Task → Plan` head-pointer, re-pointed on every `PlanGenerated`.
+    WasLastPlannedTo,
 }
 
 impl HeadPointerRel {
@@ -82,7 +86,16 @@ impl HeadPointerRel {
         match self {
             Self::WasLastTransitionedTo => semantic_labels::WAS_LAST_TRANSITIONED_TO,
             Self::WasLastExecutedBy => semantic_labels::WAS_LAST_EXECUTED_BY,
+            Self::WasLastResolvedTo => semantic_labels::WAS_LAST_RESOLVED_TO,
+            Self::WasLastPlannedTo => semantic_labels::WAS_LAST_PLANNED_TO,
         }
+    }
+}
+
+fn planning_supersession_wire(kind: PlanningSupersessionKind) -> &'static str {
+    match kind {
+        PlanningSupersessionKind::ReplacedBy => "replaced_by",
+        PlanningSupersessionKind::RefinedBy => "refined_by",
     }
 }
 
@@ -1843,6 +1856,43 @@ fn normalize_event_with_registry(
                     ),
                 );
             }
+            let task_key = task_id.as_str().to_string();
+            let supersession_kind = supersession.unwrap_or(PlanningSupersessionKind::ReplacedBy);
+            if let Some(previous) = call_state
+                .latest_intent_entity_by_task
+                .get(&task_key)
+                .cloned()
+                && previous != intent_entity
+            {
+                let kind_wire = planning_supersession_wire(supersession_kind);
+                if let Some(prev) = doc.entity(&previous).cloned() {
+                    let mut prev_attrs = prev.attributes;
+                    prev_attrs.insert(
+                        a2a::SUPERSEDED_BY_NEXT.to_string(),
+                        Value::String(kind_wire.to_string()),
+                    );
+                    doc.insert_entity(
+                        previous.clone(),
+                        Entity {
+                            attributes: prev_attrs,
+                            ..prev
+                        },
+                    );
+                }
+                intent_attrs.insert(
+                    a2a::SUPERSESSION_FROM_PREVIOUS.to_string(),
+                    Value::String(kind_wire.to_string()),
+                );
+                derived_relations.push(A2aDerivedRelation {
+                    relation: match supersession_kind {
+                        PlanningSupersessionKind::ReplacedBy => A2aRelationType::IntentReplacedBy,
+                        PlanningSupersessionKind::RefinedBy => A2aRelationType::IntentRefinedBy,
+                    },
+                    from: ProvNodeRef::Entity(previous),
+                    to: ProvNodeRef::Entity(intent_entity.clone()),
+                    attributes: base_attrs(event),
+                });
+            }
             doc.insert_entity(
                 intent_entity.clone(),
                 Entity {
@@ -1853,31 +1903,21 @@ fn normalize_event_with_registry(
 
             derived_relations.push(A2aDerivedRelation {
                 relation: A2aRelationType::HasIntent,
-                from: ProvNodeRef::Entity(task_entity),
+                from: ProvNodeRef::Entity(task_entity.clone()),
                 to: ProvNodeRef::Entity(intent_entity.clone()),
                 attributes: HashMap::new(),
             });
 
-            let task_key = task_id.as_str().to_string();
-            if let Some(previous) = call_state
-                .latest_intent_entity_by_task
-                .get(&task_key)
-                .cloned()
-                && previous != intent_entity
-            {
-                derived_relations.push(A2aDerivedRelation {
-                    relation: match supersession.unwrap_or(PlanningSupersessionKind::ReplacedBy) {
-                        PlanningSupersessionKind::ReplacedBy => A2aRelationType::IntentReplacedBy,
-                        PlanningSupersessionKind::RefinedBy => A2aRelationType::IntentRefinedBy,
-                    },
-                    from: ProvNodeRef::Entity(previous),
-                    to: ProvNodeRef::Entity(intent_entity.clone()),
-                    attributes: base_attrs(event),
-                });
-            }
             call_state
                 .latest_intent_entity_by_task
-                .insert(task_key, intent_entity);
+                .insert(task_key, intent_entity.clone());
+            head_pointer_repoints.push(HeadPointerRepoint {
+                from_id: task_entity.as_str().to_string(),
+                from_label: GraphNodeLabel::Task.as_str().to_string(),
+                rel: HeadPointerRel::WasLastResolvedTo,
+                to_id: intent_entity.as_str().to_string(),
+                to_label: GraphNodeLabel::Intent.as_str().to_string(),
+            });
         }
         ProvEventData::PlanGenerated {
             task_id,
@@ -1915,6 +1955,45 @@ fn normalize_event_with_registry(
                 a2a::STATUS.to_string(),
                 Value::String("generated".to_string()),
             );
+
+            let task_key = task_id.as_str().to_string();
+            let supersession_kind = supersession.unwrap_or(PlanningSupersessionKind::ReplacedBy);
+            if let Some(previous) = call_state
+                .latest_plan_entity_by_task
+                .get(&task_key)
+                .cloned()
+                && previous != plan_entity
+            {
+                let kind_wire = planning_supersession_wire(supersession_kind);
+                if let Some(prev) = doc.entity(&previous).cloned() {
+                    let mut prev_attrs = prev.attributes;
+                    prev_attrs.insert(
+                        a2a::SUPERSEDED_BY_NEXT.to_string(),
+                        Value::String(kind_wire.to_string()),
+                    );
+                    doc.insert_entity(
+                        previous.clone(),
+                        Entity {
+                            attributes: prev_attrs,
+                            ..prev
+                        },
+                    );
+                }
+                plan_attrs.insert(
+                    a2a::SUPERSESSION_FROM_PREVIOUS.to_string(),
+                    Value::String(kind_wire.to_string()),
+                );
+                derived_relations.push(A2aDerivedRelation {
+                    relation: match supersession_kind {
+                        PlanningSupersessionKind::ReplacedBy => A2aRelationType::PlanReplacedBy,
+                        PlanningSupersessionKind::RefinedBy => A2aRelationType::PlanRefinedBy,
+                    },
+                    from: ProvNodeRef::Entity(previous),
+                    to: ProvNodeRef::Entity(plan_entity.clone()),
+                    attributes: base_attrs(event),
+                });
+            }
+
             doc.insert_entity(
                 plan_entity.clone(),
                 Entity {
@@ -1926,7 +2005,7 @@ fn normalize_event_with_registry(
 
             derived_relations.push(A2aDerivedRelation {
                 relation: A2aRelationType::HasPlan,
-                from: ProvNodeRef::Entity(task_entity),
+                from: ProvNodeRef::Entity(task_entity.clone()),
                 to: ProvNodeRef::Entity(plan_entity.clone()),
                 attributes: HashMap::new(),
             });
@@ -1967,26 +2046,16 @@ fn normalize_event_with_registry(
                 insert_was_derived_from(&mut doc, step_entity, plan_entity.clone(), None, None);
             }
 
-            let task_key = task_id.as_str().to_string();
-            if let Some(previous) = call_state
-                .latest_plan_entity_by_task
-                .get(&task_key)
-                .cloned()
-                && previous != plan_entity
-            {
-                derived_relations.push(A2aDerivedRelation {
-                    relation: match supersession.unwrap_or(PlanningSupersessionKind::ReplacedBy) {
-                        PlanningSupersessionKind::ReplacedBy => A2aRelationType::PlanReplacedBy,
-                        PlanningSupersessionKind::RefinedBy => A2aRelationType::PlanRefinedBy,
-                    },
-                    from: ProvNodeRef::Entity(previous),
-                    to: ProvNodeRef::Entity(plan_entity.clone()),
-                    attributes: base_attrs(event),
-                });
-            }
             call_state
                 .latest_plan_entity_by_task
-                .insert(task_key, plan_entity);
+                .insert(task_key, plan_entity.clone());
+            head_pointer_repoints.push(HeadPointerRepoint {
+                from_id: task_entity.as_str().to_string(),
+                from_label: GraphNodeLabel::Task.as_str().to_string(),
+                rel: HeadPointerRel::WasLastPlannedTo,
+                to_id: plan_entity.as_str().to_string(),
+                to_label: GraphNodeLabel::Plan.as_str().to_string(),
+            });
         }
         ProvEventData::PlanStepStatusChanged {
             task_id,
@@ -2800,6 +2869,10 @@ fn base_attrs(event: &ProvEvent) -> HashMap<String, Value> {
         attrs.insert(a2a::EVENT_ORDER.to_string(), Value::Number(order.into()));
     }
     attrs.insert(a2a::ACTIVITY_ANCHOR.to_string(), Value::String(anchor));
+    attrs.insert(
+        a2a::PROV_TIME.to_string(),
+        Value::Number(event.timestamp_ms().into()),
+    );
     attrs
 }
 

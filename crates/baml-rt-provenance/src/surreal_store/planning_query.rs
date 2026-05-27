@@ -4,13 +4,14 @@
 
 //! [`ProvenancePlanningQuery`] and planning graph helpers (intents, plans, step gate).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use async_trait::async_trait;
 use baml_rt_core::{
     bus::PlanningSupersessionKind,
     ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, TaskId, UuidId},
 };
+use baml_rt_vocabulary::vocabulary::a2a;
 use serde_json::Value;
 
 use super::{
@@ -23,7 +24,9 @@ use crate::{
     error::{ProvenanceError, Result},
     events::ProvEventData,
     id_semantics::context_entity_id_string,
+    metamodel::{EdgeProjection, SemanticEdge},
     normalizer::{plan_entity_id_string, task_entity_id_string},
+    read::PlanningReader,
     store::{
         PlanningIntentRecord, PlanningPlanRecord, PlanningPlanStepRecord, ProvenancePlanningQuery,
     },
@@ -31,33 +34,64 @@ use crate::{
     vocabulary::{context_scope, semantic_labels},
 };
 
+fn supersession_kind_from_prop(props: &Value, key: &str) -> Option<PlanningSupersessionKind> {
+    props
+        .get(key)
+        .and_then(Value::as_str)
+        .and_then(|s| match s {
+            "replaced_by" => Some(PlanningSupersessionKind::ReplacedBy),
+            "refined_by" => Some(PlanningSupersessionKind::RefinedBy),
+            _ => None,
+        })
+}
+
+#[async_trait]
+impl PlanningReader for SurrealProvenanceStore {
+    async fn current_intent(&self, task_id: &TaskId) -> Result<Option<PlanningIntentRecord>> {
+        ProvenancePlanningQuery::query_current_intent(self, task_id).await
+    }
+
+    async fn current_plan(&self, task_id: &TaskId) -> Result<Option<PlanningPlanRecord>> {
+        ProvenancePlanningQuery::query_current_plan(self, task_id).await
+    }
+
+    async fn intent_history(
+        &self,
+        task_id: &TaskId,
+        limit: usize,
+    ) -> Result<Vec<PlanningIntentRecord>> {
+        ProvenancePlanningQuery::query_intent_history(self, task_id, Some(limit)).await
+    }
+
+    async fn plan_history(
+        &self,
+        task_id: &TaskId,
+        limit: usize,
+    ) -> Result<Vec<PlanningPlanRecord>> {
+        ProvenancePlanningQuery::query_plan_history(self, task_id, Some(limit)).await
+    }
+}
+
 #[async_trait]
 impl ProvenancePlanningQuery for SurrealProvenanceStore {
     async fn query_current_intent(&self, task_id: &TaskId) -> Result<Option<PlanningIntentRecord>> {
-        let intents = self.query_intent_history(task_id, Some(500)).await?;
-        if intents.is_empty() {
-            return Ok(None);
-        }
-        // Find intents that are superseded (have outgoing WAS_REPLACED_BY or WAS_REFINED_BY)
-        let replaced_sources = self
-            .collect_superseded_activity_anchors(task_id, "Intent")
+        let node_id = self
+            .planning_head_node_id(task_id, SemanticEdge::WasLastResolvedTo)
             .await?;
-        Ok(intents
-            .into_iter()
-            .find(|intent| !replaced_sources.contains(intent.activity_anchor_id.as_str())))
+        let Some(node_id) = node_id else {
+            return Ok(None);
+        };
+        self.hydrate_intent_node(&node_id).await
     }
 
     async fn query_current_plan(&self, task_id: &TaskId) -> Result<Option<PlanningPlanRecord>> {
-        let plans = self.query_plan_history(task_id, Some(500)).await?;
-        if plans.is_empty() {
-            return Ok(None);
-        }
-        let replaced_sources = self
-            .collect_superseded_activity_anchors(task_id, "Plan")
+        let node_id = self
+            .planning_head_node_id(task_id, SemanticEdge::WasLastPlannedTo)
             .await?;
-        Ok(plans
-            .into_iter()
-            .find(|plan| !replaced_sources.contains(plan.activity_anchor_id.as_str())))
+        let Some(node_id) = node_id else {
+            return Ok(None);
+        };
+        self.hydrate_plan_node(task_id, &node_id).await
     }
 
     async fn query_intent_history(
@@ -72,19 +106,17 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
              WHERE node_id IN (\
                SELECT VALUE to_id FROM {TBL_EDGE} \
                WHERE from_id = $task_node_id AND rel_type = '{has_intent}'\
-             ) ORDER BY event_order DESC",
+             ) ORDER BY event_order DESC LIMIT $limit",
             has_intent = semantic_labels::HAS_INTENT,
         );
         let response = self
             .db
             .query(&query)
             .bind(("task_node_id", task_node_id))
+            .bind(("limit", limit_val))
             .await
             .map_err(map_surreal_error)?;
         let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
-
-        let (intent_incoming, intent_outgoing) =
-            self.query_supersession_maps("Intent", task_id).await?;
 
         let mut intents = Vec::new();
         for row in &rows {
@@ -116,13 +148,12 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
                 intent_id: intent_id.to_string(),
                 description: description.to_string(),
                 event_order,
-                supersession_from_previous: intent_incoming.get(event_id).copied(),
-                superseded_by_next: intent_outgoing.get(event_id).copied(),
+                supersession_from_previous: supersession_kind_from_prop(
+                    props,
+                    a2a::SUPERSESSION_FROM_PREVIOUS,
+                ),
+                superseded_by_next: supersession_kind_from_prop(props, a2a::SUPERSEDED_BY_NEXT),
             });
-        }
-        intents.sort_by_key(|r| std::cmp::Reverse(r.event_order));
-        if intents.len() > limit_val {
-            intents.truncate(limit_val);
         }
         Ok(intents)
     }
@@ -139,18 +170,28 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
              WHERE node_id IN (\
                SELECT VALUE to_id FROM {TBL_EDGE} \
                WHERE from_id = $task_node_id AND rel_type = '{has_plan}'\
-             ) ORDER BY event_order DESC",
+             ) ORDER BY event_order DESC LIMIT $limit",
             has_plan = semantic_labels::HAS_PLAN,
         );
         let response = self
             .db
             .query(&query)
             .bind(("task_node_id", task_node_id))
+            .bind(("limit", limit_val))
             .await
             .map_err(map_surreal_error)?;
         let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
 
-        let (plan_incoming, plan_outgoing) = self.query_supersession_maps("Plan", task_id).await?;
+        let plan_ids: Vec<String> = rows
+            .iter()
+            .filter_map(|row| {
+                row.get("props")
+                    .and_then(|p| p.get("a2a_plan_id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect();
+        let steps_by_plan = self.query_plan_steps_for_plans(task_id, &plan_ids).await?;
 
         let mut plans = Vec::new();
         for row in &rows {
@@ -173,7 +214,7 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
             else {
                 continue;
             };
-            let steps = self.query_plan_steps(task_id, plan_id).await?;
+            let steps = steps_by_plan.get(plan_id).cloned().unwrap_or_default();
             let event_order = props
                 .get("a2a_event_order")
                 .and_then(Value::as_u64)
@@ -186,19 +227,154 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
                 plan_id: plan_id.to_string(),
                 steps,
                 event_order,
-                supersession_from_previous: plan_incoming.get(event_id).copied(),
-                superseded_by_next: plan_outgoing.get(event_id).copied(),
+                supersession_from_previous: supersession_kind_from_prop(
+                    props,
+                    a2a::SUPERSESSION_FROM_PREVIOUS,
+                ),
+                superseded_by_next: supersession_kind_from_prop(props, a2a::SUPERSEDED_BY_NEXT),
             });
-        }
-        plans.sort_by_key(|r| std::cmp::Reverse(r.event_order));
-        if plans.len() > limit_val {
-            plans.truncate(limit_val);
         }
         Ok(plans)
     }
 }
 
 impl SurrealProvenanceStore {
+    async fn planning_head_node_id(
+        &self,
+        task_id: &TaskId,
+        edge: SemanticEdge,
+    ) -> Result<Option<String>> {
+        let task_node_id = task_entity_id_string(task_id);
+        let (sql, binds) = EdgeProjection::for_edge(edge)
+            .from_id_in(&[task_node_id])
+            .into_surreal();
+        let mut q = self.db.query(sql);
+        if let Some(obj) = binds.as_object() {
+            for (k, v) in obj {
+                q = q.bind((k.clone(), v.clone()));
+            }
+        }
+        let mut response = q.await.map_err(map_surreal_error)?;
+        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+        Ok(rows
+            .first()
+            .and_then(|r| r.get("to_id").and_then(Value::as_str))
+            .map(str::to_string))
+    }
+
+    async fn hydrate_intent_node(&self, node_id: &str) -> Result<Option<PlanningIntentRecord>> {
+        let query = format!(
+            "SELECT props, props.a2a_event_order AS event_order FROM {TBL_NODE} \
+             WHERE node_id = $node_id LIMIT 1"
+        );
+        let response = self
+            .db
+            .query(&query)
+            .bind(("node_id", node_id.to_string()))
+            .await
+            .map_err(map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        let props = row
+            .get("props")
+            .ok_or_else(|| ProvenanceError::InvalidEvent {
+                activity_anchor: String::new(),
+                reason: format!("intent node missing props: {node_id}"),
+            })?;
+        let context_id = props.get("a2a_context_id").and_then(Value::as_str);
+        let task_id_value = props.get("a2a_task_id").and_then(Value::as_str);
+        let event_id = props.get("a2a_activity_anchor").and_then(Value::as_str);
+        let intent_id = props.get("a2a_intent_id").and_then(Value::as_str);
+        let description = props
+            .get("prov_label")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let (Some(context_id), Some(task_id_value), Some(event_id), Some(intent_id)) =
+            (context_id, task_id_value, event_id, intent_id)
+        else {
+            return Ok(None);
+        };
+        let event_order = props
+            .get("a2a_event_order")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        Ok(Some(PlanningIntentRecord {
+            context_id: ContextId::from(context_id),
+            task_id: TaskId::from_external(ExternalId::new(task_id_value)),
+            activity_anchor_id: ActivityAnchorId::from(event_id),
+            intent_id: intent_id.to_string(),
+            description: description.to_string(),
+            event_order,
+            supersession_from_previous: supersession_kind_from_prop(
+                props,
+                a2a::SUPERSESSION_FROM_PREVIOUS,
+            ),
+            superseded_by_next: supersession_kind_from_prop(props, a2a::SUPERSEDED_BY_NEXT),
+        }))
+    }
+
+    async fn hydrate_plan_node(
+        &self,
+        task_id: &TaskId,
+        node_id: &str,
+    ) -> Result<Option<PlanningPlanRecord>> {
+        let query = format!(
+            "SELECT props, props.a2a_event_order AS event_order FROM {TBL_NODE} \
+             WHERE node_id = $node_id LIMIT 1"
+        );
+        let response = self
+            .db
+            .query(&query)
+            .bind(("node_id", node_id.to_string()))
+            .await
+            .map_err(map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        let props = row
+            .get("props")
+            .ok_or_else(|| ProvenanceError::InvalidEvent {
+                activity_anchor: String::new(),
+                reason: format!("plan node missing props: {node_id}"),
+            })?;
+        let context_id = props.get("a2a_context_id").and_then(Value::as_str);
+        let task_id_value = props.get("a2a_task_id").and_then(Value::as_str);
+        let event_id = props.get("a2a_activity_anchor").and_then(Value::as_str);
+        let intent_id = props.get("a2a_intent_id").and_then(Value::as_str);
+        let plan_id = props.get("a2a_plan_id").and_then(Value::as_str);
+        let (Some(context_id), Some(task_id_value), Some(event_id), Some(intent_id), Some(plan_id)) =
+            (context_id, task_id_value, event_id, intent_id, plan_id)
+        else {
+            return Ok(None);
+        };
+        let steps = self
+            .query_plan_steps_for_plans(task_id, &[plan_id.to_string()])
+            .await?
+            .remove(plan_id)
+            .unwrap_or_default();
+        let event_order = props
+            .get("a2a_event_order")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        Ok(Some(PlanningPlanRecord {
+            context_id: ContextId::from(context_id),
+            task_id: TaskId::from_external(ExternalId::new(task_id_value)),
+            activity_anchor_id: ActivityAnchorId::from(event_id),
+            intent_id: intent_id.to_string(),
+            plan_id: plan_id.to_string(),
+            steps,
+            event_order,
+            supersession_from_previous: supersession_kind_from_prop(
+                props,
+                a2a::SUPERSESSION_FROM_PREVIOUS,
+            ),
+            superseded_by_next: supersession_kind_from_prop(props, a2a::SUPERSEDED_BY_NEXT),
+        }))
+    }
+
     // -----------------------------------------------------------------------
     // Graph traversal helpers
     // -----------------------------------------------------------------------
@@ -438,17 +614,25 @@ impl SurrealProvenanceStore {
     // Planning query helpers
     // -----------------------------------------------------------------------
 
-    async fn query_plan_steps(
+    async fn query_plan_steps_for_plans(
         &self,
         task_id: &TaskId,
-        plan_id: &str,
-    ) -> Result<Vec<PlanningPlanStepRecord>> {
-        let plan_node_id = plan_entity_id_string(task_id, plan_id);
+        plan_ids: &[String],
+    ) -> Result<HashMap<String, Vec<PlanningPlanStepRecord>>> {
+        let mut out: HashMap<String, Vec<PlanningPlanStepRecord>> = HashMap::new();
+        if plan_ids.is_empty() {
+            return Ok(out);
+        }
+        let plan_node_ids: Vec<String> = plan_ids
+            .iter()
+            .map(|plan_id| plan_entity_id_string(task_id, plan_id))
+            .collect();
         let query = format!(
-            "SELECT props, props.a2a_step_order AS step_order FROM {TBL_NODE} \
+            "SELECT props, props.a2a_step_order AS step_order, props.a2a_plan_id AS plan_id \
+             FROM {TBL_NODE} \
              WHERE node_id IN (\
                SELECT VALUE from_id FROM {TBL_EDGE} \
-               WHERE to_id = $plan_node_id \
+               WHERE to_id IN $plan_node_ids \
                  AND rel_type = '{derived}' \
                  AND from_label = 'PlanStep'\
              ) ORDER BY step_order ASC",
@@ -457,16 +641,21 @@ impl SurrealProvenanceStore {
         let response = self
             .db
             .query(&query)
-            .bind(("plan_node_id", plan_node_id))
+            .bind(("plan_node_ids", plan_node_ids))
             .await
             .map_err(map_surreal_error)?;
         let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
-
-        let mut steps = Vec::new();
         for row in &rows {
             let props = match row.get("props") {
                 Some(p) => p,
                 None => continue,
+            };
+            let plan_id = row
+                .get("plan_id")
+                .and_then(Value::as_str)
+                .or_else(|| props.get("a2a_plan_id").and_then(Value::as_str));
+            let Some(plan_id) = plan_id else {
+                continue;
             };
             let step_id = props.get("a2a_step_id").and_then(Value::as_str);
             let description = props
@@ -488,158 +677,30 @@ impl SurrealProvenanceStore {
             let Some(step_id) = step_id else {
                 continue;
             };
-            steps.push(PlanningPlanStepRecord {
-                step_id: step_id.to_string(),
-                description: description.to_string(),
-                order: step_order.max(0) as u32,
-                depends_on: decode_depends_on(depends_on_raw),
-                status: step_status.to_string(),
-            });
+            out.entry(plan_id.to_string())
+                .or_default()
+                .push(PlanningPlanStepRecord {
+                    step_id: step_id.to_string(),
+                    description: description.to_string(),
+                    order: step_order.max(0) as u32,
+                    depends_on: decode_depends_on(depends_on_raw),
+                    status: step_status.to_string(),
+                });
         }
-        Ok(steps)
+        Ok(out)
     }
 
-    async fn query_supersession_maps(
-        &self,
-        node_label: &str,
-        task_id: &TaskId,
-    ) -> Result<(
-        HashMap<String, PlanningSupersessionKind>,
-        HashMap<String, PlanningSupersessionKind>,
-    )> {
-        // Query WAS_REPLACED_BY and WAS_REFINED_BY edges concurrently — independent queries.
-        let (replaced_edges, refined_edges) = tokio::try_join!(
-            self.query_supersession_edges(node_label, task_id, semantic_labels::WAS_REPLACED_BY),
-            self.query_supersession_edges(node_label, task_id, semantic_labels::WAS_REFINED_BY),
-        )?;
-
-        let mut incoming: HashMap<String, PlanningSupersessionKind> = HashMap::new();
-        let mut outgoing: HashMap<String, PlanningSupersessionKind> = HashMap::new();
-
-        for (source_anchor, target_anchor) in &replaced_edges {
-            incoming
-                .entry(target_anchor.clone())
-                .or_insert(PlanningSupersessionKind::ReplacedBy);
-            outgoing
-                .entry(source_anchor.clone())
-                .or_insert(PlanningSupersessionKind::ReplacedBy);
-        }
-        for (source_anchor, target_anchor) in &refined_edges {
-            incoming
-                .entry(target_anchor.clone())
-                .or_insert(PlanningSupersessionKind::RefinedBy);
-            outgoing
-                .entry(source_anchor.clone())
-                .or_insert(PlanningSupersessionKind::RefinedBy);
-        }
-
-        Ok((incoming, outgoing))
-    }
-
-    async fn query_supersession_edges(
-        &self,
-        node_label: &str,
-        task_id: &TaskId,
-        rel_type: &str,
-    ) -> Result<Vec<(String, String)>> {
-        let ownership_edge = match node_label {
-            "Intent" => semantic_labels::HAS_INTENT,
-            "Plan" => semantic_labels::HAS_PLAN,
-            _ => return Ok(vec![]),
-        };
-        let task_node_id = task_entity_id_string(task_id);
-        let query = format!(
-            "SELECT from_id, to_id FROM {TBL_EDGE} \
-             WHERE rel_type = $rel_type AND from_label = $label AND to_label = $label \
-               AND from_id IN (SELECT VALUE to_id FROM {TBL_EDGE} WHERE from_id = $task_node_id AND rel_type = $ownership_edge) \
-               AND to_id IN (SELECT VALUE to_id FROM {TBL_EDGE} WHERE from_id = $task_node_id AND rel_type = $ownership_edge)"
-        );
-        let response = self
-            .db
-            .query(&query)
-            .bind(("rel_type", rel_type.to_string()))
-            .bind(("label", node_label.to_string()))
-            .bind(("task_node_id", task_node_id))
-            .bind(("ownership_edge", ownership_edge.to_string()))
-            .await
-            .map_err(map_surreal_error)?;
-        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
-
-        // Collect all referenced node IDs, then batch-fetch activity anchors in one query.
-        let mut node_ids: Vec<String> = Vec::new();
-        let mut edge_pairs: Vec<(String, String)> = Vec::new();
-        for row in &rows {
-            let from_id = row
-                .get("from_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let to_id = row.get("to_id").and_then(Value::as_str).unwrap_or_default();
-            if from_id.is_empty() || to_id.is_empty() {
-                continue;
-            }
-            node_ids.push(from_id.to_string());
-            node_ids.push(to_id.to_string());
-            edge_pairs.push((from_id.to_string(), to_id.to_string()));
-        }
-
-        if edge_pairs.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        node_ids.sort_unstable();
-        node_ids.dedup();
-
-        let anchor_query = format!(
-            "SELECT node_id, props.a2a_activity_anchor AS anchor FROM {TBL_NODE} WHERE node_id IN $ids"
-        );
-        let anchor_response = self
-            .db
-            .query(&anchor_query)
-            .bind(("ids", node_ids))
-            .await
-            .map_err(map_surreal_error)?;
-        let anchor_rows: Vec<Value> = check_and_take_zero(anchor_response, map_surreal_error)?;
-
-        let anchor_map: HashMap<String, String> = anchor_rows
-            .iter()
-            .filter_map(|r| {
-                let nid = r.get("node_id").and_then(Value::as_str)?;
-                let anchor = r.get("anchor").and_then(Value::as_str)?;
-                if anchor.is_empty() {
-                    return None;
-                }
-                Some((nid.to_string(), anchor.to_string()))
-            })
-            .collect();
-
-        let mut results = Vec::new();
-        for (from_id, to_id) in edge_pairs {
-            if let (Some(from_event), Some(to_event)) =
-                (anchor_map.get(&from_id), anchor_map.get(&to_id))
-            {
-                results.push((from_event.clone(), to_event.clone()));
-            }
-        }
-        Ok(results)
-    }
-
-    async fn collect_superseded_activity_anchors(
+    #[allow(dead_code)]
+    async fn query_plan_steps(
         &self,
         task_id: &TaskId,
-        node_label: &str,
-    ) -> Result<HashSet<String>> {
-        let (replaced_edges, refined_edges) = tokio::try_join!(
-            self.query_supersession_edges(node_label, task_id, semantic_labels::WAS_REPLACED_BY),
-            self.query_supersession_edges(node_label, task_id, semantic_labels::WAS_REFINED_BY),
-        )?;
-        let mut superseded = HashSet::new();
-        for (source_anchor, _) in replaced_edges {
-            superseded.insert(source_anchor);
-        }
-        for (source_anchor, _) in refined_edges {
-            superseded.insert(source_anchor);
-        }
-        Ok(superseded)
+        plan_id: &str,
+    ) -> Result<Vec<PlanningPlanStepRecord>> {
+        Ok(self
+            .query_plan_steps_for_plans(task_id, &[plan_id.to_string()])
+            .await?
+            .remove(plan_id)
+            .unwrap_or_default())
     }
 }
 

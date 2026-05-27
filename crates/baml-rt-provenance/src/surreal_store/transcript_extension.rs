@@ -291,7 +291,9 @@ impl SurrealProvenanceStore {
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
         let mut items = Vec::new();
 
-        if let Some(intent) = self.query_current_intent(task_id).await? {
+        let intent = self.query_current_intent(task_id).await?;
+
+        if let Some(intent) = intent {
             let anchor = intent.activity_anchor_id.as_str().to_string();
             if !existing_anchors.contains(&anchor) {
                 items.push(ProvenanceConversationContextItem {
@@ -313,7 +315,9 @@ impl SurrealProvenanceStore {
             }
         }
 
-        if let Some(plan) = self.query_current_plan(task_id).await? {
+        let plan = self.query_current_plan(task_id).await?;
+
+        if let Some(plan) = plan {
             let plan_anchor = plan.activity_anchor_id.as_str().to_string();
             if !existing_anchors.contains(&plan_anchor) {
                 items.push(ProvenanceConversationContextItem {

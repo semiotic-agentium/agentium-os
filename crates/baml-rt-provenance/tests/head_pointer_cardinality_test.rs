@@ -234,3 +234,130 @@ async fn was_last_executed_by_keeps_exactly_one_edge_after_re_execution() {
         "WAS_LAST_EXECUTED_BY must point at the most recently-started agent"
     );
 }
+
+#[tokio::test]
+async fn was_last_resolved_to_points_at_latest_intent() {
+    let store: Arc<baml_rt_provenance::SurrealProvenanceStore> =
+        SurrealStoreBuilder::in_memory_isolated()
+            .build()
+            .await
+            .expect("build isolated in-memory store");
+
+    let context_id = ContextId::new(91103, 1);
+    let task_id = TaskId::from_external(ExternalId::new("hp-task-intent"));
+    store
+        .add_event(ProvEvent::task_execution_started(
+            context_id.clone(),
+            task_id.clone(),
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-0000000000a1").unwrap()),
+        ))
+        .await
+        .expect("task_execution_started");
+
+    store
+        .add_event(ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-a".to_string(),
+            "first intent".to_string(),
+            vec![],
+            None,
+            None,
+        ))
+        .await
+        .expect("first intent");
+    store
+        .add_event(ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-b".to_string(),
+            "second intent".to_string(),
+            vec![],
+            None,
+            None,
+        ))
+        .await
+        .expect("second intent");
+
+    let task_node = task_node_id(&task_id);
+    let head_rows =
+        select_edges_via_typed_projection(&store, SemanticEdge::WasLastResolvedTo, &task_node)
+            .await;
+    assert_eq!(head_rows.len(), 1, "WAS_LAST_RESOLVED_TO cardinality one");
+    let to_id = head_rows[0]
+        .get("to_id")
+        .and_then(Value::as_str)
+        .expect("to_id");
+    assert!(
+        to_id.contains("intent-b"),
+        "head must reference latest intent entity, got {to_id}"
+    );
+}
+
+#[tokio::test]
+async fn was_last_planned_to_points_at_latest_plan() {
+    let store: Arc<baml_rt_provenance::SurrealProvenanceStore> =
+        SurrealStoreBuilder::in_memory_isolated()
+            .build()
+            .await
+            .expect("build isolated in-memory store");
+
+    let context_id = ContextId::new(91104, 1);
+    let task_id = TaskId::from_external(ExternalId::new("hp-task-plan"));
+    store
+        .add_event(ProvEvent::task_execution_started(
+            context_id.clone(),
+            task_id.clone(),
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-0000000000a1").unwrap()),
+        ))
+        .await
+        .expect("task_execution_started");
+    store
+        .add_event(ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-1".to_string(),
+            "intent".to_string(),
+            vec![],
+            None,
+            None,
+        ))
+        .await
+        .expect("intent");
+
+    store
+        .add_event(ProvEvent::plan_generated(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-1".to_string(),
+            "plan-a".to_string(),
+            vec![],
+            None,
+        ))
+        .await
+        .expect("first plan");
+    store
+        .add_event(ProvEvent::plan_generated(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-1".to_string(),
+            "plan-b".to_string(),
+            vec![],
+            None,
+        ))
+        .await
+        .expect("second plan");
+
+    let task_node = task_node_id(&task_id);
+    let head_rows =
+        select_edges_via_typed_projection(&store, SemanticEdge::WasLastPlannedTo, &task_node).await;
+    assert_eq!(head_rows.len(), 1, "WAS_LAST_PLANNED_TO cardinality one");
+    let to_id = head_rows[0]
+        .get("to_id")
+        .and_then(Value::as_str)
+        .expect("to_id");
+    assert!(
+        to_id.contains("plan-b"),
+        "head must reference latest plan entity, got {to_id}"
+    );
+}

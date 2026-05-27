@@ -3,6 +3,7 @@
 import type { ChatMessage, ContentBlock, OperationalContentBlock } from "../types/a2a";
 import type { EventDispatchPhase, EventPublishResponse } from "../types/events";
 import type { TraceObserveState } from "../composables/useEventObservation";
+import { deriveEventRunStatus } from "../operator/runStatus";
 import { isIngressWireBody } from "./ingressWireBody";
 import { formatPublishAcceptanceSummary } from "./publishOutcome";
 
@@ -112,15 +113,15 @@ export function transcriptPhaseLabel(
   dispatchPhase: EventDispatchPhase,
   hydrateState: TraceObserveState,
 ): string {
-  if (dispatchPhase === "validating") return "Validating draft…";
-  if (dispatchPhase === "publishing") return "Publishing to subscribers…";
-  if (dispatchPhase === "recording" || hydrateState === "loading" || hydrateState === "waiting") {
-    return "Recording provenance…";
-  }
-  if (dispatchPhase === "failed") return "Publish failed";
-  if (dispatchPhase === "live") return "Live";
-  if (dispatchPhase === "empty") return "Waiting for ingress";
-  return "Ready";
+  return deriveEventRunStatus({
+    dispatchPhase,
+    hydrateState,
+    lastPublishOutcome: null,
+    publishError: null,
+    waitingForIngress: false,
+    transcriptMessages: [],
+    contextId: null,
+  }).label;
 }
 
 function buildPublishMilestone(meta: EventRunMeta): EventTranscriptMilestoneRow | null {

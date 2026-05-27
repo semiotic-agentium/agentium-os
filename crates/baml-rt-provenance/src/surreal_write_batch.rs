@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::{
     graph_model::GraphNodeLabel,
-    id_semantics::context_entity_id_string,
+    id_semantics::{context_entity_id_string, task_entity_id_string_raw},
     normalizer::{A2aRelationType, HeadPointerRepoint, NormalizedProv},
     payload_record::PayloadRecord,
     payload_storage,
@@ -20,7 +20,7 @@ use crate::{
         semantic_used_label,
     },
     surreal_sql::{edge_props_object, storage_safe_props_sorted_keys},
-    surreal_tables::{TBL_BLOB, TBL_EDGE, TBL_NODE, TBL_PAYLOAD},
+    surreal_tables::{TBL_BLOB, TBL_CONTEXT_TRANSCRIPT_INDEX, TBL_EDGE, TBL_NODE, TBL_PAYLOAD},
     types::ProvNodeRef,
     vocabulary::semantic_labels,
 };
@@ -274,7 +274,7 @@ fn push_edge_delete_by_from_rel(
 }
 
 /// Emit the DELETE-then-UPSERT pair that re-points one head-pointer edge
-/// (`WAS_LAST_TRANSITIONED_TO` or `WAS_LAST_EXECUTED_BY`) to a new head
+/// (`WAS_LAST_*`) to a new head
 /// inside the current event transaction. Cardinality (exactly one
 /// `(from_id, rel_type)` row per head-pointer per Task) is enforced
 /// procedurally by the DELETE preceding the UPSERT inside `BEGIN..COMMIT`;
@@ -282,6 +282,43 @@ fn push_edge_delete_by_from_rel(
 /// indexes, so an index-level backstop on `(rel_type, from_id)` is not
 /// available without breaking the existing chain edges that legitimately
 /// fan out from the same `from_id`.
+#[allow(clippy::too_many_arguments)]
+fn push_transcript_index_upsert(
+    stmts: &mut Vec<String>,
+    binds: &mut Vec<TxBind>,
+    ti: &mut usize,
+    context_id: &str,
+    node_id: &str,
+    label: &str,
+    event_order: u64,
+    task_entity_id: Option<&str>,
+) {
+    let i = *ti;
+    *ti += 1;
+    let ck = format!("ti{i}_ctx");
+    let nk = format!("ti{i}_nid");
+    let lk = format!("ti{i}_lab");
+    let ok = format!("ti{i}_ord");
+    let tk = format!("ti{i}_task");
+    push_bind(binds, &ck, Value::String(context_id.to_string()));
+    push_bind(binds, &nk, Value::String(node_id.to_string()));
+    push_bind(binds, &lk, Value::String(label.to_string()));
+    push_bind(binds, &ok, Value::Number(event_order.into()));
+    push_bind(
+        binds,
+        &tk,
+        task_entity_id
+            .map(|s| Value::String(s.to_string()))
+            .unwrap_or(Value::Null),
+    );
+    stmts.push(format!(
+        "UPSERT {TBL_CONTEXT_TRANSCRIPT_INDEX} SET \
+         context_id = ${ck}, node_id = ${nk}, label = ${lk}, event_order = ${ok}, \
+         task_entity_id = ${tk} \
+         WHERE context_id = ${ck} AND node_id = ${nk}"
+    ));
+}
+
 fn push_head_pointer_repoint(
     stmts: &mut Vec<String>,
     binds: &mut Vec<TxBind>,
@@ -429,6 +466,7 @@ fn build_graph_fragment(normalized: &NormalizedProv, context_id: Option<&str>) -
     let mut ni = 0usize;
     let mut ei = 0usize;
     let mut di = 0usize;
+    let mut ti = 0usize;
 
     for (id, entity) in normalized.document.entities() {
         let label = entity_labels
@@ -740,7 +778,8 @@ fn build_graph_fragment(normalized: &NormalizedProv, context_id: Option<&str>) -
             &ctx_props,
         );
 
-        for (id, _) in normalized.document.entities() {
+        let ctx_id_str = ctx_id;
+        for (id, entity) in normalized.document.entities() {
             let label = entity_labels
                 .get(id.as_str())
                 .map(String::as_str)
@@ -753,8 +792,30 @@ fn build_graph_fragment(normalized: &NormalizedProv, context_id: Option<&str>) -
                 label,
                 &ctx_node_id,
             );
+            if matches!(label, "Message" | "ToolCall" | "SessionStep") {
+                let event_order = entity
+                    .attributes
+                    .get(a2a::EVENT_ORDER)
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let task_entity_id = entity
+                    .attributes
+                    .get(a2a::TASK_ID)
+                    .and_then(Value::as_str)
+                    .map(task_entity_id_string_raw);
+                push_transcript_index_upsert(
+                    &mut stmts,
+                    &mut binds,
+                    &mut ti,
+                    ctx_id_str,
+                    id.as_str(),
+                    label,
+                    event_order,
+                    task_entity_id.as_deref(),
+                );
+            }
         }
-        for (id, _) in normalized.document.activities() {
+        for (id, activity) in normalized.document.activities() {
             let label = activity_labels
                 .get(id.as_str())
                 .map(String::as_str)
@@ -767,6 +828,28 @@ fn build_graph_fragment(normalized: &NormalizedProv, context_id: Option<&str>) -
                 label,
                 &ctx_node_id,
             );
+            if matches!(label, "SessionStep") {
+                let event_order = activity
+                    .attributes
+                    .get(a2a::EVENT_ORDER)
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let task_entity_id = activity
+                    .attributes
+                    .get(a2a::TASK_ID)
+                    .and_then(Value::as_str)
+                    .map(task_entity_id_string_raw);
+                push_transcript_index_upsert(
+                    &mut stmts,
+                    &mut binds,
+                    &mut ti,
+                    ctx_id_str,
+                    id.as_str(),
+                    label,
+                    event_order,
+                    task_entity_id.as_deref(),
+                );
+            }
         }
         for (id, _) in normalized.document.agents() {
             let label = agent_labels

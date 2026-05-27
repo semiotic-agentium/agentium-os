@@ -32,6 +32,7 @@ import { useConfirm } from "./composables/useConfirm";
 import { parseMermaidBlocks } from "./utils/parseMermaid";
 import type { AgentDiscoveryEntry, ChatMessage, LlmPromptOperation } from "./types/a2a";
 import type { ProvenancePaneTab } from "./composables/useDashboardViewModel";
+import { deriveChatRunStatus } from "./operator/runStatus";
 
 /** First inline mermaid block in agent messages (stops at first hit). */
 function firstInlineMermaidDiagram(messages: ChatMessage[]): string | null {
@@ -54,10 +55,6 @@ const {
 } = useChatTabs();
 
 const eventConsole = useEventConsole();
-const eventAgents = computed(() => eventConsole.agents.value);
-const eventSubscribedAgents = computed(() => eventConsole.subscribedAgents.value);
-const eventSelectedAgent = computed(() => eventConsole.selectedAgent.value ?? null);
-const eventAgentsLoading = ref(false);
 
 // Derived refs from the active tab's client
 const agents = computed(() => activeClient.value?.agents.value ?? []);
@@ -108,6 +105,16 @@ function onDashboardGoChat(payload?: { tabId?: string; provenanceTab?: Provenanc
 }
 const workflowProgress = computed(() => activeClient.value?.workflowProgress.value ?? { phase: "idle" as const, nodes: [], completedNodes: [] });
 const awaitingInput = computed(() => activeClient.value?.awaitingInput.value ?? false);
+const chatRunStatus = computed(() =>
+  deriveChatRunStatus({
+    isLoading: isLoading.value,
+    awaitingInput: awaitingInput.value,
+    hydrateState: historyHydrateState.value,
+    workflowProgress: workflowProgress.value,
+    messages: messages.value,
+    contextId: contextId.value,
+  }),
+);
 const inputRequiredPrompt = computed(() => activeClient.value?.inputRequiredPrompt.value ?? "");
 function normalizeChatTitle(text: string): string {
   const compact = text.replace(/\s+/g, " ").trim();
@@ -150,18 +157,9 @@ async function handleSelectAgent(agent: AgentDiscoveryEntry): Promise<void> {
   selectAgent(agent);
 }
 
-function handleSelectEventAgent(agent: AgentDiscoveryEntry): void {
-  eventConsole.selectAgent(agent);
-}
-
 async function ensureEventConsoleLoaded(): Promise<void> {
-  eventAgentsLoading.value = true;
-  try {
-    await Promise.all([eventConsole.fetchAgents(), eventConsole.fetchMessageShapes()]);
-    eventConsole.applyRouteFromUrl();
-  } finally {
-    eventAgentsLoading.value = false;
-  }
+  await Promise.all([eventConsole.fetchAgents(), eventConsole.fetchMessageShapes()]);
+  eventConsole.applyRouteFromUrl();
 }
 
 const { theme, toggle: toggleTheme } = useTheme();
@@ -383,22 +381,6 @@ watch(
       @toggle-theme="toggleTheme"
     />
 
-    <div
-      v-if="view === 'events'"
-      class="operator-agent-shell-bar"
-      role="region"
-      aria-label="Event compose agent"
-    >
-      <OperatorAgentSelector
-        variant="event"
-        :agents="eventAgents"
-        :subscribed-agents="eventSubscribedAgents"
-        :selected="eventSelectedAgent"
-        :loading="eventAgentsLoading"
-        @select="handleSelectEventAgent"
-      />
-    </div>
-
     <div id="main-content" class="app-content-area">
       <ErrorBoundary v-if="view === 'dashboard'">
         <Dashboard
@@ -451,7 +433,7 @@ watch(
             :disabled="!selectedAgent"
             :awaiting-input="awaitingInput"
             :input-required-prompt="inputRequiredPrompt"
-            :workflow-progress="workflowProgress"
+            :run-status="chatRunStatus"
             :history-hydrate-state="historyHydrateState"
             :selected-context-id="selectedHistoryContextId"
             @send="sendMessage"
@@ -461,8 +443,8 @@ watch(
           <ProvenancePane
             :context-id="contextId"
             :task-id="taskId ?? undefined"
-            :selected-agent-id="undefined"
-            :is-streaming="isLoading"
+            :selected-agent-id="selectedAgent?.agent_instance_id ?? undefined"
+            :run-status="chatRunStatus"
             :diagrams="provenancePaneDiagrams"
             :trace-refresh-tick="traceRefreshGeneration"
             :llm-prompt-operations="llmPromptOperations"

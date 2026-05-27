@@ -156,7 +156,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
         context_id: &ContextId,
         limit: Option<usize>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.conversation_context_filtered(context_id, limit, None, None, None, false)
+        self.conversation_context_filtered(context_id, limit, None, None, None, false, true, None)
             .await
     }
 
@@ -166,8 +166,10 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
         limit: Option<usize>,
         task_id: Option<&TaskId>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.conversation_context_filtered(context_id, limit, task_id, None, None, false)
-            .await
+        self.conversation_context_filtered(
+            context_id, limit, task_id, None, None, false, true, None,
+        )
+        .await
     }
 }
 
@@ -286,6 +288,7 @@ impl SurrealProvenanceStore {
         check_and_take_zero(response, map_surreal_error)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn conversation_context_filtered(
         &self,
         context_id: &ContextId,
@@ -294,6 +297,8 @@ impl SurrealProvenanceStore {
         agent_package: Option<&str>,
         after_event_order: Option<u64>,
         forward_limit: bool,
+        include_extensions: bool,
+        preloaded_rows: Option<Vec<Value>>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
         let ctx_node_id = context_entity_id_string(context_id.as_str());
         let scoped_to = context_scope::SCOPED_TO;
@@ -338,8 +343,9 @@ impl SurrealProvenanceStore {
         let task_tool = task_tool_call_filter_sql();
         let task_session = task_session_step_filter_sql();
 
-        let mut rows: Vec<Value> = Vec::new();
-        if task_id.is_some() {
+        let rows_from_preload = preloaded_rows.is_some();
+        let mut rows: Vec<Value> = preloaded_rows.unwrap_or_default();
+        if !rows_from_preload && task_id.is_some() {
             let agent_msg = if agent_instances_ref.is_some() {
                 msg_agent_filter.as_str()
             } else {
@@ -369,7 +375,7 @@ impl SurrealProvenanceStore {
                     .await?,
                 );
             }
-        } else if agent_instances_ref.is_some() {
+        } else if !rows_from_preload && agent_instances_ref.is_some() {
             for agent_filter_sql in [msg_agent_filter.as_str(), call_agent_filter.as_str()] {
                 rows.extend(
                     self.fetch_scoped_conversation_nodes(ScopedConversationQuery {
@@ -385,7 +391,7 @@ impl SurrealProvenanceStore {
                     .await?,
                 );
             }
-        } else {
+        } else if !rows_from_preload {
             rows = self
                 .fetch_scoped_conversation_nodes(ScopedConversationQuery {
                     ctx_node_id: &ctx_node_id,
@@ -399,7 +405,9 @@ impl SurrealProvenanceStore {
                 })
                 .await?;
         }
-        sort_conversation_rows(&mut rows);
+        if rows_from_preload || !rows.is_empty() {
+            sort_conversation_rows(&mut rows);
+        }
 
         // Collect ToolCall node_ids, payload anchors, and Message node_ids for batch queries.
         let mut tool_call_node_ids: Vec<String> = Vec::new();
@@ -1077,11 +1085,18 @@ impl SurrealProvenanceStore {
             .iter()
             .map(|i| i.activity_anchor.as_str().to_string())
             .collect();
-        let after_order = after_event_order.map(crate::observation::EventOrder);
-        let mut supplement = self
-            .load_transcript_extension_items(context_id, task_id, after_order, &existing_anchors)
-            .await?;
-        items.append(&mut supplement);
+        if include_extensions {
+            let after_order = after_event_order.map(crate::observation::EventOrder);
+            let mut supplement = self
+                .load_transcript_extension_items(
+                    context_id,
+                    task_id,
+                    after_order,
+                    &existing_anchors,
+                )
+                .await?;
+            items.append(&mut supplement);
+        }
 
         items.sort_by(crate::observation::cmp_transcript_items);
         if let Some(n) = limit {
@@ -1125,8 +1140,17 @@ impl ProvenanceQueryApi for SurrealProvenanceStore {
         task_id: Option<&TaskId>,
         agent_package: Option<&str>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.conversation_context_filtered(context_id, limit, task_id, agent_package, None, false)
-            .await
+        self.conversation_context_filtered(
+            context_id,
+            limit,
+            task_id,
+            agent_package,
+            None,
+            false,
+            true,
+            None,
+        )
+        .await
     }
 
     async fn query_conversation_context_after(
@@ -1144,6 +1168,8 @@ impl ProvenanceQueryApi for SurrealProvenanceStore {
             agent_package,
             Some(after_event_order),
             true,
+            true,
+            None,
         )
         .await
     }

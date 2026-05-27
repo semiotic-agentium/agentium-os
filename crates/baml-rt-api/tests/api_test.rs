@@ -425,18 +425,28 @@ impl ConversationHistoryService for RealConversationHistory {
         &self,
         request: &ConversationHistoryRequest,
     ) -> std::result::Result<ConversationHistoryPageDto, ConversationHistoryError> {
-        use baml_rt_provenance::ProvenanceQueryApi;
-        let rows = self
+        use baml_rt_provenance::{TranscriptReader, TranscriptSliceSpec};
+        let after = request
+            .after_event_order_from_cursor()
+            .map_err(|e| ConversationHistoryError::Other(Box::new(e)))?;
+        let slice = self
             .store
-            .query_conversation_context(
-                &request.context_id,
-                None,
-                request.task_id.as_ref(),
-                request.agent_package.as_deref(),
-            )
+            .slice(TranscriptSliceSpec {
+                context_id: request.context_id.clone(),
+                task_id: request.task_id.clone(),
+                agent_package: request.agent_package.clone(),
+                after_event_order: after,
+                limit: request.page.limit(),
+                include_extensions: false,
+            })
             .await
             .map_err(|e| ConversationHistoryError::Other(Box::new(e)))?;
-        let mut page = baml_rt_api::paginate_items(rows, request, 0)?;
+        let mut page = baml_rt_api::page_from_transcript_slice(
+            slice.items,
+            request,
+            0,
+            slice.next_after_event_order,
+        );
         if matches!(request.profile, ConversationHistoryProfile::Compact) {
             page.items = page
                 .items

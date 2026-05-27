@@ -26,7 +26,7 @@ describe("transcriptPhaseLabel", () => {
     expect(transcriptPhaseLabel("validating", "idle")).toBe("Validating draft…");
     expect(transcriptPhaseLabel("publishing", "idle")).toBe("Publishing to subscribers…");
     expect(transcriptPhaseLabel("recording", "loading")).toBe("Recording provenance…");
-    expect(transcriptPhaseLabel("live", "ready")).toBe("Live");
+    expect(transcriptPhaseLabel("live", "ready")).toBe("Ready");
     expect(transcriptPhaseLabel("failed", "ready")).toBe("Publish failed");
   });
 });

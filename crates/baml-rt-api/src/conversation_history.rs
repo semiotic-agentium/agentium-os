@@ -85,41 +85,41 @@ impl ConversationHistoryFormat {
 pub struct CursorToken(pub String);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct CursorStateV1 {
+struct CursorStateV2 {
     v: u8,
-    offset: usize,
+    after_event_order: u64,
     context_id: String,
     task_id: Option<String>,
     agent_package: Option<String>,
 }
 
 impl CursorToken {
-    pub fn encode_v1(
-        offset: usize,
+    pub fn encode_v2(
+        after_event_order: u64,
         context_id: &ContextId,
         task_id: Option<&TaskId>,
         agent_package: Option<&str>,
     ) -> Self {
-        let state = CursorStateV1 {
-            v: 1,
-            offset,
+        let state = CursorStateV2 {
+            v: 2,
+            after_event_order,
             context_id: context_id.as_str().to_string(),
             task_id: task_id.map(|id| id.as_str().to_string()),
             agent_package: agent_package.map(str::to_string),
         };
-        let bytes = serde_json::to_vec(&state).expect("cursor state v1 serializes");
-        Self(format!("v1.{:x}", HexBytes(bytes)))
+        let bytes = serde_json::to_vec(&state).expect("cursor state v2 serializes");
+        Self(format!("v2.{:x}", HexBytes(bytes)))
     }
 
-    fn decode_v1(&self) -> Result<CursorStateV1, ConversationHistoryRequestParseError> {
-        let payload = self.0.strip_prefix("v1.").ok_or_else(|| {
-            ConversationHistoryRequestParseError::InvalidCursor("missing v1 prefix".to_string())
+    fn decode_v2(&self) -> Result<CursorStateV2, ConversationHistoryRequestParseError> {
+        let payload = self.0.strip_prefix("v2.").ok_or_else(|| {
+            ConversationHistoryRequestParseError::InvalidCursor("missing v2 prefix".to_string())
         })?;
         let bytes = decode_hex(payload)
             .map_err(|e| ConversationHistoryRequestParseError::InvalidCursor(e.to_string()))?;
-        let state: CursorStateV1 = serde_json::from_slice(&bytes)
+        let state: CursorStateV2 = serde_json::from_slice(&bytes)
             .map_err(|e| ConversationHistoryRequestParseError::InvalidCursor(e.to_string()))?;
-        if state.v != 1 {
+        if state.v != 2 {
             return Err(ConversationHistoryRequestParseError::UnknownCursorVersion(
                 state.v as u32,
             ));
@@ -273,7 +273,7 @@ impl ConversationHistoryRequest {
         let page = match params.cursor.map(CursorToken) {
             None => ConversationHistoryPageRequest::First { limit },
             Some(cursor) => {
-                let state = cursor.decode_v1()?;
+                let state = cursor.decode_v2()?;
                 if state.context_id != context_id.as_str()
                     || state.task_id.as_deref() != task_id.as_ref().map(TaskId::as_str)
                     || state.agent_package != agent_package
@@ -294,10 +294,14 @@ impl ConversationHistoryRequest {
         })
     }
 
-    pub fn offset_from_cursor(&self) -> Result<usize, ConversationHistoryRequestParseError> {
+    pub fn after_event_order_from_cursor(
+        &self,
+    ) -> Result<u64, ConversationHistoryRequestParseError> {
         match &self.page {
             ConversationHistoryPageRequest::First { .. } => Ok(0),
-            ConversationHistoryPageRequest::Next { cursor, .. } => Ok(cursor.decode_v1()?.offset),
+            ConversationHistoryPageRequest::Next { cursor, .. } => {
+                Ok(cursor.decode_v2()?.after_event_order)
+            }
         }
     }
 }
@@ -617,6 +621,7 @@ impl From<ProvenanceConversationContextItem> for ConversationHistoryItemDto {
 
 /// Loads every page for `request` (same `limit` per chunk), merges items and prompt-operation rows,
 /// clears `next_cursor`, and recomputes [`page_version`] for the merged transcript.
+#[allow(dead_code)]
 pub async fn merge_conversation_history_pages(
     svc: &dyn ConversationHistoryService,
     request: &ConversationHistoryRequest,
@@ -739,41 +744,27 @@ pub trait ConversationHistoryEventService: Send + Sync {
     fn subscribe_updates(&self) -> tokio::sync::broadcast::Receiver<ConversationHistoryUpdate>;
 }
 
-pub fn paginate_items(
-    mut rows: Vec<ProvenanceConversationContextItem>,
+pub fn page_from_transcript_slice(
+    items: Vec<ProvenanceConversationContextItem>,
     request: &ConversationHistoryRequest,
     llm_call_count: u32,
-) -> Result<ConversationHistoryPageDto, ConversationHistoryError> {
-    baml_rt_provenance::sort_transcript_items(&mut rows);
-
-    let start = request
-        .offset_from_cursor()
-        .map_err(|e| ConversationHistoryError::Other(Box::new(e)))?;
-    if start > rows.len() {
-        return Err(ConversationHistoryError::NotFound);
-    }
-    let limit = request.page.limit();
-    let end = start.saturating_add(limit).min(rows.len());
-    let page_rows = rows[start..end].to_vec();
-    let next_cursor = if end < rows.len() {
-        Some(
-            CursorToken::encode_v1(
-                end,
-                &request.context_id,
-                request.task_id.as_ref(),
-                request.agent_package.as_deref(),
-            )
-            .0
-            .to_string(),
-        )
-    } else {
-        None
-    };
-    let items: Vec<ConversationHistoryItemDto> = page_rows.into_iter().map(Into::into).collect();
+    next_after_event_order: Option<u64>,
+) -> ConversationHistoryPageDto {
+    let items: Vec<ConversationHistoryItemDto> = items.into_iter().map(Into::into).collect();
     let max_event_order = items.last().map(|item| item.timestamp_ms).unwrap_or(0);
+    let next_cursor = next_after_event_order.map(|after| {
+        CursorToken::encode_v2(
+            after,
+            &request.context_id,
+            request.task_id.as_ref(),
+            request.agent_package.as_deref(),
+        )
+        .0
+        .to_string()
+    });
     let version = page_version(&items, &[], None, None, false, None, llm_call_count);
 
-    Ok(ConversationHistoryPageDto {
+    ConversationHistoryPageDto {
         context_id: request.context_id.as_str().to_string(),
         task_id: request.task_id.as_ref().map(|id| id.as_str().to_string()),
         version,
@@ -786,7 +777,7 @@ pub fn paginate_items(
         awaiting_input: false,
         input_required_prompt: None,
         llm_call_count,
-    })
+    }
 }
 
 pub fn apply_conversation_history_profile(

@@ -7,9 +7,9 @@
 use std::sync::Arc;
 
 use baml_rt_provenance::{
-    EventOrder, LoadedObservation, ObservationLoader as _, ObservationScope, PageVersionEnvelope,
-    PromptOpsVersionRow, ResumeVersionHints, TemporalBound, observation_scope_from_history,
-    observation_version_page, resolve_resume_ui_hints,
+    EventOrder, LoadedObservation, ObservationLoader as _, PageVersionEnvelope,
+    PromptOpsVersionRow, ResumeVersionHints, TranscriptReader, TranscriptSliceSpec,
+    observation_scope_from_history, observation_version_page, resolve_resume_ui_hints,
 };
 
 use super::metrics::{value_as_string, value_as_u64};
@@ -23,18 +23,17 @@ impl ConversationHistoryServiceImpl {
         Self { store }
     }
 
-    fn scope_from_request(
+    fn transcript_spec(
         request: &baml_rt_api::ConversationHistoryRequest,
-        temporal: TemporalBound,
-    ) -> ObservationScope {
-        ObservationScope {
+        after_event_order: u64,
+    ) -> TranscriptSliceSpec {
+        TranscriptSliceSpec {
             context_id: request.context_id.clone(),
-            task: match request.task_id.clone() {
-                Some(id) => baml_rt_provenance::TaskObservationScope::Task(id),
-                None => baml_rt_provenance::TaskObservationScope::ContextWide,
-            },
+            task_id: request.task_id.clone(),
             agent_package: request.agent_package.clone(),
-            temporal,
+            after_event_order,
+            limit: request.page.limit(),
+            include_extensions: false,
         }
     }
 
@@ -168,18 +167,45 @@ impl baml_rt_api::ConversationHistoryService for ConversationHistoryServiceImpl 
         baml_rt_api::ConversationHistoryPageDto,
         baml_rt_api::ConversationHistoryError,
     > {
-        let loaded = self
+        let after = request
+            .after_event_order_from_cursor()
+            .map_err(|e| baml_rt_api::ConversationHistoryError::Other(Box::new(e)))?;
+        let spec = Self::transcript_spec(request, after);
+        let slice = self
             .store
-            .load(Self::scope_from_request(request, TemporalBound::All))
+            .slice(spec)
             .await
             .map_err(|e| baml_rt_api::ConversationHistoryError::Other(Box::new(e)))?;
 
-        let mut page = baml_rt_api::paginate_items(
-            loaded.transcript.clone(),
+        let scope = observation_scope_from_history(
+            request.context_id.clone(),
+            request.task_id.clone(),
+            request.agent_package.clone(),
+            None,
+        );
+        let llm_call_count = self
+            .store
+            .load_task_metrics(&scope)
+            .await
+            .map_err(|e| baml_rt_api::ConversationHistoryError::Other(Box::new(e)))?
+            .map(|m| m.llm_call_count)
+            .unwrap_or(0);
+
+        let transcript = slice.items.clone();
+        let mut page = baml_rt_api::page_from_transcript_slice(
+            slice.items,
             request,
-            loaded.llm_call_count(),
-        )?;
+            llm_call_count,
+            slice.next_after_event_order,
+        );
         page.items = baml_rt_api::apply_conversation_history_profile(page.items, request.profile);
+
+        let loaded = LoadedObservation {
+            scope,
+            transcript,
+            max_event_order: EventOrder(page.max_event_order),
+            metrics: None,
+        };
 
         self.enrich_prompt_metrics(&mut page, None).await?;
         self.enrich_resume_ui_hints(

@@ -850,10 +850,14 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
         let start = std::time::Instant::now();
         let resource_op = provenance_ops_query_op_label(&request.resource);
         let result = async {
-        let profile = request
-            .response_profile
-            .clone()
-            .unwrap_or(ProvenanceResponseProfile::UiFull);
+        let profile = if request.budget_mode {
+            ProvenanceResponseProfile::ToolCompact
+        } else {
+            request
+                .response_profile
+                .clone()
+                .unwrap_or(ProvenanceResponseProfile::UiFull)
+        };
         let page_cap = match profile {
             ProvenanceResponseProfile::UiFull => 200_u32,
             ProvenanceResponseProfile::ToolCompact => 50_u32,
@@ -871,13 +875,25 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
 
         let agent_runtime_index = self.load_agent_runtime_index().await?;
         let identity_by_agent_id = agent_runtime_index.identity_by_agent_id.clone();
-        let resolved_package_instances = request
-            .filters
-            .agent_package
-            .as_deref()
-            .and_then(|pkg| agent_runtime_index.instance_node_ids_by_package.get(pkg).cloned());
+        // Context-scoped reads use `GraphQuery::for_agent_package` inside `scoped_to_ctx`;
+        // the global instance registry IN-list is only for unscoped ops queries.
+        let resolved_package_instances = if request.filters.context_id.is_some() {
+            None
+        } else {
+            request
+                .filters
+                .agent_package
+                .as_deref()
+                .and_then(|pkg| {
+                    agent_runtime_index
+                        .instance_node_ids_by_package
+                        .get(pkg)
+                        .cloned()
+                })
+        };
         let package_instances = resolved_package_instances.as_deref();
         if request.filters.agent_package.is_some()
+            && request.filters.context_id.is_none()
             && package_instances.is_some_and(|instances| instances.is_empty())
         {
             return Ok(empty_ops_query_response(

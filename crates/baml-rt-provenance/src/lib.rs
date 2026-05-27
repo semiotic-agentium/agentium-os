@@ -72,6 +72,7 @@ pub(crate) mod payload_id;
 pub(crate) mod payload_record;
 pub(crate) mod payload_storage;
 pub(crate) mod prov_write_semantics;
+pub mod read;
 pub mod spans;
 pub mod store;
 pub mod surreal_config;
@@ -128,6 +129,7 @@ pub use observation::{
     observation_version_transcript, sort_transcript_items, task_ids_for_context,
     task_ids_for_scope, transcript_delta_rows,
 };
+pub use read::{OpsPageSpec, OpsReader, PlanningReader, TranscriptSlice, TranscriptSliceSpec};
 pub use store::{
     ActivityRef, ArchiveRef, PayloadRef, PlanningIntentRecord, PlanningPlanRecord,
     PlanningPlanStepRecord, ProvenanceArchivePayload, ProvenanceArchiveRecord,
@@ -139,7 +141,7 @@ pub use store::{
 pub use surreal_config::SurrealStoreConfig;
 pub use surreal_store::{
     ContextPickerIndexRow, RemoteConfig, RemoteCredentials, SurrealBackend, SurrealProvenanceStore,
-    SurrealStoreBuilder, hydrate_ref_table, prepare_ref_table_for_projection,
+    SurrealStoreBuilder, TranscriptReader, hydrate_ref_table, prepare_ref_table_for_projection,
 };
 pub use task_agent_binding::{
     TaskAgentBinding, TaskAgentBindingSource, event_local_executing_agent_id,

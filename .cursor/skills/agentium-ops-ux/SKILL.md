@@ -64,8 +64,8 @@ See `useDashboardViewModel.ts` header comment for legacy → narrative mapping.
 
 ### Chat + ProvenancePane
 
-- **Left**: streaming transcript, tool cards, workflow progress, `INPUT_REQUIRED` prompts
-- **Right** (optional): ProvenancePane tabs — Live, Failures, Anomalies, Drift, Explore
+- **Left**: streaming transcript, tool cards, unified **RunStatusIndicator** banner (replaces WorkflowProgress + working-indicator), `INPUT_REQUIRED` prompts
+- **Right** (optional): ProvenancePane tabs — Live, Failures, Anomalies, Drift, Explore; header shows same **OperatorRunStatus** via compact `RunStatusIndicator`
 - Toggle traces persists in `localStorage` (`agentium:showTraces`)
 - History selector reloads prior contexts; switching agent confirms before clearing
 
@@ -73,8 +73,8 @@ See `useDashboardViewModel.ts` header comment for legacy → narrative mapping.
 
 CI-style control shell + linear transcript + central compose modal:
 
-1. **Run header** (`EventRunHeader`) — Run picker, status pill, context chip (copy), **New event** CTA; hint when recent runs exist but none selected
-2. **Status banner** (`EventRunStatusBanner`) — Fleet publish outcome, failures list, waiting-for-ingress, in-flight progress
+1. **Run header** (`EventRunHeader`) — Compose agent, run picker, **New event** CTA; hint when recent runs exist but none selected
+2. **Status strip** (`EventRunStatusStrip` + `RunStatusIndicator`) — unified `OperatorRunStatus`: fleet publish, unit progress (X/Y), ingress wait, in-flight progress
 3. **Transcript** (primary, `flex: 2`) — `TranscriptView` + `MessageBubble` (same stack as Chat); ingress wire JSON in full-width card
 4. **Traces** — `ProvenancePane` `surface="event"`; collapsed until `context_id`; `prefer-open` after publish or run pick
 5. **Compose modal** (`EventComposeModal`, Teleport) — Source payload, scope, batch editor, Validate + Publish (compose agent in app shell, read-only in modal)
@@ -92,7 +92,7 @@ Tabbed operator surface: LLM, Tools, Secrets, Deployments. Assume token proxy in
 ## Component Conventions
 
 - **Panels**: `.panel`, border `var(--border)`, `min-height: 0` in flex layouts for scroll containment
-- **Phases**: Use shared dispatch phase helpers (`dispatchPhases.ts`); show human labels ("Publishing to subscribers…")
+- **Phases**: Derive UI from `deriveEventRunStatus` / `deriveChatRunStatus` in `operator/runStatus.ts`; render via `RunStatusIndicator` (severity dot + label + optional step rail)
 - **IDs**: Truncate middle for display; full id on copy; monospace for `context_id`, task ids, content hashes
 - **Mermaid traces**: Generated on demand from graph; show disclaimer text; Download when task complete
 - **Toasts**: `useToast` for non-blocking confirm/errors; inline errors for form validation

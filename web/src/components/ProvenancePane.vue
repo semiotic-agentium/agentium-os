@@ -29,6 +29,8 @@ import ProvenanceDriftTab from "./provenance/ProvenanceDriftTab.vue";
 import ExploreTab from "./provenance/ExploreTab.vue";
 import type { DrilldownParams } from "./provenance/ExploreTab.vue";
 import type { LlmPromptOperation } from "../types/a2a";
+import RunStatusIndicator from "./RunStatusIndicator.vue";
+import { IDLE_RUN_STATUS, type OperatorRunStatus } from "../operator/runStatus";
 
 const TRACES_STORAGE_KEY = "agentium:showTraces";
 
@@ -57,7 +59,9 @@ const props = defineProps<{
   selectedAgentId?: string;
   /** Filter ops queries by agent package (Event Console compose agent). */
   selectedAgentPackage?: string;
-  isStreaming: boolean;
+  runStatus?: OperatorRunStatus;
+  /** @deprecated Use runStatus.active */
+  isStreaming?: boolean;
   diagrams?: string[];
   /** Bumps when evented provenance signals new rows; edge-triggers Live refresh */
   traceRefreshTick?: number;
@@ -80,12 +84,19 @@ function initialPaneOpen(): boolean {
 
 const isOpen = ref(initialPaneOpen());
 
+const resolvedRunStatus = computed(() => props.runStatus ?? IDLE_RUN_STATUS);
+
+const traceActive = computed(
+  () => props.runStatus?.active ?? props.isStreaming ?? false,
+);
+
 const emptyStateCopy = computed(() => {
   if (props.surface === "event") {
     return "Publish an event or select an event run to load context-scoped traces.";
   }
   return "Start a chat turn to attach context-scoped provenance.";
 });
+
 const activeTab = ref<"live" | "failures" | "anomalies" | "drift" | "explore">("live");
 
 const { theme } = useTheme();
@@ -392,6 +403,14 @@ watch(
 );
 
 watch(
+  () => traceActive.value,
+  (active) => {
+    if (!active || !props.contextId || isExploreTab.value) return;
+    void refreshForActiveTab();
+  },
+);
+
+watch(
   () => [activeTab.value] as const,
   ([tab]) => {
     if (!props.contextId || tab === "explore") return;
@@ -417,10 +436,7 @@ watch(
     <div v-show="isOpen" class="provenance-pane-inner">
       <header class="provenance-header">
         <div class="provenance-header-title">Traces</div>
-        <div class="provenance-header-status">
-          <span class="status-dot" />
-          {{ props.isStreaming ? "Live" : "Idle" }}
-        </div>
+        <RunStatusIndicator variant="compact" :status="resolvedRunStatus" />
       </header>
 
       <div class="provenance-tabs">
@@ -451,7 +467,7 @@ watch(
             :planning-error="planningState.error"
             :rendered="rendered"
             :task-id="props.taskId"
-            :is-streaming="props.isStreaming"
+            :is-streaming="traceActive"
             :all-task-ids="planningState.response?.allTaskIds ?? []"
             :llm-prompt-operations="props.llmPromptOperations"
             @hotspot-drilldown="onHotspotDrilldown"

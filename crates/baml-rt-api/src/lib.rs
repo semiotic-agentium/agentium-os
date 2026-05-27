@@ -56,7 +56,7 @@ pub use conversation_history::{
     ConversationHistoryRequestParseError, ConversationHistoryService, ConversationHistoryUpdate,
     CursorToken, DEFAULT_CONVERSATION_HISTORY_LIMIT, LlmPromptOperationDto, SessionStepOpDto,
     ToolOutcomeDto, apply_conversation_history_profile, include_in_conversation_history_profile,
-    merge_conversation_history_pages, page_version, paginate_items, profile_filter,
+    page_from_transcript_slice, page_version, profile_filter,
 };
 pub use episode::{
     ArtifactSummaryDto, EpisodeContentDto, EpisodeDurationDto, EpisodeEntryDto, EpisodeError,

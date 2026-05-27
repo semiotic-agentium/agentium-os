@@ -21,6 +21,8 @@ pub(crate) const TBL_SESSION_REF_COUNTER: &str = "session_ref_counter";
 pub(crate) const TBL_AGENT_PACKAGE_INSTANCE: &str = "agent_package_instance";
 /// Materialized context picker rows (latest message per context).
 pub(crate) const TBL_CONTEXT_PICKER_INDEX: &str = "context_picker_index";
+/// Ordered transcript index rows (Message / ToolCall / SessionStep per context).
+pub(crate) const TBL_CONTEXT_TRANSCRIPT_INDEX: &str = "context_transcript_index";
 
 /// Column list for `PayloadRecord` round-trip SELECTs (must match serde fields).
 pub(crate) const PAYLOAD_ROW_SELECT: &str = "payload_id, activity_anchor_id, activity_id, payload_kind, payload_json, content_hash, storage_kind, file_key, search_text";

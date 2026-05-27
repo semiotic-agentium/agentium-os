@@ -12,8 +12,8 @@ import {
 } from "../../events/dispatchObserve";
 import {
   isEventDispatchInFlight,
-  isEventDispatchProvenanceStreaming,
 } from "../../events/dispatchPhases";
+import { deriveEventRunStatus } from "../../operator/runStatus";
 import { messageShapesForSubscription } from "../../events/messageShapes";
 import { useEventConsole } from "../../composables/useEventConsole";
 import {
@@ -70,6 +70,7 @@ const {
   fetchAgents,
   fetchMessageShapes,
   applyRouteFromUrl,
+  selectAgent,
   selectContextFromPicker,
   selectSubscriptionEvent,
   applySample,
@@ -236,8 +237,16 @@ const transcriptHydrateState = computed(() => {
   return raw;
 });
 
-const provenancePaneStreaming = computed(() =>
-  isEventDispatchProvenanceStreaming(dispatchPhase.value),
+const runStatus = computed(() =>
+  deriveEventRunStatus({
+    dispatchPhase: dispatchPhase.value,
+    hydrateState: transcriptHydrateState.value,
+    lastPublishOutcome: lastPublishOutcome.value,
+    publishError: publishError.value,
+    waitingForIngress: waitingForIngress.value,
+    transcriptMessages: observation.transcriptMessages.value,
+    contextId: observeIds.value.contextId,
+  }),
 );
 
 const transcriptMessages = observation.transcriptMessages;
@@ -462,23 +471,26 @@ function focusEventRunFromTranscript(): void {
   <div class="events-layout">
     <EventRunHeader
       ref="runHeaderRef"
+      :agents="deployedAgents"
+      :subscribed-agents="subscribedAgents"
+      :selected-agent="selectedAgent ?? null"
+      :agents-loading="agentsLoading"
       :histories="historyItems"
       :selected-context-id="observedContextId"
       :history-loading="historyLoading"
       :history-fetch-error="historyFetchError"
       :history-runs-hint="historyRunsHint"
+      @select-agent="selectAgent"
       @select-context="onSelectContextFromPicker"
       @refresh-history="fetchHistory()"
       @new-event="composeModalOpen = true"
     />
 
     <EventRunStatusStrip
-      :dispatch-phase="dispatchPhase"
-      :hydrate-state="transcriptHydrateState"
+      :status="runStatus"
       :context-id="observeIds.contextId"
       :last-publish-outcome="lastPublishOutcome"
       :publish-error="publishError"
-      :waiting-for-ingress="waitingForIngress"
       :transcript-shows-dispatch-failures="transcriptShowsDispatchFailures"
     />
 
@@ -493,7 +505,7 @@ function focusEventRunFromTranscript(): void {
           variant="event"
           :messages="transcriptMessages"
           :hydrate-state="transcriptHydrateState"
-          :is-streaming="false"
+          :is-streaming="runStatus.active"
           :selected-context-id="observeIds.contextId"
           :waiting-for-ingress="waitingForIngress"
           :has-published-run="hasPublishedRun"
@@ -510,7 +522,7 @@ function focusEventRunFromTranscript(): void {
         :context-id="observeIds.contextId ?? undefined"
         :task-id="observeIds.taskId ?? undefined"
         :selected-agent-package="draft.agent_package || undefined"
-        :is-streaming="provenancePaneStreaming"
+        :run-status="runStatus"
         :diagrams="provenancePaneDiagrams"
         :trace-refresh-tick="traceRefreshTick"
         :external-tab-focus="provenanceExternalFocus"
@@ -583,16 +595,12 @@ function focusEventRunFromTranscript(): void {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 0.75rem 1rem;
+  padding: 0;
   background: var(--bg);
 }
 
 .events-observe.panel :deep(.message-row--ingress-wire) {
   width: 100%;
-}
-
-.events-observe.panel :deep(.messages) {
-  padding: 16px 12px;
 }
 
 .events-body :deep(.provenance-pane.open) {
