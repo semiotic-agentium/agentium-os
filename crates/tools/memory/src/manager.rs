@@ -50,10 +50,10 @@ pub enum MemoryError {
 #[derive(Debug)]
 struct MemoryFileLock {
     // Held to keep the OS file lock alive for the manager lifetime; Drop releases the lock.
-    #[expect(
-        dead_code,
-        reason = "held to keep the OS file lock alive for the manager lifetime; released on Drop"
-    )]
+    // `#[allow]` not `#[expect]`: the derived `Debug` read of this field counts as a use on
+    // stable (CI's nextest toolchain) but not on nightly, so `dead_code` fires on only one of
+    // them and `#[expect]` would be unfulfilled on the other.
+    #[allow(dead_code)]
     file: File,
 }
 

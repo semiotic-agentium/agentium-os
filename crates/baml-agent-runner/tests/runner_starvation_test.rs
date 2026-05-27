@@ -219,10 +219,9 @@ impl StandaloneRunner {
     /// long-running adversarial tests so the assert payload stays bounded
     /// even when the runner has been booting for minutes under fault
     /// injection (T3 boots can run >5min with per-query latency).
-    #[expect(
-        dead_code,
-        reason = "T1/T4 use the full log_text; only the T3 path needs a tail"
-    )]
+    // `#[allow]` not `#[expect]`: only the T3 path calls this (T1/T4 use the full `log_text`),
+    // so whether `dead_code` fires depends on which test binaries/toolchain are in scope.
+    #[allow(dead_code)]
     fn log_tail(&self, lines: usize) -> String {
         let text = fs::read_to_string(&self.log_path).unwrap_or_default();
         let tail: Vec<&str> = text.lines().rev().take(lines).collect();
