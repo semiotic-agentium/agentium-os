@@ -1,19 +1,15 @@
 //! Tool index tests using SurrealDB in-memory store.
 
+use std::sync::Arc;
+
 use baml_rt_provenance::{SurrealStoreBuilder, index_tools};
 use baml_rt_tools::{SecretRequest, ToolFunctionMetadataExport, ToolName, ToolTypeSpec};
 use serde_json::{Value, json};
 
-#[tokio::test]
-async fn tool_index_creates_tool_nodes() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build store");
-
+fn weather_tool() -> ToolFunctionMetadataExport {
     let name = ToolName::parse("support/get_weather").expect("valid tool name");
-    let tools = vec![ToolFunctionMetadataExport {
-        name: name.clone(),
+    ToolFunctionMetadataExport {
+        name,
         class_name: "SupportGetWeather".to_string(),
         description: "Fetch a weather report by location".to_string(),
         open_input_schema: json!({ "type": "object" }),
@@ -46,7 +42,17 @@ async fn tool_index_creates_tool_nodes() {
         digest: None,
         projection_semantics: None,
         event_sources: Vec::new(),
-    }];
+    }
+}
+
+#[tokio::test]
+async fn tool_index_creates_tool_nodes() {
+    let store = SurrealStoreBuilder::in_memory_isolated()
+        .build()
+        .await
+        .expect("build store");
+
+    let tools = vec![weather_tool()];
 
     index_tools(&store, &tools).await.expect("index tools");
 
@@ -72,5 +78,65 @@ async fn tool_index_creates_tool_nodes() {
         id_rows.len(),
         1,
         "expected one ToolFunction node for support/get_weather"
+    );
+}
+
+/// Regression for the multi-pod shared-SurrealDB publish race (#546): every
+/// runner pod indexes the same tool rows into one database concurrently, so the
+/// writers collide on the same `prov_node` record. `index_tools` runs its UPSERT
+/// under the store's MVCC retry budget; without it the loser of each concurrent
+/// pair surfaces `Transaction conflict` and its tool-metadata index is silently
+/// dropped. N parallel `index_tools` calls of the same tool must all return `Ok`
+/// and converge on exactly one node. (Verified to fail reliably when the retry
+/// loop is reverted.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_tool_index_writes_succeed_under_mvcc_contention() {
+    // Reproduce the multi-pod race: many writers hammering the same `prov_node`
+    // row concurrently. A single UPSERT is a narrow conflict window, so each
+    // writer loops to widen it — on a multi-thread runtime this reliably drives
+    // SurrealDB `Transaction conflict` for the retry loop to absorb (verified to
+    // fail without the loop). 12 writers > 6 retry-budget headroom.
+    const PARALLEL_WRITERS: usize = 12;
+    const UPSERTS_PER_WRITER: usize = 50;
+
+    let store = SurrealStoreBuilder::in_memory_isolated()
+        .build()
+        .await
+        .expect("build store");
+
+    let mut handles = Vec::with_capacity(PARALLEL_WRITERS);
+    for _ in 0..PARALLEL_WRITERS {
+        let store = Arc::clone(&store);
+        handles.push(tokio::spawn(async move {
+            for _ in 0..UPSERTS_PER_WRITER {
+                index_tools(&store, &[weather_tool()]).await?;
+            }
+            Ok::<(), baml_rt_provenance::ProvenanceError>(())
+        }));
+    }
+
+    let mut failures: Vec<String> = Vec::new();
+    for (i, handle) in handles.into_iter().enumerate() {
+        match handle.await.expect("writer task panicked") {
+            Ok(()) => {}
+            Err(e) => failures.push(format!("writer[{i}]: {e}")),
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "all {PARALLEL_WRITERS} concurrent tool-index writers must succeed under MVCC retry; failures: {failures:?}"
+    );
+
+    let mut by_id = store
+        .db()
+        .query("SELECT * OMIT id FROM prov_node WHERE label = 'ToolFunction' AND node_id = $id")
+        .bind(("id", "support/get_weather"))
+        .await
+        .expect("query by id");
+    let id_rows: Vec<Value> = by_id.take(0).unwrap_or_default();
+    assert_eq!(
+        id_rows.len(),
+        1,
+        "concurrent UPSERTs keyed on node_id must converge on exactly one ToolFunction node"
     );
 }

@@ -262,12 +262,27 @@ impl SurrealProvenanceStore {
         plan: impl crate::surreal_write_batch::ExecutableSurrealPlan,
     ) -> Result<()> {
         let (sql, binds) = plan.into_sql_and_binds();
+        self.run_write_with_retry(&sql, &binds).await
+    }
+
+    /// Run one write statement under the shared MVCC retry budget, re-applying
+    /// `binds` on each attempt because the query builder is consumed on `.await`.
+    ///
+    /// Every retried statement must be idempotent — all callers pass UPSERTs
+    /// keyed on a stable id, so re-running the loser of a `Transaction conflict`
+    /// converges on the same row rather than double-writing. An empty `sql` is a
+    /// no-op. A genuinely exhausted budget surfaces as [`ProvenanceError::Contention`].
+    pub(crate) async fn run_write_with_retry(
+        &self,
+        sql: &str,
+        binds: &[crate::surreal_write_batch::TxBind],
+    ) -> Result<()> {
         if sql.trim().is_empty() {
             return Ok(());
         }
         for attempt in 0..WRITE_CONFLICT_MAX_ATTEMPTS {
-            let mut q = self.db.query(&sql);
-            for bind in &binds {
+            let mut q = self.db.query(sql);
+            for bind in binds {
                 q = q.bind((bind.name.clone(), bind.value.clone()));
             }
             match q.await.and_then(surrealdb::IndexedResults::check) {
