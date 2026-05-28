@@ -142,6 +142,16 @@ const failedToolQuery = createQuery("tool_calls", {
 
 const exploreTabRef = ref<InstanceType<typeof ExploreTab> | null>(null);
 
+const planningState = ref<{
+  loading: boolean;
+  error: string | null;
+  response: ContextPlanningResponse | null;
+}>({
+  loading: false,
+  error: null,
+  response: null,
+});
+
 // ── Unified observe bundle (Live + Drift planning) ─────────────────────────
 
 const observationScope = useObservationScope(
@@ -193,15 +203,6 @@ watch([observeBundle, observeLoading, observeError], syncObserveToLiveState, {
 const isExploreTab = computed(() => activeTab.value === "explore");
 const pollInFlight = ref(false);
 let pollPending = false;
-const planningState = ref<{
-  loading: boolean;
-  error: string | null;
-  response: ContextPlanningResponse | null;
-}>({
-  loading: false,
-  error: null,
-  response: null,
-});
 
 function baseScope(): Pick<
   ProvenanceQueryParams,
