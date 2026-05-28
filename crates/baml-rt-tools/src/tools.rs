@@ -2911,19 +2911,26 @@ impl Default for ToolRegistry {
 type TypedToolHandler<I, O> =
     Arc<dyn Fn(I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>> + Send + Sync>;
 
-pub struct TypedToolFunction<I, O, F> {
+/// Async handler with session context: takes (ctx, I), returns a future that resolves to Result<O>.
+type TypedCtxToolHandler<I, O> = Arc<
+    dyn Fn(ToolSessionContext, I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>> + Send + Sync,
+>;
+
+pub struct TypedToolFunction<I, O> {
     metadata: ToolFunctionMetadata,
     handler: TypedToolHandler<I, O>,
-    _phantom: std::marker::PhantomData<(I, O, F)>,
 }
 
-impl<I, O, F> TypedToolFunction<I, O, F>
+impl<I, O> TypedToolFunction<I, O>
 where
     I: ToolType + Serialize + for<'de> Deserialize<'de>,
     O: ToolType + Serialize,
-    F: Fn(I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>> + Send + Sync + 'static,
 {
-    pub fn new(name: &str, description: &str, handler: F) -> Self {
+    pub fn new<F, Fut>(name: &str, description: &str, handler: F) -> Self
+    where
+        F: Fn(I) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<O>> + Send + 'static,
+    {
         // Tool name format is validated at compile time by the type system
         // If parsing fails, it indicates a programming error in the caller
         let (parsed, class_name) = parse_tool_name_and_class(name).unwrap_or_else(|e| {
@@ -2940,18 +2947,16 @@ where
         .build_metadata();
         Self {
             metadata,
-            handler: Arc::new(handler),
-            _phantom: std::marker::PhantomData,
+            handler: Arc::new(move |input| Box::pin(handler(input))),
         }
     }
 }
 
 #[async_trait]
-impl<I, O, F> ToolHandler for TypedToolFunction<I, O, F>
+impl<I, O> ToolHandler for TypedToolFunction<I, O>
 where
     I: ToolType + Serialize + for<'de> Deserialize<'de>,
     O: ToolType + Serialize,
-    F: Fn(I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>> + Send + Sync + 'static,
 {
     fn metadata(&self) -> &ToolFunctionMetadata {
         &self.metadata
@@ -2988,7 +2993,7 @@ where
 ///
 /// Open validates `OI`, Send captures `I`, and the first Read executes the handler
 /// and returns a single `Done` payload.
-pub fn create_one_shot_tool_from_async<OI, I, O, F>(
+pub fn create_one_shot_tool_from_async<OI, I, O, F, Fut>(
     metadata: ToolFunctionMetadata,
     executor: F,
 ) -> Arc<dyn ToolHandler>
@@ -3008,18 +3013,20 @@ where
         + Sync
         + 'static,
     O: crate::tool_schema::ToolType + Serialize + Send + Sync + 'static,
-    F: Fn(I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>> + Send + Sync + 'static,
+    F: Fn(I) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<O>> + Send + 'static,
 {
-    Arc::new(OneShotToolFromAsync::<OI, I, O, F> {
+    let executor: TypedToolHandler<I, O> = Arc::new(move |input| Box::pin(executor(input)));
+    Arc::new(OneShotToolFromAsync::<OI, I, O> {
         metadata,
-        executor: Arc::new(executor),
+        executor,
         _phantom: PhantomData,
     })
 }
 
 /// One-shot tool built from an async function and pre-built metadata, with access
 /// to the session context used to open the tool.
-pub fn create_one_shot_tool_from_async_with_context<OI, I, O, F>(
+pub fn create_one_shot_tool_from_async_with_context<OI, I, O, F, Fut>(
     metadata: ToolFunctionMetadata,
     executor: F,
 ) -> Arc<dyn ToolHandler>
@@ -3039,32 +3046,32 @@ where
         + Sync
         + 'static,
     O: crate::tool_schema::ToolType + Serialize + Send + Sync + 'static,
-    F: Fn(ToolSessionContext, I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>>
-        + Send
-        + Sync
-        + 'static,
+    F: Fn(ToolSessionContext, I) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<O>> + Send + 'static,
 {
-    Arc::new(OneShotToolFromAsyncWithContext::<OI, I, O, F> {
+    let executor: TypedCtxToolHandler<I, O> =
+        Arc::new(move |ctx, input| Box::pin(executor(ctx, input)));
+    Arc::new(OneShotToolFromAsyncWithContext::<OI, I, O> {
         metadata,
-        executor: Arc::new(executor),
+        executor,
         _phantom: PhantomData,
     })
 }
 
-struct OneShotToolFromAsync<OI, I, O, F> {
+struct OneShotToolFromAsync<OI, I, O> {
     metadata: ToolFunctionMetadata,
-    executor: Arc<F>,
-    _phantom: PhantomData<(OI, I, O)>,
+    executor: TypedToolHandler<I, O>,
+    _phantom: PhantomData<OI>,
 }
 
-struct OneShotToolFromAsyncWithContext<OI, I, O, F> {
+struct OneShotToolFromAsyncWithContext<OI, I, O> {
     metadata: ToolFunctionMetadata,
-    executor: Arc<F>,
-    _phantom: PhantomData<(OI, I, O)>,
+    executor: TypedCtxToolHandler<I, O>,
+    _phantom: PhantomData<OI>,
 }
 
 #[async_trait]
-impl<OI, I, O, F> ToolHandler for OneShotToolFromAsync<OI, I, O, F>
+impl<OI, I, O> ToolHandler for OneShotToolFromAsync<OI, I, O>
 where
     OI: crate::tool_schema::ToolType
         + Serialize
@@ -3081,7 +3088,6 @@ where
         + Sync
         + 'static,
     O: crate::tool_schema::ToolType + Serialize + Send + Sync + 'static,
-    F: Fn(I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>> + Send + Sync + 'static,
 {
     fn metadata(&self) -> &ToolFunctionMetadata {
         &self.metadata
@@ -3135,7 +3141,7 @@ where
 }
 
 #[async_trait]
-impl<OI, I, O, F> ToolHandler for OneShotToolFromAsyncWithContext<OI, I, O, F>
+impl<OI, I, O> ToolHandler for OneShotToolFromAsyncWithContext<OI, I, O>
 where
     OI: crate::tool_schema::ToolType
         + Serialize
@@ -3152,10 +3158,6 @@ where
         + Sync
         + 'static,
     O: crate::tool_schema::ToolType + Serialize + Send + Sync + 'static,
-    F: Fn(ToolSessionContext, I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>>
-        + Send
-        + Sync
-        + 'static,
 {
     fn metadata(&self) -> &ToolFunctionMetadata {
         &self.metadata
@@ -3216,7 +3218,7 @@ where
 ///
 /// Open validates OI; Send sets scope and Read executes scoped retrieval. Use when you have
 /// runtime deps and want multi-request sessions without implementing [ToolHandler].
-pub fn create_multi_send_session_tool_from_async<OI, I, O, F>(
+pub fn create_multi_send_session_tool_from_async<OI, I, O, F, Fut>(
     metadata: ToolFunctionMetadata,
     executor: F,
 ) -> Arc<dyn ToolHandler>
@@ -3230,24 +3232,26 @@ where
         + Sync
         + 'static,
     O: crate::tool_schema::ToolType + Serialize + Send + Sync + 'static,
-    F: Fn(I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>> + Send + Sync + 'static,
+    F: Fn(I) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<O>> + Send + 'static,
 {
-    Arc::new(MultiSendSessionToolFromAsync::<OI, I, O, F> {
+    let executor: TypedToolHandler<I, O> = Arc::new(move |input| Box::pin(executor(input)));
+    Arc::new(MultiSendSessionToolFromAsync::<OI, I, O> {
         metadata,
-        executor: Arc::new(executor),
+        executor,
         _phantom: PhantomData,
     })
 }
 
 /// Internal handler for create_multi_send_session_tool_from_async.
-struct MultiSendSessionToolFromAsync<OI, I, O, F> {
+struct MultiSendSessionToolFromAsync<OI, I, O> {
     metadata: ToolFunctionMetadata,
-    executor: Arc<F>,
-    _phantom: PhantomData<(OI, I, O)>,
+    executor: TypedToolHandler<I, O>,
+    _phantom: PhantomData<OI>,
 }
 
 #[async_trait]
-impl<OI, I, O, F> ToolHandler for MultiSendSessionToolFromAsync<OI, I, O, F>
+impl<OI, I, O> ToolHandler for MultiSendSessionToolFromAsync<OI, I, O>
 where
     OI: for<'de> Deserialize<'de> + DescribeAction + Send + Sync + 'static,
     I: crate::tool_schema::ToolType
@@ -3258,7 +3262,6 @@ where
         + Sync
         + 'static,
     O: crate::tool_schema::ToolType + Serialize + Send + Sync + 'static,
-    F: Fn(I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>> + Send + Sync + 'static,
 {
     fn metadata(&self) -> &ToolFunctionMetadata {
         &self.metadata

@@ -68,20 +68,16 @@ impl ToolBundle for CallbackBundle {
 }
 
 pub fn callback_handler(metadata: ToolFunctionMetadata) -> Arc<dyn ToolHandler> {
-    create_one_shot_tool_from_async_with_context::<(), CallbackToolInput, CallbackToolOutput, _>(
+    create_one_shot_tool_from_async_with_context::<(), CallbackToolInput, CallbackToolOutput, _, _>(
         metadata,
-        move |session_ctx, input| {
-            Box::pin(async move {
-                let store = require_callback_store()?;
-                match input {
-                    CallbackToolInput::Schedule(schedule) => {
-                        schedule_callback(store.as_ref(), &session_ctx, schedule).await
-                    }
-                    CallbackToolInput::Cancel(cancel) => {
-                        cancel_callback(store.as_ref(), cancel).await
-                    }
+        move |session_ctx, input| async move {
+            let store = require_callback_store()?;
+            match input {
+                CallbackToolInput::Schedule(schedule) => {
+                    schedule_callback(store.as_ref(), &session_ctx, schedule).await
                 }
-            })
+                CallbackToolInput::Cancel(cancel) => cancel_callback(store.as_ref(), cancel).await,
+            }
         },
     )
 }

@@ -119,9 +119,10 @@ pub fn discover_agents_handler(
         DiscoverAgentsSendInput,
         DiscoverAgentsNextOutput,
         _,
+        _,
     >(metadata, move |send_input: DiscoverAgentsSendInput| {
         let list = agent_list.clone();
-        Box::pin(async move {
+        async move {
             let limit = send_input.limit.unwrap_or(50).min(100);
             let offset = send_input.offset.unwrap_or(0);
             let normalized_query = send_input
@@ -197,7 +198,7 @@ pub fn discover_agents_handler(
                     }))),
                 }),
             })
-        })
+        }
     })
 }
 
@@ -211,9 +212,10 @@ pub fn discover_tools_handler(
         DiscoverToolsSendInput,
         DiscoverToolsNextOutput,
         _,
+        _,
     >(metadata, move |send_input: DiscoverToolsSendInput| {
         let registry = tool_registry.clone();
-        Box::pin(async move {
+        async move {
             let limit = send_input.limit.unwrap_or(50).min(100) as usize;
             let query = send_input.query.as_deref().unwrap_or("");
             let records = registry.search_tools(query, limit);
@@ -242,6 +244,6 @@ pub fn discover_tools_handler(
                     }))),
                 }),
             })
-        })
+        }
     })
 }

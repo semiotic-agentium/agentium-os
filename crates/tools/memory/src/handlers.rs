@@ -37,9 +37,10 @@ pub fn memory_add_handler(
         MemoryAddSendInput,
         MemoryAddNextOutput,
         _,
+        _,
     >(metadata, move |input: MemoryAddSendInput| {
         let mgr = manager.clone();
-        Box::pin(async move { mgr.add(input).await.map_err(map_err) })
+        async move { mgr.add(input).await.map_err(map_err) }
     })
 }
 
@@ -52,9 +53,10 @@ pub fn memory_search_handler(
         MemorySearchSendInput,
         MemorySearchNextOutput,
         _,
+        _,
     >(metadata, move |input: MemorySearchSendInput| {
         let mgr = manager.clone();
-        Box::pin(async move { mgr.search(input).await.map_err(map_err) })
+        async move { mgr.search(input).await.map_err(map_err) }
     })
 }
 
@@ -67,9 +69,10 @@ pub fn memory_traverse_handler(
         MemoryTraverseSendInput,
         MemoryTraverseNextOutput,
         _,
+        _,
     >(metadata, move |input: MemoryTraverseSendInput| {
         let mgr = manager.clone();
-        Box::pin(async move { mgr.traverse(input).await.map_err(map_err) })
+        async move { mgr.traverse(input).await.map_err(map_err) }
     })
 }
 
@@ -82,9 +85,10 @@ pub fn memory_resolve_handler(
         MemoryResolveSendInput,
         MemoryResolveNextOutput,
         _,
+        _,
     >(metadata, move |input: MemoryResolveSendInput| {
         let mgr = manager.clone();
-        Box::pin(async move { mgr.resolve(input).await.map_err(map_err) })
+        async move { mgr.resolve(input).await.map_err(map_err) }
     })
 }
 
@@ -97,9 +101,10 @@ pub fn memory_impact_handler(
         MemoryImpactSendInput,
         MemoryImpactNextOutput,
         _,
+        _,
     >(metadata, move |input: MemoryImpactSendInput| {
         let mgr = manager.clone();
-        Box::pin(async move { mgr.impact(input).await.map_err(map_err) })
+        async move { mgr.impact(input).await.map_err(map_err) }
     })
 }
 
@@ -112,9 +117,10 @@ pub fn memory_link_handler(
         MemoryLinkSendInput,
         MemoryLinkNextOutput,
         _,
+        _,
     >(metadata, move |input: MemoryLinkSendInput| {
         let mgr = manager.clone();
-        Box::pin(async move { mgr.link(input).await.map_err(map_err) })
+        async move { mgr.link(input).await.map_err(map_err) }
     })
 }
 
@@ -127,8 +133,9 @@ pub fn memory_stats_handler(
         MemoryStatsSendInput,
         MemoryStatsNextOutput,
         _,
+        _,
     >(metadata, move |_input: MemoryStatsSendInput| {
         let mgr = manager.clone();
-        Box::pin(async move { mgr.stats().await.map_err(map_err) })
+        async move { mgr.stats().await.map_err(map_err) }
     })
 }
