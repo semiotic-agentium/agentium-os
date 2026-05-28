@@ -1,0 +1,32 @@
+[package]
+name = "baml-tools-grafana-alerts"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "Grafana alert webhook intake + event producer for BAML runtime"
+
+[features]
+default = []
+test-support = []
+
+[dependencies]
+baml-rt-core = { path = "../../baml-rt-core" }
+baml-rt-tools = { path = "../../baml-rt-tools" }
+baml-derive-core = { path = "../../baml-derive-core" }
+baml-derive = { path = "../../baml-derive" }
+serde_json = { workspace = true }
+serde = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+inventory = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
+rusqlite = { workspace = true }
+sha2 = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+test-support = { path = "../../test-support" }

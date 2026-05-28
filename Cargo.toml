@@ -38,6 +38,7 @@ members = [
   "crates/tools/clickup",
   "crates/tools/slack",
   "crates/tools/slack-notify",
+  "crates/tools/grafana-alerts",
   "crates/tools/notion",
   "crates/tools/system",
   "crates/tools/memory",
