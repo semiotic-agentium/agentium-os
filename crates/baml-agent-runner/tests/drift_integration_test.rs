@@ -287,7 +287,12 @@ async fn query_llm_call_rows(store: &SurrealProvenanceStore) -> Vec<Value> {
             ..Default::default()
         })
         .await
-        .map(|r| r.rows)
+        .map(|r| {
+            r.rows
+                .into_iter()
+                .map(|row| Value::Object(row.into_map()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 

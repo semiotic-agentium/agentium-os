@@ -452,7 +452,7 @@ impl ConversationHistoryService for RealConversationHistory {
             .store
             .page(TranscriptPageRequest {
                 scope,
-                limit: request.page.limit() as usize,
+                limit: request.page.limit(),
                 profile: TranscriptProjectionProfile::OperatorTimeline,
             })
             .await

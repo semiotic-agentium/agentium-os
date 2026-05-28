@@ -43,7 +43,7 @@ impl ConversationHistoryServiceImpl {
         };
         TranscriptPageRequest {
             scope,
-            limit: request.page.limit() as usize,
+            limit: request.page.limit(),
             profile,
         }
     }

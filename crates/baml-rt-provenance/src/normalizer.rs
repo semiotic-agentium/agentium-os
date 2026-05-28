@@ -2724,13 +2724,13 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
         ProvEventData::CallbackDispatchContextsLinked { .. } => {}
         ProvEventData::HostSourcePollRecorded { .. }
         | ProvEventData::HostDispatchAccepted { .. }
-        | ProvEventData::HostDispatchRejected { .. } => {
-            if event.context_id_opt().is_none() {
-                return Err(ProvenanceError::InvalidEvent {
-                    activity_anchor: event.id().as_str().to_string(),
-                    reason: "host ingress events must carry context_id".to_string(),
-                });
-            }
+        | ProvEventData::HostDispatchRejected { .. }
+            if event.context_id_opt().is_none() =>
+        {
+            return Err(ProvenanceError::InvalidEvent {
+                activity_anchor: event.id().as_str().to_string(),
+                reason: "host ingress events must carry context_id".to_string(),
+            });
         }
         _ => {}
     }
