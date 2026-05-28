@@ -55,10 +55,6 @@ pub use event_producer::{
     ProducerCheckpoint, ProducerPoll, ProducerRegistry, load_configured_event_producers,
     load_configured_event_producers_with_checkpoints,
 };
-pub use webhook_intake::{
-    WebhookAuthTier, WebhookIntake, WebhookIntakeBuildContext, WebhookIntakeBuildFuture,
-    WebhookIntakeProvider, WebhookRequest, WebhookResponse, load_configured_webhook_intakes,
-};
 pub use host_registration::{
     ExternalToolResolver, register_manifest_tools, register_manifest_tools_with_fallback,
 };
@@ -112,4 +108,8 @@ pub use tools::{
     create_one_shot_tool_from_async, create_one_shot_tool_from_async_with_context,
     parse_tool_name_and_class, parse_unified_step_executors_authoring_json,
     project_archive_action_identity_from_parts,
+};
+pub use webhook_intake::{
+    WebhookAuthTier, WebhookIntake, WebhookIntakeBuildContext, WebhookIntakeBuildFuture,
+    WebhookIntakeProvider, WebhookRequest, WebhookResponse, load_configured_webhook_intakes,
 };

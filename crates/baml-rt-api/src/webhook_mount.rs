@@ -207,10 +207,8 @@ mod tests {
 
     #[tokio::test]
     async fn public_intake_mounts_at_root() {
-        let routers = build_webhook_intake_router(vec![intake(
-            "/webhooks/echo",
-            WebhookAuthTier::Public,
-        )]);
+        let routers =
+            build_webhook_intake_router(vec![intake("/webhooks/echo", WebhookAuthTier::Public)]);
         let response = routers
             .public
             .expect("public arm present when public intake registered")
@@ -266,10 +264,8 @@ mod tests {
 
     #[tokio::test]
     async fn wrong_method_returns_405() {
-        let routers = build_webhook_intake_router(vec![intake(
-            "/webhooks/echo",
-            WebhookAuthTier::Public,
-        )]);
+        let routers =
+            build_webhook_intake_router(vec![intake("/webhooks/echo", WebhookAuthTier::Public)]);
         let response = routers
             .public
             .expect("public arm present when public intake registered")
