@@ -4,12 +4,11 @@ import type { InvestigatorReport, RunContext, SessionResult } from "./baml-runti
 
 // Grafana investigator. TypeScript deterministically gathers the required
 // evidence pack (incident Prometheus, baseline Prometheus, Loki service +
-// dependency logs, synthetic trace annotations) before BAML synthesis reads the
-// archived tool outputs and emits a structured InvestigatorReport.
+// dependency logs) before BAML synthesis reads the archived tool outputs and
+// emits a structured InvestigatorReport.
 
 const LOKI_TOOL = "mcp/grafana/query_loki_logs";
 const PROM_TOOL = "mcp/grafana/query_prometheus";
-const ANNOTATIONS_TOOL = "mcp/grafana/get_annotations";
 const DEPENDENCY_SERVICE = "payments-api";
 
 type Incident = {
@@ -93,11 +92,6 @@ function baselineWindow(incident: Incident): { startRfc3339: string; endRfc3339:
   };
 }
 
-function annotationWindowMs(incident: Incident): { from: number; to: number } {
-  const window = incidentWindow(incident);
-  return { from: Date.parse(window.startRfc3339), to: Date.parse(window.endRfc3339) };
-}
-
 function stringField(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
@@ -167,18 +161,6 @@ async function runLokiToolSession(
   });
 }
 
-async function runAnnotationsSession(incident: Incident): Promise<void> {
-  const service = incident.service ?? "checkout-api";
-  const window = annotationWindowMs(incident);
-  await runToolSession(ANNOTATIONS_TOOL, {
-    tags: ["agentium-demo", "kind=trace", `service=${service}`],
-    matchAny: false,
-    from: window.from,
-    to: window.to,
-    limit: 20,
-  });
-}
-
 async function runMandatoryPrometheusSessions(incident: Incident): Promise<void> {
   const expr = primaryPromql(incident);
   await runPrometheusQuery(expr, incidentWindow(incident));
@@ -218,7 +200,7 @@ function normalizeReport(report: InvestigatorReport): InvestigatorReport {
     })),
   };
 
-  const evidenceText = JSON.stringify({ logs: report.log_samples, traces: report.traces, caveats: report.caveats }).toLowerCase();
+  const evidenceText = JSON.stringify({ cause: report.likely_cause, logs: report.log_samples, caveats: report.caveats }).toLowerCase();
   if (
     next.status === "firing" &&
     (next.likely_cause.toLowerCase().includes("increased processing time") ||
@@ -228,6 +210,19 @@ function normalizeReport(report: InvestigatorReport): InvestigatorReport {
       next.likely_cause =
         "Injected latency_spike slowed payments-api authorization, causing checkout-api /api/checkout requests to exceed the latency threshold.";
     }
+  }
+
+  next.traces = [];
+  if (evidenceText.includes("log_kind") || evidenceText.includes("payments-api")) {
+    next.caveats = ["Dependency span evidence comes from structured Loki logs, not Tempo/OTLP traces."];
+  }
+
+  if (next.status === "firing" && evidenceText.includes("latency_spike")) {
+    next.open_questions = [
+      "Does this match the expected demo latency_spike injection?",
+      "Should the demo be reset now with `just ford-demo-reset`?",
+      "If not expected, is payments-api still in an injected failure mode?",
+    ];
   }
 
   const p95 = next.metrics.find((metric) => metric.name === "p95_latency");
@@ -259,13 +254,6 @@ __chat_register({
 
     ctx.emit.message("Collecting Loki logs (service + dependency)");
     await runMandatoryLokiSessions(incident);
-
-    ctx.emit.message("Collecting synthetic trace annotations");
-    try {
-      await runAnnotationsSession(incident);
-    } catch (error) {
-      ctx.emit.message(`annotation collection failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
 
     ctx.emit.message("Synthesising evidence");
     const report = normalizeReport(await AnalyzeGrafanaEvidence({ incident_json: brief }));

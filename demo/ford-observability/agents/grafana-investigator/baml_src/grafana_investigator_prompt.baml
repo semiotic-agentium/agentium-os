@@ -1,19 +1,13 @@
 // Hand-written prompts for the Grafana investigator.
 //
-// Agentic shape: the LLM picks which MCP tool to run next per outer hop. TypeScript
-// drives an outer ReAct loop calling `runGeneratedStepExecutor("DecideInvestigationAction", ...)`;
-// each generated step-executor invocation runs one full tool session FSM
-// (Open → Send → PageRead → Finish) for the tool the LLM selected. The LLM signals
-// "investigation complete" by returning `null` (the `string?` arm of the union).
-//
-// After the loop, `AnalyzeGrafanaEvidence` reads the transcript archives and emits
-// a structured `InvestigatorReport` for the coordinator to synthesize.
+// TypeScript deterministically gathers Prometheus metrics and Loki log evidence.
+// `AnalyzeGrafanaEvidence` reads the transcript archives and emits a structured
+// InvestigatorReport for the coordinator to synthesize.
 //
 // Available tools (read-only, mounted by manifest.json):
 //   mcp/grafana/list_datasources   — resolve Prometheus/Loki UIDs once.
 //   mcp/grafana/query_prometheus   — PromQL: baseline window vs incident window.
 //   mcp/grafana/query_loki_logs    — LogQL over the alert window.
-//   mcp/grafana/get_annotations    — synthetic span/window annotations.
 
 enum InvestigatorConfidence {
   High   @alias("high")
@@ -50,9 +44,9 @@ class InvestigatorReport {
   confidence InvestigatorConfidence
   metrics InvestigatorMetricFinding[] @description("One row per metric query (p95_latency, error_rate, request_rate, up). Use \"n/a\" fields rather than dropping rows.")
   log_samples InvestigatorLogSample[] @description("Up to 5 representative log lines. Empty array allowed.")
-  traces InvestigatorTraceFinding[] @description("Synthetic span findings. Empty array allowed.")
+  traces InvestigatorTraceFinding[] @description("Deprecated for this demo; always emit an empty array. Dependency span evidence belongs in log_samples.")
   open_questions string[] @description("1–3 short follow-up questions; always include whether this matches an expected demo injection.")
-  caveats string[] @description("Always include the trace-evidence-is-synthetic caveat.")
+  caveats string[] @description("Caveats about evidence sources.")
 }
 
 /// Outer ReAct step. LLM picks one of the four MCP grafana tools to run, supplies
@@ -64,14 +58,14 @@ class InvestigatorReport {
 ///   queries can reference real datasourceUid values from the transcript.
 /// - Use baseline (>=1 min before startsAt) and incident windows for Prometheus
 ///   queries so the synthesizer can compute deltas.
-/// - Bound every Loki/annotation query with limit and time range from the
-///   incident envelope.
-/// - Stop (`null`) once metric + log + trace evidence is in the transcript or
-///   when further queries would not change confidence.
+/// - Bound every Loki query with limit and time range from the incident
+///   envelope.
+/// - Stop (`null`) once metric + log evidence is in the transcript or when
+///   further queries would not change confidence.
 function DecideInvestigationAction(
   incident_brief: string,
   investigation_goal: string
-) -> McpGrafanaListDatasourcesSessionPlan | McpGrafanaQueryPrometheusSessionPlan | McpGrafanaQueryLokiLogsSessionPlan | McpGrafanaGetAnnotationsSessionPlan | string? {
+) -> McpGrafanaListDatasourcesSessionPlan | McpGrafanaQueryPrometheusSessionPlan | McpGrafanaQueryLokiLogsSessionPlan | string? {
   client DefaultClient
   prompt #"
     You are the Grafana incident investigator. Coordinator delegated this goal:
@@ -92,10 +86,8 @@ function DecideInvestigationAction(
     1. Prometheus over the INCIDENT window for the alert's primary metric.
     2. Prometheus over a BASELINE window of the same metric (so a delta exists).
     3. Loki logs over the incident window.
-    4. Grafana trace annotations over the incident window.
-    5. One reactive follow-up only when the prior archives suggest a sharper
-       query (e.g. error_rate metric, narrower LogQL with a term you spotted,
-       a second annotation pull).
+    4. One reactive follow-up only when the prior archives suggest a sharper
+       query (e.g. error_rate metric, narrower LogQL with a term you spotted).
 
     Primary metric selection (in priority order — pick the FIRST match):
       a. `annotations.expr` present → query that PromQL verbatim over the
@@ -118,10 +110,9 @@ function DecideInvestigationAction(
     completed Send or PageRead archive from `mcp/grafana/query_loki_logs`
     AND you have metric evidence (incident + baseline Prometheus archives).
     FORBIDDEN to return `null` before Loki has been queried — the host will
-    force a Loki session anyway, wasting a hop. Trace annotations are optional
-    for this demo; do not skip Loki because traces are missing. Never re-issue
-    an identical query. Never run a query whose answer is already visible in
-    the transcript.
+    force a Loki session anyway, wasting a hop. This demo does not use trace
+    annotations. Never re-issue an identical query. Never run a query whose
+    answer is already visible in the transcript.
 
     Tool input recipes:
     - Use the well-known datasource UIDs `"prometheus"` and `"loki"` directly;
@@ -136,9 +127,6 @@ function DecideInvestigationAction(
       `{service="payments-api", failure_mode="latency_spike"} | json`,
       each with `limit≤10`, `direction="backward"`. Do not expand into label
       variants unless a visible archive says those exact labels are invalid.
-    - Annotations: `tags=["agentium-demo", "kind=trace", "service=<svc>"]`,
-      `matchAny=false`, `from`/`to` in epoch-ms, `limit≤20`.
-
     Within one session you may issue multiple PageRead/SearchRead ops to page
     deeper or grep for terms (`payments-api`, `timeout`, `5..`, `slow
     dependency`, route paths) before Finish — these do NOT count toward the
@@ -200,9 +188,9 @@ function AnalyzeGrafanaEvidence(
        - If no Loki archive exists OR every Loki archive shows empty
          `data.result`, keep `log_samples: []` and add caveat
          "No Loki evidence collected".
-    3. For traces, parse the synthetic annotation `text` field (it is a JSON
-       string inside the annotation body) and extract operation, dependency,
-       duration_ms.
+    3. Always set `traces: []`. This demo does not use Tempo/OTLP traces or
+       Grafana annotation traces. Loki log lines with `log_kind="span"` are
+       log evidence only and belong in `log_samples`, never `traces[]`.
     4. likely_cause must name a concrete mechanism, not a tautology. FORBIDDEN:
        "high latency due to increased processing time", "p95 latency is high",
        or restating alert text. Prefer mechanisms visible in evidence, e.g.
@@ -213,8 +201,8 @@ function AnalyzeGrafanaEvidence(
     5. confidence: "high" only when ≥2 evidence kinds corroborate the cause;
        "medium" when 1 corroborates without contradictions; "low" when
        evidence is thin or a tool errored; "unknown" only as last resort.
-    6. Always include the caveat that trace/span evidence is a synthetic
-       Grafana annotation, not Tempo/OTLP.
+    6. If Loki span logs are used, include exact caveat:
+       "Dependency span evidence comes from structured Loki logs, not Tempo/OTLP traces."
     7. STRICT OUTPUT SHAPE. Emit ONLY the fields declared in InvestigatorReport:
        service, alert_name, status, likely_cause, confidence, metrics,
        log_samples, traces, open_questions, caveats. Do NOT include any extra

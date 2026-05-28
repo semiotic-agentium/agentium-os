@@ -113,21 +113,6 @@ class ReadOnlyFinishStep {
   reply StructuredReply @description("User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.")
 }
 // Domain types generated from JSON schemas
-class McpGrafanaGetAnnotationsInput {
-  alertUid string? @description("Filter by alert UID")
-  dashboardUid string? @description("Filter by dashboard UID")
-  from int? @description("Epoch ms start time")
-  limit int? @description("Max results default 100")
-  matchAny bool? @description("If true, match any tag (OR). If false, match all tags (AND). Default: false")
-  panelId int? @description("Filter by panel ID")
-  tags string[]? @description("Filter by tags. Multiple tags allowed; use matchAny to control AND/OR logic")
-  to int? @description("Epoch ms end time")
-  type string? @description("annotation or alert")
-  userId int? @description("Filter by creator user ID")
-}
-
-type McpGrafanaGetAnnotationsOutput = OpaqueJson
-
 class McpGrafanaListDatasourcesInput {
   limit int? @description("Maximum number of datasources to return (max 100)")
   offset int? @description("Number of datasources to skip for pagination")
@@ -296,60 +281,15 @@ class McpGrafanaQueryLokiLogsSessionPlan {
   citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
-/// Tool card for mcp/grafana/get_annotations: metadata for polymorphic Open selection.
-class McpGrafanaGetAnnotationsToolCard {
-  tool_name "mcp/grafana/get_annotations"
-  description "Fetch Grafana annotations using filters such as dashboard UID, time range and tags."
-  session_policy "Strict"
-  input_summary "{ alertUid?: string, dashboardUid?: string, from?: integer, limit?: integer, matchAny?: boolean, panelId?: integer, tags?: string[], to?: integer, type?: string, userId?: integer }"
-  tags string[] @description("Tool tags: mcp, mcp:grafana")
-}
-
-class McpGrafanaGetAnnotationsOpenStep {
-  op "Open"
-  tool_name "mcp/grafana/get_annotations" @description("Tool to open")
-}
-
-class McpGrafanaGetAnnotationsSendStep {
-  op "Send"
-  input McpGrafanaGetAnnotationsInput @description("Payload for this step.")
-  citations string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
-}
-
-class McpGrafanaGetAnnotationsSearchReadStep {
-  op "SearchRead"
-  input ArchiveSearchReadInput @description("SearchRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a filtered window: required archive_ref and non-empty grep. Why: the summary line is not the text; this step materializes matching lines. If the prior read shows offset=, continue with that offset. For contiguous unfiltered text, use PageRead instead.")
-}
-
-class McpGrafanaGetAnnotationsPageReadStep {
-  op "PageRead"
-  input ArchivePageReadInput @description("PageRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a contiguous window: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
-}
-
-class McpGrafanaGetAnnotationsFinishStep {
-  op "Finish"
-}
-
-class McpGrafanaGetAnnotationsAbortStep {
-  op "Abort"
-}
-
-type McpGrafanaGetAnnotationsSessionStep = McpGrafanaGetAnnotationsOpenStep | McpGrafanaGetAnnotationsSendStep | McpGrafanaGetAnnotationsSearchReadStep | McpGrafanaGetAnnotationsPageReadStep | McpGrafanaGetAnnotationsFinishStep | McpGrafanaGetAnnotationsAbortStep
-
-class McpGrafanaGetAnnotationsSessionPlan {
-  step McpGrafanaGetAnnotationsSessionStep @description("Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes in this file — do not paraphrase JSON field lists in the prompt. @N beside a prior Send is an archive handle for PageRead/SearchRead (archive_ref is @ only). Do not use #N as an archive handle — #N indexes transcript lines only. Access: read.")
-  citations string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
-}
-
 
 
 // ── builder: polymorphic session unions (from IR) ──
 
 /// Polymorphic Open step for DecideInvestigationAction: selects a tool and opens a session.
-/// See McpGrafanaGetAnnotationsToolCard, McpGrafanaListDatasourcesToolCard, McpGrafanaQueryLokiLogsToolCard, McpGrafanaQueryPrometheusToolCard for tool capabilities.
+/// See McpGrafanaListDatasourcesToolCard, McpGrafanaQueryLokiLogsToolCard, McpGrafanaQueryPrometheusToolCard for tool capabilities.
 class DecideInvestigationActionOpenStep {
   op "Open"
-  tool_name ("mcp/grafana/get_annotations" | "mcp/grafana/list_datasources" | "mcp/grafana/query_loki_logs" | "mcp/grafana/query_prometheus") @description("Which tool to open. See ToolCard classes for capabilities.")
+  tool_name ("mcp/grafana/list_datasources" | "mcp/grafana/query_loki_logs" | "mcp/grafana/query_prometheus") @description("Which tool to open. See ToolCard classes for capabilities.")
 }
 
 /// Session plan for DecideInvestigationAction: polymorphic tool selection via Open.
@@ -370,7 +310,7 @@ function DecideInvestigationAction__entry(
   incident_brief: string,
   investigation_goal: string,
   session_context: SessionContext
-) -> ArchivePageReadStep | ArchiveSearchReadStep | McpGrafanaGetAnnotationsOpenStep | McpGrafanaListDatasourcesOpenStep | McpGrafanaQueryLokiLogsOpenStep | McpGrafanaQueryPrometheusOpenStep | ReadOnlyFinishStep {
+) -> ArchivePageReadStep | ArchiveSearchReadStep | McpGrafanaListDatasourcesOpenStep | McpGrafanaQueryLokiLogsOpenStep | McpGrafanaQueryPrometheusOpenStep | ReadOnlyFinishStep {
 
   client DefaultClient
   prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
@@ -403,10 +343,8 @@ is still missing. Higher-signal evidence first, lower-signal last:
 1. Prometheus over the INCIDENT window for the alert's primary metric.
 2. Prometheus over a BASELINE window of the same metric (so a delta exists).
 3. Loki logs over the incident window.
-4. Grafana trace annotations over the incident window.
-5. One reactive follow-up only when the prior archives suggest a sharper
-   query (e.g. error_rate metric, narrower LogQL with a term you spotted,
-   a second annotation pull).
+4. One reactive follow-up only when the prior archives suggest a sharper
+   query (e.g. error_rate metric, narrower LogQL with a term you spotted).
 
 Primary metric selection (in priority order — pick the FIRST match):
   a. `annotations.expr` present → query that PromQL verbatim over the
@@ -429,10 +367,9 @@ Stop rule: return `null` ONLY when the transcript already contains a
 completed Send or PageRead archive from `mcp/grafana/query_loki_logs`
 AND you have metric evidence (incident + baseline Prometheus archives).
 FORBIDDEN to return `null` before Loki has been queried — the host will
-force a Loki session anyway, wasting a hop. Trace annotations are optional
-for this demo; do not skip Loki because traces are missing. Never re-issue
-an identical query. Never run a query whose answer is already visible in
-the transcript.
+force a Loki session anyway, wasting a hop. This demo does not use trace
+annotations. Never re-issue an identical query. Never run a query whose
+answer is already visible in the transcript.
 
 Tool input recipes:
 - Use the well-known datasource UIDs `"prometheus"` and `"loki"` directly;
@@ -442,15 +379,11 @@ Tool input recipes:
   If endsAt is the zero placeholder (`"0001-01-01T00:00:00Z"` or empty),
   use `endsAt = startsAt + 5m`.
 - Baseline window: ≈10 minutes ending ≥1 minute before startsAt; same PromQL.
-- Loki: try `{service="<svc>"} | json` first, same incident window,
-  `limit≤40`, `direction="backward"`. If the response has empty
-  `data.result`, retry with `{app="<svc>"} | json` then
-  `{service_name="<svc>"} | json` before giving up on logs. Label keys
-  vary by deployment so do not Finish the investigation declaring "no
-  logs" until all three label variants returned empty.
-- Annotations: `tags=["agentium-demo", "kind=trace", "service=<svc>"]`,
-  `matchAny=false`, `from`/`to` in epoch-ms, `limit≤20`.
-
+- Loki: runtime already queries bounded service + dependency evidence:
+  `{service="<svc>"} | json | log_kind="span"` and
+  `{service="payments-api", failure_mode="latency_spike"} | json`,
+  each with `limit≤10`, `direction="backward"`. Do not expand into label
+  variants unless a visible archive says those exact labels are invalid.
 Within one session you may issue multiple PageRead/SearchRead ops to page
 deeper or grep for terms (`payments-api`, `timeout`, `5..`, `slow
 dependency`, route paths) before Finish — these do NOT count toward the
@@ -475,144 +408,20 @@ Current FSM state from the host:
 - last_archive_ref: {{ session_context.last_archive_ref }}
 - last_output_header: {{ session_context.last_output_header }}
 
-Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | McpGrafanaGetAnnotationsOpenStep | McpGrafanaListDatasourcesOpenStep | McpGrafanaQueryLokiLogsOpenStep | McpGrafanaQueryPrometheusOpenStep | ReadOnlyFinishStep`.
+Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | McpGrafanaListDatasourcesOpenStep | McpGrafanaQueryLokiLogsOpenStep | McpGrafanaQueryPrometheusOpenStep | ReadOnlyFinishStep`.
 
 Choose the matching object type.
 - `ArchivePageReadStep` uses fields like `input`
 - `ArchiveSearchReadStep` uses fields like `input`
-- `McpGrafanaGetAnnotationsOpenStep`
-- `McpGrafanaListDatasourcesOpenStep`
-- `McpGrafanaQueryLokiLogsOpenStep`
-- `McpGrafanaQueryPrometheusOpenStep`
+- `McpGrafanaListDatasourcesOpenStep` uses fields like `tool_name`
+- `McpGrafanaQueryLokiLogsOpenStep` uses fields like `tool_name`
+- `McpGrafanaQueryPrometheusOpenStep` uses fields like `tool_name`
 - `ReadOnlyFinishStep` uses fields like `reply`
 Do not mix fields from different object shapes.
 Do not add text before or after the JSON object.
 
 Phase policy:
 - Derived state rule: this entry return union excludes `Send`, `Finish`, and `Abort`.
-"#
-
-}
-
-/// Active step executor: stable prefix, transcript, task body, compact contract, and phase policy.
-function DecideInvestigationAction__active__mcp_grafana_get_annotations(
-  incident_brief: string,
-  investigation_goal: string,
-  session_context: SessionContext
-) -> McpGrafanaGetAnnotationsSendStep | McpGrafanaGetAnnotationsSearchReadStep | McpGrafanaGetAnnotationsPageReadStep | McpGrafanaGetAnnotationsFinishStep | McpGrafanaGetAnnotationsAbortStep {
-
-  client DefaultClient
-  prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
-Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
-
-{% if ctx.tags['tool_schema_prelude'] %}
-Tool and operation types:
-{{ ctx.tags['tool_schema_prelude'] }}
-
-{% endif %}
-{% if ctx.tags['conversation_transcript'] %}
-Session history:
-{{ ctx.tags['conversation_transcript'] }}
-{% endif %}
-You are the Grafana incident investigator. Coordinator delegated this goal:
-{{ investigation_goal }}
-
-Incident envelope:
-{{ incident_brief }}
-
-You drive ONE tool session per outer hop. The runtime narrows your return
-type per hop in the FSM (Open / Send / PageRead / Finish / Abort). The four
-MCP tools available to you are listed at the top of this file's comment.
-
-Investigation shape (each outer step = one tool session; aim for ≤5 total):
-
-Pick the next tool by checking what is already in the transcript and what
-is still missing. Higher-signal evidence first, lower-signal last:
-
-1. Prometheus over the INCIDENT window for the alert's primary metric.
-2. Prometheus over a BASELINE window of the same metric (so a delta exists).
-3. Loki logs over the incident window.
-4. Grafana trace annotations over the incident window.
-5. One reactive follow-up only when the prior archives suggest a sharper
-   query (e.g. error_rate metric, narrower LogQL with a term you spotted,
-   a second annotation pull).
-
-Primary metric selection (in priority order — pick the FIRST match):
-  a. `annotations.expr` present → query that PromQL verbatim over the
-     incident window. This is the alert's own rule expression and is the
-     strongest signal of what fired.
-  b. Else `labels.promql` present → query that PromQL verbatim.
-  c. Else `labels.metric == "p95_latency_seconds"` → query
-     histogram_quantile(0.95, sum(rate(demo_service_request_duration_seconds_bucket{service="<svc>"}[2m])) by (le, service))
-  d. Else `labels.metric == "error_rate"` → query
-     sum(rate(demo_service_requests_total{service="<svc>",status=~"5.."}[2m])) /
-     sum(rate(demo_service_requests_total{service="<svc>"}[2m]))
-  e. Else `labels.metric == "request_rate"` → query
-     sum(rate(demo_service_requests_total{service="<svc>"}[2m]))
-  f. Else fall back to (c) p95 latency as the demo default.
-NEVER use `up{}` as the primary metric — it answers liveness, not the alert.
-`up{}` is only acceptable as a tie-breaker reactive hop when other evidence
-is contradictory.
-
-Stop rule: return `null` ONLY when the transcript already contains a
-completed Send or PageRead archive from `mcp/grafana/query_loki_logs`
-AND you have metric evidence (incident + baseline Prometheus archives).
-FORBIDDEN to return `null` before Loki has been queried — the host will
-force a Loki session anyway, wasting a hop. Trace annotations are optional
-for this demo; do not skip Loki because traces are missing. Never re-issue
-an identical query. Never run a query whose answer is already visible in
-the transcript.
-
-Tool input recipes:
-- Use the well-known datasource UIDs `"prometheus"` and `"loki"` directly;
-  do NOT call list_datasources unless the transcript shows those UIDs are
-  invalid.
-- Incident window: `startsAt - 30s … endsAt + 90s`, `stepSeconds=15`.
-  If endsAt is the zero placeholder (`"0001-01-01T00:00:00Z"` or empty),
-  use `endsAt = startsAt + 5m`.
-- Baseline window: ≈10 minutes ending ≥1 minute before startsAt; same PromQL.
-- Loki: try `{service="<svc>"} | json` first, same incident window,
-  `limit≤40`, `direction="backward"`. If the response has empty
-  `data.result`, retry with `{app="<svc>"} | json` then
-  `{service_name="<svc>"} | json` before giving up on logs. Label keys
-  vary by deployment so do not Finish the investigation declaring "no
-  logs" until all three label variants returned empty.
-- Annotations: `tags=["agentium-demo", "kind=trace", "service=<svc>"]`,
-  `matchAny=false`, `from`/`to` in epoch-ms, `limit≤20`.
-
-Within one session you may issue multiple PageRead/SearchRead ops to page
-deeper or grep for terms (`payments-api`, `timeout`, `5..`, `slow
-dependency`, route paths) before Finish — these do NOT count toward the
-outer-session budget. After each Send, PageRead `last_archive_ref` with
-`offset=0, limit=120` before Finish so lines materialise.
-
-Runtime phase policy:
-- SELECT / entry, status == "awaiting_open": emit Open for ONE tool.
-- ACT / status == "just_opened": emit Send with the minimal valid input
-  derived from the incident envelope + transcript.
-- status == "done", last_step_op == "send": emit PageRead for
-  last_archive_ref with offset=0, limit=120.
-- status == "done", last_step_op == "read": emit Finish.
-- last_completion == "INTERRUPTED": emit Abort when legal.
-
-Output: ONE JSON object matching the narrowed return type, OR the literal
-`null` to end the investigation. No prose, no markdown.
-
-Current FSM state from the host:
-- status: {{ session_context.status }}
-- last_step_op: {{ session_context.last_step_op }}
-- last_archive_ref: {{ session_context.last_archive_ref }}
-- last_output_header: {{ session_context.last_output_header }}
-
-Return exactly one JSON object of type `McpGrafanaGetAnnotationsAbortStep | McpGrafanaGetAnnotationsFinishStep | McpGrafanaGetAnnotationsPageReadStep | McpGrafanaGetAnnotationsSearchReadStep | McpGrafanaGetAnnotationsSendStep`.
-
-Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
-Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.
-Calculator Send: set input.expression.operation to exactly one JSON string token: "+", "-", "*", "/", or Add|Subtract|Multiply|Divide — never an object or sentence.
-Do not add text before or after the JSON object.
-
-Phase policy:
-- Derived state rule: this active return union has no `Open` variant.
 "#
 
 }
@@ -655,10 +464,8 @@ is still missing. Higher-signal evidence first, lower-signal last:
 1. Prometheus over the INCIDENT window for the alert's primary metric.
 2. Prometheus over a BASELINE window of the same metric (so a delta exists).
 3. Loki logs over the incident window.
-4. Grafana trace annotations over the incident window.
-5. One reactive follow-up only when the prior archives suggest a sharper
-   query (e.g. error_rate metric, narrower LogQL with a term you spotted,
-   a second annotation pull).
+4. One reactive follow-up only when the prior archives suggest a sharper
+   query (e.g. error_rate metric, narrower LogQL with a term you spotted).
 
 Primary metric selection (in priority order — pick the FIRST match):
   a. `annotations.expr` present → query that PromQL verbatim over the
@@ -681,10 +488,9 @@ Stop rule: return `null` ONLY when the transcript already contains a
 completed Send or PageRead archive from `mcp/grafana/query_loki_logs`
 AND you have metric evidence (incident + baseline Prometheus archives).
 FORBIDDEN to return `null` before Loki has been queried — the host will
-force a Loki session anyway, wasting a hop. Trace annotations are optional
-for this demo; do not skip Loki because traces are missing. Never re-issue
-an identical query. Never run a query whose answer is already visible in
-the transcript.
+force a Loki session anyway, wasting a hop. This demo does not use trace
+annotations. Never re-issue an identical query. Never run a query whose
+answer is already visible in the transcript.
 
 Tool input recipes:
 - Use the well-known datasource UIDs `"prometheus"` and `"loki"` directly;
@@ -694,15 +500,11 @@ Tool input recipes:
   If endsAt is the zero placeholder (`"0001-01-01T00:00:00Z"` or empty),
   use `endsAt = startsAt + 5m`.
 - Baseline window: ≈10 minutes ending ≥1 minute before startsAt; same PromQL.
-- Loki: try `{service="<svc>"} | json` first, same incident window,
-  `limit≤40`, `direction="backward"`. If the response has empty
-  `data.result`, retry with `{app="<svc>"} | json` then
-  `{service_name="<svc>"} | json` before giving up on logs. Label keys
-  vary by deployment so do not Finish the investigation declaring "no
-  logs" until all three label variants returned empty.
-- Annotations: `tags=["agentium-demo", "kind=trace", "service=<svc>"]`,
-  `matchAny=false`, `from`/`to` in epoch-ms, `limit≤20`.
-
+- Loki: runtime already queries bounded service + dependency evidence:
+  `{service="<svc>"} | json | log_kind="span"` and
+  `{service="payments-api", failure_mode="latency_spike"} | json`,
+  each with `limit≤10`, `direction="backward"`. Do not expand into label
+  variants unless a visible archive says those exact labels are invalid.
 Within one session you may issue multiple PageRead/SearchRead ops to page
 deeper or grep for terms (`payments-api`, `timeout`, `5..`, `slow
 dependency`, route paths) before Finish — these do NOT count toward the
@@ -778,10 +580,8 @@ is still missing. Higher-signal evidence first, lower-signal last:
 1. Prometheus over the INCIDENT window for the alert's primary metric.
 2. Prometheus over a BASELINE window of the same metric (so a delta exists).
 3. Loki logs over the incident window.
-4. Grafana trace annotations over the incident window.
-5. One reactive follow-up only when the prior archives suggest a sharper
-   query (e.g. error_rate metric, narrower LogQL with a term you spotted,
-   a second annotation pull).
+4. One reactive follow-up only when the prior archives suggest a sharper
+   query (e.g. error_rate metric, narrower LogQL with a term you spotted).
 
 Primary metric selection (in priority order — pick the FIRST match):
   a. `annotations.expr` present → query that PromQL verbatim over the
@@ -804,10 +604,9 @@ Stop rule: return `null` ONLY when the transcript already contains a
 completed Send or PageRead archive from `mcp/grafana/query_loki_logs`
 AND you have metric evidence (incident + baseline Prometheus archives).
 FORBIDDEN to return `null` before Loki has been queried — the host will
-force a Loki session anyway, wasting a hop. Trace annotations are optional
-for this demo; do not skip Loki because traces are missing. Never re-issue
-an identical query. Never run a query whose answer is already visible in
-the transcript.
+force a Loki session anyway, wasting a hop. This demo does not use trace
+annotations. Never re-issue an identical query. Never run a query whose
+answer is already visible in the transcript.
 
 Tool input recipes:
 - Use the well-known datasource UIDs `"prometheus"` and `"loki"` directly;
@@ -817,15 +616,11 @@ Tool input recipes:
   If endsAt is the zero placeholder (`"0001-01-01T00:00:00Z"` or empty),
   use `endsAt = startsAt + 5m`.
 - Baseline window: ≈10 minutes ending ≥1 minute before startsAt; same PromQL.
-- Loki: try `{service="<svc>"} | json` first, same incident window,
-  `limit≤40`, `direction="backward"`. If the response has empty
-  `data.result`, retry with `{app="<svc>"} | json` then
-  `{service_name="<svc>"} | json` before giving up on logs. Label keys
-  vary by deployment so do not Finish the investigation declaring "no
-  logs" until all three label variants returned empty.
-- Annotations: `tags=["agentium-demo", "kind=trace", "service=<svc>"]`,
-  `matchAny=false`, `from`/`to` in epoch-ms, `limit≤20`.
-
+- Loki: runtime already queries bounded service + dependency evidence:
+  `{service="<svc>"} | json | log_kind="span"` and
+  `{service="payments-api", failure_mode="latency_spike"} | json`,
+  each with `limit≤10`, `direction="backward"`. Do not expand into label
+  variants unless a visible archive says those exact labels are invalid.
 Within one session you may issue multiple PageRead/SearchRead ops to page
 deeper or grep for terms (`payments-api`, `timeout`, `5..`, `slow
 dependency`, route paths) before Finish — these do NOT count toward the
@@ -901,10 +696,8 @@ is still missing. Higher-signal evidence first, lower-signal last:
 1. Prometheus over the INCIDENT window for the alert's primary metric.
 2. Prometheus over a BASELINE window of the same metric (so a delta exists).
 3. Loki logs over the incident window.
-4. Grafana trace annotations over the incident window.
-5. One reactive follow-up only when the prior archives suggest a sharper
-   query (e.g. error_rate metric, narrower LogQL with a term you spotted,
-   a second annotation pull).
+4. One reactive follow-up only when the prior archives suggest a sharper
+   query (e.g. error_rate metric, narrower LogQL with a term you spotted).
 
 Primary metric selection (in priority order — pick the FIRST match):
   a. `annotations.expr` present → query that PromQL verbatim over the
@@ -927,10 +720,9 @@ Stop rule: return `null` ONLY when the transcript already contains a
 completed Send or PageRead archive from `mcp/grafana/query_loki_logs`
 AND you have metric evidence (incident + baseline Prometheus archives).
 FORBIDDEN to return `null` before Loki has been queried — the host will
-force a Loki session anyway, wasting a hop. Trace annotations are optional
-for this demo; do not skip Loki because traces are missing. Never re-issue
-an identical query. Never run a query whose answer is already visible in
-the transcript.
+force a Loki session anyway, wasting a hop. This demo does not use trace
+annotations. Never re-issue an identical query. Never run a query whose
+answer is already visible in the transcript.
 
 Tool input recipes:
 - Use the well-known datasource UIDs `"prometheus"` and `"loki"` directly;
@@ -940,15 +732,11 @@ Tool input recipes:
   If endsAt is the zero placeholder (`"0001-01-01T00:00:00Z"` or empty),
   use `endsAt = startsAt + 5m`.
 - Baseline window: ≈10 minutes ending ≥1 minute before startsAt; same PromQL.
-- Loki: try `{service="<svc>"} | json` first, same incident window,
-  `limit≤40`, `direction="backward"`. If the response has empty
-  `data.result`, retry with `{app="<svc>"} | json` then
-  `{service_name="<svc>"} | json` before giving up on logs. Label keys
-  vary by deployment so do not Finish the investigation declaring "no
-  logs" until all three label variants returned empty.
-- Annotations: `tags=["agentium-demo", "kind=trace", "service=<svc>"]`,
-  `matchAny=false`, `from`/`to` in epoch-ms, `limit≤20`.
-
+- Loki: runtime already queries bounded service + dependency evidence:
+  `{service="<svc>"} | json | log_kind="span"` and
+  `{service="payments-api", failure_mode="latency_spike"} | json`,
+  each with `limit≤10`, `direction="backward"`. Do not expand into label
+  variants unless a visible archive says those exact labels are invalid.
 Within one session you may issue multiple PageRead/SearchRead ops to page
 deeper or grep for terms (`payments-api`, `timeout`, `5..`, `slow
 dependency`, route paths) before Finish — these do NOT count toward the

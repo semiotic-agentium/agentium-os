@@ -289,7 +289,7 @@ async function a2a(target: { agent_package: string; agent_instance_id: string },
 
 function buildInvestigatorPrompt(incident: Incident): string {
   return JSON.stringify({
-    goal: `Diagnose Grafana alert ${incident.alertName} on ${incident.service}. Pick the right Grafana MCP tools, gather metric (baseline + incident windows), log, and synthetic trace evidence, then return a structured InvestigatorReport JSON.`,
+    goal: `Diagnose Grafana alert ${incident.alertName} on ${incident.service}. Gather metric (baseline + incident windows) and Loki log evidence, then return a structured InvestigatorReport JSON. Do not gather or report trace evidence.`,
     incident,
   });
 }
@@ -302,6 +302,152 @@ function linksFor(incident: Incident): Record<string, string> {
       ? incident.contextId
       : "context unavailable",
   };
+}
+
+type MetricFinding = {
+  name: string;
+  query: string;
+  incident_peak: string;
+  baseline: string;
+  delta_summary: string;
+};
+
+type LogSample = { line: string; why: string };
+
+type InvestigatorPack = {
+  service: string;
+  alert_name: string;
+  status: string;
+  likely_cause: string;
+  confidence: string;
+  metrics: MetricFinding[];
+  log_samples: LogSample[];
+  traces: [];
+  open_questions: string[];
+  caveats: string[];
+};
+
+function truncate(value: string, max: number): string {
+  return value.length <= max ? value : `${value.slice(0, Math.max(0, max - 3))}...`;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+}
+
+function parseInvestigatorPack(text: string): { ok: true; pack: InvestigatorPack } | { ok: false; reason: string } {
+  const obj = tryParseJsonObject(text);
+  if (!obj) return { ok: false, reason: "investigator reply was not a JSON object" };
+
+  const metrics = Array.isArray(obj.metrics) ? obj.metrics : [];
+  const logSamples = Array.isArray(obj.log_samples) ? obj.log_samples : [];
+  const pack: InvestigatorPack = {
+    service: s(obj.service, "unknown-service"),
+    alert_name: s(obj.alert_name, "GrafanaAlert"),
+    status: s(obj.status, "unknown"),
+    likely_cause: truncate(s(obj.likely_cause, "Cause not determined."), 300),
+    confidence: s(obj.confidence, "unknown").toLowerCase(),
+    metrics: metrics
+      .filter((m): m is Record<string, unknown> => !!m && typeof m === "object" && !Array.isArray(m))
+      .map((m) => ({
+        name: truncate(s(m.name, "metric"), 80),
+        query: truncate(s(m.query, "n/a"), 120),
+        incident_peak: truncate(s(m.incident_peak, "n/a"), 40),
+        baseline: truncate(s(m.baseline, "n/a"), 40),
+        delta_summary: truncate(s(m.delta_summary, "n/a"), 180),
+      })),
+    log_samples: logSamples
+      .filter((l): l is Record<string, unknown> => !!l && typeof l === "object" && !Array.isArray(l))
+      .map((l) => ({
+        line: truncate(s(l.line, ""), 200),
+        why: truncate(s(l.why, "log evidence"), 120),
+      }))
+      .filter((l) => l.line.length > 0),
+    traces: [],
+    open_questions: stringArray(obj.open_questions).map((q) => truncate(q, 160)).slice(0, 5),
+    caveats: stringArray(obj.caveats)
+      .filter((c) => !c.toLowerCase().includes("grafana annotation"))
+      .map((c) => truncate(c, 180)),
+  };
+
+  const evidenceText = JSON.stringify({ cause: pack.likely_cause, logs: pack.log_samples }).toLowerCase();
+  if (evidenceText.includes("log_kind") || evidenceText.includes("payments-api")) {
+    pack.caveats = ["Dependency span evidence comes from structured Loki logs, not Tempo/OTLP traces."];
+  }
+  if (!pack.open_questions.some((q) => q.toLowerCase().includes("demo injection"))) {
+    pack.open_questions = pack.open_questions.length > 0 ? pack.open_questions : ["Confirm whether this matches the expected demo injection."];
+  }
+
+  if (!pack.service || !pack.alert_name || !pack.status) {
+    return { ok: false, reason: "investigator report missing required identity fields" };
+  }
+  return { ok: true, pack };
+}
+
+function statusEmoji(status: string): string {
+  const s = status.toLowerCase();
+  if (s === "firing") return "🚨";
+  if (s === "resolved") return "✅";
+  return "⚠️";
+}
+
+function maybeUrlLine(label: string, value: string): string {
+  return value.startsWith("http") ? `- ${label}: [link](${value})` : `- ${label}: ${value}`;
+}
+
+function buildDeterministicMarkdown(incident: Incident, pack: InvestigatorPack, links: Record<string, string>): string {
+  const status = incident.status || pack.status;
+  const resolved = status.toLowerCase() === "resolved";
+  const title = `## ${incident.alertName || pack.alert_name} Alert - ${incident.service || pack.service} ${statusEmoji(status)}`;
+  const lines: string[] = [title, ""];
+
+  lines.push(`### ${resolved ? "Resolution summary" : "Summary"}`);
+  if (pack.metrics.length > 0) {
+    for (const metric of pack.metrics.slice(0, 4)) {
+      lines.push(`- **${metric.name}:** ${metric.baseline} → ${metric.incident_peak}. ${metric.delta_summary}`);
+    }
+  } else if (resolved) {
+    lines.push("- Alert resolved; no fresh evidence collected for resolution notification.");
+  } else {
+    lines.push("- Evidence incomplete: no metric findings were available.");
+  }
+  if (pack.confidence === "unknown") lines.push("- Confidence is unknown; evidence may be incomplete.");
+  lines.push("");
+
+  lines.push("### Likely cause");
+  lines.push(`${pack.likely_cause} (${pack.confidence})`);
+  lines.push("");
+
+  lines.push("### Evidence");
+  if (pack.metrics.length > 0) {
+    for (const metric of pack.metrics.slice(0, 4)) {
+      lines.push(`- **${metric.name}:** incident=${metric.incident_peak}, baseline=${metric.baseline}; query=${metric.query}`);
+    }
+  }
+  for (const sample of pack.log_samples.slice(0, 2)) {
+    lines.push(`- Log sample: \`${sample.line}\` (${sample.why})`);
+  }
+  if (pack.metrics.length === 0 && pack.log_samples.length === 0) {
+    lines.push("- No metric or log samples were available in the investigator pack.");
+  }
+  for (const caveat of pack.caveats) lines.push(`- ${caveat}`);
+  lines.push("");
+
+  lines.push("### References");
+  lines.push(maybeUrlLine("grafana_dashboard", links.grafana_dashboard));
+  lines.push(maybeUrlLine("grafana_panel", links.grafana_panel));
+  lines.push(`- context_id: \`${links.context_id}\``);
+  lines.push("");
+
+  lines.push("### Suggested next actions");
+  const questions = pack.open_questions.length > 0 ? pack.open_questions : ["Confirm whether this matches the expected demo injection."];
+  questions.slice(0, 5).forEach((q, i) => lines.push(`${i + 1}. ${q}`));
+
+  return lines.join("\n");
+}
+
+function structuredTextReply(text: string): StructuredReply {
+  return { parts: [{ type: "text", text }], citations: [] } as StructuredReply;
 }
 
 function stringifyReply(reply: StructuredReply | string): string {
@@ -321,9 +467,28 @@ function stringifyReply(reply: StructuredReply | string): string {
 }
 
 async function buildReport(incident: Incident, investigatorPack: string): Promise<{ reply: StructuredReply; text: string }> {
+  const parsed = parseInvestigatorPack(investigatorPack);
+  if (parsed.ok) {
+    const text = buildDeterministicMarkdown(incident, parsed.pack, linksFor(incident));
+    return { reply: structuredTextReply(text), text };
+  }
+
+  const fallbackPack = JSON.stringify({
+    service: incident.service,
+    alert_name: incident.alertName,
+    status: incident.status,
+    likely_cause: `Investigator returned unparseable data: ${parsed.reason}`,
+    confidence: "unknown",
+    metrics: [],
+    log_samples: [],
+    traces: [],
+    open_questions: ["Re-run investigation manually."],
+    caveats: [`Raw investigator reply: ${truncate(investigatorPack, 1000)}`],
+  });
+
   const reply = await SynthesizeIncidentReport({
     incident_json: JSON.stringify(incident),
-    investigator_pack_json: investigatorPack,
+    investigator_pack_json: fallbackPack,
     links_json: JSON.stringify(linksFor(incident)),
   });
   return { reply, text: stringifyReply(reply) };

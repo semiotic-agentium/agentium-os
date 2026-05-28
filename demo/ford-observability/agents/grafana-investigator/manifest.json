@@ -6,12 +6,11 @@
   "tools": [
     "mcp/grafana/list_datasources",
     "mcp/grafana/query_prometheus",
-    "mcp/grafana/query_loki_logs",
-    "mcp/grafana/get_annotations"
+    "mcp/grafana/query_loki_logs"
   ],
   "tags": ["demo", "observability", "grafana", "mcp", "investigator"],
   "discovery": {
-    "description": "Demo Grafana investigator. Gathers Prometheus metric evidence, Loki log evidence, and synthetic trace annotations for a bounded incident window.",
-    "capabilities": ["observability:grafana-investigate", "evidence:metrics", "evidence:logs", "evidence:trace-annotations"]
+    "description": "Demo Grafana investigator. Gathers Prometheus metric evidence and Loki log evidence for a bounded incident window.",
+    "capabilities": ["observability:grafana-investigate", "evidence:metrics", "evidence:logs"]
   }
 }

@@ -11,14 +11,15 @@ function SynthesizeIncidentReport(
   client DefaultClient
   prompt #"
     You are the observability coordinator. The grafana-investigator already
-    gathered metric, log, and synthetic trace evidence. Your job: write one
-    concise operator-facing incident report grounded ONLY in the inputs below.
+    gathered metric and log evidence. Your job: write one concise
+    operator-facing incident report grounded ONLY in the inputs below.
 
     Inputs:
     - incident_json: alert envelope from Grafana (alertName, service, status,
       severity, startsAt, endsAt, fingerprint, dashboardURL, panelURL).
     - investigator_pack_json: an InvestigatorReport object with metrics,
-      log_samples, traces, likely_cause, confidence, open_questions, caveats.
+      log_samples, likely_cause, confidence, open_questions, caveats. The
+      `traces` field is deprecated for this demo and should be ignored.
     - links_json: precomputed references — `grafana_dashboard`, `grafana_panel`
       (URLs when Grafana provided them, otherwise "not provided"), and
       `context_id` (the Agentium provenance context id; not a URL).
@@ -33,8 +34,8 @@ function SynthesizeIncidentReport(
        investigator pack. Include the confidence label in parentheses.
     4. "Evidence" — bullet list. One bullet per metric finding (include the
        PromQL query); one bullet for representative log samples (quote up to
-       two lines); one bullet for trace findings (operation, dependency,
-       duration_ms). Include the trace-is-synthetic caveat as a separate bullet.
+       two lines). Do NOT include a trace findings section. Include caveats
+       from investigator_pack_json verbatim as separate bullets.
     5. "References" — render `grafana_dashboard` and `grafana_panel` as
        markdown links ONLY when they look like URLs (start with `http`);
        otherwise show the literal placeholder string ("not provided").
@@ -43,8 +44,8 @@ function SynthesizeIncidentReport(
        the Agentium dashboard via `kubectl port-forward svc/agentium-runner
        18080:18080` and that runbook step belongs in docs, not this report.
     6. "Suggested next actions" — numbered list from the investigator's
-       open_questions; add a closing reminder to confirm whether this matches a
-       demo injection if not already covered.
+       open_questions. If one already asks whether this matches expected demo
+       injection, do not add another reminder.
 
     Hard rules:
     - Do not invent metrics, log lines, span values, or URLs absent from inputs.
