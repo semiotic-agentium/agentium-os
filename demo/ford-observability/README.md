@@ -17,21 +17,43 @@ Canonical entrypoint: `demo/ford-observability/demo.sh`.
 - Kubernetes cluster. k3d is default target; kind works if images are loaded/pushed.
 - `kubectl`
 - `helm`
-- `jq`
+- `jq` (also used by `install.sh` to map `.env` secrets into Helm values)
 - `curl`
 - Docker or compatible image builder
+- `git-lfs` (fastembed ONNX models tracked via Git LFS; runner image build fails on pointer stubs)
 - Rust toolchain for local demo image builds
 - TypeScript 6.x for regenerating/checking demo agents
-- Agentium runner image containing demo tools/agents, or local image loaded into cluster
+- Agentium runner image containing `baml-agent-runner`, `baml-agent-builder`, and `cargo-agent-platform`
+- Grafana MCP adapter available inside the runner/deployer image. `Dockerfile.demo` preinstalls `/usr/local/bin/mcp-grafana`, matching Helm defaults.
+- Grafana MCP config for local agent deployment (`~/.agentium-os/mcp-servers.json` by default)
 
-For local agent regeneration with MCP tools:
+Local agent deployment against a port-forwarded runner:
 
 ```bash
+cargo run -q -p cargo-agent-platform -- mcp enable grafana \
+  --config ~/.agentium-os/mcp-servers.json \
+  --repository-url http://127.0.0.1:18080/repository \
+  --yes
+
 BAML_MCP_REGISTRY_URL=http://127.0.0.1:18080/repository \
   cargo run -q -p cargo-agent-platform -- regen \
     --path demo/ford-observability/agents/observability-coordinator \
     --path demo/ford-observability/agents/grafana-investigator \
     --path demo/ford-observability/agents/slack-notify
+
+cargo run -q -p cargo-agent-platform -- push \
+  --repository-url http://127.0.0.1:18080/repository \
+  --url http://127.0.0.1:18080 \
+  --agents \
+    demo/ford-observability/agents/observability-coordinator \
+    demo/ford-observability/agents/grafana-investigator \
+    demo/ford-observability/agents/slack-notify
+```
+
+Cluster shortcut after agent/BAML changes:
+
+```bash
+just ford-demo-reload k3d agentium
 ```
 
 Demo agent `tsconfig.json` files use `moduleResolution: "bundler"`.
@@ -58,7 +80,34 @@ k3d image import ghcr.io/semiotic-ai/agent-platform-demo/failure-harness:latest 
 k3d image import agentium-runner:demo -c <cluster>
 ```
 
-Or push to registry and set `images.registry`, `images.tag`, and `agentiumRunner.image.*` values.
+Runner image must include `cargo-agent-platform`, `support/grafana-alerts`, `support/slack_notify`, and the Grafana MCP adapter runtime. Use root `Dockerfile.demo` for this demo; it intentionally omits read-only Slack `support/slack` to avoid the Slack inbox producer consuming Grafana webhook ingress. Or push to registry and set `images.registry`, `images.tag`, and `agentiumRunner.image.*` values.
+
+### Fastembed models (Git LFS)
+
+The runner image bakes `models/fastembed/**/*.onnx` (embedding + reranker). These are Git LFS files. Without LFS materialization, the blobs are 134-byte pointer stubs and the Dockerfile stub-check aborts the build:
+
+```text
+ERROR: ONNX models are LFS pointer stubs (run 'git lfs pull'):
+/models/fastembed/.../model.onnx
+```
+
+One-time host setup:
+
+```bash
+sudo apt install -y git-lfs   # or: brew install git-lfs
+git lfs install
+git lfs pull
+```
+
+Verify (real model is ~150MB, stub is 134B):
+
+```bash
+wc -c models/fastembed/models--jinaai--jina-reranker-v1-turbo-en/blobs/c1296c66c119de645fa9cdee536d8637740efe85224cfa270281e50f213aa565
+```
+
+Then `docker build -t agentium-runner:demo -f Dockerfile.demo .` succeeds.
+
+Local `cargo run` may appear to work without LFS pull — runner falls back to `~/.cache/fastembed/` populated by previous fastembed downloads. Docker image has no such fallback cache, so LFS pull is mandatory for image builds.
 
 ## Secrets
 
@@ -68,6 +117,18 @@ Minimum:
 export OPENROUTER_API_KEY=...
 ```
 
+Grafana MCP needs credentials for the Grafana service when enabled in Helm (`agentiumRunner.mcp.grafana.enabled=true`, default). Chart default uses basic auth:
+
+```bash
+export GRAFANA_PASSWORD=admin   # or your Grafana admin password
+```
+
+If overriding MCP config to token auth, provide:
+
+```bash
+export GRAFANA_API_KEY=...      # service account token with read access to datasources/annotations
+```
+
 Slack optional but needed for notification path:
 
 ```bash
@@ -75,11 +136,35 @@ export SLACK_BOT_TOKEN=xoxb-...
 export SLACK_NOTIFY_CHANNEL_ID=C0123456789   # channel ID, not name
 ```
 
-Install can pass secrets directly:
+`install.sh` automatically sources repo-root `.env` when present and maps these env vars into a temporary Helm values file:
+
+```bash
+OPENROUTER_API_KEY=...
+GRAFANA_PASSWORD=admin
+SLACK_BOT_TOKEN=...
+SLACK_NOTIFY_CHANNEL_ID=C0123456789
+```
+
+No manual export needed if values are in `.env`:
+
+```bash
+demo/ford-observability/demo.sh install
+```
+
+Override env file path or disable loading:
+
+```bash
+ENV_FILE=/path/to/demo.env demo/ford-observability/demo.sh install
+LOAD_ENV_FILE=0 demo/ford-observability/demo.sh install
+AUTO_VALUES_FROM_ENV=0 demo/ford-observability/demo.sh install
+```
+
+You can still pass secrets directly; CLI `--set` overrides env-derived values:
 
 ```bash
 demo/ford-observability/demo.sh install \
   --set secrets.openrouterApiKey="$OPENROUTER_API_KEY" \
+  --set secrets.grafanaAdminPassword="$GRAFANA_PASSWORD" \
   --set secrets.slackBotToken="$SLACK_BOT_TOKEN" \
   --set secrets.slackNotifyChannelId="$SLACK_NOTIFY_CHANNEL_ID"
 ```
@@ -89,8 +174,7 @@ Or use `existingSecrets.name` with keys documented in `helm/values.yaml`.
 ## Install
 
 ```bash
-demo/ford-observability/demo.sh install \
-  --set secrets.openrouterApiKey="$OPENROUTER_API_KEY"
+demo/ford-observability/demo.sh install
 ```
 
 Equivalent Helm command:
@@ -99,7 +183,8 @@ Equivalent Helm command:
 helm upgrade --install agentium-observability-demo ./demo/ford-observability/helm \
   --namespace agentium-demo \
   --create-namespace \
-  --set secrets.openrouterApiKey="$OPENROUTER_API_KEY"
+  --set secrets.openrouterApiKey="$OPENROUTER_API_KEY" \
+  --set secrets.grafanaAdminPassword="$GRAFANA_PASSWORD"
 ```
 
 Useful env knobs:
@@ -252,6 +337,30 @@ Deferred modes may have placeholder scripts/values but are not required for firs
 - `brief_offline`
 - scheduled injection mode
 
+## MCP adapter dependency
+
+Agentium's MCP runtime does not include Grafana-specific tools by itself. It starts the configured MCP adapter command from `mcp-servers.json` / Helm values and speaks MCP over stdio.
+
+Default Helm values use the pre-baked Grafana MCP binary from `Dockerfile.demo`:
+
+```yaml
+agentiumRunner:
+  mcp:
+    grafana:
+      command: /usr/local/bin/mcp-grafana
+      args: ["-t", "stdio"]
+      env:
+        GRAFANA_URL: http://grafana:3000
+        GRAFANA_USERNAME: admin
+        HOME: /tmp
+        XDG_CACHE_HOME: /tmp/.cache
+      secretEnvName: GRAFANA_PASSWORD
+```
+
+This avoids runtime PyPI/network egress for `uvx mcp-grafana` during demos.
+
+Grafana itself is still installed by the Helm chart as the `grafana` StatefulSet. The MCP adapter only connects to it; it does not install or configure Grafana.
+
 ## Troubleshooting
 
 ### No pods or rollout stuck
@@ -323,8 +432,8 @@ Labels may also appear as Kubernetes labels depending on shipper config.
 Harness is sole annotation writer. Check:
 
 ```bash
-kubectl -n agentium-demo logs deploy/failure-harness
-kubectl -n agentium-demo exec deploy/failure-harness -- curl -fsS localhost:8080/admin/ledger
+kubectl -n agentium-demo logs statefulset/failure-harness
+kubectl -n agentium-demo exec statefulset/failure-harness -- curl -fsS localhost:8080/admin/ledger
 ```
 
 Grafana API token/admin config must permit `POST /api/annotations`.
