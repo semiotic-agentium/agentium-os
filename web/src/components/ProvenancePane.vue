@@ -18,6 +18,7 @@ import ProvenanceDriftTab from "./provenance/ProvenanceDriftTab.vue";
 import ExploreTab from "./provenance/ExploreTab.vue";
 import type { DrilldownParams } from "./provenance/ExploreTab.vue";
 import type { LlmPromptOperation } from "../types/a2a";
+import { encodeContextIdForPath } from "../utils/contextPath";
 
 const props = defineProps<{
   contextId?: string;
@@ -132,7 +133,7 @@ async function refreshPlanning() {
   planningState.value.loading = true;
   planningState.value.error = null;
   try {
-    const response = await fetch(`/contexts/${props.contextId}/planning`);
+    const response = await fetch(`/contexts/${encodeContextIdForPath(props.contextId)}/planning`);
     if (!response.ok) {
       if (response.status === 404) {
         planningState.value.response = null;

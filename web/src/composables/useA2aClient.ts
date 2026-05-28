@@ -13,6 +13,7 @@ import {
 import { appendExecutionErrorCard, parseExecutionErrorText } from "../chat/executionErrorCard";
 import { readA2aSseJsonRpcStream } from "../chat/a2aSse";
 import { collectChunkAssistantPlainText, extractWireMessageText } from "../chat/a2aStreamAssistantText";
+import { encodeContextIdForPath } from "../utils/contextPath";
 import { digestA2aProcessEvent } from "../chat/a2aStreamChunkDigest";
 import {
   deriveToolStatus,
@@ -226,7 +227,7 @@ export function useA2aClient() {
     closeConversationHistoryStream();
     const params = new URLSearchParams();
     params.set("limit", String(CONVERSATION_HISTORY_PAGE_SIZE));
-    const url = `/contexts/${_contextId.value}/conversation-history/stream?${params.toString()}`;
+    const url = `/contexts/${encodeContextIdForPath(_contextId.value)}/conversation-history/stream?${params.toString()}`;
     const stream = new EventSource(url);
 
     stream.addEventListener("snapshot", (ev) => {
@@ -874,9 +875,10 @@ export function useA2aClient() {
     try {
       // Canonical API route is /contexts/{context_id}/mermaid.
       // Keep a legacy fallback while old backends/links still exist.
-      let res = await fetch(`/contexts/${_contextId.value}/mermaid`);
+      const ctxPath = encodeContextIdForPath(_contextId.value);
+      let res = await fetch(`/contexts/${ctxPath}/mermaid`);
       if (!res.ok && res.status === 404) {
-        res = await fetch(`/mermaid/context/${_contextId.value}`);
+        res = await fetch(`/mermaid/context/${ctxPath}`);
       }
       if (res.ok) {
         const text = await res.text();
@@ -891,7 +893,7 @@ export function useA2aClient() {
   async function fetchContextMetrics(): Promise<void> {
     if (!_contextId.value) return;
     try {
-      const res = await fetch(`/contexts/${_contextId.value}/metrics`);
+      const res = await fetch(`/contexts/${encodeContextIdForPath(_contextId.value)}/metrics`);
       if (res.ok) {
         contextMetrics.value = await res.json();
       }
@@ -927,7 +929,7 @@ export function useA2aClient() {
         params.set("limit", String(PAGE_LIMIT));
         if (cursor) params.set("cursor", cursor);
         const response = await fetch(
-          `/contexts/${contextId}/conversation-history?${params.toString()}`,
+          `/contexts/${encodeContextIdForPath(contextId)}/conversation-history?${params.toString()}`,
         );
         if (!response.ok) {
           if (!options.quiet) {

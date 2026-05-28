@@ -14,6 +14,7 @@ import DashboardRuntimeSection from "./dashboard/DashboardRuntimeSection.vue";
 import DashboardCausalSection from "./dashboard/DashboardCausalSection.vue";
 import DashboardAttentionSection from "./dashboard/DashboardAttentionSection.vue";
 import DashboardSystemSection from "./dashboard/DashboardSystemSection.vue";
+import { encodeContextIdForPath } from "../utils/contextPath";
 
 const props = defineProps<{
   agents: AgentDiscoveryEntry[];
@@ -52,7 +53,7 @@ watch(
       return;
     }
     try {
-      const res = await fetch(`/contexts/${ctxId}/planning`);
+      const res = await fetch(`/contexts/${encodeContextIdForPath(ctxId)}/planning`);
       if (res.ok) planningData.value = await res.json();
     } catch {
       // planning endpoint may not be available

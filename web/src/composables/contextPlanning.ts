@@ -1,6 +1,7 @@
 import type { ComputedRef, InjectionKey, Ref } from "vue";
 import { computed, ref, watch } from "vue";
 import { buildPlanStepDescriptionLookup } from "../chat/planStepLookup";
+import { encodeContextIdForPath } from "../utils/contextPath";
 import type { ContextPlanningResponse, ContextPlanningTaskSnapshot } from "../types/provenance";
 
 export type ContextPlanningApi = {
@@ -32,7 +33,7 @@ export function useContextPlanning(
     loading.value = true;
     error.value = null;
     try {
-      const res = await fetch(`/contexts/${id}/planning`);
+      const res = await fetch(`/contexts/${encodeContextIdForPath(id)}/planning`);
       if (!res.ok) {
         if (res.status === 404) {
           response.value = null;
