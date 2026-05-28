@@ -7,23 +7,29 @@ metadata:
     app.kubernetes.io/part-of: agentium-observability-demo
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: alloy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/part-of: agentium-observability-demo
 rules:
   - apiGroups: [""]
-    resources: ["nodes", "nodes/proxy", "nodes/metrics", "services", "endpoints", "pods"]
+    resources: ["pods", "pods/log"]
     verbs: ["get", "list", "watch"]
-  - nonResourceURLs: ["/metrics"]
-    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: alloy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/part-of: agentium-observability-demo
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: alloy
 subjects:
   - kind: ServiceAccount
@@ -70,6 +76,10 @@ data:
         target_label  = "app"
       }
       rule {
+        source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+        target_label  = "service"
+      }
+      rule {
         source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_name", "__meta_kubernetes_pod_container_name"]
         separator     = "/"
         action        = "replace"
@@ -88,16 +98,14 @@ data:
 
       stage.json {
         expressions = {
-          service      = "service",
-          route        = "route",
-          status       = "status",
-          failure_mode = "failure_mode",
+          route        = "fields.route",
+          status       = "fields.status",
+          failure_mode = "fields.failure_mode",
         }
       }
 
       stage.labels {
         values = {
-          service      = "",
           route        = "",
           status       = "",
           failure_mode = "",

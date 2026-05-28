@@ -52,11 +52,16 @@ data:
             execErrState: Error
             for: 1m
             labels:
+              alertname: HighLatency
               severity: warning
               service: checkout-api
+              metric: p95_latency_seconds
             annotations:
               summary: "{{ `{{ $labels.service }}` }} p95 latency is high"
               description: "p95 latency exceeded 750ms in the recent window"
+              expr: histogram_quantile(0.95, sum(rate(demo_service_request_duration_seconds_bucket{service="checkout-api"}[2m])) by (le, service))
+              threshold: "0.75"
+              unit: "seconds"
   contact-points.yaml: |
     apiVersion: 1
     contactPoints:

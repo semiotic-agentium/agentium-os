@@ -8,9 +8,14 @@ metadata:
     app.kubernetes.io/component: agents
     app.kubernetes.io/part-of: agentium-observability-demo
   annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
     checksum/agents: {{ include (print $.Template.BasePath "/agentium-agents-configmap.yaml") . | sha256sum }}
+{{- if .Values.agentiumRunner.mcp.grafana.enabled }}
+    checksum/mcp: {{ include (print $.Template.BasePath "/agentium-mcp-configmap.yaml") . | sha256sum }}
+{{- end }}
 spec:
-  backoffLimit: 6
+  backoffLimit: 0
   template:
     metadata:
       labels:
@@ -18,14 +23,14 @@ spec:
         app.kubernetes.io/component: agents
         app.kubernetes.io/part-of: agentium-observability-demo
     spec:
-      restartPolicy: OnFailure
+      restartPolicy: Never
       initContainers:
         - name: unpack-demo-agents
           image: busybox:1.36
           imagePullPolicy: IfNotPresent
           command: ["sh", "-c"]
           args:
-            - mkdir -p /agents && tar -xf /agent-bundle/demo-agents.tar -C /agents --strip-components=1
+            - mkdir -p /agents && tar -xf /agent-bundle/demo-agents.tar -C /agents --strip-components=1 && chown -R 1000:1000 /agents
           volumeMounts:
             - name: agent-bundle
               mountPath: /agent-bundle
@@ -52,17 +57,42 @@ spec:
             - |
               set -eu
               RUNNER_URL="http://{{ .Values.agentiumRunner.service.name }}:{{ .Values.agentiumRunner.service.port }}"
-              for agent_dir in \
-                /agents/observability-coordinator \
-                /agents/grafana-investigator \
-                /agents/slack-notify; do
-                baml-agent-builder publish \
-                  --agent-dir "$agent_dir" \
-                  --repository-url "$RUNNER_URL/repository" \
-                  --deploy-url "$RUNNER_URL" \
-                  --runner-token "${RUNNER_TOKEN:-}"
-              done
+              REPO_URL="$RUNNER_URL/repository"
+              wait_runner() {
+                until curl -fsS "$RUNNER_URL/readyz" >/dev/null; do
+                  echo "[agent-deployer] waiting for runner at $RUNNER_URL"
+                  sleep 5
+                done
+              }
+              wait_runner
+{{- if .Values.agentiumRunner.mcp.grafana.enabled }}
+              echo "[agent-deployer] enabling Grafana MCP registry snapshot"
+              cargo-agent-platform mcp enable {{ .Values.agentiumRunner.mcp.grafana.serverId | quote }} \
+                --config /config/mcp-servers.json \
+                --repository-url "$REPO_URL" \
+                --runner-token "${RUNNER_TOKEN:-}" \
+                --yes
+{{- end }}
+              echo "[agent-deployer] regenerating demo agents from live registry"
+              BAML_MCP_REGISTRY_URL="$REPO_URL" \
+              cargo-agent-platform regen \
+                --path /agents/observability-coordinator \
+                --path /agents/grafana-investigator \
+                --path /agents/slack-notify
+
+              echo "[agent-deployer] publishing and deploying demo agents"
+              wait_runner
+              cargo-agent-platform push \
+                --repository-url "$REPO_URL" \
+                --url "$RUNNER_URL" \
+                --runner-token "${RUNNER_TOKEN:-}" \
+                --agents \
+                  /agents/grafana-investigator \
+                  /agents/slack-notify \
+                  /agents/observability-coordinator
           env:
+            - name: BAML_AGENT_BUILDER
+              value: /usr/local/bin/baml-agent-builder
             - name: RUNNER_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -75,13 +105,41 @@ spec:
                   name: {{ $secretName }}
                   key: {{ .Values.existingSecrets.openrouterApiKeyKey }}
                   optional: false
+            - name: GRAFANA_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .Values.existingSecrets.grafanaApiTokenKey }}
+                  optional: true
+            - name: GRAFANA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .Values.existingSecrets.grafanaApiKeyKey }}
+                  optional: true
+            - name: GRAFANA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .Values.existingSecrets.grafanaPasswordKey }}
+                  optional: true
           volumeMounts:
             - name: agents
               mountPath: /agents
+              readOnly: false
+{{- if .Values.agentiumRunner.mcp.grafana.enabled }}
+            - name: mcp-config
+              mountPath: /config
               readOnly: true
+{{- end }}
       volumes:
         - name: agents
           emptyDir: {}
         - name: agent-bundle
           configMap:
             name: agentium-demo-agents
+{{- if .Values.agentiumRunner.mcp.grafana.enabled }}
+        - name: mcp-config
+          configMap:
+            name: agentium-demo-mcp
+{{- end }}

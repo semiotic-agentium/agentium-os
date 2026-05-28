@@ -37,14 +37,28 @@ spec:
         app.kubernetes.io/part-of: agentium-observability-demo
       annotations:
         checksum/agents: {{ include (print $.Template.BasePath "/agentium-agents-configmap.yaml") . | sha256sum }}
+        checksum/fnox: {{ include (print $.Template.BasePath "/agentium-fnox-configmap.yaml") . | sha256sum }}
+{{- if .Values.agentiumRunner.mcp.grafana.enabled }}
+        checksum/mcp: {{ include (print $.Template.BasePath "/agentium-mcp-configmap.yaml") . | sha256sum }}
+{{- end }}
     spec:
       initContainers:
+{{- if gt (int .Values.agentiumRunner.inotifyMaxUserInstances) 0 }}
+        - name: raise-inotify-limits
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          command: ["sh", "-c"]
+          args:
+            - sysctl -w fs.inotify.max_user_instances={{ .Values.agentiumRunner.inotifyMaxUserInstances }}
+{{- end }}
         - name: unpack-demo-agents
           image: busybox:1.36
           imagePullPolicy: IfNotPresent
           command: ["sh", "-c"]
           args:
-            - mkdir -p /agents && tar -xf /agent-bundle/demo-agents.tar -C /agents --strip-components=1
+            - mkdir -p /agents && tar -xf /agent-bundle/demo-agents.tar -C /agents --strip-components=1 && chown -R 1000:1000 /agents
           volumeMounts:
             - name: agent-bundle
               mountPath: /agent-bundle
@@ -66,6 +80,8 @@ spec:
             - /data/repository
             - --provenance-db
             - /data/runner-state/provenance.db
+            - --web-dir
+            - /web/dist
           ports:
             - name: http
               containerPort: {{ .Values.agentiumRunner.service.port }}
@@ -94,8 +110,32 @@ spec:
                   optional: false
             - name: BAML_TEST_MODEL
               value: {{ .Values.agentiumRunner.model | quote }}
+            - name: BAML_FNOX_CONFIG
+              value: /etc/agentium/fnox.toml
+{{- if .Values.agentiumRunner.mcp.grafana.enabled }}
+            - name: BAML_MCP_SERVERS_CONFIG
+              value: /config/mcp-servers.json
+{{- end }}
             - name: AGENTIUM_UI_BASE_URL
               value: {{ .Values.agentiumRunner.uiBaseUrl | quote }}
+            - name: GRAFANA_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .Values.existingSecrets.grafanaApiTokenKey }}
+                  optional: true
+            - name: GRAFANA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .Values.existingSecrets.grafanaApiKeyKey }}
+                  optional: true
+            - name: GRAFANA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: {{ .Values.existingSecrets.grafanaPasswordKey }}
+                  optional: true
             - name: SLACK_BOT_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -152,6 +192,15 @@ spec:
             - name: agents
               mountPath: /opt/agentium/demo-agents
               readOnly: true
+            - name: fnox-config
+              mountPath: /etc/agentium/fnox.toml
+              subPath: fnox.toml
+              readOnly: true
+{{- if .Values.agentiumRunner.mcp.grafana.enabled }}
+            - name: mcp-config
+              mountPath: /config
+              readOnly: true
+{{- end }}
           resources:
 {{ toYaml .Values.agentiumRunner.resources | indent 12 }}
       volumes:
@@ -164,6 +213,14 @@ spec:
         - name: agent-bundle
           configMap:
             name: agentium-demo-agents
+        - name: fnox-config
+          configMap:
+            name: agentium-fnox
+{{- if .Values.agentiumRunner.mcp.grafana.enabled }}
+        - name: mcp-config
+          configMap:
+            name: agentium-demo-mcp
+{{- end }}
   volumeClaimTemplates:
     - metadata:
         name: data

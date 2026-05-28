@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentium-fnox
+  labels:
+    app.kubernetes.io/name: agentium-fnox
+    app.kubernetes.io/part-of: agentium-observability-demo
+data:
+  fnox.toml: |
+    # Runner secret store — entries with no provider/default fall back to the
+    # process environment (see fnox::secret_resolver::resolve_secret). Env vars
+    # are wired in agentium-runner.yaml from the runner secret.
+
+    [secrets.OPENROUTER_API_KEY]
+    description = "OpenRouter API key — LLM backend for all agents"
+    if_missing = "warn"
+
+    [secrets.BAML_TEST_MODEL]
+    description = "Model id used by BAML test_model_default()"
+    if_missing = "warn"
+    default = {{ .Values.agentiumRunner.model | quote }}
+
+    [secrets.GRAFANA_API_TOKEN]
+    description = "Grafana service account token"
+    if_missing = "ignore"
+
+    [secrets.GRAFANA_API_KEY]
+    description = "Grafana API key (alias for GRAFANA_API_TOKEN)"
+    if_missing = "ignore"
+
+    [secrets.GRAFANA_PASSWORD]
+    description = "Grafana admin password"
+    if_missing = "ignore"
+
+    [secrets.SLACK_BOT_TOKEN]
+    description = "Slack bot token (xoxb-...) — slack-notify tool"
+    if_missing = "ignore"
+
+    [secrets.SLACK_USER_TOKEN]
+    description = "Slack user token (xoxp-...)"
+    if_missing = "ignore"
+
+    [secrets.SLACK_NOTIFY_CHANNEL_ID]
+    description = "Slack channel id for slack-notify deliveries"
+    if_missing = "ignore"

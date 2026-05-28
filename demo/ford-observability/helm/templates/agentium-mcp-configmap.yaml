@@ -1,0 +1,33 @@
+{{- if .Values.agentiumRunner.mcp.grafana.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentium-demo-mcp
+  labels:
+    app.kubernetes.io/name: agentium-demo-mcp
+    app.kubernetes.io/component: agents
+    app.kubernetes.io/part-of: agentium-observability-demo
+data:
+  mcp-servers.json: |
+    {
+      "mcpServers": {
+        {{ .Values.agentiumRunner.mcp.grafana.serverId | quote }}: {
+          "command": {{ .Values.agentiumRunner.mcp.grafana.command | quote }},
+          "args": {{ .Values.agentiumRunner.mcp.grafana.args | toJson }},
+          "env": {{ .Values.agentiumRunner.mcp.grafana.env | toJson }},
+          "secrets": [
+            {
+              "name": {{ default .Values.agentiumRunner.mcp.grafana.apiKeyEnvName .Values.agentiumRunner.mcp.grafana.secretEnvName | quote }},
+              "description": "Grafana credential used by the demo Grafana MCP server",
+              "reason": "Read Prometheus, Loki, dashboards, and annotations through Grafana MCP"
+            }
+          ],
+          "sandbox": {
+            "import_timeout_secs": {{ .Values.agentiumRunner.mcp.grafana.importTimeoutSecs }},
+            "runtime_call_timeout_secs": {{ .Values.agentiumRunner.mcp.grafana.runtimeCallTimeoutSecs }}
+          },
+          "description": "Ford observability demo Grafana MCP server"
+        }
+      }
+    }
+{{- end }}

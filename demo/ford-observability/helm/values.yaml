@@ -10,6 +10,8 @@ secrets:
   grafanaAdminPassword: "admin"
   # Optional Grafana service account token for failure-harness annotation writes.
   grafanaApiToken: ""
+  # Duplicate of grafanaApiToken under the env name expected by most Grafana MCP servers.
+  grafanaApiKey: ""
   slackBotToken: ""
   slackUserToken: ""
   slackNotifyChannelId: ""
@@ -20,6 +22,9 @@ existingSecrets:
   name: ""
   openrouterApiKeyKey: OPENROUTER_API_KEY
   grafanaApiTokenKey: GRAFANA_API_TOKEN
+  # Defaults to GRAFANA_API_TOKEN so existing secrets can back both env names.
+  grafanaApiKeyKey: GRAFANA_API_TOKEN
+  grafanaPasswordKey: GRAFANA_PASSWORD
   slackBotTokenKey: SLACK_BOT_TOKEN
   slackUserTokenKey: SLACK_USER_TOKEN
   slackNotifyChannelIdKey: SLACK_NOTIFY_CHANNEL_ID
@@ -117,22 +122,46 @@ agentiumRunner:
     repository: agentium-runner
     tag: demo
     pullPolicy: IfNotPresent
+  mcp:
+    grafana:
+      enabled: true
+      serverId: grafana
+      # Pre-baked Grafana MCP Go binary in the runner image; avoids PyPI/network
+      # egress at runtime (was `uvx mcp-grafana`, which required DNS the pod
+      # didn't have).
+      command: /usr/local/bin/mcp-grafana
+      args:
+        - -t
+        - stdio
+      env:
+        GRAFANA_URL: http://grafana:3000
+        GRAFANA_USERNAME: admin
+        HOME: /tmp
+        XDG_CACHE_HOME: /tmp/.cache
+      secretEnvName: GRAFANA_PASSWORD
+      # Deprecated alias retained for values files that still set apiKeyEnvName.
+      apiKeyEnvName: ""
+      importTimeoutSecs: 60
+      runtimeCallTimeoutSecs: 120
   replicas: 1
   service:
     name: agentium-runner
     port: 18080
   uiBaseUrl: http://localhost:18080
   webhookPath: /webhooks/grafana
+  inotifyMaxUserInstances: 1024
   stateStorage: 1Gi
   repositoryStorage: 1Gi
   runnerToken: demo-runner-token
   rustLog: info
   model: x-ai/grok-4.3
   otel:
-    tracesExporter: otlp
-    metricsExporter: otlp
+    # Disabled by default for demo clusters without an in-cluster OTEL collector.
+    # If collector exists, set exporters to `otlp` and endpoint to e.g. http://otel-collector:4317.
+    tracesExporter: none
+    metricsExporter: none
     protocol: grpc
-    endpoint: http://localhost:4317
+    endpoint: ""
     serviceName: baml-agent-runner
   resources:
     requests:
