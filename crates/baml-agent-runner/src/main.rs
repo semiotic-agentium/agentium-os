@@ -50,8 +50,6 @@ use baml_rt_tools::{
 use baml_tools_calculator as _;
 #[cfg(feature = "clickup")]
 use baml_tools_clickup as _;
-#[cfg(feature = "grafana-alerts")]
-use baml_tools_grafana_alerts as _;
 #[cfg(feature = "memory")]
 use baml_tools_memory as _;
 #[cfg(feature = "notion")]
