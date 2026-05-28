@@ -19,8 +19,9 @@ function SynthesizeIncidentReport(
       severity, startsAt, endsAt, fingerprint, dashboardURL, panelURL).
     - investigator_pack_json: an InvestigatorReport object with metrics,
       log_samples, traces, likely_cause, confidence, open_questions, caveats.
-    - links_json: precomputed URLs (grafana_dashboard, grafana_panel,
-      agentium_dashboard, transcript_api, llm_provenance_api, tool_provenance_api).
+    - links_json: precomputed references — `grafana_dashboard`, `grafana_panel`
+      (URLs when Grafana provided them, otherwise "not provided"), and
+      `context_id` (the Agentium provenance context id; not a URL).
 
     Required report structure (single TextPart, media_type text/markdown):
     1. Header line with alert + service + status emoji (🚨 for firing,
@@ -34,9 +35,13 @@ function SynthesizeIncidentReport(
        PromQL query); one bullet for representative log samples (quote up to
        two lines); one bullet for trace findings (operation, dependency,
        duration_ms). Include the trace-is-synthetic caveat as a separate bullet.
-    5. "Links" — markdown links to Grafana dashboard, Grafana panel, Agentium
-       dashboard, and the raw provenance APIs from links_json. Use the literal
-       string from links_json verbatim; do not invent URLs.
+    5. "References" — render `grafana_dashboard` and `grafana_panel` as
+       markdown links ONLY when they look like URLs (start with `http`);
+       otherwise show the literal placeholder string ("not provided").
+       Show `context_id` as a plain code-formatted value (e.g.
+       `context_id: ` `ctx-...`). Do NOT invent URLs for it; operators reach
+       the Agentium dashboard via `kubectl port-forward svc/agentium-runner
+       18080:18080` and that runbook step belongs in docs, not this report.
     6. "Suggested next actions" — numbered list from the investigator's
        open_questions; add a closing reminder to confirm whether this matches a
        demo injection if not already covered.

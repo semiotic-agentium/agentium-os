@@ -1,10 +1,10 @@
 /// <reference path="./baml-runtime.d.ts" />
 //
 // Multi-alert handling — Phase A (current): Grafana batches alerts with the
-// same alertname/folder into one webhook payload. We iterate envelope.alerts[]
-// and fan out one investigator + one synthesis + one Slack post per alert via
-// Promise.all. Demo only fires HighLatency so N=1 in practice, but the loop
-// stops alerts[1..] from being silently dropped if Grafana ever groups.
+// same alertname/folder into one webhook payload ({ alerts: [...] }). The
+// grafana-alerts producer emits one alert per dispatch (messages[0] is the
+// alert object). We iterate the extracted alert list and fan out one
+// investigator + one synthesis + one Slack post per alert via Promise.all.
 //
 // Multi-alert handling — Phase B (deferred, gated on phase-2 alert rules
 // landing: ServiceDown, HighErrorRate, DependencyTimeout):
@@ -27,7 +27,20 @@ import type {
 
 const INVESTIGATOR = { agent_package: "grafana-investigator", agent_instance_id: "default" };
 const SLACK = { agent_package: "slack-notify", agent_instance_id: "default" };
-const UI_BASE_URL = "http://localhost:18080";
+// Agentium dashboard/provenance/transcript endpoints live on the runner's
+// HTTP API. The runner is ClusterIP-only in the demo, so the URL is not
+// stable for Slack readers; operators reach it via `kubectl port-forward
+// svc/agentium-runner 18080:18080`. See demo/ford-observability/OPERATING.md.
+
+// Wall-clock bounds per tool-call session inside runSingleSendSession.
+// Two-tier deadline: A2A children (system/internal_a2a) wrap a full sub-agent
+// run (outer ReAct loop + nested LLM/MCP calls + synthesis), so they need a
+// much larger window than a single in-process MCP/host tool round-trip.
+// Stall timer is unified — if no chunk arrives for SESSION_STALL_MS, the
+// callee is treated as wedged regardless of remaining deadline.
+const A2A_DEADLINE_MS = 10 * 60 * 1000;          // system/internal_a2a child agent
+const TOOL_DEADLINE_MS = 2 * 60 * 1000;          // single MCP / host tool call
+const SESSION_STALL_MS = 90 * 1000;              // no progress for this long → abort
 
 type GrafanaAlert = {
   status: string;
@@ -38,6 +51,8 @@ type GrafanaAlert = {
   fingerprint?: string;
   dashboardURL?: string;
   panelURL?: string;
+  generatorURL?: string;
+  valueString?: string;
 };
 
 type Incident = {
@@ -54,17 +69,47 @@ type Incident = {
   fingerprint: string;
   dashboardURL: string;
   panelURL: string;
+  generatorURL: string;
+  valueString: string;
+  labels: Record<string, unknown>;
+  annotations: Record<string, unknown>;
 };
 
 function s(value: unknown, fallback = ""): string {
   return typeof value === "string" && value.length > 0 ? value : fallback;
 }
 
+function isGrafanaAlertShape(value: unknown): value is GrafanaAlert {
+  if (!value || typeof value !== "object") return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    typeof obj.status === "string"
+    || typeof obj.startsAt === "string"
+    || typeof obj.fingerprint === "string"
+    || (obj.labels !== undefined && typeof obj.labels === "object" && obj.labels !== null)
+    || (obj.annotations !== undefined && typeof obj.annotations === "object" && obj.annotations !== null)
+  );
+}
+
 function extractAlerts(request: HostDispatchRequest): GrafanaAlert[] {
-  const envelope = request.messages[0] as JsonObject | undefined;
-  const alerts = Array.isArray(envelope?.alerts) ? envelope.alerts : [];
-  const out: GrafanaAlert[] = alerts.filter((a) => !!a && typeof a === "object") as GrafanaAlert[];
-  return out.length > 0 ? out : [{} as GrafanaAlert];
+  const message = request.messages[0];
+  if (!message || typeof message !== "object") {
+    return [{} as GrafanaAlert];
+  }
+
+  // Full Grafana webhook envelope: { status, alerts: [...], groupLabels, ... }
+  const envelope = message as JsonObject;
+  if (Array.isArray(envelope.alerts)) {
+    const out = envelope.alerts.filter((a) => !!a && typeof a === "object") as GrafanaAlert[];
+    if (out.length > 0) return out;
+  }
+
+  // support/grafana-alerts producer: messages[0] IS the alert (one dispatch per alert).
+  if (isGrafanaAlertShape(envelope)) {
+    return [envelope];
+  }
+
+  return [{} as GrafanaAlert];
 }
 
 function incidentFromAlert(request: HostDispatchRequest, alert: GrafanaAlert): Incident {
@@ -86,6 +131,10 @@ function incidentFromAlert(request: HostDispatchRequest, alert: GrafanaAlert): I
     fingerprint: s(alert.fingerprint),
     dashboardURL: s(alert.dashboardURL),
     panelURL: s(alert.panelURL),
+    generatorURL: s(alert.generatorURL),
+    valueString: s(alert.valueString),
+    labels,
+    annotations,
   };
 }
 
@@ -95,14 +144,28 @@ async function runSingleSendSession(
   sendInput: Record<string, unknown>,
 ): Promise<unknown> {
   let session = await openToolSession(toolName, openInput);
+  const deadlineMs = toolName === "system/internal_a2a" ? A2A_DEADLINE_MS : TOOL_DEADLINE_MS;
   try {
     await session.send(sendInput);
-    for (let i = 0; i < 16; i += 1) {
+    const startedAt = Date.now();
+    let lastProgressAt = startedAt;
+    for (;;) {
+      const now = Date.now();
+      if (now - startedAt > deadlineMs) {
+        throw new Error(`${toolName} exceeded ${deadlineMs}ms deadline`);
+      }
+      if (now - lastProgressAt > SESSION_STALL_MS) {
+        throw new Error(`${toolName} stalled (${SESSION_STALL_MS}ms with no progress)`);
+      }
       const next = await session.continue();
       if (next && typeof next === "object") {
         const obj = next as Record<string, unknown>;
         const status = typeof obj.status === "string" ? obj.status.toLowerCase() : "";
-        if (status === "streaming") continue;
+        if (status === "streaming") {
+          // Transport heartbeat — refresh stall clock but do not terminate.
+          lastProgressAt = Date.now();
+          continue;
+        }
         if (status === "error") throw new Error(JSON.stringify(obj.error ?? obj));
         await session.finish();
         session = null as unknown as typeof session;
@@ -112,7 +175,6 @@ async function runSingleSendSession(
       session = null as unknown as typeof session;
       return next;
     }
-    throw new Error(`${toolName} exceeded continue budget`);
   } catch (error) {
     if (session) {
       try { await session.abort(error instanceof Error ? error.message : String(error)); } catch {}
@@ -121,13 +183,108 @@ async function runSingleSendSession(
   }
 }
 
+function isInfrastructureNotice(text: string): boolean {
+  const t = text.trim();
+  return t.startsWith("Calling model:") || t.startsWith("Invoking tool:");
+}
+
+function isA2aStatusBlurb(text: string): boolean {
+  const t = text.trim();
+  if (t.length === 0 || t === "{}") return true;
+  if (t.startsWith("Investigating ") || t === "Synthesising evidence") return true;
+  if (t.startsWith("Posting Slack incident summary")) return true;
+  return false;
+}
+
+function tryParseJsonObject(text: string): Record<string, unknown> | null {
+  try {
+    const value = JSON.parse(text) as unknown;
+    return value !== null && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function looksLikeInvestigatorReport(value: Record<string, unknown>): boolean {
+  return (
+    typeof value.service === "string"
+    && (
+      typeof value.likely_cause === "string"
+      || Array.isArray(value.metrics)
+      || Array.isArray(value.log_samples)
+    )
+  );
+}
+
+function textPartsFromA2aOutput(raw: unknown): string[] {
+  if (typeof raw === "string") {
+    return raw.trim().length > 0 ? [raw] : [];
+  }
+  if (!raw || typeof raw !== "object") return [];
+  const chunks = Array.isArray((raw as Record<string, unknown>).chunks)
+    ? (raw as Record<string, unknown>).chunks as unknown[]
+    : [];
+  const texts: string[] = [];
+  for (const chunk of chunks) {
+    if (!chunk || typeof chunk !== "object") continue;
+    const message = (chunk as Record<string, unknown>).message;
+    if (!message || typeof message !== "object") continue;
+    const parts = Array.isArray((message as Record<string, unknown>).parts)
+      ? (message as Record<string, unknown>).parts as unknown[]
+      : [];
+    for (const part of parts) {
+      if (!part || typeof part !== "object") continue;
+      const text = (part as Record<string, unknown>).text;
+      if (typeof text === "string" && text.trim().length > 0) {
+        texts.push(text);
+      }
+    }
+  }
+  return texts;
+}
+
+/** Pull the delegated agent's substantive reply from an internal_a2a Done payload. */
+function extractA2aFinalText(raw: unknown): string {
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    return trimmed.length > 0 ? trimmed : raw;
+  }
+
+  const texts = textPartsFromA2aOutput(raw);
+  const substantive = texts.filter((t) => !isInfrastructureNotice(t) && !isA2aStatusBlurb(t));
+
+  for (let i = substantive.length - 1; i >= 0; i -= 1) {
+    const parsed = tryParseJsonObject(substantive[i]);
+    if (parsed && looksLikeInvestigatorReport(parsed)) {
+      return substantive[i];
+    }
+  }
+
+  for (let i = substantive.length - 1; i >= 0; i -= 1) {
+    if (tryParseJsonObject(substantive[i])) {
+      return substantive[i];
+    }
+  }
+
+  for (let i = texts.length - 1; i >= 0; i -= 1) {
+    const t = texts[i];
+    if (!isInfrastructureNotice(t) && t.trim() !== "{}") {
+      return t;
+    }
+  }
+
+  return JSON.stringify(raw);
+}
+
 async function a2a(target: { agent_package: string; agent_instance_id: string }, text: string): Promise<string> {
   const raw = await runSingleSendSession(
     "system/internal_a2a",
     { target },
     { parts: [{ text }] },
   );
-  return typeof raw === "string" ? raw : JSON.stringify(raw);
+  return extractA2aFinalText(raw);
 }
 
 function buildInvestigatorPrompt(incident: Incident): string {
@@ -138,15 +295,12 @@ function buildInvestigatorPrompt(incident: Incident): string {
 }
 
 function linksFor(incident: Incident): Record<string, string> {
-  const hasContext = incident.contextId && incident.contextId !== "unknown-context";
-  const encoded = hasContext ? encodeURIComponent(incident.contextId) : "";
   return {
     grafana_dashboard: incident.dashboardURL || "not provided",
     grafana_panel: incident.panelURL || "not provided",
-    agentium_dashboard: hasContext ? `${UI_BASE_URL}/?view=dashboard&contextId=${encoded}` : "context unavailable",
-    transcript_api: hasContext ? `${UI_BASE_URL}/contexts/${encoded}/conversation-history` : "context unavailable",
-    llm_provenance_api: hasContext ? `${UI_BASE_URL}/provenance/llm-calls?context_id=${encoded}` : "context unavailable",
-    tool_provenance_api: hasContext ? `${UI_BASE_URL}/provenance/tool-calls?context_id=${encoded}` : "context unavailable",
+    context_id: incident.contextId && incident.contextId !== "unknown-context"
+      ? incident.contextId
+      : "context unavailable",
   };
 }
 

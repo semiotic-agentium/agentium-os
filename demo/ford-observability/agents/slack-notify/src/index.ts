@@ -3,6 +3,14 @@ import type { RunContext, SessionResult } from "./baml-runtime";
 
 type NotifyRequest = { text: string; context_id: string };
 
+// Max session.continue() hops for the slack_notify tool call. One hop per
+// streaming chunk from the tool; chat.postMessage is single-shot but the host
+// may interleave status updates, so we keep a small but non-trivial budget.
+// Hitting the budget aborts the session and surfaces "exceeded continue
+// budget" in runner logs. See coordinator MAX_CONTINUE_HOPS for the longer
+// rationale.
+const MAX_CONTINUE_HOPS = 16;
+
 function parseRequest(text: string): NotifyRequest {
   try {
     const raw = JSON.parse(text) as unknown;
@@ -26,7 +34,7 @@ async function runSingleSendSession(
   let session = await openToolSession(toolName, openInput);
   try {
     await session.send(sendInput);
-    for (let i = 0; i < 8; i += 1) {
+    for (let i = 0; i < MAX_CONTINUE_HOPS; i += 1) {
       const next = await session.continue();
       if (next && typeof next === "object") {
         const obj = next as Record<string, unknown>;

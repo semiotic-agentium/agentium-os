@@ -408,10 +408,31 @@ is still missing. Higher-signal evidence first, lower-signal last:
    query (e.g. error_rate metric, narrower LogQL with a term you spotted,
    a second annotation pull).
 
-Stop rule: return `null` as soon as metric + log + trace evidence are in
-the transcript, or when the next query would not change confidence. Never
-re-issue an identical query. Never run a query whose answer is already
-visible in the transcript.
+Primary metric selection (in priority order — pick the FIRST match):
+  a. `annotations.expr` present → query that PromQL verbatim over the
+     incident window. This is the alert's own rule expression and is the
+     strongest signal of what fired.
+  b. Else `labels.promql` present → query that PromQL verbatim.
+  c. Else `labels.metric == "p95_latency_seconds"` → query
+     histogram_quantile(0.95, sum(rate(demo_service_request_duration_seconds_bucket{service="<svc>"}[2m])) by (le, service))
+  d. Else `labels.metric == "error_rate"` → query
+     sum(rate(demo_service_requests_total{service="<svc>",status=~"5.."}[2m])) /
+     sum(rate(demo_service_requests_total{service="<svc>"}[2m]))
+  e. Else `labels.metric == "request_rate"` → query
+     sum(rate(demo_service_requests_total{service="<svc>"}[2m]))
+  f. Else fall back to (c) p95 latency as the demo default.
+NEVER use `up{}` as the primary metric — it answers liveness, not the alert.
+`up{}` is only acceptable as a tie-breaker reactive hop when other evidence
+is contradictory.
+
+Stop rule: return `null` ONLY when the transcript already contains a
+completed Send or PageRead archive from `mcp/grafana/query_loki_logs`
+AND you have metric evidence (incident + baseline Prometheus archives).
+FORBIDDEN to return `null` before Loki has been queried — the host will
+force a Loki session anyway, wasting a hop. Trace annotations are optional
+for this demo; do not skip Loki because traces are missing. Never re-issue
+an identical query. Never run a query whose answer is already visible in
+the transcript.
 
 Tool input recipes:
 - Use the well-known datasource UIDs `"prometheus"` and `"loki"` directly;
@@ -421,8 +442,12 @@ Tool input recipes:
   If endsAt is the zero placeholder (`"0001-01-01T00:00:00Z"` or empty),
   use `endsAt = startsAt + 5m`.
 - Baseline window: ≈10 minutes ending ≥1 minute before startsAt; same PromQL.
-- Loki: `{service="<svc>"} | json`, same incident window, `limit≤40`,
-  `direction="backward"`.
+- Loki: try `{service="<svc>"} | json` first, same incident window,
+  `limit≤40`, `direction="backward"`. If the response has empty
+  `data.result`, retry with `{app="<svc>"} | json` then
+  `{service_name="<svc>"} | json` before giving up on logs. Label keys
+  vary by deployment so do not Finish the investigation declaring "no
+  logs" until all three label variants returned empty.
 - Annotations: `tags=["agentium-demo", "kind=trace", "service=<svc>"]`,
   `matchAny=false`, `from`/`to` in epoch-ms, `limit≤20`.
 
@@ -512,10 +537,31 @@ is still missing. Higher-signal evidence first, lower-signal last:
    query (e.g. error_rate metric, narrower LogQL with a term you spotted,
    a second annotation pull).
 
-Stop rule: return `null` as soon as metric + log + trace evidence are in
-the transcript, or when the next query would not change confidence. Never
-re-issue an identical query. Never run a query whose answer is already
-visible in the transcript.
+Primary metric selection (in priority order — pick the FIRST match):
+  a. `annotations.expr` present → query that PromQL verbatim over the
+     incident window. This is the alert's own rule expression and is the
+     strongest signal of what fired.
+  b. Else `labels.promql` present → query that PromQL verbatim.
+  c. Else `labels.metric == "p95_latency_seconds"` → query
+     histogram_quantile(0.95, sum(rate(demo_service_request_duration_seconds_bucket{service="<svc>"}[2m])) by (le, service))
+  d. Else `labels.metric == "error_rate"` → query
+     sum(rate(demo_service_requests_total{service="<svc>",status=~"5.."}[2m])) /
+     sum(rate(demo_service_requests_total{service="<svc>"}[2m]))
+  e. Else `labels.metric == "request_rate"` → query
+     sum(rate(demo_service_requests_total{service="<svc>"}[2m]))
+  f. Else fall back to (c) p95 latency as the demo default.
+NEVER use `up{}` as the primary metric — it answers liveness, not the alert.
+`up{}` is only acceptable as a tie-breaker reactive hop when other evidence
+is contradictory.
+
+Stop rule: return `null` ONLY when the transcript already contains a
+completed Send or PageRead archive from `mcp/grafana/query_loki_logs`
+AND you have metric evidence (incident + baseline Prometheus archives).
+FORBIDDEN to return `null` before Loki has been queried — the host will
+force a Loki session anyway, wasting a hop. Trace annotations are optional
+for this demo; do not skip Loki because traces are missing. Never re-issue
+an identical query. Never run a query whose answer is already visible in
+the transcript.
 
 Tool input recipes:
 - Use the well-known datasource UIDs `"prometheus"` and `"loki"` directly;
@@ -525,8 +571,12 @@ Tool input recipes:
   If endsAt is the zero placeholder (`"0001-01-01T00:00:00Z"` or empty),
   use `endsAt = startsAt + 5m`.
 - Baseline window: ≈10 minutes ending ≥1 minute before startsAt; same PromQL.
-- Loki: `{service="<svc>"} | json`, same incident window, `limit≤40`,
-  `direction="backward"`.
+- Loki: try `{service="<svc>"} | json` first, same incident window,
+  `limit≤40`, `direction="backward"`. If the response has empty
+  `data.result`, retry with `{app="<svc>"} | json` then
+  `{service_name="<svc>"} | json` before giving up on logs. Label keys
+  vary by deployment so do not Finish the investigation declaring "no
+  logs" until all three label variants returned empty.
 - Annotations: `tags=["agentium-demo", "kind=trace", "service=<svc>"]`,
   `matchAny=false`, `from`/`to` in epoch-ms, `limit≤20`.
 
@@ -610,10 +660,31 @@ is still missing. Higher-signal evidence first, lower-signal last:
    query (e.g. error_rate metric, narrower LogQL with a term you spotted,
    a second annotation pull).
 
-Stop rule: return `null` as soon as metric + log + trace evidence are in
-the transcript, or when the next query would not change confidence. Never
-re-issue an identical query. Never run a query whose answer is already
-visible in the transcript.
+Primary metric selection (in priority order — pick the FIRST match):
+  a. `annotations.expr` present → query that PromQL verbatim over the
+     incident window. This is the alert's own rule expression and is the
+     strongest signal of what fired.
+  b. Else `labels.promql` present → query that PromQL verbatim.
+  c. Else `labels.metric == "p95_latency_seconds"` → query
+     histogram_quantile(0.95, sum(rate(demo_service_request_duration_seconds_bucket{service="<svc>"}[2m])) by (le, service))
+  d. Else `labels.metric == "error_rate"` → query
+     sum(rate(demo_service_requests_total{service="<svc>",status=~"5.."}[2m])) /
+     sum(rate(demo_service_requests_total{service="<svc>"}[2m]))
+  e. Else `labels.metric == "request_rate"` → query
+     sum(rate(demo_service_requests_total{service="<svc>"}[2m]))
+  f. Else fall back to (c) p95 latency as the demo default.
+NEVER use `up{}` as the primary metric — it answers liveness, not the alert.
+`up{}` is only acceptable as a tie-breaker reactive hop when other evidence
+is contradictory.
+
+Stop rule: return `null` ONLY when the transcript already contains a
+completed Send or PageRead archive from `mcp/grafana/query_loki_logs`
+AND you have metric evidence (incident + baseline Prometheus archives).
+FORBIDDEN to return `null` before Loki has been queried — the host will
+force a Loki session anyway, wasting a hop. Trace annotations are optional
+for this demo; do not skip Loki because traces are missing. Never re-issue
+an identical query. Never run a query whose answer is already visible in
+the transcript.
 
 Tool input recipes:
 - Use the well-known datasource UIDs `"prometheus"` and `"loki"` directly;
@@ -623,8 +694,12 @@ Tool input recipes:
   If endsAt is the zero placeholder (`"0001-01-01T00:00:00Z"` or empty),
   use `endsAt = startsAt + 5m`.
 - Baseline window: ≈10 minutes ending ≥1 minute before startsAt; same PromQL.
-- Loki: `{service="<svc>"} | json`, same incident window, `limit≤40`,
-  `direction="backward"`.
+- Loki: try `{service="<svc>"} | json` first, same incident window,
+  `limit≤40`, `direction="backward"`. If the response has empty
+  `data.result`, retry with `{app="<svc>"} | json` then
+  `{service_name="<svc>"} | json` before giving up on logs. Label keys
+  vary by deployment so do not Finish the investigation declaring "no
+  logs" until all three label variants returned empty.
 - Annotations: `tags=["agentium-demo", "kind=trace", "service=<svc>"]`,
   `matchAny=false`, `from`/`to` in epoch-ms, `limit≤20`.
 
@@ -708,10 +783,31 @@ is still missing. Higher-signal evidence first, lower-signal last:
    query (e.g. error_rate metric, narrower LogQL with a term you spotted,
    a second annotation pull).
 
-Stop rule: return `null` as soon as metric + log + trace evidence are in
-the transcript, or when the next query would not change confidence. Never
-re-issue an identical query. Never run a query whose answer is already
-visible in the transcript.
+Primary metric selection (in priority order — pick the FIRST match):
+  a. `annotations.expr` present → query that PromQL verbatim over the
+     incident window. This is the alert's own rule expression and is the
+     strongest signal of what fired.
+  b. Else `labels.promql` present → query that PromQL verbatim.
+  c. Else `labels.metric == "p95_latency_seconds"` → query
+     histogram_quantile(0.95, sum(rate(demo_service_request_duration_seconds_bucket{service="<svc>"}[2m])) by (le, service))
+  d. Else `labels.metric == "error_rate"` → query
+     sum(rate(demo_service_requests_total{service="<svc>",status=~"5.."}[2m])) /
+     sum(rate(demo_service_requests_total{service="<svc>"}[2m]))
+  e. Else `labels.metric == "request_rate"` → query
+     sum(rate(demo_service_requests_total{service="<svc>"}[2m]))
+  f. Else fall back to (c) p95 latency as the demo default.
+NEVER use `up{}` as the primary metric — it answers liveness, not the alert.
+`up{}` is only acceptable as a tie-breaker reactive hop when other evidence
+is contradictory.
+
+Stop rule: return `null` ONLY when the transcript already contains a
+completed Send or PageRead archive from `mcp/grafana/query_loki_logs`
+AND you have metric evidence (incident + baseline Prometheus archives).
+FORBIDDEN to return `null` before Loki has been queried — the host will
+force a Loki session anyway, wasting a hop. Trace annotations are optional
+for this demo; do not skip Loki because traces are missing. Never re-issue
+an identical query. Never run a query whose answer is already visible in
+the transcript.
 
 Tool input recipes:
 - Use the well-known datasource UIDs `"prometheus"` and `"loki"` directly;
@@ -721,8 +817,12 @@ Tool input recipes:
   If endsAt is the zero placeholder (`"0001-01-01T00:00:00Z"` or empty),
   use `endsAt = startsAt + 5m`.
 - Baseline window: ≈10 minutes ending ≥1 minute before startsAt; same PromQL.
-- Loki: `{service="<svc>"} | json`, same incident window, `limit≤40`,
-  `direction="backward"`.
+- Loki: try `{service="<svc>"} | json` first, same incident window,
+  `limit≤40`, `direction="backward"`. If the response has empty
+  `data.result`, retry with `{app="<svc>"} | json` then
+  `{service_name="<svc>"} | json` before giving up on logs. Label keys
+  vary by deployment so do not Finish the investigation declaring "no
+  logs" until all three label variants returned empty.
 - Annotations: `tags=["agentium-demo", "kind=trace", "service=<svc>"]`,
   `matchAny=false`, `from`/`to` in epoch-ms, `limit≤20`.
 
@@ -806,10 +906,31 @@ is still missing. Higher-signal evidence first, lower-signal last:
    query (e.g. error_rate metric, narrower LogQL with a term you spotted,
    a second annotation pull).
 
-Stop rule: return `null` as soon as metric + log + trace evidence are in
-the transcript, or when the next query would not change confidence. Never
-re-issue an identical query. Never run a query whose answer is already
-visible in the transcript.
+Primary metric selection (in priority order — pick the FIRST match):
+  a. `annotations.expr` present → query that PromQL verbatim over the
+     incident window. This is the alert's own rule expression and is the
+     strongest signal of what fired.
+  b. Else `labels.promql` present → query that PromQL verbatim.
+  c. Else `labels.metric == "p95_latency_seconds"` → query
+     histogram_quantile(0.95, sum(rate(demo_service_request_duration_seconds_bucket{service="<svc>"}[2m])) by (le, service))
+  d. Else `labels.metric == "error_rate"` → query
+     sum(rate(demo_service_requests_total{service="<svc>",status=~"5.."}[2m])) /
+     sum(rate(demo_service_requests_total{service="<svc>"}[2m]))
+  e. Else `labels.metric == "request_rate"` → query
+     sum(rate(demo_service_requests_total{service="<svc>"}[2m]))
+  f. Else fall back to (c) p95 latency as the demo default.
+NEVER use `up{}` as the primary metric — it answers liveness, not the alert.
+`up{}` is only acceptable as a tie-breaker reactive hop when other evidence
+is contradictory.
+
+Stop rule: return `null` ONLY when the transcript already contains a
+completed Send or PageRead archive from `mcp/grafana/query_loki_logs`
+AND you have metric evidence (incident + baseline Prometheus archives).
+FORBIDDEN to return `null` before Loki has been queried — the host will
+force a Loki session anyway, wasting a hop. Trace annotations are optional
+for this demo; do not skip Loki because traces are missing. Never re-issue
+an identical query. Never run a query whose answer is already visible in
+the transcript.
 
 Tool input recipes:
 - Use the well-known datasource UIDs `"prometheus"` and `"loki"` directly;
@@ -819,8 +940,12 @@ Tool input recipes:
   If endsAt is the zero placeholder (`"0001-01-01T00:00:00Z"` or empty),
   use `endsAt = startsAt + 5m`.
 - Baseline window: ≈10 minutes ending ≥1 minute before startsAt; same PromQL.
-- Loki: `{service="<svc>"} | json`, same incident window, `limit≤40`,
-  `direction="backward"`.
+- Loki: try `{service="<svc>"} | json` first, same incident window,
+  `limit≤40`, `direction="backward"`. If the response has empty
+  `data.result`, retry with `{app="<svc>"} | json` then
+  `{service_name="<svc>"} | json` before giving up on logs. Label keys
+  vary by deployment so do not Finish the investigation declaring "no
+  logs" until all three label variants returned empty.
 - Annotations: `tags=["agentium-demo", "kind=trace", "service=<svc>"]`,
   `matchAny=false`, `from`/`to` in epoch-ms, `limit≤20`.
 
