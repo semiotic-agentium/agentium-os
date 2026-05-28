@@ -24,7 +24,8 @@ function runnerProxy(): ProxyOptions {
         if (
           url.startsWith("/agents") ||
           url.includes("sse") ||
-          url.includes("/conversation-history/stream")
+          url.includes("/conversation-history/stream") ||
+          url.includes("/observe/stream")
         ) {
           proxyReq.setHeader("accept-encoding", "identity");
         }

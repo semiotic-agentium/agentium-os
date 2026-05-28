@@ -44,6 +44,13 @@ use crate::{
     vocabulary::{a2a_relations, context_scope, semantic_labels},
 };
 
+fn stored_event_order(props: &Value) -> u64 {
+    props
+        .get("a2a_event_order")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
+
 fn is_session_bookkeeping_result(phase: &ToolSessionPhase, value: &Value) -> bool {
     if !phase.is_session_phase() {
         return false;
@@ -123,10 +130,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
             }
             messages.push(ProvenanceContextMessage {
                 message_id: MessageId::from(message_id),
-                timestamp_ms: props
-                    .get("a2a_event_order")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
+                timestamp_ms: stored_event_order(props),
                 role: role.to_string(),
                 content: vec![content],
             });
@@ -297,7 +301,7 @@ impl SurrealProvenanceStore {
         agent_package: Option<&str>,
         after_event_order: Option<u64>,
         forward_limit: bool,
-        include_extensions: bool,
+        enrich_extensions: bool,
         preloaded_rows: Option<Vec<Value>>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
         let ctx_node_id = context_entity_id_string(context_id.as_str());
@@ -310,15 +314,41 @@ impl SurrealProvenanceStore {
 
         let agent_instance_nodes: Option<Vec<String>> = if let Some(pkg) = agent_package {
             let index = self.load_agent_runtime_index().await?;
-            let instances = index
-                .instance_node_ids_by_package
-                .get(pkg)
-                .cloned()
-                .unwrap_or_default();
-            if instances.is_empty() {
-                return Ok(Vec::new());
+            if let Some(task_id) = task_id {
+                let resolution = self.get_task_agent_id(task_id).await?;
+                match super::agent_runtime_index::task_agent_package_check(
+                    Some(task_id),
+                    Some(pkg),
+                    Some(&resolution),
+                    &index,
+                ) {
+                    super::agent_runtime_index::TaskAgentPackageCheck::OmitAgentFilter => None,
+                    super::agent_runtime_index::TaskAgentPackageCheck::MismatchEmpty => {
+                        return Ok(Vec::new());
+                    }
+                    super::agent_runtime_index::TaskAgentPackageCheck::ApplyPackageFilter => {
+                        let instances = index
+                            .instance_node_ids_by_package
+                            .get(pkg)
+                            .cloned()
+                            .unwrap_or_default();
+                        if instances.is_empty() {
+                            return Ok(Vec::new());
+                        }
+                        Some(instances)
+                    }
+                }
+            } else {
+                let instances = index
+                    .instance_node_ids_by_package
+                    .get(pkg)
+                    .cloned()
+                    .unwrap_or_default();
+                if instances.is_empty() {
+                    return Ok(Vec::new());
+                }
+                Some(instances)
             }
-            Some(instances)
         } else {
             None
         };
@@ -700,10 +730,7 @@ impl SurrealProvenanceStore {
                             operational.agent_instance_id = Some(instance.clone());
                         }
                         items.push(ProvenanceConversationContextItem {
-                            timestamp_ms: props
-                                .get("a2a_event_order")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(0),
+                            timestamp_ms: stored_event_order(props),
                             activity_anchor: ActivityAnchorId::from(event_id),
                             role: "host".to_string(),
                             content: ConversationItemContent::Operational(operational),
@@ -729,10 +756,7 @@ impl SurrealProvenanceStore {
                         role,
                     );
                     items.push(ProvenanceConversationContextItem {
-                        timestamp_ms: props
-                            .get("a2a_event_order")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
+                        timestamp_ms: stored_event_order(props),
                         activity_anchor: ActivityAnchorId::from(event_id),
                         role: history_role,
                         content: ConversationItemContent::Message { text, citations },
@@ -849,10 +873,7 @@ impl SurrealProvenanceStore {
                     let include_call =
                         !phase.is_session_phase() || !is_empty_object(&args) || has_outcome;
 
-                    let tool_event_order = props
-                        .get("a2a_event_order")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0);
+                    let tool_event_order = stored_event_order(props);
 
                     if include_call {
                         items.push(ProvenanceConversationContextItem {
@@ -1047,10 +1068,7 @@ impl SurrealProvenanceStore {
                     };
 
                     items.push(ProvenanceConversationContextItem {
-                        timestamp_ms: props
-                            .get("a2a_event_order")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
+                        timestamp_ms: stored_event_order(props),
                         activity_anchor: ActivityAnchorId::from(event_id.as_str()),
                         role: "tool".to_string(),
                         content: ConversationItemContent::SessionStep(SessionStepContent {
@@ -1085,7 +1103,7 @@ impl SurrealProvenanceStore {
             .iter()
             .map(|i| i.activity_anchor.as_str().to_string())
             .collect();
-        if include_extensions {
+        if enrich_extensions {
             let after_order = after_event_order.map(crate::observation::EventOrder);
             let mut supplement = self
                 .load_transcript_extension_items(
@@ -1140,17 +1158,31 @@ impl ProvenanceQueryApi for SurrealProvenanceStore {
         task_id: Option<&TaskId>,
         agent_package: Option<&str>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.conversation_context_filtered(
-            context_id,
-            limit,
-            task_id,
-            agent_package,
-            None,
-            false,
-            true,
-            None,
+        use crate::{
+            conversation_context_query::DEFAULT_LLM_CONTEXT_ITEM_CAP,
+            observation::{ObservationScope, TaskObservationScope, TemporalBound},
+            read::{TranscriptEngine, TranscriptPageRequest, TranscriptProjectionProfile},
+        };
+
+        let scope = ObservationScope {
+            context_id: context_id.clone(),
+            task: match task_id {
+                Some(id) => TaskObservationScope::Task(id.clone()),
+                None => TaskObservationScope::ContextWide,
+            },
+            agent_package: agent_package.map(str::to_string),
+            temporal: TemporalBound::All,
+        };
+        let page = TranscriptEngine::page(
+            self,
+            TranscriptPageRequest {
+                scope,
+                limit: limit.unwrap_or(DEFAULT_LLM_CONTEXT_ITEM_CAP),
+                profile: TranscriptProjectionProfile::AgentPromptIndex,
+            },
         )
-        .await
+        .await?;
+        Ok(page.items)
     }
 
     async fn query_conversation_context_after(
@@ -1161,16 +1193,30 @@ impl ProvenanceQueryApi for SurrealProvenanceStore {
         task_id: Option<&TaskId>,
         agent_package: Option<&str>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.conversation_context_filtered(
-            context_id,
-            limit,
-            task_id,
-            agent_package,
-            Some(after_event_order),
-            true,
-            true,
-            None,
+        use crate::{
+            conversation_context_query::DEFAULT_LLM_CONTEXT_ITEM_CAP,
+            observation::{EventOrder, ObservationScope, TaskObservationScope, TemporalBound},
+            read::{TranscriptEngine, TranscriptPageRequest, TranscriptProjectionProfile},
+        };
+
+        let scope = ObservationScope {
+            context_id: context_id.clone(),
+            task: match task_id {
+                Some(id) => TaskObservationScope::Task(id.clone()),
+                None => TaskObservationScope::ContextWide,
+            },
+            agent_package: agent_package.map(str::to_string),
+            temporal: TemporalBound::After(EventOrder(after_event_order)),
+        };
+        let page = TranscriptEngine::page(
+            self,
+            TranscriptPageRequest {
+                scope,
+                limit: limit.unwrap_or(DEFAULT_LLM_CONTEXT_ITEM_CAP),
+                profile: TranscriptProjectionProfile::AgentPromptIndex,
+            },
         )
-        .await
+        .await?;
+        Ok(page.items)
     }
 }

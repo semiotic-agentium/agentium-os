@@ -2500,8 +2500,10 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--event-transcript-gap);
-  padding: 24px;
-  max-width: 52rem;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+  padding: 1rem 1.25rem 1.5rem;
 }
 
 .event-transcript-row {
@@ -2682,6 +2684,32 @@ body {
   border-color: color-mix(in srgb, var(--ingress-accent) 28%, var(--border));
 }
 
+.event-lane-chip--agent {
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, var(--surface));
+  border-color: color-mix(in srgb, var(--primary) 28%, var(--border));
+}
+
+.event-lane-card--agent {
+  border-left: 3px solid var(--primary);
+}
+
+.event-lane-card--agent .event-lane-card__body {
+  padding: 0.5rem 0.75rem 0.625rem;
+}
+
+.event-lane-card--agent .event-transcript-agent-bubble :deep(.bubble) {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+  padding: 0;
+}
+
+.event-lane-card--agent .event-transcript-agent-bubble :deep(.message-row) {
+  padding: 0;
+}
+
 .event-lane-chip--host {
   color: var(--color-warning);
   background: color-mix(in srgb, var(--color-warning) 10%, var(--surface));
@@ -2776,6 +2804,34 @@ body {
   box-shadow: var(--shadow-sm);
   font-size: var(--text-base);
   line-height: 1.55;
+}
+
+/* Event Console: keep transcript + traces in a flex split (no floating overlay). */
+.events-body.app-body {
+  position: relative;
+  overflow: hidden;
+}
+
+.events-body.app-body :deep(.provenance-pane) {
+  position: relative;
+  right: auto;
+  top: auto;
+  bottom: auto;
+  height: auto;
+  align-self: stretch;
+  box-shadow: none;
+}
+
+.events-body.app-body :deep(.provenance-pane.open) {
+  flex: 0 1 min(480px, 38vw);
+  max-width: min(480px, 38vw);
+  width: auto;
+  min-width: 0;
+}
+
+.events-body.app-body :deep(.provenance-pane.open .provenance-pane-inner) {
+  width: 100%;
+  min-width: 0;
 }
 
 .event-transcript-skeleton-line {

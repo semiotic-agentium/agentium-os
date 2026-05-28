@@ -1,14 +1,18 @@
 import { computed, onUnmounted, ref } from "vue";
 import type { ChatMessage, ConversationHistoryPage, HistoryHydrateState } from "../types/a2a";
+import type { ConversationHistoryIngressMode } from "../chat/conversationHistorySync";
 import { fetchMergedConversationHistoryPage } from "../chat/fetchConversationHistoryPage";
 import {
   applyConversationHistoryIngress,
   type ConversationHistoryIngressDeps,
 } from "../chat/conversationHistorySync";
-import { fetchContextMermaidDiagram } from "../utils/mermaidDiagram";
+import {
+  invalidateContextMermaidSchedule,
+  scheduleContextMermaidDiagram,
+} from "../utils/mermaidDiagram";
 import {
   mergeEventConsoleTranscript,
-  transcriptHasHostIngress,
+  transcriptHasIngressUserRows,
 } from "../events/dispatchObserve";
 import {
   observationScopeKey,
@@ -29,6 +33,8 @@ export interface LoadContextOptions {
   preserveMessagesUntilTranscript?: boolean;
   /** Restrict transcript rows to this agent package (matches GET /contexts?agentPackage=). */
   agentPackage?: string | null;
+  /** How to apply GET/SSE conversation-history payloads (restore vs live publish). */
+  ingressMode?: ConversationHistoryIngressMode;
 }
 
 export type TraceObserveState = "idle" | "loading" | "waiting" | "ready" | "empty" | "error";
@@ -49,6 +55,8 @@ export function useEventObservation() {
 
   let historyStream: EventSource | null = null;
   let historyStreamKey = "";
+  let loadContextInFlight: Promise<void> | null = null;
+  let loadContextInFlightKey = "";
   let preserveRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let deltaReconcileTimer: ReturnType<typeof setTimeout> | null = null;
   let reconcileSeq = 0;
@@ -56,6 +64,7 @@ export function useEventObservation() {
   let observeCtx = "";
   /** Skip redundant full reloads when context/task/agent unchanged. */
   let loadedObserveKey = "";
+  let activeIngressMode: ConversationHistoryIngressMode = "evented";
 
   const transcriptMessages = computed(() =>
     mergeEventConsoleTranscript(messages.value, localOverlay.value),
@@ -87,7 +96,7 @@ export function useEventObservation() {
   }
 
   function pruneLocalOverlay(): void {
-    if (!transcriptHasHostIngress(messages.value)) return;
+    if (!transcriptHasIngressUserRows(messages.value)) return;
     localOverlay.value = localOverlay.value.filter(
       (m) => !(m.role === "user" && m.speakerKind === "ingress"),
     );
@@ -95,14 +104,14 @@ export function useEventObservation() {
 
   function applyFullConversationPage(
     page: ConversationHistoryPage,
-    options?: { respectDuplicateVersion?: boolean },
+    options?: { respectDuplicateVersion?: boolean; ingressMode?: ConversationHistoryIngressMode },
   ): void {
     const effect = applyConversationHistoryIngress(ingressDeps(), {
       kind: "full",
-      mode: "evented",
+      mode: options?.ingressMode ?? "evented",
       page,
       respectDuplicateVersion: options?.respectDuplicateVersion ?? false,
-      syncTaskIdFromPageBeforeDefer: true,
+      syncTaskIdFromPageBeforeDefer: false,
     });
     bumpTraceRefreshOnHistoryIngress(traceRefresh, effect);
     pruneLocalOverlay();
@@ -157,7 +166,7 @@ export function useEventObservation() {
     const seq = ++reconcileSeq;
     const page = await fetchMergedConversationHistoryPage(scope);
     if (!page || seq !== reconcileSeq) return;
-    applyFullConversationPage(page, { respectDuplicateVersion: false });
+    applyFullConversationPage(page, { respectDuplicateVersion: false, ingressMode: activeIngressMode });
   }
 
   function ensureHistoryStream(scope: ObservationScope): void {
@@ -168,11 +177,17 @@ export function useEventObservation() {
     const params = streamQueryParams(scope);
     const url = `/contexts/${scope.contextId}/conversation-history/stream?${params.toString()}`;
     const stream = new EventSource(url);
+    // Register before listeners so concurrent ensureHistoryStream calls close this stream.
+    historyStream = stream;
+    historyStreamKey = key;
 
     stream.addEventListener("snapshot", (ev) => {
       try {
         const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
-        applyFullConversationPage(page, { respectDuplicateVersion: true });
+        applyFullConversationPage(page, {
+          respectDuplicateVersion: true,
+          ingressMode: activeIngressMode,
+        });
       } catch {
         // ignore malformed payloads
       }
@@ -195,9 +210,6 @@ export function useEventObservation() {
         historyStreamKey = "";
       }
     };
-
-    historyStream = stream;
-    historyStreamKey = key;
   }
 
   function schedulePreserveTranscriptRetry(
@@ -230,8 +242,10 @@ export function useEventObservation() {
         pageSize: HISTORY_PAGE_SIZE,
       });
       if (!page) return;
-      applyFullConversationPage(page, { respectDuplicateVersion: false });
-      await fetchDiagram(scope.contextId);
+      applyFullConversationPage(page, {
+        respectDuplicateVersion: false,
+        ingressMode: activeIngressMode,
+      });
       if (options?.bumpTrace) {
         bumpTraceRefresh();
       }
@@ -244,7 +258,7 @@ export function useEventObservation() {
 
   async function fetchDiagram(ctx: string): Promise<void> {
     const seq = ++diagramFetchSeq;
-    const text = await fetchContextMermaidDiagram(ctx);
+    const text = await scheduleContextMermaidDiagram(ctx);
     if (seq !== diagramFetchSeq) return;
     provenanceDiagram.value = text;
   }
@@ -276,8 +290,35 @@ export function useEventObservation() {
   ): Promise<void> {
     const preserve = options?.preserveMessagesUntilTranscript ?? false;
     const agentPackage = options?.agentPackage ?? null;
+    const ingressMode = options?.ingressMode ?? "evented";
     const key = observeKey(ctx, task, agentPackage);
+    const inFlightKey = `${key}:${preserve ? "preserve" : "full"}:${ingressMode}`;
+    if (loadContextInFlightKey === inFlightKey && loadContextInFlight) {
+      return loadContextInFlight;
+    }
+
+    loadContextInFlightKey = inFlightKey;
+    loadContextInFlight = runLoadContext(ctx, task, agentPackage, preserve, ingressMode, key);
+    try {
+      await loadContextInFlight;
+    } finally {
+      if (loadContextInFlightKey === inFlightKey) {
+        loadContextInFlight = null;
+        loadContextInFlightKey = "";
+      }
+    }
+  }
+
+  async function runLoadContext(
+    ctx: string,
+    task: string | null | undefined,
+    agentPackage: string | null,
+    preserve: boolean,
+    ingressMode: ConversationHistoryIngressMode,
+    key: string,
+  ): Promise<void> {
     const scope = observeScope(ctx, task, agentPackage);
+    const previousObserveKey = loadedObserveKey;
     const sameObserveTarget = key === loadedObserveKey;
 
     observeCtx = ctx;
@@ -311,17 +352,21 @@ export function useEventObservation() {
     }
 
     loadedObserveKey = key;
+    activeIngressMode = ingressMode;
     traceRefresh.resetHistoryVersion();
     stopDeltaReconcile();
     if (!preserve) {
       provenanceDiagram.value = "";
+      invalidateContextMermaidSchedule(ctx);
       diagramFetchSeq += 1;
       messages.value = [];
       localOverlay.value = [];
       hydrateState.value = "loading";
     }
     stopPreserveRetry();
-    closeHistoryStream();
+    if (previousObserveKey !== key) {
+      closeHistoryStream();
+    }
     try {
       await refreshHistoryPage(scope);
       if (messages.value.length > 0) {

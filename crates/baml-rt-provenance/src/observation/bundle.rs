@@ -46,31 +46,38 @@ impl SurrealProvenanceStore {
             ..Default::default()
         };
 
-        let llm_ops = if request.include_llm_ops {
-            Some(
-                self.query_live_ops_bundle(
-                    ProvenanceOpsResource::LlmCalls,
-                    ops_filters.clone(),
-                    request.ops_page_size,
-                )
-                .await?,
+        let llm_filters = ops_filters.clone();
+        let tool_filters = ops_filters;
+
+        let llm_future = async {
+            if !request.include_llm_ops {
+                return Ok(None);
+            }
+            self.query_live_ops_bundle(
+                ProvenanceOpsResource::LlmCalls,
+                llm_filters,
+                request.ops_page_size,
             )
-        } else {
-            None
+            .await
+            .map(Some)
         };
 
-        let tool_ops = if request.include_tool_ops {
-            Some(
-                self.query_live_ops_bundle(
-                    ProvenanceOpsResource::ToolCalls,
-                    ops_filters,
-                    request.ops_page_size,
-                )
-                .await?,
+        let tool_future = async {
+            if !request.include_tool_ops {
+                return Ok(None);
+            }
+            self.query_live_ops_bundle(
+                ProvenanceOpsResource::ToolCalls,
+                tool_filters,
+                request.ops_page_size,
             )
-        } else {
-            None
+            .await
+            .map(Some)
         };
+
+        let (llm_ops, tool_ops) = tokio::join!(llm_future, tool_future);
+        let llm_ops = llm_ops?;
+        let tool_ops = tool_ops?;
 
         let version = observation_version_from_bundle(&planning, &llm_ops, &tool_ops);
         Ok(LoadedObservationBundle {

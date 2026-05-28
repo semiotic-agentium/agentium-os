@@ -222,7 +222,24 @@ export function normalizeEventTranscriptRows(
     }
   }
 
-  return rows;
+  return sortEventTranscriptRows(rows);
+}
+
+function eventTranscriptRowTimestamp(row: EventTranscriptRow): number {
+  if (row.kind === "ingress_wire" || row.kind === "agent_turn" || row.kind === "operational") {
+    return row.message.timestamp.getTime();
+  }
+  return 0;
+}
+
+/** Transcript rows follow provenance timestamp order. */
+export function sortEventTranscriptRows(rows: EventTranscriptRow[]): EventTranscriptRow[] {
+  return [...rows].sort((a, b) => {
+    const ta = eventTranscriptRowTimestamp(a);
+    const tb = eventTranscriptRowTimestamp(b);
+    if (ta !== tb) return ta - tb;
+    return a.key.localeCompare(b.key);
+  });
 }
 
 export function sortMessagesChronologically(messages: ChatMessage[]): ChatMessage[] {

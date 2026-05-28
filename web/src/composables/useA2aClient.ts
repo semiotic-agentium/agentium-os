@@ -28,7 +28,10 @@ import {
   withSessionStepDetailEvents,
 } from "../chat/toolNotificationEvents";
 import { isSyntheticInputRequiredPrompt } from "../chat/inputRequiredUi";
-import { fetchContextMermaidDiagram } from "../utils/mermaidDiagram";
+import {
+  fetchContextMermaidDiagram,
+  scheduleContextMermaidDiagram,
+} from "../utils/mermaidDiagram";
 import {
   bumpTraceRefreshOnHistoryIngress,
   useTraceRefreshGeneration,
@@ -533,7 +536,7 @@ export function useA2aClient() {
         awaitingResume
           ? Promise.resolve()
           : hydrateMessagesFromConversationHistory(undefined, { quiet: true }),
-        fetchProvenanceDiagram(),
+        fetchProvenanceDiagram({ force: true }),
         fetchContextMetrics(),
         fetchConversationHistoryOptions(),
       ]);
@@ -870,10 +873,12 @@ export function useA2aClient() {
     return extractWireMessageText(message as A2aMessage | undefined);
   }
 
-  async function fetchProvenanceDiagram(): Promise<void> {
+  async function fetchProvenanceDiagram(options?: { force?: boolean }): Promise<void> {
     if (!_contextId.value) return;
     const seq = ++diagramFetchSeq;
-    const text = await fetchContextMermaidDiagram(_contextId.value);
+    const text = options?.force
+      ? await fetchContextMermaidDiagram(_contextId.value, { force: true })
+      : await scheduleContextMermaidDiagram(_contextId.value);
     if (seq !== diagramFetchSeq) return;
     provenanceDiagram.value = text;
   }
@@ -1034,7 +1039,7 @@ export function useA2aClient() {
     historyHydrateState.value = "loading";
     await Promise.all([
       hydrateMessagesFromConversationHistory(contextId),
-      fetchProvenanceDiagram(),
+      fetchProvenanceDiagram({ force: true }),
       fetchContextMetrics(),
     ]);
     ensureConversationHistoryStream();

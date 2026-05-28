@@ -446,6 +446,27 @@ fn host_dispatch_message_to_agent_traversal(target: AgentTarget<'_>) -> String {
     )
 }
 
+/// Forward two-hop semi-join for LlmCall / ToolCall agent ownership.
+///
+/// Starts from bound `AgentRuntimeInstance` node ids, walks
+/// `WAS_EXECUTED_BY` to parent activities, then `A2A_*_CALL` to call nodes.
+fn call_activity_from_agent_instances(target: AgentTarget<'_>) -> String {
+    let message_call = SemanticEdge::A2aMessageCall.as_rel_str();
+    let task_call = SemanticEdge::A2aTaskCall.as_rel_str();
+    let executed = SemanticEdge::WasExecutedBy.as_rel_str();
+    let agent_pred = target.as_predicate();
+    format!(
+        "node_id IN (\
+            SELECT VALUE to_id FROM {TBL_EDGE} \
+            WHERE (rel_type = '{message_call}' OR rel_type = '{task_call}') \
+            AND from_id IN (\
+                SELECT VALUE from_id FROM {TBL_EDGE} \
+                WHERE rel_type = '{executed}' AND {agent_pred}\
+            )\
+         )"
+    )
+}
+
 /// Two-hop pattern for LlmCall / ToolCall: the call activity is reachable
 /// from `AgentRuntimeInstance` via either the message-scoped
 /// (`A2A_MESSAGE_CALL`) or task-scoped (`A2A_TASK_CALL`) parent activity,
@@ -454,35 +475,8 @@ fn host_dispatch_message_to_agent_traversal(target: AgentTarget<'_>) -> String {
 ///
 /// On-disk shape:
 /// `(c:LlmCall|ToolCall) <-[:A2A_MESSAGE_CALL|:A2A_TASK_CALL]- (p:A2AMessageProcessing|A2ATaskExecution) -[:WAS_EXECUTED_BY]-> (a:AgentRuntimeInstance)`
-///
-/// Conceptually equivalent to the W3C-PROV
-/// `LLM_CALL_TO_AGENT` documented on
-/// [`crate::ConversationGraphTraversal::LLM_CALL_TO_AGENT`]; the
-/// `A2A_*_CALL` relation labels are the persisted form of `WAS_INVOKED_BY`
-/// (LlmCall) / `WAS_EXECUTED_BY` (ToolCall) per
-/// `crates/baml-rt-provenance/PROV_MAPPING.md`.
 fn call_activity_to_agent_traversal(target: AgentTarget<'_>) -> String {
-    let message_call = SemanticEdge::A2aMessageCall.as_rel_str();
-    let task_call = SemanticEdge::A2aTaskCall.as_rel_str();
-    let executed = SemanticEdge::WasExecutedBy.as_rel_str();
-    let agent_pred = target.as_predicate();
-    format!(
-        "(node_id IN (\
-            SELECT VALUE to_id FROM {TBL_EDGE} \
-            WHERE rel_type = '{message_call}' \
-            AND from_id IN (\
-                SELECT VALUE from_id FROM {TBL_EDGE} \
-                WHERE rel_type = '{executed}' AND {agent_pred}\
-            )\
-         ) OR node_id IN (\
-            SELECT VALUE to_id FROM {TBL_EDGE} \
-            WHERE rel_type = '{task_call}' \
-            AND from_id IN (\
-                SELECT VALUE from_id FROM {TBL_EDGE} \
-                WHERE rel_type = '{executed}' AND {agent_pred}\
-            )\
-         ))"
-    )
+    call_activity_from_agent_instances(target)
 }
 
 /// Single-hop pattern for AgentStop: the stop activity is directly

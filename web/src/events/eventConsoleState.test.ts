@@ -5,6 +5,7 @@ import {
   changeDraftScopeKind,
   createInitialObservation,
   isEventDispatchScopeKind,
+  publishTargetsNewSession,
   resolveObservedScopeIds,
   scopeContextIdFromDraft,
   shouldOfferApplyObservedScope,
@@ -26,6 +27,25 @@ describe("eventConsoleState", () => {
 
   it("scopeContextIdFromDraft returns empty for new_context", () => {
     expect(scopeContextIdFromDraft({ kind: "new_context" })).toBe("");
+  });
+
+  it("publishTargetsNewSession when historical context is loaded", () => {
+    expect(
+      publishTargetsNewSession({ kind: "new_context" }, "ctx-old"),
+    ).toBe(true);
+    expect(
+      publishTargetsNewSession(
+        { kind: "existing_context", context_id: "ctx-other" },
+        "ctx-old",
+      ),
+    ).toBe(true);
+    expect(
+      publishTargetsNewSession(
+        { kind: "existing_context", context_id: "ctx-old" },
+        "ctx-old",
+      ),
+    ).toBe(false);
+    expect(publishTargetsNewSession({ kind: "new_context" }, null)).toBe(false);
   });
 
   it("shouldOfferApplyObservedScope only for new_context draft with observed id", () => {

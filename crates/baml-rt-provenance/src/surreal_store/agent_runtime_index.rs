@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use baml_rt_core::ids::AgentId;
+use baml_rt_core::ids::{AgentId, TaskId};
 use serde_json::Value;
 
 use super::{
@@ -13,9 +13,45 @@ use crate::{
     error::Result,
     id_semantics::{AgentRuntimeInstanceId, AgentRuntimeInstanceInput},
     metamodel::{GraphQuery, labels},
+    store::TaskAgentResolution,
     surreal_tables::TBL_AGENT_PACKAGE_INSTANCE,
     types::ProvAgentId,
 };
+
+/// Outcome of checking whether `agent_package` adds information when `task_id`
+/// is already set (task head pointer implies executing agent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TaskAgentPackageCheck {
+    /// Task agent matches package — omit redundant agent edge filter.
+    OmitAgentFilter,
+    /// Task agent belongs to a different package — empty result.
+    MismatchEmpty,
+    /// No task scope or agent could not be validated — apply package edge filter.
+    ApplyPackageFilter,
+}
+
+pub(super) fn task_agent_package_check(
+    task_id: Option<&TaskId>,
+    agent_package: Option<&str>,
+    resolution: Option<&TaskAgentResolution>,
+    index: &AgentRuntimeIndex,
+) -> TaskAgentPackageCheck {
+    let (Some(_task_id), Some(pkg)) = (task_id, agent_package) else {
+        return TaskAgentPackageCheck::ApplyPackageFilter;
+    };
+    match resolution {
+        Some(TaskAgentResolution::Resolved(agent_id)) => {
+            match index.identity_by_agent_id.get(agent_id.as_str()) {
+                Some((task_pkg, _)) if task_pkg == pkg => TaskAgentPackageCheck::OmitAgentFilter,
+                Some(_) => TaskAgentPackageCheck::MismatchEmpty,
+                None => TaskAgentPackageCheck::OmitAgentFilter,
+            }
+        }
+        Some(TaskAgentResolution::NotLinked | TaskAgentResolution::TimedOut) | None => {
+            TaskAgentPackageCheck::OmitAgentFilter
+        }
+    }
+}
 
 /// Agent runtime rows indexed once per request (package filter uses instance node ids).
 #[derive(Debug, Clone, Default)]
@@ -261,4 +297,79 @@ fn index_from_registry_rows(rows: &[Value]) -> AgentRuntimeIndex {
 
 pub(super) fn normalize_agent_field_for_ops(raw: Option<&str>, fallback: &str) -> String {
     normalize_agent_field(raw, fallback)
+}
+
+#[cfg(test)]
+mod task_agent_package_tests {
+    use std::collections::HashMap;
+
+    use baml_rt_core::ids::{AgentId, ExternalId, TaskId};
+    use baml_rt_id::UuidId;
+
+    use super::*;
+    use crate::store::TaskAgentResolution;
+
+    const AGENT_UUID: &str = "11111111-2222-3333-4444-555555555555";
+
+    fn task_id() -> TaskId {
+        TaskId::from_external(ExternalId::new("dispatch-unit-test"))
+    }
+
+    fn agent_id() -> AgentId {
+        AgentId::from_uuid(UuidId::parse_str(AGENT_UUID).expect("valid uuid"))
+    }
+
+    fn index_with_package(package: &str) -> AgentRuntimeIndex {
+        let agent_id = agent_id().as_str().to_string();
+        let mut identity_by_agent_id = HashMap::new();
+        identity_by_agent_id.insert(agent_id, (package.to_string(), "1".to_string()));
+        let mut instance_node_ids_by_package = HashMap::new();
+        instance_node_ids_by_package.insert(
+            package.to_string(),
+            vec![format!("agent_instance:{AGENT_UUID}")],
+        );
+        AgentRuntimeIndex {
+            identity_by_agent_id,
+            instance_node_ids_by_package,
+        }
+    }
+
+    #[test]
+    fn omit_filter_when_task_agent_matches_package() {
+        let index = index_with_package("slack-agent");
+        let resolution = TaskAgentResolution::Resolved(agent_id());
+        assert_eq!(
+            task_agent_package_check(
+                Some(&task_id()),
+                Some("slack-agent"),
+                Some(&resolution),
+                &index,
+            ),
+            TaskAgentPackageCheck::OmitAgentFilter,
+        );
+    }
+
+    #[test]
+    fn empty_on_package_mismatch() {
+        let index = index_with_package("slack-agent");
+        let resolution = TaskAgentResolution::Resolved(agent_id());
+        assert_eq!(
+            task_agent_package_check(
+                Some(&task_id()),
+                Some("clickup-agent"),
+                Some(&resolution),
+                &index,
+            ),
+            TaskAgentPackageCheck::MismatchEmpty,
+        );
+    }
+
+    #[test]
+    fn apply_filter_without_task_scope() {
+        let index = index_with_package("slack-agent");
+        assert_eq!(
+            task_agent_package_check(None, Some("slack-agent"), None, &index),
+            TaskAgentPackageCheck::ApplyPackageFilter,
+        );
+    }
 }

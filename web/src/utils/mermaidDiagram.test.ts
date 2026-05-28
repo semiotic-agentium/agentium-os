@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchContextMermaidDiagram, looksLikeMermaidDiagram } from "./mermaidDiagram";
+import {
+  fetchContextMermaidDiagram,
+  invalidateContextMermaidSchedule,
+  looksLikeMermaidDiagram,
+  scheduleContextMermaidDiagram,
+} from "./mermaidDiagram";
 
 describe("looksLikeMermaidDiagram", () => {
   it("accepts sequenceDiagram with leading whitespace", () => {
@@ -17,6 +22,7 @@ describe("looksLikeMermaidDiagram", () => {
 describe("fetchContextMermaidDiagram", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    invalidateContextMermaidSchedule();
   });
 
   it("returns diagram text when response is a sequence diagram", async () => {
@@ -43,5 +49,45 @@ describe("fetchContextMermaidDiagram", () => {
 
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network")));
     await expect(fetchContextMermaidDiagram("ctx-1")).resolves.toBe("");
+  });
+
+  it("dedupes concurrent fetches for the same context", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => "sequenceDiagram\n  A->>B",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const [a, b] = await Promise.all([
+      fetchContextMermaidDiagram("ctx-dedupe"),
+      fetchContextMermaidDiagram("ctx-dedupe"),
+    ]);
+    expect(a).toBe(b);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("scheduleContextMermaidDiagram", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    invalidateContextMermaidSchedule();
+  });
+
+  it("coalesces rapid schedule calls into one fetch", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => "sequenceDiagram\n  A->>B",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const p1 = scheduleContextMermaidDiagram("ctx-sched");
+    const p2 = scheduleContextMermaidDiagram("ctx-sched");
+    await vi.advanceTimersByTimeAsync(400);
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1).toBe(r2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

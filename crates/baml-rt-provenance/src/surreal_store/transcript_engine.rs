@@ -1,4 +1,4 @@
-//! [`TranscriptReader`] — index-backed bounded transcript slices.
+//! [`TranscriptEngine`] — index-backed bounded transcript pages.
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -10,7 +10,7 @@ use super::{
 use crate::{
     error::Result,
     id_semantics::task_entity_id_string_raw,
-    read::{TranscriptReader, TranscriptSlice, TranscriptSliceSpec},
+    read::{TranscriptEngine, TranscriptPage, TranscriptPageRequest, TranscriptScopeWidening},
     surreal_tables::{TBL_CONTEXT_TRANSCRIPT_INDEX, TBL_NODE},
 };
 
@@ -18,7 +18,7 @@ impl SurrealProvenanceStore {
     async fn fetch_transcript_index_rows(
         &self,
         context_id: &str,
-        after_event_order: u64,
+        after_exclusive: Option<u64>,
         limit: usize,
         task_entity_id: Option<&str>,
     ) -> Result<Vec<Value>> {
@@ -27,17 +27,24 @@ impl SurrealProvenanceStore {
         } else {
             ""
         };
+        let after_filter = if after_exclusive.is_some() {
+            "AND event_order > $after"
+        } else {
+            ""
+        };
         let query = format!(
             "SELECT node_id, label, event_order FROM {TBL_CONTEXT_TRANSCRIPT_INDEX} \
-             WHERE context_id = $context_id AND event_order > $after {task_filter} \
+             WHERE context_id = $context_id {after_filter} {task_filter} \
              ORDER BY event_order ASC, node_id ASC LIMIT $limit"
         );
         let mut q = self
             .db
             .query(&query)
             .bind(("context_id", context_id.to_string()))
-            .bind(("after", after_event_order))
             .bind(("limit", limit));
+        if let Some(after) = after_exclusive {
+            q = q.bind(("after", after));
+        }
         if let Some(task_entity) = task_entity_id {
             q = q.bind(("task_entity_id", task_entity.to_string()));
         }
@@ -66,24 +73,58 @@ impl SurrealProvenanceStore {
 }
 
 #[async_trait]
-impl TranscriptReader for SurrealProvenanceStore {
-    async fn slice(&self, spec: TranscriptSliceSpec) -> Result<TranscriptSlice> {
-        let limit = spec.limit.max(1);
-        let ctx = spec.context_id.as_str();
-        let task_entity = spec
-            .task_id
-            .as_ref()
+impl TranscriptEngine for SurrealProvenanceStore {
+    async fn page(&self, request: TranscriptPageRequest) -> Result<TranscriptPage> {
+        let limit = request.limit.max(1);
+        let ctx = request.scope.context_id.as_str();
+        let after_exclusive = request.after_event_order_exclusive();
+        let task_entity = request
+            .scope
+            .task_id()
             .map(|t| task_entity_id_string_raw(t.as_str()));
 
-        let index_rows = self
-            .fetch_transcript_index_rows(ctx, spec.after_event_order, limit, task_entity.as_deref())
+        let mut scope_widening = TranscriptScopeWidening::None;
+        let mut index_rows = self
+            .fetch_transcript_index_rows(ctx, after_exclusive, limit, task_entity.as_deref())
             .await?;
 
+        if index_rows.is_empty() && task_entity.is_some() {
+            scope_widening = TranscriptScopeWidening::ContextFallback;
+            index_rows = self
+                .fetch_transcript_index_rows(ctx, after_exclusive, limit, None)
+                .await?;
+        }
+
         if index_rows.is_empty() {
-            return Ok(TranscriptSlice {
-                items: Vec::new(),
-                max_event_order: spec.after_event_order,
-                next_after_event_order: None,
+            let enrich = request.profile.enrich_from_graph_extensions();
+            let items = self
+                .conversation_context_filtered(
+                    &request.scope.context_id,
+                    Some(limit),
+                    request.scope.task_id(),
+                    request.scope.agent_package.as_deref(),
+                    after_exclusive,
+                    true,
+                    enrich,
+                    None,
+                )
+                .await?;
+            let max_event_order = items
+                .iter()
+                .map(|i| i.timestamp_ms)
+                .max()
+                .unwrap_or(after_exclusive.unwrap_or(0));
+            let next_after_event_order = if items.len() >= limit {
+                Some(max_event_order)
+            } else {
+                None
+            };
+            return Ok(TranscriptPage {
+                scope: request.scope,
+                items,
+                max_event_order,
+                next_after_event_order,
+                scope_widening,
             });
         }
 
@@ -94,15 +135,16 @@ impl TranscriptReader for SurrealProvenanceStore {
 
         let rows = self.fetch_transcript_nodes_by_ids(&node_ids).await?;
 
+        let enrich = request.profile.enrich_from_graph_extensions();
         let items = self
             .conversation_context_filtered(
-                &spec.context_id,
+                &request.scope.context_id,
                 None,
-                spec.task_id.as_ref(),
-                spec.agent_package.as_deref(),
-                Some(spec.after_event_order),
+                request.scope.task_id(),
+                request.scope.agent_package.as_deref(),
+                after_exclusive,
                 true,
-                spec.include_extensions,
+                enrich,
                 Some(rows),
             )
             .await?;
@@ -111,17 +153,19 @@ impl TranscriptReader for SurrealProvenanceStore {
             .iter()
             .map(|i| i.timestamp_ms)
             .max()
-            .unwrap_or(spec.after_event_order);
+            .unwrap_or(after_exclusive.unwrap_or(0));
         let next_after_event_order = if index_rows.len() >= limit {
             Some(max_event_order)
         } else {
             None
         };
 
-        Ok(TranscriptSlice {
+        Ok(TranscriptPage {
+            scope: request.scope,
             items,
             max_event_order,
             next_after_event_order,
+            scope_widening,
         })
     }
 }

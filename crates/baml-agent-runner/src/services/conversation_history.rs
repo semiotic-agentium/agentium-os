@@ -1,14 +1,10 @@
-// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
-//
-// SPDX-License-Identifier: Apache-2.0
-
-//! Conversation history service backed by provenance observation loader.
+//! Conversation history service backed by provenance transcript engine.
 
 use std::sync::Arc;
 
 use baml_rt_provenance::{
-    EventOrder, LoadedObservation, ObservationLoader as _, PageVersionEnvelope,
-    PromptOpsVersionRow, ResumeVersionHints, TranscriptReader, TranscriptSliceSpec,
+    EventOrder, LoadedObservation, PageVersionEnvelope, PromptOpsVersionRow, ResumeVersionHints,
+    TranscriptEngine, TranscriptPageRequest, TranscriptProjectionProfile,
     observation_scope_from_history, observation_version_page, resolve_resume_ui_hints,
 };
 
@@ -23,17 +19,32 @@ impl ConversationHistoryServiceImpl {
         Self { store }
     }
 
-    fn transcript_spec(
+    fn transcript_page_request(
         request: &baml_rt_api::ConversationHistoryRequest,
         after_event_order: u64,
-    ) -> TranscriptSliceSpec {
-        TranscriptSliceSpec {
-            context_id: request.context_id.clone(),
-            task_id: request.task_id.clone(),
-            agent_package: request.agent_package.clone(),
-            after_event_order,
-            limit: request.page.limit(),
-            include_extensions: false,
+    ) -> TranscriptPageRequest {
+        let scope = observation_scope_from_history(
+            request.context_id.clone(),
+            request.task_id.clone(),
+            request.agent_package.clone(),
+            if after_event_order > 0 {
+                Some(after_event_order)
+            } else {
+                None
+            },
+        );
+        let profile = match request.profile {
+            baml_rt_api::ConversationHistoryProfile::Full => {
+                TranscriptProjectionProfile::OperatorTimeline
+            }
+            baml_rt_api::ConversationHistoryProfile::Compact => {
+                TranscriptProjectionProfile::OperatorTimeline
+            }
+        };
+        TranscriptPageRequest {
+            scope,
+            limit: request.page.limit() as usize,
+            profile,
         }
     }
 
@@ -170,19 +181,12 @@ impl baml_rt_api::ConversationHistoryService for ConversationHistoryServiceImpl 
         let after = request
             .after_event_order_from_cursor()
             .map_err(|e| baml_rt_api::ConversationHistoryError::Other(Box::new(e)))?;
-        let spec = Self::transcript_spec(request, after);
-        let slice = self
-            .store
-            .slice(spec)
+        let transcript_req = Self::transcript_page_request(request, after);
+        let transcript_page = TranscriptEngine::page(self.store.as_ref(), transcript_req)
             .await
             .map_err(|e| baml_rt_api::ConversationHistoryError::Other(Box::new(e)))?;
 
-        let scope = observation_scope_from_history(
-            request.context_id.clone(),
-            request.task_id.clone(),
-            request.agent_package.clone(),
-            None,
-        );
+        let scope = transcript_page.scope.clone();
         let llm_call_count = self
             .store
             .load_task_metrics(&scope)
@@ -191,18 +195,18 @@ impl baml_rt_api::ConversationHistoryService for ConversationHistoryServiceImpl 
             .map(|m| m.llm_call_count)
             .unwrap_or(0);
 
-        let transcript = slice.items.clone();
+        let items = transcript_page.items.clone();
         let mut page = baml_rt_api::page_from_transcript_slice(
-            slice.items,
+            transcript_page.items,
             request,
             llm_call_count,
-            slice.next_after_event_order,
+            transcript_page.next_after_event_order,
         );
         page.items = baml_rt_api::apply_conversation_history_profile(page.items, request.profile);
 
         let loaded = LoadedObservation {
             scope,
-            transcript,
+            transcript: items,
             max_event_order: EventOrder(page.max_event_order),
             metrics: None,
         };
@@ -229,11 +233,11 @@ impl baml_rt_api::ConversationHistoryService for ConversationHistoryServiceImpl 
             request.context_id.clone(),
             request.task_id.clone(),
             request.agent_package.clone(),
-            None,
+            Some(request.after_event_order),
         );
         let (loaded, delta_rows) = self
             .store
-            .load_delta(scope, EventOrder(request.after_event_order), request.limit)
+            .load_observation_delta(scope, EventOrder(request.after_event_order), request.limit)
             .await
             .map_err(|e| baml_rt_api::ConversationHistoryError::Other(Box::new(e)))?;
 

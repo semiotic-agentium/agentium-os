@@ -217,6 +217,15 @@ export function syncResumeHintsFromPage(
   }
 }
 
+function sortConversationHistoryItems(
+  items: ConversationHistoryItem[],
+): ConversationHistoryItem[] {
+  return [...items].sort((a, b) => {
+    if (a.timestampMs !== b.timestampMs) return a.timestampMs - b.timestampMs;
+    return a.activityAnchor.localeCompare(b.activityAnchor);
+  });
+}
+
 export function applyConversationHistoryPage(
   messages: Ref<ChatMessage[]>,
   page: ConversationHistoryPage,
@@ -229,11 +238,7 @@ export function applyConversationHistoryPage(
       );
     }
   };
-  const sorted = [...page.items].sort(
-    (a, b) =>
-      a.timestampMs - b.timestampMs ||
-      a.activityAnchor.localeCompare(b.activityAnchor),
-  );
+  const sorted = sortConversationHistoryItems(page.items);
   const rebuilt: ChatMessage[] = [];
   let turnOrdinal = 0;
   let activeAgentMsg: ChatMessage | null = null;
@@ -402,11 +407,7 @@ export function applyConversationHistoryDelta(
   applyMode: ConversationHistoryDeltaApplyMode = ConversationHistoryDeltaApplyMode.Full,
 ): void {
   if (Array.isArray(page.items) && page.items.length > 0) {
-    const sorted = [...page.items].sort(
-    (a, b) =>
-      a.timestampMs - b.timestampMs ||
-      a.activityAnchor.localeCompare(b.activityAnchor),
-  );
+    const sorted = sortConversationHistoryItems(page.items);
     for (const item of sorted) {
       const isUser = item.role.toLowerCase() === "user";
       const ts = new Date(normalizeEpochMs(item.timestampMs));

@@ -7,47 +7,31 @@ use super::{
     transcript_order::transcript_delta_rows,
     types::{
         EventOrder, LoadedObservation, ObservationScope, TaskObservationMetrics,
-        TaskObservationScope,
+        TaskObservationScope, TemporalBound,
     },
 };
 use crate::{
     episode::token_summary_for_task,
     error::Result,
-    read::{TranscriptReader, TranscriptSliceSpec},
+    read::{TranscriptEngine, TranscriptPageRequest, TranscriptProjectionProfile},
     surreal_store::SurrealProvenanceStore,
 };
 
 impl SurrealProvenanceStore {
-    fn transcript_spec_from_scope(
-        &self,
-        scope: &ObservationScope,
-        after_event_order: u64,
-        limit: usize,
-        include_extensions: bool,
-    ) -> TranscriptSliceSpec {
-        TranscriptSliceSpec {
-            context_id: scope.context_id.clone(),
-            task_id: scope.task_id().cloned(),
-            agent_package: scope.agent_package.clone(),
-            after_event_order,
-            limit,
-            include_extensions,
-        }
-    }
-
     /// Load one observation for the given scope (bounded slice; no full-context scan).
     pub async fn load_observation(&self, scope: ObservationScope) -> Result<LoadedObservation> {
-        let after_u64 = scope
-            .temporal
-            .after_event_order()
-            .map(EventOrder::as_u64)
-            .unwrap_or(0);
         let limit = usize::MAX / 4;
-        let spec = self.transcript_spec_from_scope(&scope, after_u64, limit, true);
-        let slice = TranscriptReader::slice(self, spec).await?;
+        let page = TranscriptEngine::page(
+            self,
+            TranscriptPageRequest {
+                scope: scope.clone(),
+                limit,
+                profile: TranscriptProjectionProfile::OperatorTimeline,
+            },
+        )
+        .await?;
 
-        let ObservationScope { task, .. } = scope.clone();
-        let metrics = match task {
+        let metrics = match scope.task {
             TaskObservationScope::Task(ref tid) => Some(TaskObservationMetrics {
                 llm_call_count: token_summary_for_task(self, tid.as_str())
                     .await?
@@ -58,8 +42,8 @@ impl SurrealProvenanceStore {
 
         Ok(LoadedObservation {
             scope,
-            transcript: slice.items,
-            max_event_order: EventOrder(slice.max_event_order),
+            transcript: page.items,
+            max_event_order: EventOrder(page.max_event_order),
             metrics,
         })
     }
@@ -71,9 +55,18 @@ impl SurrealProvenanceStore {
         after: EventOrder,
         limit: usize,
     ) -> Result<(LoadedObservation, Vec<ProvenanceConversationContextItem>)> {
-        let spec = self.transcript_spec_from_scope(&scope, after.as_u64(), limit, false);
-        let slice = TranscriptReader::slice(self, spec).await?;
-        let delta = transcript_delta_rows(&slice.items, after.as_u64(), limit);
+        let mut scoped = scope.clone();
+        scoped.temporal = TemporalBound::After(after);
+        let page = TranscriptEngine::page(
+            self,
+            TranscriptPageRequest {
+                scope: scoped,
+                limit,
+                profile: TranscriptProjectionProfile::LiveStructuralDelta,
+            },
+        )
+        .await?;
+        let delta = transcript_delta_rows(&page.items, after.as_u64(), limit);
 
         let metrics = match scope.task {
             TaskObservationScope::Task(ref tid) => Some(TaskObservationMetrics {
@@ -86,8 +79,8 @@ impl SurrealProvenanceStore {
 
         let loaded = LoadedObservation {
             scope,
-            transcript: slice.items.clone(),
-            max_event_order: EventOrder(slice.max_event_order),
+            transcript: page.items.clone(),
+            max_event_order: EventOrder(page.max_event_order),
             metrics,
         };
         Ok((loaded, delta))

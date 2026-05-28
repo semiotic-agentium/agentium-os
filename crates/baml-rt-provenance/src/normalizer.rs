@@ -2847,6 +2847,15 @@ fn validate_required_call_metadata(
     Ok(())
 }
 
+fn event_order_from_event(event: &ProvEvent) -> u64 {
+    event
+        .id()
+        .as_str()
+        .strip_prefix("prov-")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or_else(|| event.timestamp_ms())
+}
+
 fn base_attrs(event: &ProvEvent) -> HashMap<String, Value> {
     let mut attrs = HashMap::new();
     if let Some(ctx) = event.context_id_opt() {
@@ -2862,12 +2871,10 @@ fn base_attrs(event: &ProvEvent) -> HashMap<String, Value> {
         );
     }
     let anchor = event.id().as_str().to_string();
-    if let Some(order) = anchor
-        .strip_prefix("prov-")
-        .and_then(|s| s.parse::<u64>().ok())
-    {
-        attrs.insert(a2a::EVENT_ORDER.to_string(), Value::Number(order.into()));
-    }
+    attrs.insert(
+        a2a::EVENT_ORDER.to_string(),
+        Value::Number(event_order_from_event(event).into()),
+    );
     attrs.insert(a2a::ACTIVITY_ANCHOR.to_string(), Value::String(anchor));
     attrs.insert(
         a2a::PROV_TIME.to_string(),
@@ -2894,13 +2901,10 @@ fn derived_attrs(event: &ProvEvent) -> HashMap<String, Value> {
         a2a::TIMESTAMP_MS.to_string(),
         Value::Number(event.timestamp_ms().into()),
     );
-    let anchor = event.id().as_str();
-    if let Some(order) = anchor
-        .strip_prefix("prov-")
-        .and_then(|s| s.parse::<u64>().ok())
-    {
-        attrs.insert(a2a::EVENT_ORDER.to_string(), Value::Number(order.into()));
-    }
+    attrs.insert(
+        a2a::EVENT_ORDER.to_string(),
+        Value::Number(event_order_from_event(event).into()),
+    );
     attrs
 }
 

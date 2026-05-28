@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use baml_rt_conversation::view::{ConversationItemContent, ProvenanceConversationContextItem};
 use baml_rt_core::{
     bus::{EffectEvent, EffectSubscriber, EffectSubscriberTier},
-    ids::{ActivityAnchorId, ContextId, ExternalId, MessageId, TaskId},
+    ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_embedding::{
     DriftConfig, DriftSeverity, EmbeddingProvider, FastEmbedProvider, FastRerankProvider,
@@ -2130,7 +2130,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 tracing::debug!(
                     event = "provenance_emit",
                     source = "effect_subscriber.llm_completion",
-                    prov_event_id = %completed_event.id(),
+                    prov_event_id = %completed_id,
                     function_name = %metadata.function_name,
                     client = %metadata.client,
                     model = %metadata.model,
@@ -2142,9 +2142,25 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                     has_drift = drift.is_some(),
                     "Emitting LLM completion provenance event from effect-subscriber path"
                 );
+                let citation_values = resolved_citations
+                    .iter()
+                    .filter_map(|t| baml_rt_core::Citation::try_new(&t.raw).ok())
+                    .collect::<Vec<_>>();
                 self.writer
                     .add_event_with_logging(completed_event, "effect subscriber")
                     .await;
+                if bool::from(*outcome) {
+                    emit_llm_assistant_transcript_message(
+                        self.writer.as_ref(),
+                        context_id,
+                        &completion_metadata,
+                        result_payload.as_ref(),
+                        &completed_id,
+                        *duration_ms,
+                        citation_values,
+                    )
+                    .await;
+                }
                 self.invalidate_context_ref_cache(context_id);
                 if !bool::from(*outcome) && rejection_reason.as_deref().is_some() {
                     let reason = rejection_reason.clone().unwrap_or_default();
@@ -2338,6 +2354,75 @@ fn task_id_from_metadata(metadata: &Value) -> Option<TaskId> {
         .get("task_id")
         .and_then(|value| value.as_str())
         .map(|value| TaskId::from_external(ExternalId::new(value.to_string())))
+}
+
+fn agent_id_from_metadata(metadata: &Value) -> Option<AgentId> {
+    metadata
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .and_then(|value| uuid::Uuid::parse_str(value).ok())
+        .map(|uuid| AgentId::from_uuid(UuidId::new(uuid)))
+}
+
+fn llm_assistant_transcript_message_id(
+    metadata: &Value,
+    context_id: &ContextId,
+    completed_anchor: &ActivityAnchorId,
+) -> MessageId {
+    message_id_from_metadata(metadata).map_or_else(
+        || {
+            MessageId::from_external(ExternalId::new(format!(
+                "ctx-msg:{}:llm:{}",
+                context_id.as_str(),
+                completed_anchor.as_str()
+            )))
+        },
+        |base| {
+            MessageId::from_external(ExternalId::new(format!(
+                "{}:llm:{}",
+                base.as_str(),
+                completed_anchor.as_str()
+            )))
+        },
+    )
+}
+
+async fn emit_llm_assistant_transcript_message<W: ProvenanceWriter + ?Sized>(
+    writer: &W,
+    context_id: &ContextId,
+    metadata: &Value,
+    result_payload: Option<&Value>,
+    completed_anchor: &ActivityAnchorId,
+    timestamp_ms: u64,
+    citations: Vec<baml_rt_core::Citation>,
+) {
+    let Some(task_id) = task_id_from_metadata(metadata) else {
+        return;
+    };
+    let Some(agent_id) = agent_id_from_metadata(metadata) else {
+        return;
+    };
+    let response_text = result_payload
+        .map(baml_rt_embedding::extraction::extract_response_text)
+        .unwrap_or_default();
+    if response_text.trim().is_empty() {
+        return;
+    }
+    let message_id = llm_assistant_transcript_message_id(metadata, context_id, completed_anchor);
+    let msg_event = ProvEvent::message_sent_task(
+        context_id.clone(),
+        task_id,
+        message_id,
+        "assistant".to_string(),
+        vec![response_text],
+        None,
+        agent_id,
+        timestamp_ms,
+        citations,
+    );
+    writer
+        .add_event_with_logging(msg_event, "llm assistant transcript")
+        .await;
 }
 
 fn usage_tokens(usage: &LlmUsage) -> (Option<u64>, Option<u64>) {

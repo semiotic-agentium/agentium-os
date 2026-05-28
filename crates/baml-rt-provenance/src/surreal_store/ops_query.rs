@@ -13,7 +13,9 @@ use serde_json::{Map, Value};
 
 use super::{
     SurrealProvenanceStore,
-    agent_runtime_index::normalize_agent_field_for_ops,
+    agent_runtime_index::{
+        TaskAgentPackageCheck, normalize_agent_field_for_ops, task_agent_package_check,
+    },
     helpers::{
         json_value_from_embedded_string, normalize_payload_text_query, parse_json_object_field,
     },
@@ -25,8 +27,8 @@ use super::{
 use crate::{
     error::{ProvenanceError, Result},
     metamodel::{
-        AgentPackage, AgentRuntimeInstanceNodeId, ContextNodeId, EdgeProjection, FilterOp,
-        GraphQuery, ScopeState, SemanticEdge, TaskExecutionNodeId, TaskNodeId, keys, labels,
+        AgentRuntimeInstanceNodeId, ContextNodeId, EdgeProjection, FilterOp, GraphQuery,
+        ScopeState, SemanticEdge, TaskExecutionNodeId, TaskNodeId, keys, labels,
     },
     observation::ops::build_ops_summary,
     ops_types::{ProvenanceOpsAppliedCaps, ProvenanceOpsHotspotGroup, ProvenanceOpsRow},
@@ -622,15 +624,65 @@ fn provenance_ops_query_op_label(r: &ProvenanceOpsResource) -> &'static str {
 // at compile time.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Agent package resolution (task-scoped validation + registry instances).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpsAgentPackageResolution {
+    None,
+    TaskValidatedOmit,
+    Empty,
+    ApplyInstances,
+}
+
+impl SurrealProvenanceStore {
+    async fn resolve_ops_agent_package_filter(
+        &self,
+        filters: &ProvenanceOpsFilters,
+        index: &super::agent_runtime_index::AgentRuntimeIndex,
+    ) -> Result<OpsAgentPackageResolution> {
+        let Some(pkg) = filters.agent_package.as_deref() else {
+            return Ok(OpsAgentPackageResolution::None);
+        };
+
+        let task_resolution = if let Some(ref task_id) = filters.task_id {
+            Some(self.get_task_agent_id(task_id).await?)
+        } else {
+            None
+        };
+
+        match task_agent_package_check(
+            filters.task_id.as_ref(),
+            Some(pkg),
+            task_resolution.as_ref(),
+            index,
+        ) {
+            TaskAgentPackageCheck::OmitAgentFilter => {
+                Ok(OpsAgentPackageResolution::TaskValidatedOmit)
+            }
+            TaskAgentPackageCheck::MismatchEmpty => Ok(OpsAgentPackageResolution::Empty),
+            TaskAgentPackageCheck::ApplyPackageFilter => {
+                match index.instance_node_ids_by_package.get(pkg) {
+                    Some(instances) if instances.is_empty() => Ok(OpsAgentPackageResolution::Empty),
+                    Some(_) => Ok(OpsAgentPackageResolution::ApplyInstances),
+                    None => Ok(OpsAgentPackageResolution::Empty),
+                }
+            }
+        }
+    }
+}
+
 fn build_messages_query(
     filters: &ProvenanceOpsFilters,
+    package_resolution: OpsAgentPackageResolution,
     package_instances: Option<&[String]>,
     sql_page: Option<(u64, u64, bool)>,
 ) -> (String, Value) {
     if let Some(ref ctx) = filters.context_id {
         let q = GraphQuery::<labels::Message, _>::new()
             .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
-        let q = apply_message_filters(q, filters, package_instances);
+        let q = apply_message_filters(q, filters, package_resolution, package_instances);
         match sql_page {
             Some((offset, limit, sort_desc)) => {
                 apply_sql_page(q, offset, limit, sort_desc).into_surreal()
@@ -639,7 +691,7 @@ fn build_messages_query(
         }
     } else {
         let q = GraphQuery::<labels::Message, _>::new().all();
-        let q = apply_message_filters(q, filters, package_instances);
+        let q = apply_message_filters(q, filters, package_resolution, package_instances);
         match sql_page {
             Some((offset, limit, sort_desc)) => {
                 apply_sql_page(q, offset, limit, sort_desc).into_surreal()
@@ -652,28 +704,32 @@ fn build_messages_query(
 fn apply_message_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>(
     mut q: GraphQuery<labels::Message, S>,
     filters: &ProvenanceOpsFilters,
+    package_resolution: OpsAgentPackageResolution,
     package_instances: Option<&[String]>,
 ) -> GraphQuery<labels::Message, S> {
-    if let Some(ref agent_id) = filters.agent_id {
-        q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
-    } else {
-        q = apply_agent_package_filter(q, filters, package_instances);
-    }
     if let Some(ref task_id) = filters.task_id {
         q = q.for_task(TaskNodeId::for_task_id(task_id));
+    }
+    if let Some(ref agent_id) = filters.agent_id {
+        q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
+    } else if package_resolution == OpsAgentPackageResolution::ApplyInstances
+        && let Some(instances) = package_instances
+    {
+        q = q.for_agent_instances(instances);
     }
     q
 }
 
 fn build_llm_query(
     filters: &ProvenanceOpsFilters,
+    package_resolution: OpsAgentPackageResolution,
     package_instances: Option<&[String]>,
     sql_page: Option<(u64, u64, bool)>,
 ) -> (String, Value) {
     if let Some(ref ctx) = filters.context_id {
         let q = GraphQuery::<labels::LlmCall, _>::new()
             .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
-        let q = apply_llm_filters(q, filters, package_instances);
+        let q = apply_llm_filters(q, filters, package_resolution, package_instances);
         match sql_page {
             Some((offset, limit, sort_desc)) => {
                 apply_sql_page(q, offset, limit, sort_desc).into_surreal()
@@ -682,7 +738,7 @@ fn build_llm_query(
         }
     } else {
         let q = GraphQuery::<labels::LlmCall, _>::new().all();
-        let q = apply_llm_filters(q, filters, package_instances);
+        let q = apply_llm_filters(q, filters, package_resolution, package_instances);
         match sql_page {
             Some((offset, limit, sort_desc)) => {
                 apply_sql_page(q, offset, limit, sort_desc).into_surreal()
@@ -695,15 +751,18 @@ fn build_llm_query(
 fn apply_llm_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>(
     mut q: GraphQuery<labels::LlmCall, S>,
     filters: &ProvenanceOpsFilters,
+    package_resolution: OpsAgentPackageResolution,
     package_instances: Option<&[String]>,
 ) -> GraphQuery<labels::LlmCall, S> {
-    if let Some(ref agent_id) = filters.agent_id {
-        q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
-    } else {
-        q = apply_agent_package_filter(q, filters, package_instances);
-    }
     if let Some(ref task_id) = filters.task_id {
         q = q.for_task_execution(TaskExecutionNodeId::for_task_id(task_id));
+    }
+    if let Some(ref agent_id) = filters.agent_id {
+        q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
+    } else if package_resolution == OpsAgentPackageResolution::ApplyInstances
+        && let Some(instances) = package_instances
+    {
+        q = q.for_agent_instances(instances);
     }
     if let Some(ref provider) = filters.provider {
         q = q.filter(keys::Provider, FilterOp::Eq, provider.clone());
@@ -716,13 +775,14 @@ fn apply_llm_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>
 
 fn build_tool_query(
     filters: &ProvenanceOpsFilters,
+    package_resolution: OpsAgentPackageResolution,
     package_instances: Option<&[String]>,
     sql_page: Option<(u64, u64, bool)>,
 ) -> (String, Value) {
     if let Some(ref ctx) = filters.context_id {
         let q = GraphQuery::<labels::ToolCall, _>::new()
             .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
-        let q = apply_tool_filters(q, filters, package_instances);
+        let q = apply_tool_filters(q, filters, package_resolution, package_instances);
         match sql_page {
             Some((offset, limit, sort_desc)) => {
                 apply_sql_page(q, offset, limit, sort_desc).into_surreal()
@@ -731,7 +791,7 @@ fn build_tool_query(
         }
     } else {
         let q = GraphQuery::<labels::ToolCall, _>::new().all();
-        let q = apply_tool_filters(q, filters, package_instances);
+        let q = apply_tool_filters(q, filters, package_resolution, package_instances);
         match sql_page {
             Some((offset, limit, sort_desc)) => {
                 apply_sql_page(q, offset, limit, sort_desc).into_surreal()
@@ -744,15 +804,18 @@ fn build_tool_query(
 fn apply_tool_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>(
     mut q: GraphQuery<labels::ToolCall, S>,
     filters: &ProvenanceOpsFilters,
+    package_resolution: OpsAgentPackageResolution,
     package_instances: Option<&[String]>,
 ) -> GraphQuery<labels::ToolCall, S> {
-    if let Some(ref agent_id) = filters.agent_id {
-        q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
-    } else {
-        q = apply_agent_package_filter(q, filters, package_instances);
-    }
     if let Some(ref task_id) = filters.task_id {
         q = q.for_task_execution(TaskExecutionNodeId::for_task_id(task_id));
+    }
+    if let Some(ref agent_id) = filters.agent_id {
+        q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
+    } else if package_resolution == OpsAgentPackageResolution::ApplyInstances
+        && let Some(instances) = package_instances
+    {
+        q = q.for_agent_instances(instances);
     }
     if let Some(ref tool_name) = filters.tool_name {
         q = q.filter(keys::ToolName, FilterOp::Eq, tool_name.clone());
@@ -762,13 +825,14 @@ fn apply_tool_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter
 
 fn build_lifecycle_query(
     filters: &ProvenanceOpsFilters,
+    package_resolution: OpsAgentPackageResolution,
     package_instances: Option<&[String]>,
     sql_page: Option<(u64, u64, bool)>,
 ) -> (String, Value) {
     if let Some(ref ctx) = filters.context_id {
         let q = GraphQuery::<labels::AgentStop, _>::new()
             .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
-        let q = apply_lifecycle_filters(q, filters, package_instances);
+        let q = apply_lifecycle_filters(q, filters, package_resolution, package_instances);
         match sql_page {
             Some((offset, limit, sort_desc)) => {
                 apply_sql_page(q, offset, limit, sort_desc).into_surreal()
@@ -777,7 +841,7 @@ fn build_lifecycle_query(
         }
     } else {
         let q = GraphQuery::<labels::AgentStop, _>::new().all();
-        let q = apply_lifecycle_filters(q, filters, package_instances);
+        let q = apply_lifecycle_filters(q, filters, package_resolution, package_instances);
         match sql_page {
             Some((offset, limit, sort_desc)) => {
                 apply_sql_page(q, offset, limit, sort_desc).into_surreal()
@@ -790,72 +854,17 @@ fn build_lifecycle_query(
 fn apply_lifecycle_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>(
     mut q: GraphQuery<labels::AgentStop, S>,
     filters: &ProvenanceOpsFilters,
+    package_resolution: OpsAgentPackageResolution,
     package_instances: Option<&[String]>,
 ) -> GraphQuery<labels::AgentStop, S> {
     if let Some(ref agent_id) = filters.agent_id {
         q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
-    } else {
-        q = apply_agent_package_filter(q, filters, package_instances);
+    } else if package_resolution == OpsAgentPackageResolution::ApplyInstances
+        && let Some(instances) = package_instances
+    {
+        q = q.for_agent_instances(instances);
     }
     q
-}
-
-trait AgentPackageFilterOps {
-    fn for_agent_package(self, package: AgentPackage) -> Self;
-    fn for_agent_instances(self, instance_node_ids: &[String]) -> Self;
-}
-
-impl<S: ScopeState> AgentPackageFilterOps for GraphQuery<labels::Message, S> {
-    fn for_agent_package(self, package: AgentPackage) -> Self {
-        GraphQuery::<labels::Message, S>::for_agent_package(self, package)
-    }
-    fn for_agent_instances(self, instance_node_ids: &[String]) -> Self {
-        GraphQuery::<labels::Message, S>::for_agent_instances(self, instance_node_ids)
-    }
-}
-
-impl<S: ScopeState> AgentPackageFilterOps for GraphQuery<labels::LlmCall, S> {
-    fn for_agent_package(self, package: AgentPackage) -> Self {
-        GraphQuery::<labels::LlmCall, S>::for_agent_package(self, package)
-    }
-    fn for_agent_instances(self, instance_node_ids: &[String]) -> Self {
-        GraphQuery::<labels::LlmCall, S>::for_agent_instances(self, instance_node_ids)
-    }
-}
-
-impl<S: ScopeState> AgentPackageFilterOps for GraphQuery<labels::ToolCall, S> {
-    fn for_agent_package(self, package: AgentPackage) -> Self {
-        GraphQuery::<labels::ToolCall, S>::for_agent_package(self, package)
-    }
-    fn for_agent_instances(self, instance_node_ids: &[String]) -> Self {
-        GraphQuery::<labels::ToolCall, S>::for_agent_instances(self, instance_node_ids)
-    }
-}
-
-impl<S: ScopeState> AgentPackageFilterOps for GraphQuery<labels::AgentStop, S> {
-    fn for_agent_package(self, package: AgentPackage) -> Self {
-        GraphQuery::<labels::AgentStop, S>::for_agent_package(self, package)
-    }
-    fn for_agent_instances(self, instance_node_ids: &[String]) -> Self {
-        GraphQuery::<labels::AgentStop, S>::for_agent_instances(self, instance_node_ids)
-    }
-}
-
-fn apply_agent_package_filter<Subject, S>(
-    q: GraphQuery<Subject, S>,
-    filters: &ProvenanceOpsFilters,
-    package_instances: Option<&[String]>,
-) -> GraphQuery<Subject, S>
-where
-    Subject: labels::NodeLabelTy,
-    S: ScopeState,
-    GraphQuery<Subject, S>: AgentPackageFilterOps,
-{
-    match (filters.agent_package.as_deref(), package_instances) {
-        (Some(_), Some(instances)) => q.for_agent_instances(instances),
-        (Some(pkg), None) => q.for_agent_package(AgentPackage::new(pkg.to_string())),
-        _ => q,
-    }
 }
 
 fn apply_sql_page<Subject, S>(
@@ -957,19 +966,10 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
 
         let agent_runtime_index = self.load_agent_runtime_index().await?;
         let identity_by_agent_id = agent_runtime_index.identity_by_agent_id.clone();
-        // Resolve agent package → instance node ids from the registry cache for
-        // all ops queries (context-scoped and global). Avoids the expensive
-        // archive/bootstrap graph subquery in `for_agent_package`.
-        let resolved_package_instances = request.filters.agent_package.as_deref().and_then(|pkg| {
-            agent_runtime_index
-                .instance_node_ids_by_package
-                .get(pkg)
-                .cloned()
-        });
-        let package_instances = resolved_package_instances.as_deref();
-        if request.filters.agent_package.is_some()
-            && package_instances.is_some_and(|instances| instances.is_empty())
-        {
+        let package_resolution = self
+            .resolve_ops_agent_package_filter(&request.filters, &agent_runtime_index)
+            .await?;
+        if package_resolution == OpsAgentPackageResolution::Empty {
             return Ok(empty_ops_query_response(
                 &request,
                 page_size,
@@ -977,24 +977,50 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
                 requested_page,
             ));
         }
+        let resolved_package_instances = request.filters.agent_package.as_deref().and_then(|pkg| {
+            agent_runtime_index
+                .instance_node_ids_by_package
+                .get(pkg)
+                .cloned()
+        });
+        let package_instances = match package_resolution {
+            OpsAgentPackageResolution::ApplyInstances => resolved_package_instances.as_deref(),
+            OpsAgentPackageResolution::None
+            | OpsAgentPackageResolution::TaskValidatedOmit
+            | OpsAgentPackageResolution::Empty => None,
+        };
 
         // Per-resource typed dispatch. Each `build_*_query` returns a
         // `(SQL, bindings)` pair from `GraphQuery::into_surreal()` — the
         // only legal SQL emitter for graph-targeted reads in this crate.
         // No `format!` of edge labels appears below.
         let (query, binds_value) = match request.resource {
-            ProvenanceOpsResource::Messages => {
-                build_messages_query(&request.filters, package_instances, sql_page)
-            }
+            ProvenanceOpsResource::Messages => build_messages_query(
+                &request.filters,
+                package_resolution,
+                package_instances,
+                sql_page,
+            ),
             ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates => {
-                build_llm_query(&request.filters, package_instances, sql_page)
+                build_llm_query(
+                    &request.filters,
+                    package_resolution,
+                    package_instances,
+                    sql_page,
+                )
             }
-            ProvenanceOpsResource::ToolCalls => {
-                build_tool_query(&request.filters, package_instances, sql_page)
-            }
-            ProvenanceOpsResource::LifecycleEvents => {
-                build_lifecycle_query(&request.filters, package_instances, sql_page)
-            }
+            ProvenanceOpsResource::ToolCalls => build_tool_query(
+                &request.filters,
+                package_resolution,
+                package_instances,
+                sql_page,
+            ),
+            ProvenanceOpsResource::LifecycleEvents => build_lifecycle_query(
+                &request.filters,
+                package_resolution,
+                package_instances,
+                sql_page,
+            ),
         };
         let rows = self.execute_typed_node_query(&query, &binds_value).await?;
 

@@ -11,6 +11,7 @@ class MockEventSource {
   private listeners = new Map<string, Listener>();
   onerror: (() => void) | null = null;
   url: string;
+  closed = false;
 
   constructor(url: string) {
     this.url = url;
@@ -28,7 +29,11 @@ class MockEventSource {
   }
 
   close(): void {
-    /* no-op */
+    this.closed = true;
+  }
+
+  static openInstances(): MockEventSource[] {
+    return MockEventSource.instances.filter((s) => !s.closed);
   }
 }
 
@@ -171,5 +176,72 @@ describe("useEventObservation transcript reconcile", () => {
     expect(fetchCalls).toBeGreaterThanOrEqual(2);
     expect(obs.messages.value).toHaveLength(2);
     expect(obs.messages.value.map((m) => m.role)).toEqual(["user", "agent"]);
+  });
+
+  it("keeps one history stream when reloading the same observe scope", async () => {
+    await obs.loadContext("ctx-observe", null);
+    const streamsAfterFirst = MockEventSource.instances.length;
+
+    await obs.loadContext("ctx-observe", null);
+    expect(MockEventSource.instances.length).toBe(streamsAfterFirst);
+  });
+
+  it("opens one history stream when loadContext runs concurrently for the same scope", async () => {
+    const pending = Promise.all([
+      obs.loadContext("ctx-observe", "dispatch-unit-abc"),
+      obs.loadContext("ctx-observe", "dispatch-unit-abc"),
+    ]);
+    await vi.runAllTimersAsync();
+    await pending;
+
+    const streams = MockEventSource.instances.filter((s) =>
+      s.url.includes("taskId=dispatch-unit-abc"),
+    );
+    expect(streams).toHaveLength(1);
+    expect(MockEventSource.openInstances()).toHaveLength(1);
+  });
+
+  it("closes context-only stream when taskId resolves on the same context", async () => {
+    await obs.loadContext("ctx-observe", null);
+    const contextOnly = MockEventSource.instances.find(
+      (s) => s.url.includes("ctx-observe") && !s.url.includes("taskId="),
+    );
+    expect(contextOnly).toBeDefined();
+
+    await obs.loadContext("ctx-observe", "dispatch-unit-abc");
+    expect(contextOnly!.closed).toBe(true);
+
+    const openTaskStreams = MockEventSource.openInstances().filter((s) =>
+      s.url.includes("taskId=dispatch-unit-abc"),
+    );
+    expect(openTaskStreams).toHaveLength(1);
+  });
+
+  it("runs separate loadContext work when preserve mode differs", async () => {
+    let fetchCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/conversation-history?")) {
+          fetchCalls += 1;
+          return { ok: true, json: async () => emptyHistoryPage };
+        }
+        if (url.includes("/mermaid")) {
+          return { ok: true, text: async () => "" };
+        }
+        return { ok: false };
+      }),
+    );
+
+    await Promise.all([
+      obs.loadContext("ctx-observe", "dispatch-unit-abc", {
+        preserveMessagesUntilTranscript: true,
+      }),
+      obs.loadContext("ctx-observe", "dispatch-unit-abc"),
+    ]);
+
+    expect(fetchCalls).toBe(2);
+    expect(MockEventSource.openInstances()).toHaveLength(1);
   });
 });

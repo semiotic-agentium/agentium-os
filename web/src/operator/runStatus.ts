@@ -59,6 +59,8 @@ export interface DeriveEventRunStatusInput {
   waitingForIngress: boolean;
   transcriptMessages: ChatMessage[];
   contextId: string | null;
+  /** Deep-link / picker observe — do not treat stale tool rows as live execution. */
+  observeOnly?: boolean;
 }
 
 export interface DeriveChatRunStatusInput {
@@ -97,6 +99,7 @@ export function deriveEventRunStatus(input: DeriveEventRunStatusInput): Operator
     waitingForIngress,
     transcriptMessages,
     contextId,
+    observeOnly = false,
   } = input;
 
   if (publishError) {
@@ -165,7 +168,10 @@ export function deriveEventRunStatus(input: DeriveEventRunStatusInput): Operator
   }
 
   const unitProgress = worstUnitProgress(lastPublishOutcome?.acceptances);
-  if (executionIncomplete(unitProgress, transcriptMessages)) {
+  if (
+    !observeOnly &&
+    executionIncomplete(unitProgress, transcriptMessages)
+  ) {
     const progress = unitProgress
       ? { done: unitProgress.done, total: unitProgress.total, noun: "units" as const }
       : undefined;

@@ -425,27 +425,32 @@ impl ConversationHistoryService for RealConversationHistory {
         &self,
         request: &ConversationHistoryRequest,
     ) -> std::result::Result<ConversationHistoryPageDto, ConversationHistoryError> {
-        use baml_rt_provenance::{TranscriptReader, TranscriptSliceSpec};
+        use baml_rt_provenance::{
+            TranscriptEngine, TranscriptPageRequest, TranscriptProjectionProfile,
+        };
         let after = request
             .after_event_order_from_cursor()
             .map_err(|e| ConversationHistoryError::Other(Box::new(e)))?;
-        let slice = self
+        let scope = baml_rt_provenance::observation_scope_from_history(
+            request.context_id.clone(),
+            request.task_id.clone(),
+            request.agent_package.clone(),
+            if after > 0 { Some(after) } else { None },
+        );
+        let transcript_page = self
             .store
-            .slice(TranscriptSliceSpec {
-                context_id: request.context_id.clone(),
-                task_id: request.task_id.clone(),
-                agent_package: request.agent_package.clone(),
-                after_event_order: after,
-                limit: request.page.limit(),
-                include_extensions: false,
+            .page(TranscriptPageRequest {
+                scope,
+                limit: request.page.limit() as usize,
+                profile: TranscriptProjectionProfile::OperatorTimeline,
             })
             .await
             .map_err(|e| ConversationHistoryError::Other(Box::new(e)))?;
         let mut page = baml_rt_api::page_from_transcript_slice(
-            slice.items,
+            transcript_page.items,
             request,
             0,
-            slice.next_after_event_order,
+            transcript_page.next_after_event_order,
         );
         if matches!(request.profile, ConversationHistoryProfile::Compact) {
             page.items = page

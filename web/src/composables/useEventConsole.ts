@@ -24,6 +24,7 @@ import {
   parsePreviewProducedEvent,
   pickerOptionFromContextId,
   publishedScopeFromPreview,
+  publishTargetsNewSession,
   resolveObservedScopeIds,
 } from "../events/eventConsoleState";
 import {
@@ -351,6 +352,33 @@ function createEventConsoleState() {
     });
   }
 
+  /** Leave historical observe mode and open a fresh compose session. */
+  function beginNewEvent(): void {
+    observation.value = createInitialObservation();
+    lastPublishOutcome.value = null;
+    lastPublishedScope.value = null;
+    publishError.value = null;
+    dispatchPhase.value = "idle";
+    if (draft.value.scope.kind !== "new_context") {
+      draft.value.scope = { kind: "new_context" };
+    }
+    syncEventConsoleRoute();
+  }
+
+  /** Drop historical observe scope when publish targets a different run. */
+  function beginPublishSession(): void {
+    publishError.value = null;
+    if (publishTargetsNewSession(draft.value.scope, observation.value.contextId)) {
+      observation.value = {
+        contextId: null,
+        source: "publish",
+        taskId: null,
+      };
+      lastPublishedScope.value = null;
+      syncEventConsoleRoute();
+    }
+  }
+
   /** Apply agent/context from the URL (initial load or browser back/forward only). */
   function applyRouteFromUrl(): void {
     const { agentPackage, agentInstance, contextId } = readEventConsoleRouteFromUrl();
@@ -361,7 +389,10 @@ function createEventConsoleState() {
           draft.value.agent_package === match.agent_package &&
           draft.value.agent_instance_id === match.agent_instance_id;
         if (!alreadySelected) {
-          selectAgent(match, { syncRoute: false });
+          selectAgent(match, {
+            syncRoute: false,
+            keepObservation: Boolean(contextId),
+          });
         }
       }
     } else if (!draft.value.agent_package && subscribedAgents.value[0]) {
@@ -376,7 +407,7 @@ function createEventConsoleState() {
 
   function selectAgent(
     agent: AgentDiscoveryEntry,
-    options?: { syncRoute?: boolean },
+    options?: { syncRoute?: boolean; keepObservation?: boolean },
   ): void {
     draft.value.agent_package = agent.agent_package;
     draft.value.agent_instance_id = agent.agent_instance_id;
@@ -397,7 +428,9 @@ function createEventConsoleState() {
     }
     lastPublishOutcome.value = null;
     lastPublishedScope.value = null;
-    observation.value = createInitialObservation();
+    if (!options?.keepObservation) {
+      observation.value = createInitialObservation();
+    }
     publishError.value = null;
     if (options?.syncRoute !== false) {
       syncEventConsoleRoute();
@@ -728,10 +761,6 @@ function createEventConsoleState() {
       source: "picker",
       taskId: null,
     };
-    void resolveDispatchUnitTaskId(option.contextId).then((taskId) => {
-      if (observation.value.contextId !== option.contextId) return;
-      observation.value = { ...observation.value, taskId };
-    });
     if (options?.syncRoute !== false) {
       syncEventConsoleRoute();
     }
@@ -798,6 +827,8 @@ function createEventConsoleState() {
     fetchAgents,
     fetchMessageShapes,
     applyRouteFromUrl,
+    beginNewEvent,
+    beginPublishSession,
     selectAgent,
     selectSubscriptionEvent,
     applySample,

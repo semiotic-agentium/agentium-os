@@ -103,6 +103,16 @@ export function scopeContextIdFromDraft(scope: EventDispatchScope): string {
   return scope.kind === "new_context" ? "" : scope.context_id;
 }
 
+export function publishTargetsNewSession(
+  draftScope: EventDispatchScope,
+  observedContextId: string | null,
+): boolean {
+  if (observedContextId === null) return false;
+  if (draftScope.kind === "new_context") return true;
+  const draftContextId = scopeContextIdFromDraft(draftScope);
+  return draftContextId.length > 0 && draftContextId !== observedContextId;
+}
+
 export function scopeTaskIdFromDraft(scope: EventDispatchScope): string {
   return scope.kind === "existing_task" ? scope.task_id : "";
 }

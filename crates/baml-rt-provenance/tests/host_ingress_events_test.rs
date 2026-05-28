@@ -165,6 +165,14 @@ async fn host_ingress_lineage_events_project_operational_transcript_rows() {
         )),
         "{items:?}"
     );
+    assert!(
+        items.iter().all(|i| i.timestamp_ms > 0),
+        "host ingress operational rows must carry event_order from write time: {items:?}"
+    );
+    assert!(
+        items[0].timestamp_ms <= items[1].timestamp_ms,
+        "poll must precede dispatch accepted: {items:?}"
+    );
 }
 
 #[tokio::test]
@@ -311,9 +319,15 @@ async fn host_dispatch_accepted_links_booted_runtime_instance() {
     );
 
     let mermaid = baml_rt_provenance::graph_export::sequence::render_sequence_diagram(&exported);
-    let clickup_participants = mermaid.matches("clickup_agent_1_0_0").count();
+    let clickup_lifelines = mermaid
+        .lines()
+        .filter(|line| {
+            line.trim_start()
+                .starts_with("participant clickup_agent_1_0_0 ")
+        })
+        .count();
     assert_eq!(
-        clickup_participants, 1,
+        clickup_lifelines, 1,
         "sequence export must not duplicate clickup lifelines: {mermaid}"
     );
     assert!(
@@ -555,6 +569,259 @@ async fn record_source_poll_and_unit_prelude_emit_single_ingress_user_line() {
         .query_conversation_context(&ctx, None, None, Some("clickup-agent"))
         .await
         .expect("agent_package filter over ingress unit row");
+}
+
+#[tokio::test]
+async fn host_ingress_dispatch_accepted_precedes_unit_ingress_user() {
+    use baml_rt_core::AgentDispatchRequest;
+
+    let store = Arc::new(
+        SurrealStoreBuilder::in_memory_isolated()
+            .build()
+            .await
+            .expect("store"),
+    );
+    let recorder = HostIngressRecorderImpl::new(Arc::clone(&store));
+    let ctx = ContextId::new(44, 55);
+    let unit_key = "clickup-created:dispatch-order:1";
+    let batch = json!({
+        "schema_version": "host.source-records.v1",
+        "source": {
+            "source_kind": "clickup",
+            "source_key": "clickup:list:1",
+            "source_label": "List"
+        },
+        "records": [{
+            "record_kind": "clickup.lifecycle_event",
+            "key": unit_key,
+            "event": "created",
+            "task_id": "dispatch-order",
+            "list_id": "list-1",
+            "snapshot": { "name": "Order test" },
+            "revision": 1
+        }]
+    });
+    let event = ProducedEvent {
+        routing_key: AgentDispatchRoutingKey::parse("event:intake").expect("routing"),
+        schema_version: EventSchemaVersion::parse("host.source-records.v1").expect("schema"),
+        source_kind: EventSourceKind::parse("clickup").expect("kind"),
+        source_key: EventSourceKey::parse("clickup:list:1").expect("key"),
+        messages: vec![batch.clone()],
+        context_id: Some(ctx.clone()),
+        task_id: None,
+        message_id: Some("evt-order-msg".into()),
+        metadata: None,
+    };
+    recorder
+        .record_source_poll(&event)
+        .await
+        .expect("poll lineage");
+    let agent_id = test_agent_id();
+    boot_test_agent(
+        &store,
+        agent_id.clone(),
+        "clickup-agent",
+        "clickup-agent@1.0.0",
+    )
+    .await;
+    let dispatch_request = AgentDispatchRequest {
+        routing_key: AgentDispatchRoutingKey::parse("event:intake").expect("routing"),
+        message_type: EventSchemaVersion::parse("host.source-records.v1").expect("schema"),
+        messages: vec![batch],
+        context_id: Some(ctx.clone()),
+        task_id: None,
+        message_id: Some("evt-order-msg".into()),
+        metadata: None,
+    };
+    recorder
+        .record_dispatch_accepted(
+            &dispatch_request,
+            dispatch_target("clickup-agent", agent_id.clone()),
+        )
+        .await
+        .expect("dispatch accepted");
+    let parent =
+        RuntimeScope::message_scope(ctx.clone(), agent_id.clone(), MessageId::from("parent-msg"));
+    let records: Vec<serde_json::Value> = event
+        .messages
+        .first()
+        .and_then(|v| v.get("records"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let unit = DispatchWorkUnit::new(unit_key.to_string(), records).expect("unit");
+    recorder
+        .with_task_prelude(&parent, agent_id, unit)
+        .await
+        .expect("unit prelude");
+
+    let items = store
+        .conversation_context(&ctx, None)
+        .await
+        .expect("conversation_context");
+    assert_eq!(
+        items.len(),
+        3,
+        "poll + dispatch accepted + ingress user line: {items:?}"
+    );
+    assert!(
+        items.iter().all(|i| i.timestamp_ms > 0),
+        "all host rows must carry event_order: {items:?}"
+    );
+    let poll = items
+        .iter()
+        .find(|i| {
+            matches!(
+                &i.content,
+                baml_rt_conversation::view::ConversationItemContent::Operational(op)
+                    if matches!(
+                        op.kind,
+                        baml_rt_conversation::operational::OperationalEventKind::SourcePollRecorded
+                    )
+            )
+        })
+        .expect("poll row");
+    let dispatch = items
+        .iter()
+        .find(|i| {
+            matches!(
+                &i.content,
+                baml_rt_conversation::view::ConversationItemContent::Operational(op)
+                    if matches!(
+                        op.kind,
+                        baml_rt_conversation::operational::OperationalEventKind::DispatchAccepted
+                    )
+            )
+        })
+        .expect("dispatch row");
+    let ingress = items
+        .iter()
+        .find(|i| i.user_speaker_kind == Some(UserSpeakerKind::Ingress))
+        .expect("ingress user row");
+    assert!(
+        poll.timestamp_ms <= dispatch.timestamp_ms && dispatch.timestamp_ms <= ingress.timestamp_ms,
+        "causal host order poll → dispatch → unit ingress: {items:?}"
+    );
+}
+
+#[tokio::test]
+async fn transcript_engine_includes_event_order_zero_ingress_with_later_index_rows() {
+    use baml_rt_core::Outcome;
+    use baml_rt_provenance::{
+        ObservationScope, TaskObservationScope, TemporalBound, TranscriptEngine,
+        TranscriptPageRequest, TranscriptProjectionProfile,
+    };
+
+    let store = Arc::new(
+        SurrealStoreBuilder::in_memory_isolated()
+            .build()
+            .await
+            .expect("store"),
+    );
+    let recorder = HostIngressRecorderImpl::new(Arc::clone(&store));
+    let ctx = ContextId::new(111, 222);
+    let unit_key = "clickup-created:restore-ingress:1";
+    let batch = json!({
+        "schema_version": "host.source-records.v1",
+        "source": {
+            "source_kind": "clickup",
+            "source_key": "clickup:list:1",
+            "source_label": "List"
+        },
+        "records": [{
+            "record_kind": "clickup.lifecycle_event",
+            "key": unit_key,
+            "event": "created",
+            "task_id": "restore-ingress",
+            "list_id": "list-1",
+            "snapshot": { "name": "Restore ingress balloon", "description": "wire body" },
+            "revision": 1
+        }]
+    });
+    let event = ProducedEvent {
+        routing_key: AgentDispatchRoutingKey::parse("event:intake").expect("routing"),
+        schema_version: EventSchemaVersion::parse("host.source-records.v1").expect("schema"),
+        source_kind: EventSourceKind::parse("clickup").expect("kind"),
+        source_key: EventSourceKey::parse("clickup:list:1").expect("key"),
+        messages: vec![batch.clone()],
+        context_id: Some(ctx.clone()),
+        task_id: None,
+        message_id: Some("evt-restore-msg".into()),
+        metadata: None,
+    };
+    recorder
+        .record_source_poll(&event)
+        .await
+        .expect("poll lineage");
+    let agent_id = test_agent_id();
+    boot_test_agent(
+        &store,
+        agent_id.clone(),
+        "clickup-agent",
+        "clickup-agent@1.0.0",
+    )
+    .await;
+    let parent =
+        RuntimeScope::message_scope(ctx.clone(), agent_id.clone(), MessageId::from("parent-msg"));
+    let records: Vec<serde_json::Value> = batch
+        .get("records")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let unit = DispatchWorkUnit::new(unit_key.to_string(), records).expect("unit");
+    recorder
+        .with_task_prelude(&parent, agent_id.clone(), unit)
+        .await
+        .expect("unit prelude");
+    let task_id = dispatch_unit_task_id(&ctx, unit_key);
+    store
+        .add_event(ProvEvent::tool_call_completed_task(
+            ctx.clone(),
+            task_id.clone(),
+            "support/clickup".to_string(),
+            Some("list_teams".to_string()),
+            json!({}),
+            json!({ "agent_id": agent_id.as_str() }),
+            50,
+            Outcome::Success,
+            None,
+        ))
+        .await
+        .expect("tool");
+
+    let page = TranscriptEngine::page(
+        store.as_ref() as &SurrealProvenanceStore,
+        TranscriptPageRequest {
+            scope: ObservationScope {
+                context_id: ctx.clone(),
+                task: TaskObservationScope::ContextWide,
+                agent_package: Some("clickup-agent".to_string()),
+                temporal: TemporalBound::All,
+            },
+            limit: 50,
+            profile: TranscriptProjectionProfile::OperatorTimeline,
+        },
+    )
+    .await
+    .expect("transcript page");
+
+    assert!(
+        page.items
+            .iter()
+            .any(|i| i.user_speaker_kind == Some(UserSpeakerKind::Ingress)),
+        "host ingress user row must appear when later tool rows populate the index: {:?}",
+        page.items
+    );
+    let ingress = page
+        .items
+        .iter()
+        .find(|i| i.user_speaker_kind == Some(UserSpeakerKind::Ingress))
+        .expect("ingress row");
+    assert!(
+        ingress.timestamp_ms > 0,
+        "ingress user row must carry event_order from write time: {:?}",
+        page.items
+    );
 }
 
 #[tokio::test]

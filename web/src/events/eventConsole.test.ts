@@ -17,7 +17,7 @@ import {
   scopeFromContextId,
   scopeFromDraftScope,
   scopeFromRecord,
-  transcriptHasHostIngress,
+  transcriptHasIngressUserRows,
 } from "./dispatchObserve";
 import { deriveDispatchEnvelope } from "./messageShapes";
 
@@ -414,7 +414,7 @@ describe("mergeEventConsoleTranscript", () => {
 describe("transcriptHasIngressUserRows", () => {
   it("detects ingress poll/unit user row ids", () => {
     expect(
-      transcriptHasHostIngress([
+      transcriptHasIngressUserRows([
         {
           id: "prov-user-ingress-poll-user:ctx:msg",
           role: "user",
@@ -424,7 +424,7 @@ describe("transcriptHasIngressUserRows", () => {
       ]),
     ).toBe(true);
     expect(
-      transcriptHasHostIngress([
+      transcriptHasIngressUserRows([
         { id: "x", role: "user", text: "hello", timestamp: new Date() },
       ]),
     ).toBe(false);

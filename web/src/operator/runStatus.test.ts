@@ -99,6 +99,43 @@ describe("deriveEventRunStatus", () => {
     expect(status.label).toBe("Waiting for ingress");
     expect(status.active).toBe(true);
   });
+
+  it("returns observing for deep-linked past runs with stale open tool rows", () => {
+    const status = deriveEventRunStatus({
+      dispatchPhase: "idle",
+      hydrateState: "ready",
+      publishError: null,
+      waitingForIngress: false,
+      contextId: "ctx-1779972010352-1",
+      lastPublishOutcome: null,
+      observeOnly: true,
+      transcriptMessages: [
+        {
+          id: "msg-open",
+          role: "agent",
+          text: "",
+          timestamp: new Date(0),
+          contentBlocks: [
+            {
+              type: "tool",
+              toolName: "support/clickup",
+              status: "Running",
+              events: [
+                {
+                  kind: "system_notice",
+                  subtype: "Session step",
+                  text: "open",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(status.phase).toBe("idle");
+    expect(status.label).toBe("Observing");
+    expect(status.active).toBe(false);
+  });
 });
 
 describe("deriveChatRunStatus", () => {

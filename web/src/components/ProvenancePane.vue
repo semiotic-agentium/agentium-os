@@ -203,6 +203,17 @@ watch([observeBundle, observeLoading, observeError], syncObserveToLiveState, {
 const isExploreTab = computed(() => activeTab.value === "explore");
 const pollInFlight = ref(false);
 let pollPending = false;
+let observeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleObserveRefresh(): void {
+  if (observeRefreshTimer !== null) {
+    clearTimeout(observeRefreshTimer);
+  }
+  observeRefreshTimer = setTimeout(() => {
+    observeRefreshTimer = null;
+    refreshObserve();
+  }, 200);
+}
 
 function baseScope(): Pick<
   ProvenanceQueryParams,
@@ -214,7 +225,6 @@ function baseScope(): Pick<
 async function refreshForActiveTab() {
   if (!props.contextId) return;
   if (activeTab.value === "live" || activeTab.value === "drift") {
-    refreshObserve();
     return;
   }
   if (pollInFlight.value) {
@@ -404,9 +414,10 @@ watch(
 );
 
 watch(
-  () => [props.contextId, props.taskId, props.selectedAgentId],
+  () => [props.contextId, props.taskId, props.selectedAgentId, props.selectedAgentPackage],
   () => {
     if (!props.contextId || isExploreTab.value) return;
+    if (activeTab.value === "live" || activeTab.value === "drift") return;
     void refreshForActiveTab();
   },
   { immediate: true },
@@ -417,17 +428,13 @@ watch(
   (tick, prev) => {
     if (tick === prev) return;
     if (activeTab.value === "live" || activeTab.value === "drift") {
-      refreshObserve();
+      // Live observe SSE already receives bundle pushes from observation_events.
+      // Reconnecting here cancels streams and fights the transcript SSE.
+      if (!traceActive.value) {
+        scheduleObserveRefresh();
+      }
       return;
     }
-    void refreshForActiveTab();
-  },
-);
-
-watch(
-  () => traceActive.value,
-  (active) => {
-    if (!active || !props.contextId || isExploreTab.value) return;
     void refreshForActiveTab();
   },
 );
@@ -436,9 +443,9 @@ watch(
   () => [activeTab.value] as const,
   ([tab]) => {
     if (!props.contextId || tab === "explore") return;
+    if (tab === "live" || tab === "drift") return;
     void refreshForActiveTab();
   },
-  { immediate: true },
 );
 </script>
 

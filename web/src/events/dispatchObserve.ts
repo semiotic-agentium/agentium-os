@@ -22,9 +22,6 @@ export interface PublishedScope {
   agentInstanceId?: string | null;
 }
 
-/** @deprecated Use PublishedScope */
-export type DispatchedScope = PublishedScope;
-
 export interface ObservationAgentRef {
   agentPackage: string;
   agentInstanceId: string;
@@ -76,9 +73,6 @@ export function publishedScopeMatchesAgent(
     scope.agentInstanceId === agent.agentInstanceId
   );
 }
-
-/** @deprecated Use publishedScopeMatchesAgent */
-export const dispatchedScopeMatchesAgent = publishedScopeMatchesAgent;
 
 /**
  * Resolve which provenance context to observe for the current Event Console session.
@@ -181,12 +175,6 @@ export function buildOperatorPublishTraceMessages(input: {
 
   return rows;
 }
-
-/** @deprecated Use buildOperatorPublishTraceMessages */
-export const buildOperatorDispatchTraceMessages = buildOperatorPublishTraceMessages;
-
-/** @deprecated Use buildOperatorPublishTraceMessages */
-export const buildConsoleTraceFallbackMessages = buildOperatorPublishTraceMessages;
 
 /** First dispatch-unit task id for a context (multi-unit: first match). */
 export async function resolveDispatchUnitTaskId(
@@ -310,6 +298,3 @@ export function transcriptHasIngressUserRows(messages: ChatMessage[]): boolean {
         m.id.includes("ingress-unit-user")),
   );
 }
-
-/** @deprecated Use transcriptHasIngressUserRows */
-export const transcriptHasHostIngress = transcriptHasIngressUserRows;

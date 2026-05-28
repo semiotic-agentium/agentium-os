@@ -39,7 +39,9 @@ use crate::{
     citation_queries::query_plan_citations_for_plans,
     error::{ProvenanceError, Result},
     graph_export::export_graph_for_task,
-    store::{ProvenancePlanningQuery, ProvenanceQueryApi},
+    observation::{ObservationScope, TaskObservationScope, TemporalBound},
+    read::{TranscriptEngine, TranscriptPageRequest, TranscriptProjectionProfile},
+    store::ProvenancePlanningQuery,
     surreal_store::SurrealProvenanceStore,
 };
 
@@ -174,8 +176,24 @@ impl EpisodeReader {
                 )
             },
             self.store.get_task_agent_id(task_id),
-            self.store
-                .query_conversation_context(context_id, None, Some(task_id), None),
+            async {
+                let scope = ObservationScope {
+                    context_id: context_id.clone(),
+                    task: TaskObservationScope::Task(task_id.clone()),
+                    agent_package: None,
+                    temporal: TemporalBound::All,
+                };
+                TranscriptEngine::page(
+                    self.store.as_ref(),
+                    TranscriptPageRequest {
+                        scope,
+                        limit: usize::MAX / 4,
+                        profile: TranscriptProjectionProfile::OperatorTimeline,
+                    },
+                )
+                .await
+                .map(|page| page.items)
+            },
             self.store.query_intent_history(task_id, None),
             self.store.query_plan_history(task_id, None),
             async {

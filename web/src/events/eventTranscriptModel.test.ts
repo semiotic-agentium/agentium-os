@@ -98,6 +98,29 @@ describe("normalizeEventTranscriptRows", () => {
     expect(ingress?.key).toBe(EVENT_TRANSCRIPT_INGRESS_KEY);
     expect(ingress && ingress.kind === "ingress_wire" && ingress.pending).toBe(false);
   });
+
+  it("orders rows by provenance timestamp", () => {
+    const ingress = buildIngressWireUserMessage([{ k: 1 }]);
+    ingress.timestamp = new Date(30);
+    const hostOp: ChatMessage = {
+      id: "prov-op-host-dispatch",
+      role: "agent",
+      speakerKind: "host",
+      text: "",
+      timestamp: new Date(20),
+      contentBlocks: [
+        {
+          type: "operational",
+          kind: "dispatch_accepted",
+          severity: "info",
+          summary: "Host dispatch accepted",
+        },
+      ],
+    };
+    const rows = normalizeEventTranscriptRows([ingress, hostOp], baseMeta());
+    expect(rows[0]?.kind).toBe("operational");
+    expect(rows[1]?.kind).toBe("ingress_wire");
+  });
 });
 
 describe("mergeMessagesByRowKey", () => {

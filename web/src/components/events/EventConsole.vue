@@ -8,7 +8,7 @@ import EventRunStatusStrip from "./EventRunStatusStrip.vue";
 import {
   buildEventConsoleLocalTranscript,
   localTranscriptMatchesScope,
-  transcriptHasHostIngress,
+  transcriptHasIngressUserRows,
 } from "../../events/dispatchObserve";
 import {
   isEventDispatchInFlight,
@@ -21,14 +21,11 @@ import {
   type LoadContextOptions,
 } from "../../composables/useEventObservation";
 import { useToast } from "../../composables/useToast";
-import {
-  formatPublishAcceptanceSummary,
-  publishHadNoEffectiveWork,
-} from "../../events/publishOutcome";
 import type { EventRunMeta } from "../../events/eventTranscriptModel";
 import {
   changeDraftScopeKind,
   isEventDispatchScopeKind,
+  publishTargetsNewSession,
   updateDraftScopeContextId,
   updateDraftScopeTaskId,
 } from "../../events/eventConsoleState";
@@ -36,6 +33,13 @@ import { parseMermaidBlocks } from "../../utils/parseMermaid";
 import { looksLikeMermaidDiagram } from "../../utils/mermaidDiagram";
 import type { ConversationHistoryOption } from "../../types/a2a";
 import type { DraftPayloadRecord, EventDispatchScopeKind } from "../../types/events";
+import {
+  buildObservationRefreshLoadKey,
+  buildObservationScopeKey,
+  buildObserveScopeWatchKey,
+  shouldPreserveTranscriptOnScopeChange,
+  shouldSkipObservationRefresh,
+} from "../../events/eventConsoleObservation";
 
 const toast = useToast();
 
@@ -78,15 +82,19 @@ const {
   duplicateMessage,
   removeMessage,
   setScope,
+  applyObservedContextToDraftScope,
+  beginNewEvent,
+  beginPublishSession,
   validateDraft,
   publishEvent,
   fetchHistory,
-  applyObservedContextToDraftScope,
 } = useEventConsole();
 
 const observation = useEventObservation();
 const composeModalOpen = ref(false);
 let lastObservationLoadKey = "";
+let observationRefreshInFlight: Promise<void> | null = null;
+let observationRefreshInFlightKey = "";
 const transcriptViewRef = ref<InstanceType<typeof TranscriptView> | null>(null);
 const runHeaderRef = ref<InstanceType<typeof EventRunHeader> | null>(null);
 const provenancePreferOpen = ref(false);
@@ -200,7 +208,7 @@ const transcriptShowsDispatchFailures = computed(() =>
 const waitingForIngress = computed(() => {
   if (!lastPublishOutcome.value) return false;
   if ((lastPublishOutcome.value.subscribers_accepted ?? 0) === 0) return false;
-  if (transcriptHasHostIngress(observation.transcriptMessages.value)) return false;
+  if (transcriptHasIngressUserRows(observation.transcriptMessages.value)) return false;
   const hydrate = observation.hydrateState.value;
   if (hydrate === "empty" || hydrate === "error") return false;
   return (
@@ -246,6 +254,7 @@ const runStatus = computed(() =>
     waitingForIngress: waitingForIngress.value,
     transcriptMessages: observation.transcriptMessages.value,
     contextId: observeIds.value.contextId,
+    observeOnly: !publishObservationActive(),
   }),
 );
 
@@ -275,7 +284,7 @@ function updateDispatchPhaseFromObservation(): void {
     return;
   }
   if (state === "empty" && lastPublishOutcome.value) {
-    const hasIngress = transcriptHasHostIngress(observation.transcriptMessages.value);
+    const hasIngress = transcriptHasIngressUserRows(observation.transcriptMessages.value);
     dispatchPhase.value = hasIngress || localTranscriptRows.value.length > 0 ? "live" : "empty";
     if (hasIngress) {
       provenanceExternalFocus.value = { nonce: Date.now(), tab: "live" };
@@ -301,7 +310,8 @@ function observationLoadOptions(
   extra?: Partial<LoadContextOptions>,
 ): LoadContextOptions {
   return {
-    agentPackage: null,
+    agentPackage: draft.value.agent_package || null,
+    ingressMode: observedContextId.value ? "explicit_restore" : "evented",
     ...extra,
   };
 }
@@ -316,27 +326,52 @@ async function refreshObservation(options?: { preserveTranscript?: boolean }): P
 
   const preserve = options?.preserveTranscript ?? publishObservationActive();
   const resolvedTask = taskId?.trim() ? taskId : null;
-  const loadKey = `${contextId}:${resolvedTask ?? ""}`;
-  if (
-    loadKey === lastObservationLoadKey &&
-    observation.messages.value.length > 0 &&
-    !preserve
-  ) {
-    observation.bumpTraceRefresh();
-    updateDispatchPhaseFromObservation();
-    return;
+  const loadKey = buildObservationRefreshLoadKey(contextId, resolvedTask, preserve);
+
+  if (observationRefreshInFlightKey === loadKey && observationRefreshInFlight) {
+    return observationRefreshInFlight;
   }
 
-  lastObservationLoadKey = loadKey;
-  provenancePreferOpen.value = true;
-  await observation.loadContext(
+  const scopeKey = buildObservationScopeKey(
     contextId,
     resolvedTask,
-    observationLoadOptions(
-      preserve ? { preserveMessagesUntilTranscript: true } : undefined,
-    ),
+    draft.value.agent_package,
   );
-  updateDispatchPhaseFromObservation();
+  observationRefreshInFlightKey = loadKey;
+  observationRefreshInFlight = (async () => {
+    if (
+      shouldSkipObservationRefresh(
+        scopeKey,
+        lastObservationLoadKey,
+        observation.messages.value.length,
+        preserve,
+      )
+    ) {
+      observation.bumpTraceRefresh();
+      updateDispatchPhaseFromObservation();
+      return;
+    }
+
+    lastObservationLoadKey = scopeKey;
+    provenancePreferOpen.value = true;
+    await observation.loadContext(
+      contextId,
+      resolvedTask,
+      observationLoadOptions(
+        preserve ? { preserveMessagesUntilTranscript: true } : undefined,
+      ),
+    );
+    updateDispatchPhaseFromObservation();
+  })();
+
+  try {
+    await observationRefreshInFlight;
+  } finally {
+    if (observationRefreshInFlightKey === loadKey) {
+      observationRefreshInFlight = null;
+      observationRefreshInFlightKey = "";
+    }
+  }
 }
 
 async function onValidate(): Promise<void> {
@@ -359,6 +394,16 @@ async function onPublish(): Promise<void> {
     }
   }
 
+  const startingNewSession = publishTargetsNewSession(
+    draft.value.scope,
+    observedContextId.value,
+  );
+  beginPublishSession();
+  if (startingNewSession) {
+    lastObservationLoadKey = "";
+    observation.clear();
+  }
+
   composeModalOpen.value = false;
   provenancePreferOpen.value = true;
 
@@ -374,35 +419,21 @@ async function onPublish(): Promise<void> {
     return;
   }
 
-  const o = lastPublishOutcome.value;
-  if (o) {
-    const summary = formatPublishAcceptanceSummary(o);
-    if (o.failures.length > 0) {
-      toast.show(summary, "info");
-    } else if (o.subscribers_matched === 0) {
-      toast.error(summary);
-    } else if (publishHadNoEffectiveWork(o)) {
-      toast.show(`No agent work ran:\n${summary}`, "info");
-    } else if (o.subscribers_accepted > 0) {
-      toast.success(summary);
-    } else {
-      toast.show("No subscribers accepted the event", "info");
-    }
-  }
-
-  const { contextId, taskId } = observeIds.value;
+  const { contextId } = observeIds.value;
   if (!contextId) return;
 
-  lastObservationLoadKey = `${contextId}:${taskId?.trim() ? taskId : ""}`;
-  await observation.loadContext(
-    contextId,
-    taskId?.trim() ? taskId : null,
-    observationLoadOptions({ preserveMessagesUntilTranscript: true }),
-  );
+  await refreshObservation({ preserveTranscript: !startingNewSession });
   updateDispatchPhaseFromObservation();
   requestAnimationFrame(() => {
     transcriptViewRef.value?.getScrollContainer()?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
+}
+
+function onNewEvent(): void {
+  beginNewEvent();
+  lastObservationLoadKey = "";
+  observation.clear();
+  composeModalOpen.value = true;
 }
 
 function openComposeFromQuery(): void {
@@ -422,7 +453,7 @@ onMounted(async () => {
   }
   applyRouteFromUrl();
   openComposeFromQuery();
-  if (!draft.value.agent_package) {
+  if (!observeIds.value.contextId && !draft.value.agent_package) {
     await fetchHistory();
   }
 });
@@ -435,18 +466,25 @@ watch(
 );
 
 watch(
-  () => observeIds.value.contextId,
-  () => {
-    void refreshObservation();
+  () =>
+    buildObserveScopeWatchKey(
+      observeIds.value.contextId,
+      observeIds.value.taskId,
+      draft.value.agent_package,
+    ),
+  (scopeKey, prevScopeKey) => {
+    if (!scopeKey || scopeKey === ":") {
+      void refreshObservation();
+      return;
+    }
+    const preserve = shouldPreserveTranscriptOnScopeChange(
+      prevScopeKey,
+      scopeKey,
+      publishObservationActive(),
+    );
+    void refreshObservation({ preserveTranscript: preserve });
   },
-);
-
-watch(
-  () => observeIds.value.taskId,
-  (taskId, prev) => {
-    if (taskId === prev || !observeIds.value.contextId) return;
-    void refreshObservation({ preserveTranscript: publishObservationActive() });
-  },
+  { immediate: true },
 );
 
 watch(
@@ -483,7 +521,7 @@ function focusEventRunFromTranscript(): void {
       @select-agent="selectAgent"
       @select-context="onSelectContextFromPicker"
       @refresh-history="fetchHistory()"
-      @new-event="composeModalOpen = true"
+      @new-event="onNewEvent()"
     />
 
     <EventRunStatusStrip
@@ -586,10 +624,11 @@ function focusEventRunFromTranscript(): void {
   min-height: 0;
   display: flex;
   flex-direction: row;
+  overflow: hidden;
 }
 
 .events-observe.panel {
-  flex: 2 1 0;
+  flex: 1 1 0;
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -597,6 +636,7 @@ function focusEventRunFromTranscript(): void {
   overflow: hidden;
   padding: 0;
   background: var(--bg);
+  border-right: 1px solid var(--border);
 }
 
 .events-observe.panel :deep(.message-row--ingress-wire) {

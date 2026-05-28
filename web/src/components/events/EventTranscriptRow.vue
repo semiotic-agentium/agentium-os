@@ -108,9 +108,14 @@ function showOperationalDetail(detail: string | undefined, summary: string): boo
       <div class="event-transcript-rail" aria-hidden="true">
         <span class="event-transcript-rail-dot event-transcript-rail-dot--agent" />
       </div>
-      <div class="event-transcript-agent-bubble">
-        <MessageBubble :message="row.message" :show-inline-streaming-dots="false" />
-      </div>
+      <article class="event-lane-card event-lane-card--agent" role="article">
+        <header class="event-lane-card__header">
+          <span class="event-lane-chip event-lane-chip--agent">Agent</span>
+        </header>
+        <div class="event-lane-card__body event-transcript-agent-bubble">
+          <MessageBubble :message="row.message" :show-inline-streaming-dots="false" />
+        </div>
+      </article>
     </template>
 
     <template v-else-if="row.kind === 'skeleton'">
