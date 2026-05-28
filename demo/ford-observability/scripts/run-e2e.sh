@@ -91,7 +91,7 @@ done
 if [[ -z "$context_id" ]]; then
   echo "[e2e] no new coordinator context appeared within ${WAIT_SECONDS}s" >&2
   echo "[e2e] dumping ledger for debug:" >&2
-  kubectl -n "$NAMESPACE" exec deploy/failure-harness -- \
+  kubectl -n "$NAMESPACE" exec statefulset/failure-harness -- \
     curl -fsS localhost:8080/admin/ledger >"$OUT_DIR/ledger.json" || true
   cat "$OUT_DIR/ledger.json" >&2 || true
   exit 1
@@ -106,9 +106,9 @@ curl -fsS "$RUNNER_URL/contexts/$context_id/conversation-history" >"$OUT_DIR/con
 curl -fsS "$RUNNER_URL/provenance/llm-calls?context_id=$context_id" >"$OUT_DIR/llm-calls.json" || true
 curl -fsS "$RUNNER_URL/provenance/tool-calls?context_id=$context_id" >"$OUT_DIR/tool-calls.json" || true
 
-kubectl -n "$NAMESPACE" exec deploy/failure-harness -- \
+kubectl -n "$NAMESPACE" exec statefulset/failure-harness -- \
   curl -fsS "localhost:8080/admin/ledger/$INCIDENT_ID" >"$OUT_DIR/ledger.json" || \
-  kubectl -n "$NAMESPACE" exec deploy/failure-harness -- \
+  kubectl -n "$NAMESPACE" exec statefulset/failure-harness -- \
     curl -fsS localhost:8080/admin/ledger >"$OUT_DIR/ledger.json" || true
 
 cat <<EOF

@@ -1,0 +1,114 @@
+# Stage 0: Build the Vue/Vite dashboard frontend.
+#
+# The runner serves `web/dist` as a static fallback when launched with
+# `--web-dir`; baking the build artefacts here lets the cluster deployment
+# expose the dashboard on the same port as the JSON API (no separate frontend
+# pod / Vite dev server required for the demo).
+FROM node:22-bookworm-slim AS web-builder
+
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
+# Stage 1: Build the Rust binaries.
+#
+# Uses stable Rust (matching CI) with lld linker for fast linking.
+# Node.js 22 + TypeScript 6.x are required because agent packages
+# contain TypeScript sources compiled during the build pipeline.
+FROM rust:1.86-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential pkg-config libssl-dev libclang-dev lld \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g typescript@6 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy manifests first for better layer caching.
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates/ crates/
+
+# Override to stable (rust-toolchain.toml pins nightly for local dev).
+ENV RUSTUP_TOOLCHAIN=stable
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=lld"
+
+# Override workspace LTO profile: full LTO needs >8GB RAM during linking.
+# Thin LTO produces equivalent binaries within constrained build environments.
+ENV CARGO_PROFILE_RELEASE_LTO=thin
+ENV CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+
+# Demo image intentionally links only Ford observability tools.
+# Do not use baml-agent-runner/http-tools here: it includes the read-only Slack
+# inbox producer, which can drain Grafana webhook ingress before grafana-alerts.
+RUN cargo build --release \
+      -p baml-agent-runner \
+      -p baml-rt-builder \
+      -p cargo-agent-platform \
+      --features baml-agent-runner/grafana-alerts,baml-agent-runner/slack-notify,baml-rt-builder/slack-notify \
+      --bins
+
+# Stage 2: Slim runtime image.
+#
+# Node.js is needed at runtime because agent deployment/regen compiles
+# TypeScript and the demo deployer can run npm-backed MCP servers via npx.
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libssl3 curl python3 python3-pip \
+    && pip3 install --break-system-packages --no-cache-dir uv \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g typescript@6 \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV NPM_CONFIG_CACHE=/tmp/npm-cache
+ENV HOME=/tmp
+ENV UV_CACHE_DIR=/tmp/uv-cache
+ENV XDG_CACHE_HOME=/tmp/.cache
+
+RUN groupadd -r agentium && useradd -r -g agentium -d /data -s /sbin/nologin agentium
+RUN mkdir -p /data && chown -R agentium:agentium /data
+
+COPY --from=builder /build/target/release/baml-agent-runner /usr/local/bin/
+COPY --from=builder /build/target/release/baml-agent-builder /usr/local/bin/
+COPY --from=builder /build/target/release/cargo-agent-platform /usr/local/bin/
+
+# Pre-built dashboard assets served via `--web-dir /web/dist` (see CMD).
+COPY --from=web-builder /web/dist /web/dist
+
+# Pre-bake the official Grafana MCP server binary so the agent-deployer
+# Job does not need PyPI/network egress at runtime (uvx removed).
+ARG MCP_GRAFANA_VERSION=v0.14.0
+RUN curl -fsSL -o /tmp/mcp-grafana.tgz \
+      "https://github.com/grafana/mcp-grafana/releases/download/${MCP_GRAFANA_VERSION}/mcp-grafana_Linux_x86_64.tar.gz" \
+    && tar -xzf /tmp/mcp-grafana.tgz -C /usr/local/bin mcp-grafana \
+    && chmod +x /usr/local/bin/mcp-grafana \
+    && rm -f /tmp/mcp-grafana.tgz \
+    && /usr/local/bin/mcp-grafana --help >/dev/null 2>&1 || true
+
+# ONNX models for embedding/drift detection (git-lfs tracked).
+# Fail fast if LFS pointers were not resolved (e.g. missing `git lfs pull`).
+COPY models/fastembed /models/fastembed
+RUN stubs=$(find /models/fastembed -name '*.onnx' -exec sh -c \
+      'head -c 7 "$1" | grep -q "^version" && echo "$1"' _ {} \;); \
+    if [ -n "$stubs" ]; then \
+      echo "ERROR: ONNX models are LFS pointer stubs (run 'git lfs pull'):" >&2; \
+      echo "$stubs" >&2; \
+      exit 1; \
+    fi
+ENV BAML_MODELS_DIR=/models
+
+USER 1000
+
+EXPOSE 18080
+
+ENTRYPOINT ["baml-agent-runner"]
+CMD ["--serve-http", "0.0.0.0:18080", "--web-dir", "/web/dist"]

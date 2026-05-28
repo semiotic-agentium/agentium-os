@@ -37,3 +37,32 @@ options:
       - arg: --disable=traefik
         nodeFilters:
           - server:*
+      # Pin kubelet upstream resolver so CoreDNS (dnsPolicy: Default) does not
+      # inherit the Docker network DNS, which SERVFAILs on openrouter.ai /
+      # slack.com on some hosts. App pods stay on ClusterFirst → service DNS
+      # is unaffected; CoreDNS forwards externally via 1.1.1.1 / 8.8.8.8.
+      - arg: --kubelet-arg=resolv-conf=/etc/agentium-resolv.conf
+        nodeFilters:
+          - server:*
+          - agent:*
+  # Set the node container's resolver via Docker `--dns`, so containerd image
+  # pulls (registry-1.docker.io, ghcr.io, openrouter, …) resolve. The kubelet
+  # `--resolv-conf` arg above only affects pods; containerd reads the node's
+  # own /etc/resolv.conf, which Docker populates from `--dns`.
+  runtime:
+    extraArgs:
+      - arg: --dns=1.1.1.1
+        nodeFilters:
+          - server:*
+          - agent:*
+      - arg: --dns=8.8.8.8
+        nodeFilters:
+          - server:*
+          - agent:*
+files:
+  # Source path is relative to the k3d config file directory (deploy/k3d/).
+  - source: resolv.conf
+    destination: /etc/agentium-resolv.conf
+    nodeFilters:
+      - server:*
+      - agent:*

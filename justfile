@@ -709,7 +709,158 @@ demo-rehearsal-assert:
     ./scripts/k8s-pilot-assert-placement-consistency.sh --port-forward --local-port 18181
     ./scripts/k8s-pilot-assert-no-warn-logs.sh
 
-# Agentium observability incident copilot demo lives entirely under
-# demo/ford-observability/. Use the in-demo dispatcher to keep demo artifacts
-# out of the repo-root justfile:
-#   demo/ford-observability/demo.sh install|inject|reset|e2e
+# Agentium observability incident copilot demo.
+# Repack demo/ford-observability/helm/files/demo-agents.tar from current agent
+# sources. The helm chart loads this tarball into a ConfigMap; without repack,
+# local edits to demo/ford-observability/agents/**/src/index.ts never reach the
+# cluster (the in-cluster deployer hook unpacks this tar and runs
+# `cargo-agent-platform regen` + `push` on whatever it contains).
+#
+# Deterministic tar flags (--sort=name, fixed mtime/owner) keep the bytes stable
+# when source is unchanged so this is safe to run unconditionally.
+# Create the k3d cluster used by the Ford demo with a pinned kubelet
+# `--resolv-conf` so CoreDNS (dnsPolicy: Default) forwards externally via
+# 1.1.1.1/8.8.8.8 instead of the Docker network resolver (which SERVFAILs on
+# openrouter.ai / slack.com on some hosts). Idempotent: skips create if the
+# cluster already exists. App pods stay on ClusterFirst → service DNS intact.
+# Cluster name is fixed by demo/ford-observability/k3d/cluster.yaml (metadata.name: agentium).
+ford-demo-cluster-create:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)/deploy/k3d"
+    if k3d cluster list -o json | grep -q '"name":[[:space:]]*"agentium"'; then
+      echo "[ford-demo-cluster-create] cluster 'agentium' already exists, skipping"
+      exit 0
+    fi
+    k3d cluster create --config cluster.yaml
+    kubectl wait --for=condition=Ready node --all --timeout=120s
+
+ford-demo-pack-agents:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)/demo/ford-observability"
+    out=helm/files/demo-agents.tar
+    tar --sort=name --owner=0 --group=0 --numeric-owner \
+        --mtime='2026-01-01 00:00:00 UTC' \
+        -cf "$out" \
+        agents/observability-coordinator \
+        agents/grafana-investigator \
+        agents/slack-notify
+    echo "[ford-demo-pack-agents] wrote $out ($(stat -c%s "$out") bytes)"
+
+# Build images in release mode. Defaults match demo/ford-observability/helm/values.yaml.
+ford-demo-build-images registry='ghcr.io/semiotic-ai/agent-platform-demo' tag='latest' runner_image='agentium-runner:demo':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    docker build -t '{{runner_image}}' -f Dockerfile.demo .
+    docker build -t '{{registry}}/checkout-api:{{tag}}' -f demo/ford-observability/services/checkout-api/Dockerfile demo/ford-observability
+    docker build -t '{{registry}}/payments-api:{{tag}}' -f demo/ford-observability/services/payments-api/Dockerfile demo/ford-observability
+    docker build -t '{{registry}}/failure-harness:{{tag}}' -f demo/ford-observability/services/failure-harness/Dockerfile demo/ford-observability
+
+# Load already-built demo images into a local cluster.
+# Usage:
+#   just ford-demo-load-images k3d my-cluster
+#   just ford-demo-load-images kind kind
+ford-demo-load-images kind='k3d' cluster='agentium' registry='ghcr.io/semiotic-ai/agent-platform-demo' tag='latest' runner_image='agentium-runner:demo':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    images=(
+      '{{runner_image}}'
+      '{{registry}}/checkout-api:{{tag}}'
+      '{{registry}}/payments-api:{{tag}}'
+      '{{registry}}/failure-harness:{{tag}}'
+    )
+    case '{{kind}}' in
+      k3d)
+        for image in "${images[@]}"; do k3d image import "$image" -c '{{cluster}}'; done
+        ;;
+      kind)
+        for image in "${images[@]}"; do kind load docker-image "$image" --name '{{cluster}}'; done
+        ;;
+      none|skip)
+        echo "skip image load"
+        ;;
+      *)
+        echo "unknown cluster kind '{{kind}}' (use k3d, kind, none)" >&2
+        exit 1
+        ;;
+    esac
+
+# Install/upgrade demo stack. Loads .env through demo script and maps known secrets.
+ford-demo-install *args='':
+    demo/ford-observability/demo.sh install {{args}}
+
+# Full local setup: build release images, optionally load them into k3d/kind, then install chart.
+# Examples:
+#   just ford-demo-setup                  # build + install, assumes registry/local images visible
+#   just ford-demo-setup k3d my-cluster   # build + k3d import + install
+#   just ford-demo-setup kind kind        # build + kind load + install
+ford-demo-setup load='none' cluster='agentium' *args='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    just ford-demo-pack-agents
+    just ford-demo-build-images
+    if [[ '{{load}}' != 'none' && '{{load}}' != 'skip' ]]; then
+      just ford-demo-load-images '{{load}}' '{{cluster}}'
+    fi
+    demo/ford-observability/demo.sh install {{args}}
+
+# Nuclear fresh start for the Ford demo: delete the namespace, then rebuild/load/install.
+# Use when Helm is wedged in pending-* or hook jobs/PVCs need a clean slate.
+ford-demo-nuke kind='k3d' cluster='agentium' namespace='agentium-demo':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    if ! k3d cluster list -o json 2>/dev/null | grep -q '"name":[[:space:]]*"{{cluster}}"'; then
+      echo "[nuke] cluster '{{cluster}}' missing — creating with DNS fix"
+      just ford-demo-cluster-create
+    else
+      echo "[nuke] deleting namespace {{namespace}}"
+      kubectl delete namespace '{{namespace}}' --ignore-not-found --wait=true
+      # Legacy chart versions used cluster-scoped Alloy RBAC; namespace delete leaves these behind.
+      kubectl delete clusterrole,clusterrolebinding alloy --ignore-not-found
+    fi
+    echo "[nuke] rebuilding and reinstalling demo"
+    just ford-demo-setup '{{kind}}' '{{cluster}}'
+
+# Trigger latency incident manually.
+ford-demo-inject:
+    demo/ford-observability/demo.sh inject
+
+# Reset active demo incident + ledger.
+ford-demo-reset:
+    demo/ford-observability/demo.sh reset
+
+# Smoke e2e: install unless SKIP_INSTALL=1, inject, wait for context, dump artifacts.
+ford-demo-e2e:
+    demo/ford-observability/demo.sh e2e
+
+# Full reload: rebuild images, load into k3d, force pod replacement (same image
+# tag = k8s would otherwise keep old pods), re-run helm hook to publish agents.
+# Use this after any Rust change in runner / checkout-api / payments-api /
+# failure-harness to guarantee the cluster picks up the new code. Avoids the
+# common pitfall where `just ford-demo-install` returns clean but pods keep
+# running the previous image because the chart diff is empty.
+ford-demo-reload kind='k3d' cluster='agentium' namespace='agentium-demo':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    just ford-demo-pack-agents
+    just ford-demo-build-images
+    just ford-demo-load-images '{{kind}}' '{{cluster}}'
+    echo "[reload] restarting runner + demo service pods in ns={{namespace}}"
+    kubectl -n '{{namespace}}' rollout restart statefulset/agentium-runner || true
+    kubectl -n '{{namespace}}' rollout restart deploy/checkout-api deploy/payments-api || true
+    kubectl -n '{{namespace}}' rollout restart statefulset/failure-harness || true
+    echo "[reload] waiting for rollouts to settle"
+    kubectl -n '{{namespace}}' rollout status statefulset/agentium-runner --timeout=5m
+    kubectl -n '{{namespace}}' rollout status deploy/checkout-api --timeout=2m
+    kubectl -n '{{namespace}}' rollout status deploy/payments-api --timeout=2m
+    kubectl -n '{{namespace}}' rollout status statefulset/failure-harness --timeout=2m
+    echo "[reload] re-running helm install to fire agent-deployer hook"
+    just ford-demo-install
+    echo "[reload] done. Verify new image with:"
+    echo "  kubectl -n {{namespace}} get pod agentium-runner-0 -o jsonpath='{.status.containerStatuses[0].imageID}{\"\\n\"}'"
+    echo "  kubectl -n {{namespace}} logs agentium-runner-0 -c runner | grep -E 'global drift models warm-up|readyz probe: ready'"

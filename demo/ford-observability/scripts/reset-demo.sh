@@ -10,13 +10,13 @@ NAMESPACE="${NAMESPACE:-agentium-demo}"
 KEEP_LEDGER="${KEEP_LEDGER:-0}"
 
 echo "[reset] stopping any active failure mode"
-kubectl -n "$NAMESPACE" exec deploy/failure-harness -- \
+kubectl -n "$NAMESPACE" exec statefulset/failure-harness -- \
   curl -fsS -X POST localhost:8080/admin/reset-active || true
 echo
 
 if [[ "$KEEP_LEDGER" != "1" ]]; then
   echo "[reset] clearing ledger"
-  kubectl -n "$NAMESPACE" exec deploy/failure-harness -- \
+  kubectl -n "$NAMESPACE" exec statefulset/failure-harness -- \
     curl -fsS -X POST localhost:8080/admin/reset-ledger || true
   echo
 fi

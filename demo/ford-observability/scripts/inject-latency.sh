@@ -27,7 +27,7 @@ JSON
 )
 
 echo "[inject] incident=$INCIDENT_ID duration=${DURATION_SECONDS}s p95=${LATENCY_MS_P95}ms err=$ERROR_RATE"
-kubectl -n "$NAMESPACE" exec deploy/failure-harness -- \
+kubectl -n "$NAMESPACE" exec statefulset/failure-harness -- \
   curl -fsS -X POST localhost:8080/admin/failure-mode \
     -H 'content-type: application/json' \
     -d "$payload"

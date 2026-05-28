@@ -22,6 +22,7 @@ case "$cmd" in
   install) exec "$SCRIPTS/install.sh" "$@" ;;
   inject)  exec "$SCRIPTS/inject-latency.sh" "$@" ;;
   reset)   exec "$SCRIPTS/reset-demo.sh" "$@" ;;
+  deploy-agents) exec "$SCRIPTS/deploy-agents.sh" "$@" ;;
   e2e)     exec "$SCRIPTS/run-e2e.sh" "$@" ;;
   ""|-h|--help|help)
     cat <<EOF
