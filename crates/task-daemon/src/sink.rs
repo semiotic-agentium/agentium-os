@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use baml_rt_core::ProducedEvent;
 use integrations_clickup_client::ClickUpClient;
@@ -195,7 +195,6 @@ fn jsonl_deliver_blocking(
         })?;
     Ok(())
 }
-
 
 pub struct ClickUpSink {
     list_id: String,

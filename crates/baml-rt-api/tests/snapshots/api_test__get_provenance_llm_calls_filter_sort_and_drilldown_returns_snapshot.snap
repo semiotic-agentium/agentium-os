@@ -21,9 +21,7 @@ expression: snapshot
           "a2a_failure_evidence": "metadata",
           "a2a_function_name": "DraftPrompt",
           "llm_result": null,
-          "llm_call": {
-            "input": "world"
-          },
+          "llm_call": null,
           "a2a_message_id": "msg-b",
           "a2a_model": "claude-3-7-sonnet",
           "a2a_prompt_message_chars": 0,
@@ -33,6 +31,7 @@ expression: snapshot
           "a2a_usage_prompt_tokens": 20,
           "a2a_usage_total_tokens": 25,
           "prov_endTime": "[timestamp_ms]",
+          "prov_time": "[timestamp_ms]",
           "prov_type": "a2a:LlmCall",
           "context_id": "ctx-100-1",
           "message_id": "msg-b",
@@ -62,6 +61,7 @@ expression: snapshot
         "totalTokens": 25,
         "promptTokensTotal": 20,
         "completionTokensTotal": 5,
+        "cachedInputTokensTotal": 0,
         "latencyHotspots": {
           "p95": 650.0,
           "p99": 650.0
@@ -69,8 +69,7 @@ expression: snapshot
         "tokenHotspots": {
           "p95": 25.0,
           "p99": 25.0
-        },
-        "cachedInputTokensTotal": 0
+        }
       },
       "hotspotGroups": [
         {
@@ -96,9 +95,9 @@ expression: snapshot
       ],
       "truncated": false,
       "appliedCaps": {
-        "page_size": 50,
-        "max_page_size": 200,
-        "top_k": 10
+        "pageSize": 50,
+        "maxPageSize": 50,
+        "topK": 10
       }
     }
   },
@@ -120,9 +119,7 @@ expression: snapshot
           "a2a_failure_evidence": "metadata",
           "a2a_function_name": "DraftPrompt",
           "llm_result": null,
-          "llm_call": {
-            "input": "world"
-          },
+          "llm_call": null,
           "a2a_message_id": "msg-b",
           "a2a_model": "claude-3-7-sonnet",
           "a2a_prompt_message_chars": 0,
@@ -132,6 +129,7 @@ expression: snapshot
           "a2a_usage_prompt_tokens": 20,
           "a2a_usage_total_tokens": 25,
           "prov_endTime": "[timestamp_ms]",
+          "prov_time": "[timestamp_ms]",
           "prov_type": "a2a:LlmCall",
           "context_id": "ctx-100-1",
           "message_id": "msg-b",
@@ -161,6 +159,7 @@ expression: snapshot
         "totalTokens": 25,
         "promptTokensTotal": 20,
         "completionTokensTotal": 5,
+        "cachedInputTokensTotal": 0,
         "latencyHotspots": {
           "p95": 650.0,
           "p99": 650.0
@@ -168,8 +167,7 @@ expression: snapshot
         "tokenHotspots": {
           "p95": 25.0,
           "p99": 25.0
-        },
-        "cachedInputTokensTotal": 0
+        }
       },
       "hotspotGroups": [
         {
@@ -189,9 +187,9 @@ expression: snapshot
       ],
       "truncated": false,
       "appliedCaps": {
-        "page_size": 5,
-        "max_page_size": 200,
-        "top_k": 10
+        "pageSize": 5,
+        "maxPageSize": 50,
+        "topK": 10
       }
     }
   }

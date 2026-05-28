@@ -105,15 +105,18 @@ fn redact_variant_parts(v: Value) -> Value {
                     },
                     "maxEventOrder" => V::String("[a2a_event_order]".to_string()),
                     "version" => match &val {
-                        V::String(s) if s.starts_with("v1:") => {
+                        V::String(s) if s.starts_with("v1:") || s.starts_with("obs-v1:") => {
                             V::String("[conversation_history_version]".to_string())
                         }
                         _ => redact_variant_parts(val),
                     },
+                    "nextCursor" => V::String("[conversation_history_cursor]".to_string()),
                     // Monotonic / wall-clock ordering from store; varies every run.
                     "a2a_event_order" => V::String("[a2a_event_order]".to_string()),
                     // Wall-clock ms from Surreal / store; varies every run.
-                    "prov_endTime" | "prov_startTime" => V::String("[timestamp_ms]".to_string()),
+                    "prov_endTime" | "prov_startTime" | "prov_time" => {
+                        V::String("[timestamp_ms]".to_string())
+                    }
                     "type" => match &val {
                         V::String(s) if s.starts_with("http://") || s.starts_with("https://") => {
                             V::String("[type_url]".to_string())
@@ -354,6 +357,14 @@ impl OtelTestFixture {
     fn spans(&self) -> Vec<opentelemetry_sdk::export::trace::SpanData> {
         let _ = self.provider.force_flush();
         self.exporter.get_finished_spans().unwrap_or_default()
+    }
+
+    fn span_count(&self) -> usize {
+        self.spans().len()
+    }
+
+    fn spans_after(&self, baseline: usize) -> Vec<opentelemetry_sdk::export::trace::SpanData> {
+        self.spans().into_iter().skip(baseline).collect()
     }
 }
 
@@ -1792,6 +1803,7 @@ async fn post_a2a_bad_package_does_not_leak_raw_into_identity_span() {
             "pkg", "default", "pkg", "1.0.0",
         )]));
     let app = api_router(registry, None, None).await;
+    let span_baseline = fixture.span_count();
 
     let response = app
         .oneshot(
@@ -1808,7 +1820,7 @@ async fn post_a2a_bad_package_does_not_leak_raw_into_identity_span() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let spans = fixture.spans();
+    let spans = fixture.spans_after(span_baseline);
     for span in &spans {
         assert_ne!(
             span.name.as_ref(),
@@ -1832,6 +1844,7 @@ async fn post_a2a_bad_instance_does_not_leak_raw_into_identity_span() {
             "pkg", "default", "pkg", "1.0.0",
         )]));
     let app = api_router(registry, None, None).await;
+    let span_baseline = fixture.span_count();
 
     let response = app
         .oneshot(
@@ -1848,7 +1861,7 @@ async fn post_a2a_bad_instance_does_not_leak_raw_into_identity_span() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let spans = fixture.spans();
+    let spans = fixture.spans_after(span_baseline);
     for span in &spans {
         assert_ne!(
             span.name.as_ref(),
@@ -1872,6 +1885,7 @@ async fn post_dispatch_bad_package_does_not_leak_raw_into_identity_span() {
             "pkg", "default", "pkg", "1.0.0",
         )]));
     let app = api_router(registry, None, None).await;
+    let span_baseline = fixture.span_count();
 
     let response = app
         .oneshot(
@@ -1892,7 +1906,7 @@ async fn post_dispatch_bad_package_does_not_leak_raw_into_identity_span() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let spans = fixture.spans();
+    let spans = fixture.spans_after(span_baseline);
     for span in &spans {
         assert_ne!(
             span.name.as_ref(),
@@ -1916,6 +1930,7 @@ async fn post_dispatch_bad_instance_does_not_leak_raw_into_identity_span() {
             "pkg", "default", "pkg", "1.0.0",
         )]));
     let app = api_router(registry, None, None).await;
+    let span_baseline = fixture.span_count();
 
     let response = app
         .oneshot(
@@ -1936,7 +1951,7 @@ async fn post_dispatch_bad_instance_does_not_leak_raw_into_identity_span() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let spans = fixture.spans();
+    let spans = fixture.spans_after(span_baseline);
     for span in &spans {
         assert_ne!(
             span.name.as_ref(),

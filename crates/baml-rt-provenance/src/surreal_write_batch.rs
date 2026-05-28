@@ -828,7 +828,7 @@ fn build_graph_fragment(normalized: &NormalizedProv, context_id: Option<&str>) -
                 label,
                 &ctx_node_id,
             );
-            if matches!(label, "SessionStep") {
+            if matches!(label, "ToolCall" | "SessionStep") {
                 let event_order = activity
                     .attributes
                     .get(a2a::EVENT_ORDER)

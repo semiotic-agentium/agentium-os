@@ -1,12 +1,11 @@
 ---
 source: crates/baml-rt-provenance/tests/store_test.rs
-assertion_line: 167
 expression: mermaid
 ---
 sequenceDiagram
     autonumber
     actor User
-    participant clickup_1_0_0 as "Clickup@1.0.0"
+    participant clickup_1_0_0 as "Clickup Agent"
     participant LLM_openai_generic as "Openai Generic"
     participant clickup as "Clickup"
 

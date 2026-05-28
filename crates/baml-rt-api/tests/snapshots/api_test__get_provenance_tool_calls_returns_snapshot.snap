@@ -29,6 +29,7 @@ expression: snapshot
           "phase": "unknown"
         },
         "prov_endTime": "[timestamp_ms]",
+        "prov_time": "[timestamp_ms]",
         "prov_type": "a2a:ToolCall",
         "context_id": "ctx-100-1",
         "message_id": "msg-c",
@@ -71,6 +72,7 @@ expression: snapshot
         "a2a_tool_name": "support/calculate",
         "tool_result_ref": "[prov_activity_anchor]",
         "prov_endTime": "[timestamp_ms]",
+        "prov_time": "[timestamp_ms]",
         "prov_type": "a2a:ToolCall",
         "context_id": "ctx-100-1",
         "message_id": "msg-a",
@@ -140,9 +142,9 @@ expression: snapshot
     ],
     "truncated": false,
     "appliedCaps": {
-      "page_size": 50,
-      "max_page_size": 200,
-      "top_k": 10
+      "pageSize": 50,
+      "maxPageSize": 50,
+      "topK": 10
     }
   }
 }

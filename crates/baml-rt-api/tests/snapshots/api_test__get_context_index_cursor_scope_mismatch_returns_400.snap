@@ -1,6 +1,5 @@
 ---
 source: crates/baml-rt-api/tests/api_test.rs
-assertion_line: 1649
 expression: snapshot
 ---
 {
@@ -8,6 +7,6 @@ expression: snapshot
   "body": {
     "status": 400,
     "title": "Bad Request",
-    "detail": "cursor does not match agentPackage scope for this request"
+    "detail": "cursor does not match agentPackage or ingress filter scope for this request"
   }
 }
