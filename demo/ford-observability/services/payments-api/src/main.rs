@@ -24,6 +24,8 @@ enum FailureMode {
     Healthy,
     LatencySpike {
         latency_ms_p95: u64,
+        #[serde(default)]
+        error_rate: Option<f64>,
     },
     Fail {
         error_rate: f64,
@@ -214,11 +216,16 @@ async fn authorize(
 
     let (status_code, fail): (u16, bool) = match &mode {
         FailureMode::Healthy => (200, false),
-        FailureMode::LatencySpike { latency_ms_p95 } => {
+        FailureMode::LatencySpike { latency_ms_p95, error_rate } => {
             let jitter = rand::thread_rng().gen_range(0.7..1.2);
             let sleep_ms = ((*latency_ms_p95 as f64) * jitter) as u64;
             tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
-            (200, false)
+            let er = error_rate.unwrap_or(0.0).clamp(0.0, 1.0);
+            if er > 0.0 && rand::thread_rng().gen_bool(er) {
+                (502, true)
+            } else {
+                (200, false)
+            }
         }
         FailureMode::Fail { error_rate } => {
             if rand::thread_rng().gen_bool((*error_rate).clamp(0.0, 1.0)) {

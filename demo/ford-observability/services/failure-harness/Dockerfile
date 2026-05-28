@@ -6,7 +6,7 @@ COPY services ./services
 RUN cargo build --release -p failure-harness
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/failure-harness /usr/local/bin/failure-harness
 ENV PORT=8080 LEDGER_DB_PATH=/data/failure-harness/ledger.sqlite
 EXPOSE 8080

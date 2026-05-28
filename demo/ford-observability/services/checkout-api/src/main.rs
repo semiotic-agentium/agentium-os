@@ -26,6 +26,8 @@ enum FailureMode {
     LatencySpike {
         latency_ms_p95: u64,
         #[serde(default)]
+        error_rate: Option<f64>,
+        #[serde(default)]
         incident_id: Option<String>,
     },
     DependencyTimeout {
@@ -453,10 +455,14 @@ async fn set_failure_mode(
     info!(service = SERVICE, mode = label, incident_id = mode.incident_id().unwrap_or(""), "failure_mode set");
     state.metrics.set_mode(&mode);
 
-    if let FailureMode::LatencySpike { latency_ms_p95, .. } = &mode {
+    if let FailureMode::LatencySpike { latency_ms_p95, error_rate, .. } = &mode {
         let _ = propagate_payments_mode(
             &state,
-            serde_json::json!({"mode": "latency_spike", "latency_ms_p95": latency_ms_p95}),
+            serde_json::json!({
+                "mode": "latency_spike",
+                "latency_ms_p95": latency_ms_p95,
+                "error_rate": error_rate,
+            }),
         )
         .await;
     } else if let FailureMode::Healthy = &mode {

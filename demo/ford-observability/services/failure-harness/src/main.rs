@@ -395,6 +395,7 @@ async fn activate_checkout(state: &AppState, req: &FailureRequest) -> anyhow::Re
     let body = serde_json::json!({
         "mode": "latency_spike",
         "latency_ms_p95": req.latency_ms_p95,
+        "error_rate": req.error_rate,
         "incident_id": req.incident_id,
     });
     let resp = state.http.post(url).json(&body).send().await?;
