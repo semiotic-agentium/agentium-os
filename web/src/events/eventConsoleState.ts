@@ -103,14 +103,14 @@ export function scopeContextIdFromDraft(scope: EventDispatchScope): string {
   return scope.kind === "new_context" ? "" : scope.context_id;
 }
 
-export function publishTargetsNewSession(
-  draftScope: EventDispatchScope,
-  observedContextId: string | null,
-): boolean {
-  if (observedContextId === null) return false;
-  if (draftScope.kind === "new_context") return true;
-  const draftContextId = scopeContextIdFromDraft(draftScope);
-  return draftContextId.length > 0 && draftContextId !== observedContextId;
+/** Publish clears the transcript when the compose modal scope is New context. */
+export function publishResetsTranscript(draftScope: EventDispatchScope): boolean {
+  return draftScope.kind === "new_context";
+}
+
+/** Default scope when continuing to publish into the run currently on screen. */
+export function composeScopeForObservedRun(contextId: string): EventDispatchScope {
+  return { kind: "existing_context", context_id: contextId };
 }
 
 export function scopeTaskIdFromDraft(scope: EventDispatchScope): string {

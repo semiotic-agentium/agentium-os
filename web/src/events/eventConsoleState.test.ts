@@ -3,9 +3,10 @@ import type { EventObservationState } from "../types/events";
 import {
   buildObservationScopeResolveInput,
   changeDraftScopeKind,
+  composeScopeForObservedRun,
   createInitialObservation,
   isEventDispatchScopeKind,
-  publishTargetsNewSession,
+  publishResetsTranscript,
   resolveObservedScopeIds,
   scopeContextIdFromDraft,
   shouldOfferApplyObservedScope,
@@ -29,23 +30,21 @@ describe("eventConsoleState", () => {
     expect(scopeContextIdFromDraft({ kind: "new_context" })).toBe("");
   });
 
-  it("publishTargetsNewSession when historical context is loaded", () => {
+  it("publishResetsTranscript only for new_context", () => {
+    expect(publishResetsTranscript({ kind: "new_context" })).toBe(true);
     expect(
-      publishTargetsNewSession({ kind: "new_context" }, "ctx-old"),
-    ).toBe(true);
-    expect(
-      publishTargetsNewSession(
-        { kind: "existing_context", context_id: "ctx-other" },
-        "ctx-old",
-      ),
-    ).toBe(true);
-    expect(
-      publishTargetsNewSession(
-        { kind: "existing_context", context_id: "ctx-old" },
-        "ctx-old",
-      ),
+      publishResetsTranscript({ kind: "existing_context", context_id: "ctx-old" }),
     ).toBe(false);
-    expect(publishTargetsNewSession({ kind: "new_context" }, null)).toBe(false);
+    expect(
+      publishResetsTranscript({ kind: "existing_task", context_id: "ctx-old", task_id: "t-1" }),
+    ).toBe(false);
+  });
+
+  it("composeScopeForObservedRun targets existing context", () => {
+    expect(composeScopeForObservedRun("ctx-1")).toEqual({
+      kind: "existing_context",
+      context_id: "ctx-1",
+    });
   });
 
   it("shouldOfferApplyObservedScope only for new_context draft with observed id", () => {

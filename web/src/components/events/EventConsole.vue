@@ -25,7 +25,7 @@ import type { EventRunMeta } from "../../events/eventTranscriptModel";
 import {
   changeDraftScopeKind,
   isEventDispatchScopeKind,
-  publishTargetsNewSession,
+  publishResetsTranscript,
   updateDraftScopeContextId,
   updateDraftScopeTaskId,
 } from "../../events/eventConsoleState";
@@ -83,8 +83,8 @@ const {
   removeMessage,
   setScope,
   applyObservedContextToDraftScope,
-  beginNewEvent,
-  beginPublishSession,
+  prepareComposeNewContext,
+  prepareComposeContinueRun,
   validateDraft,
   publishEvent,
   fetchHistory,
@@ -394,12 +394,8 @@ async function onPublish(): Promise<void> {
     }
   }
 
-  const startingNewSession = publishTargetsNewSession(
-    draft.value.scope,
-    observedContextId.value,
-  );
-  beginPublishSession();
-  if (startingNewSession) {
+  const resetTranscript = publishResetsTranscript(draft.value.scope);
+  if (resetTranscript) {
     lastObservationLoadKey = "";
     observation.clear();
   }
@@ -422,18 +418,24 @@ async function onPublish(): Promise<void> {
   const { contextId } = observeIds.value;
   if (!contextId) return;
 
-  await refreshObservation({ preserveTranscript: !startingNewSession });
+  await refreshObservation({ preserveTranscript: !resetTranscript });
   updateDispatchPhaseFromObservation();
   requestAnimationFrame(() => {
     transcriptViewRef.value?.getScrollContainer()?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 }
 
-function onNewEvent(): void {
-  beginNewEvent();
-  lastObservationLoadKey = "";
-  observation.clear();
+function openComposeModal(mode: "new" | "continue"): void {
+  if (mode === "new") {
+    prepareComposeNewContext();
+  } else {
+    prepareComposeContinueRun();
+  }
   composeModalOpen.value = true;
+}
+
+function onNewEvent(): void {
+  openComposeModal("new");
 }
 
 function openComposeFromQuery(): void {
@@ -548,7 +550,7 @@ function focusEventRunFromTranscript(): void {
           :waiting-for-ingress="waitingForIngress"
           :has-published-run="hasPublishedRun"
           :event-run-meta="eventRunMeta"
-          @compose-event="composeModalOpen = true"
+          @compose-event="openComposeModal(observedContextId ? 'continue' : 'new')"
           @focus-event-run="focusEventRunFromTranscript"
         />
       </section>

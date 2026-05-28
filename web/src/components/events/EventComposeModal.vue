@@ -217,8 +217,11 @@ function onMessageShapeChange(e: Event): void {
                     {{ seg.label }}
                   </button>
                 </div>
-                <p v-if="draftScopeKind !== 'new_context'" class="field-hint scope-context-hint">
-                  Enter ids below, or use <strong>Target observed run</strong> when browsing history.
+                <p v-if="draftScopeKind === 'new_context'" class="field-hint scope-context-hint">
+                  Starts a fresh event run — the transcript clears when you publish.
+                </p>
+                <p v-else class="field-hint scope-context-hint">
+                  Appends to an existing run — the transcript is kept when you publish.
                 </p>
                 <div v-if="draftScopeKind !== 'new_context'" class="inline-fields">
                   <input

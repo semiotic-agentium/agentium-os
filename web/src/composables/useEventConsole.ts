@@ -23,8 +23,8 @@ import {
   createInitialObservation,
   parsePreviewProducedEvent,
   pickerOptionFromContextId,
+  composeScopeForObservedRun,
   publishedScopeFromPreview,
-  publishTargetsNewSession,
   resolveObservedScopeIds,
 } from "../events/eventConsoleState";
 import {
@@ -352,31 +352,25 @@ function createEventConsoleState() {
     });
   }
 
-  /** Leave historical observe mode and open a fresh compose session. */
-  function beginNewEvent(): void {
-    observation.value = createInitialObservation();
-    lastPublishOutcome.value = null;
-    lastPublishedScope.value = null;
+  /** Compose modal: New context — transcript resets on publish, not before. */
+  function prepareComposeNewContext(): void {
+    draft.value.scope = { kind: "new_context" };
+    validation.value = null;
+    validatedFingerprint.value = null;
     publishError.value = null;
-    dispatchPhase.value = "idle";
-    if (draft.value.scope.kind !== "new_context") {
-      draft.value.scope = { kind: "new_context" };
-    }
-    syncEventConsoleRoute();
   }
 
-  /** Drop historical observe scope when publish targets a different run. */
-  function beginPublishSession(): void {
-    publishError.value = null;
-    if (publishTargetsNewSession(draft.value.scope, observation.value.contextId)) {
-      observation.value = {
-        contextId: null,
-        source: "publish",
-        taskId: null,
-      };
-      lastPublishedScope.value = null;
-      syncEventConsoleRoute();
+  /** Compose modal: continue the run currently observed in the transcript. */
+  function prepareComposeContinueRun(): void {
+    const ctx = observation.value.contextId;
+    if (ctx) {
+      draft.value.scope = composeScopeForObservedRun(ctx);
+    } else {
+      draft.value.scope = { kind: "new_context" };
     }
+    validation.value = null;
+    validatedFingerprint.value = null;
+    publishError.value = null;
   }
 
   /** Apply agent/context from the URL (initial load or browser back/forward only). */
@@ -827,8 +821,8 @@ function createEventConsoleState() {
     fetchAgents,
     fetchMessageShapes,
     applyRouteFromUrl,
-    beginNewEvent,
-    beginPublishSession,
+    prepareComposeNewContext,
+    prepareComposeContinueRun,
     selectAgent,
     selectSubscriptionEvent,
     applySample,
