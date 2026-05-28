@@ -45,6 +45,8 @@ microsandbox = { version = "=0.3.13", optional = true }
 default = []
 # No-op for CI/workspace feature parity; runner and builder enable clickup/notion via their own deps.
 http-tools = []
+# Exposes `ingress_store::test_support::MemoryIngressStore` for cross-crate tests.
+test-support = []
 # Compile-time gate for MicrosandboxProvider. When off, the runner uses
 # MockSandboxProvider in tests or no sandbox at all in release builds.
 sandbox-provider = ["dep:microsandbox"]

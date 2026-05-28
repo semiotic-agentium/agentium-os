@@ -56,7 +56,8 @@ test-support = { path = "../test-support", features = ["slack"] }
 baml-rt = { path = "../baml-rt" }
 baml-derive = { path = "../baml-derive" }
 baml-derive-core = { path = "../baml-derive-core" }
-baml-tools-slack = { path = "../tools/slack", features = ["test-support"] }
+baml-tools-slack = { path = "../tools/slack" }
+baml-rt-tools = { path = "../baml-rt-tools", features = ["test-support"] }
 async-trait = { workspace = true }
 dotenvy = { workspace = true }
 serde = { workspace = true }

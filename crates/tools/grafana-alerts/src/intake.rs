@@ -171,12 +171,14 @@ inventory::submit! {
 mod tests {
     use std::{future::Future, sync::Mutex};
 
-    use baml_rt_tools::{WebhookAuthTier, WebhookIntake, WebhookRequest};
+    use baml_rt_tools::{
+        WebhookAuthTier, WebhookIntake, WebhookRequest,
+        ingress_store::test_support::install_memory_ingress_store,
+    };
     use bytes::Bytes;
     use http::{HeaderMap, Method, StatusCode, Uri};
 
     use super::*;
-    use crate::test_support::install_memory_ingress_store;
 
     // Intake tests mutate the process-wide ingress store; serialize them.
     fn test_lock() -> &'static Mutex<()> {

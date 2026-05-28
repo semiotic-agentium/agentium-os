@@ -12,9 +12,11 @@ use baml_rt_core::{
     event_subscription::EventSubscription,
 };
 use baml_rt_tools::{
-    BundleName, ConfigResolver, InventoryCatalog, load_configured_event_producers_with_checkpoints,
+    BundleName, ConfigResolver, InventoryCatalog,
+    ingress_store::test_support::install_memory_ingress_store,
+    load_configured_event_producers_with_checkpoints,
 };
-use baml_tools_slack::{SlackTool, test_support::install_memory_ingress_store};
+use baml_tools_slack::SlackTool;
 use baml_tools_system::SystemBundle;
 use common::{
     CapturingA2aHandler, DispatchRegistry, FailingA2aHandler, RunningHttpServer, StaticAgentList,

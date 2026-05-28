@@ -12,10 +12,6 @@ mod normalize;
 mod producer;
 pub(crate) mod socket_mode;
 mod spans;
-use tracing::Instrument;
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_support;
-
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use async_trait::async_trait;
@@ -32,6 +28,7 @@ pub use producer::{
     SlackTransportConfig,
 };
 use serde::{Deserialize, Serialize};
+use tracing::Instrument;
 
 /// Slack API base URL.
 pub const BASE_URL: &str = "https://slack.com/api";

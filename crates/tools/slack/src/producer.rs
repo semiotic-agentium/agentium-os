@@ -1193,12 +1193,13 @@ mod tests {
 
     use axum::{Json, Router, extract::Query, http::HeaderMap, routing::get};
     use baml_rt_core::IngressStore;
-    use baml_rt_tools::ProducerCheckpoint;
+    use baml_rt_tools::{
+        ProducerCheckpoint, ingress_store::test_support::install_memory_ingress_store,
+    };
     use serde_json::json;
     use test_support::common::TempEnvVar;
 
     use super::*;
-    use crate::test_support::install_memory_ingress_store;
 
     #[derive(Clone, Default)]
     struct MockState {

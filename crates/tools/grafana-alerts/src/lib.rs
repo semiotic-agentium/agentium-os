@@ -14,9 +14,6 @@ pub mod mapping;
 pub mod producer;
 pub mod webhook;
 
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_support;
-
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::{BamlRtError, Result};

@@ -8,7 +8,6 @@ description = "Grafana alert webhook intake + event producer for BAML runtime"
 
 [features]
 default = []
-test-support = []
 
 [dependencies]
 baml-rt-core = { path = "../../baml-rt-core" }
@@ -30,3 +29,4 @@ bytes = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 test-support = { path = "../../test-support" }
+baml-rt-tools = { path = "../../baml-rt-tools", features = ["test-support"] }

@@ -687,7 +687,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_events_api_enqueues_and_acks() {
-        let (_guard, store) = crate::test_support::install_memory_ingress_store();
+        let (_guard, store) =
+            baml_rt_tools::ingress_store::test_support::install_memory_ingress_store();
         let receiver = make_test_receiver(store.clone() as Arc<dyn IngressStore>);
         let (mut sink, acks) = AckCollector::new();
 
@@ -735,7 +736,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_events_api_deduplicates_event_id() {
-        let (_guard, store) = crate::test_support::install_memory_ingress_store();
+        let (_guard, store) =
+            baml_rt_tools::ingress_store::test_support::install_memory_ingress_store();
         let receiver = make_test_receiver(store.clone() as Arc<dyn IngressStore>);
         let (mut sink, acks) = AckCollector::new();
 
@@ -775,7 +777,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_events_api_filters_unconfigured_channel() {
-        let (_guard, store) = crate::test_support::install_memory_ingress_store();
+        let (_guard, store) =
+            baml_rt_tools::ingress_store::test_support::install_memory_ingress_store();
         let receiver = make_test_receiver(store.clone() as Arc<dyn IngressStore>);
         let (mut sink, acks) = AckCollector::new();
 
@@ -808,7 +811,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_events_api_skips_missing_event_id() {
-        let (_guard, store) = crate::test_support::install_memory_ingress_store();
+        let (_guard, store) =
+            baml_rt_tools::ingress_store::test_support::install_memory_ingress_store();
         let receiver = make_test_receiver(store.clone() as Arc<dyn IngressStore>);
         let (mut sink, acks) = AckCollector::new();
 
@@ -839,7 +843,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_events_api_skips_non_message_events() {
-        let (_guard, store) = crate::test_support::install_memory_ingress_store();
+        let (_guard, store) =
+            baml_rt_tools::ingress_store::test_support::install_memory_ingress_store();
         let receiver = make_test_receiver(store.clone() as Arc<dyn IngressStore>);
         let (mut sink, acks) = AckCollector::new();
 
@@ -873,7 +878,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_text_message_events_api_enqueues_and_acks() {
-        let (_guard, store) = crate::test_support::install_memory_ingress_store();
+        let (_guard, store) =
+            baml_rt_tools::ingress_store::test_support::install_memory_ingress_store();
         let receiver = make_test_receiver(store.clone() as Arc<dyn IngressStore>);
         let (mut sink, acks) = AckCollector::new();
 
@@ -910,7 +916,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_text_message_hello_returns_none_no_ack() {
-        let (_guard, store) = crate::test_support::install_memory_ingress_store();
+        let (_guard, store) =
+            baml_rt_tools::ingress_store::test_support::install_memory_ingress_store();
         let receiver = make_test_receiver(store.clone() as Arc<dyn IngressStore>);
         let (mut sink, acks) = AckCollector::new();
 
@@ -923,7 +930,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_text_message_disconnect_link_disabled_signals_reason() {
-        let (_guard, store) = crate::test_support::install_memory_ingress_store();
+        let (_guard, store) =
+            baml_rt_tools::ingress_store::test_support::install_memory_ingress_store();
         let receiver = make_test_receiver(store.clone() as Arc<dyn IngressStore>);
         let (mut sink, _acks) = AckCollector::new();
 
@@ -937,7 +945,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_text_message_disconnect_refresh_requested_signals_server_requested() {
-        let (_guard, store) = crate::test_support::install_memory_ingress_store();
+        let (_guard, store) =
+            baml_rt_tools::ingress_store::test_support::install_memory_ingress_store();
         let receiver = make_test_receiver(store.clone() as Arc<dyn IngressStore>);
         let (mut sink, _acks) = AckCollector::new();
 
@@ -951,7 +960,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_text_message_unknown_type_with_envelope_id_acks() {
-        let (_guard, store) = crate::test_support::install_memory_ingress_store();
+        let (_guard, store) =
+            baml_rt_tools::ingress_store::test_support::install_memory_ingress_store();
         let receiver = make_test_receiver(store.clone() as Arc<dyn IngressStore>);
         let (mut sink, acks) = AckCollector::new();
 
@@ -963,7 +973,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_text_message_malformed_json_returns_none_no_ack() {
-        let (_guard, store) = crate::test_support::install_memory_ingress_store();
+        let (_guard, store) =
+            baml_rt_tools::ingress_store::test_support::install_memory_ingress_store();
         let receiver = make_test_receiver(store.clone() as Arc<dyn IngressStore>);
         let (mut sink, acks) = AckCollector::new();
 

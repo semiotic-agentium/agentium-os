@@ -2,11 +2,12 @@
 
 use std::{future::Future, sync::Mutex};
 
-use baml_rt_tools::{EventProducer, ProducerCheckpoint};
+use baml_rt_tools::{
+    EventProducer, ProducerCheckpoint, ingress_store::test_support::install_memory_ingress_store,
+};
 use baml_tools_grafana_alerts::{
     DEFAULT_SOURCE_KEY, GRAFANA_ALERT_SCHEMA_VERSION, GRAFANA_ROUTING_KEY, GRAFANA_SOURCE_KIND,
     GrafanaAlert, GrafanaAlertEventProducer, GrafanaWebhookPayload, MappingStore, enqueue_webhook,
-    test_support::install_memory_ingress_store,
 };
 
 // Producer/ingress globals make these tests inherently sequential.
