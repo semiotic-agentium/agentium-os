@@ -18,6 +18,7 @@ baml-tools-memory = { path = "../tools/memory", optional = true }
 baml-tools-notion = { path = "../tools/notion", optional = true }
 baml-tools-security-eval = { path = "../tools/security-eval", optional = true }
 baml-tools-slack = { path = "../tools/slack", optional = true }
+baml-tools-slack-notify = { path = "../tools/slack-notify", optional = true }
 
 # Test-only tools (not included in all-tools)
 baml-tools-internal-dev = { path = "../tools/internal-dev", optional = true }
@@ -29,6 +30,7 @@ memory = ["dep:baml-tools-memory"]
 notion = ["dep:baml-tools-notion"]
 security-eval = ["dep:baml-tools-security-eval"]
 slack = ["dep:baml-tools-slack"]
+slack-notify = ["dep:baml-tools-slack-notify"]
 internal-dev = ["dep:baml-tools-internal-dev"]
-http-tools = ["clickup", "notion", "slack", "security-eval"]
+http-tools = ["clickup", "notion", "slack", "slack-notify", "security-eval"]
 all-tools = ["http-tools", "memory"]

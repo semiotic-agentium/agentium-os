@@ -60,6 +60,8 @@ use baml_tools_notion as _;
 use baml_tools_security_eval as _;
 #[cfg(feature = "slack")]
 use baml_tools_slack as _;
+#[cfg(feature = "slack-notify")]
+use baml_tools_slack_notify as _;
 use baml_tools_system::callback_delivery_gate::install_callback_delivery_gate;
 use callback_delivery::RunnerCallbackDeliveryGate;
 use clap::Parser;

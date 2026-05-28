@@ -27,6 +27,7 @@ baml-tools-clickup = { path = "../tools/clickup", optional = true }
 baml-tools-memory = { path = "../tools/memory", optional = true }
 baml-tools-notion = { path = "../tools/notion", optional = true }
 baml-tools-slack = { path = "../tools/slack", optional = true }
+baml-tools-slack-notify = { path = "../tools/slack-notify", optional = true }
 baml-tools-grafana-alerts = { path = "../tools/grafana-alerts", optional = true }
 baml-tools-security-eval = { path = "../tools/security-eval", optional = true }
 anyhow = { workspace = true }
@@ -71,9 +72,10 @@ clickup = ["dep:baml-tools-clickup"]
 memory = ["dep:baml-tools-memory"]
 notion = ["dep:baml-tools-notion"]
 slack = ["dep:baml-tools-slack"]
+slack-notify = ["dep:baml-tools-slack-notify"]
 grafana-alerts = ["dep:baml-tools-grafana-alerts"]
 security-eval = ["dep:baml-tools-security-eval"]
-http-tools = ["clickup", "notion", "slack", "security-eval", "grafana-alerts"]
+http-tools = ["clickup", "notion", "slack", "slack-notify", "security-eval", "grafana-alerts"]
 # Compile-time sandbox provider selection (three states):
 #   feature ON              → MicrosandboxProvider (production)
 #   feature OFF + cfg(test) → MockSandboxProvider::echo() (tests)
