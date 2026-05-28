@@ -15,7 +15,7 @@ use agentic_memory::{
 };
 use baml_rt_core::AgentPackageName;
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::types::*;
 
@@ -110,6 +110,13 @@ type Result<T> = std::result::Result<T, MemoryError>;
 /// Manages a single agent's memory file and graph.
 pub struct MemoryManager {
     graph: Arc<RwLock<MemoryGraph>>,
+    /// Serialized bytes of the last successfully-persisted graph state.
+    ///
+    /// `add`/`link` reuse this as their rollback snapshot instead of re-serializing the
+    /// graph on every call: the snapshot is an `Arc` clone (O(1)) and deserialization is
+    /// deferred to the rare failure path. `commit_graph` advances it to the post-mutation
+    /// bytes. Only mutated while holding `graph`'s write lock.
+    committed: StdMutex<Arc<[u8]>>,
     file_path: PathBuf,
     // Held for RAII: dropping the manager releases the file lock via MemoryFileLock::Drop.
     #[expect(
@@ -184,8 +191,13 @@ impl MemoryManager {
             MemoryGraph::new(DEFAULT_DIMENSION)
         };
 
+        // Seed the committed snapshot once at open so the first add/link has a rollback
+        // baseline without re-serializing on the hot path.
+        let committed = StdMutex::new(serialize_graph(&graph)?);
+
         Ok(Self {
             graph: Arc::new(RwLock::new(graph)),
+            committed,
             file_path,
             lock,
             query_engine: QueryEngine::new(),
@@ -232,26 +244,23 @@ impl MemoryManager {
         let predicted_batch_id_set: HashSet<u64> =
             predicted_batch_node_ids.iter().copied().collect();
         validate_edges_for_batch(&graph, &edges, &predicted_batch_id_set)?;
-        let snapshot = clone_graph_snapshot(&graph)?;
+        let snapshot = self.committed_snapshot();
         let result = match self.write_engine.ingest(&mut graph, events, edges) {
             Ok(result) => result,
             Err(err) => {
-                *graph = snapshot;
+                rollback(&mut graph, &snapshot);
                 return Err(err.into());
             }
         };
         if result.new_node_ids != predicted_batch_node_ids {
             let actual = result.new_node_ids.clone();
-            *graph = snapshot;
+            rollback(&mut graph, &snapshot);
             return Err(MemoryError::UnexpectedIngestNodeIds {
                 expected: predicted_batch_node_ids,
                 actual,
             });
         }
-        if let Err(err) = self.persist(&graph).await {
-            *graph = snapshot;
-            return Err(err);
-        }
+        self.commit_graph(&mut graph, &snapshot).await?;
 
         Ok(MemoryAddNextOutput {
             node_ids: result.new_node_ids,
@@ -408,20 +417,17 @@ impl MemoryManager {
 
         let mut graph = self.graph.write().await;
         validate_edges_for_batch(&graph, &edges, &HashSet::new())?;
-        let snapshot = clone_graph_snapshot(&graph)?;
+        let snapshot = self.committed_snapshot();
         let mut count = 0;
         for edge in edges {
             if let Err(err) = graph.add_edge(edge) {
-                *graph = snapshot;
+                rollback(&mut graph, &snapshot);
                 return Err(err.into());
             }
             count += 1;
         }
         graph.ensure_adjacency();
-        if let Err(err) = self.persist(&graph).await {
-            *graph = snapshot;
-            return Err(err);
-        }
+        self.commit_graph(&mut graph, &snapshot).await?;
 
         Ok(MemoryLinkNextOutput {
             edges_created: count,
@@ -451,27 +457,62 @@ impl MemoryManager {
         })
     }
 
-    /// Persist the graph to disk atomically.
+    /// Serialize the just-mutated graph, commit it as the new rollback snapshot, and persist
+    /// it to disk. This is the single O(graph_size) serialization on the success path.
     ///
-    /// Serialization runs inline under the caller's write lock; the filesystem write and
-    /// atomic rename (via `baml_rt_core::atomic_io::atomic_write`) run on `spawn_blocking`
-    /// to keep the tokio executor responsive.
+    /// Ordering matters for cancellation safety: the committed snapshot is advanced *before*
+    /// the disk-write `await`, so a future dropped mid-write can never leave the committed
+    /// snapshot lagging the in-memory graph (which the dropped future does not revert). On an
+    /// explicit write failure the in-memory graph and committed snapshot are both rolled back
+    /// to `snapshot`, matching the unchanged on-disk contents.
     ///
-    /// Cancellation: if the calling future is dropped at `.await`, the in-memory mutation
-    /// persists but the on-disk write may not — `spawn_blocking` is detached and the caller's
-    /// snapshot is gone, so the rollback path is unreachable. Acceptable for shutdown; do not
-    /// rely on cancellation rolling back persistence.
-    async fn persist(&self, graph: &MemoryGraph) -> Result<()> {
-        let writer = AmemWriter::new(graph.dimension());
-        let mut buf = Vec::new();
-        writer.write_to(graph, &mut buf)?;
+    /// Durability across cancellation remains best-effort: `spawn_blocking` is detached, so a
+    /// cancelled write may or may not reach disk. Do not rely on cancellation for durability.
+    async fn commit_graph(&self, graph: &mut MemoryGraph, snapshot: &Arc<[u8]>) -> Result<()> {
+        let bytes = serialize_graph(graph)?;
+        self.set_committed(Arc::clone(&bytes));
+        if let Err(err) = self.write_graph(bytes).await {
+            rollback(graph, snapshot);
+            self.set_committed(Arc::clone(snapshot));
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    /// Write serialized graph bytes to disk atomically.
+    ///
+    /// The filesystem write and atomic rename (via `baml_rt_core::atomic_io::atomic_write`)
+    /// run on `spawn_blocking` to keep the tokio executor responsive.
+    async fn write_graph(&self, bytes: Arc<[u8]>) -> Result<()> {
         let file_path = self.file_path.clone();
         tokio::task::spawn_blocking(move || {
-            baml_rt_core::atomic_io::atomic_write(&file_path, &buf)
+            baml_rt_core::atomic_io::atomic_write(&file_path, bytes.as_ref())
         })
         .await??;
         debug!(path = %self.file_path.display(), "memory persisted");
         Ok(())
+    }
+
+    /// Clone the current committed snapshot bytes (O(1) `Arc` clone).
+    fn committed_snapshot(&self) -> Arc<[u8]> {
+        Arc::clone(&self.committed_guard())
+    }
+
+    /// Replace the committed snapshot with freshly-persisted bytes.
+    fn set_committed(&self, bytes: Arc<[u8]>) {
+        *self.committed_guard() = bytes;
+    }
+
+    /// Lock the committed-snapshot mutex, recovering the inner value on poison.
+    ///
+    /// The mutex is only ever held for an `Arc` clone or assignment under `graph`'s write
+    /// lock — no panic-prone work — so poisoning is effectively unreachable. Recovering the
+    /// inner value keeps a panic elsewhere from cascading into a poisoned-lock error here;
+    /// the committed bytes are immutable and remain valid.
+    fn committed_guard(&self) -> std::sync::MutexGuard<'_, Arc<[u8]>> {
+        self.committed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Get the file path for this agent's memory.
@@ -654,12 +695,37 @@ fn predicted_ingest_node_ids(graph: &MemoryGraph, event_count: usize) -> Vec<u64
         .collect()
 }
 
-fn clone_graph_snapshot(graph: &MemoryGraph) -> Result<MemoryGraph> {
+/// Serialize a graph to its on-disk byte representation.
+fn serialize_graph(graph: &MemoryGraph) -> Result<Arc<[u8]>> {
     let writer = AmemWriter::new(graph.dimension());
     let mut buf = Vec::new();
     writer.write_to(graph, &mut buf)?;
-    let mut cursor = std::io::Cursor::new(buf);
-    Ok(AmemReader::read_from(&mut cursor)?)
+    Ok(Arc::from(buf))
+}
+
+/// Restore a graph in place from committed snapshot bytes (rollback path only).
+///
+/// `bytes` always originate from [`serialize_graph`] on a previously-committed graph, so
+/// deserialization failure here would indicate internal corruption rather than bad input.
+fn restore_into(graph: &mut MemoryGraph, bytes: &[u8]) -> Result<()> {
+    let mut cursor = std::io::Cursor::new(bytes);
+    *graph = AmemReader::read_from(&mut cursor)?;
+    Ok(())
+}
+
+/// Roll a graph back to its committed snapshot after a failed mutation.
+///
+/// Infallible by design: it logs rather than propagates a deserialization failure so the
+/// caller's original operation error stays the surfaced error. A failure here can only mean
+/// the committed bytes — our own serialization — no longer parse, i.e. internal corruption,
+/// which the log surfaces loudly.
+fn rollback(graph: &mut MemoryGraph, snapshot: &[u8]) {
+    if let Err(err) = restore_into(graph, snapshot) {
+        error!(
+            error = %err,
+            "memory rollback failed to restore committed snapshot; in-memory graph may diverge from disk"
+        );
+    }
 }
 
 /// Home directory fallback.
@@ -818,6 +884,69 @@ mod tests {
         assert_eq!(
             stats.edge_count, 0,
             "failed add must not leave partial edges"
+        );
+    }
+
+    // Pre-validation rejects bad edges/events before the snapshot is ever taken, so the
+    // only add/link rollback the public API can reach after validation is a persist failure.
+    // Force one (read-only parent dir) and assert the rollback restores the *prior committed*
+    // graph — not the empty graph captured at open time — which is what `set_committed`
+    // tracking after each successful persist provides.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_failed_persist_rolls_back_to_prior_committed_state() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Root ignores directory write permissions, so the failure injection below is a
+        // no-op there (e.g. CI running tests as root in a container). Skip rather than flake.
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipping: running as root, directory permissions do not block writes");
+            return;
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let mgr = MemoryManager::open_at(dir.join("rollback.amem")).unwrap();
+
+        // Two committed adds advance the snapshot past the open-time empty graph.
+        for content in ["first committed fact", "second committed fact"] {
+            mgr.add(MemoryAddSendInput {
+                events: vec![MemoryEventInput {
+                    event_type: MemoryEventType::Fact,
+                    content: content.to_string(),
+                    session_id: Some(1),
+                    confidence: Some(0.9),
+                }],
+                edges: None,
+            })
+            .await
+            .expect("committed add");
+        }
+        assert_eq!(mgr.stats().await.unwrap().node_count, 2);
+
+        // Make the directory unwritable so the atomic temp-file write fails. Ingest
+        // succeeds in memory, then persist fails and triggers rollback.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = mgr
+            .add(MemoryAddSendInput {
+                events: vec![MemoryEventInput {
+                    event_type: MemoryEventType::Fact,
+                    content: "uncommittable fact".to_string(),
+                    session_id: Some(1),
+                    confidence: Some(0.9),
+                }],
+                edges: None,
+            })
+            .await;
+        // Restore permissions so the tempdir can be cleaned up regardless of outcome.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        result.expect_err("persist into a read-only directory should fail");
+
+        let after = mgr.stats().await.expect("stats after failed persist");
+        assert_eq!(
+            after.node_count, 2,
+            "rollback must restore the committed graph, not the open-time empty graph"
         );
     }
 
