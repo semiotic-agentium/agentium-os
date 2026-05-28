@@ -1,6 +1,9 @@
 //! Provenance subscriber: converts EffectEvent to ProvEvent.
 
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Instant,
+};
 
 use async_trait::async_trait;
 use baml_rt_conversation::view::{ConversationItemContent, ProvenanceConversationContextItem};
@@ -9,9 +12,10 @@ use baml_rt_core::{
     ids::{ActivityAnchorId, ContextId, ExternalId, MessageId, TaskId},
 };
 use baml_rt_embedding::{
-    DriftConfig, DriftSeverity, EmbeddingProvider, FastEmbedProvider, PlanDriftConfig,
-    PlanDriftInputs, PlanStepAnchor, RerankProvider, TaskDriftTracker, score_bipia_signal,
-    score_citation_drift, score_drift_from_embeddings, score_plan_drift, tactical_drift_texts,
+    DriftConfig, DriftSeverity, EmbeddingProvider, FastEmbedProvider, FastRerankProvider,
+    PlanDriftConfig, PlanDriftInputs, PlanStepAnchor, RerankProvider, TaskDriftTracker,
+    score_bipia_signal, score_citation_drift, score_drift_from_embeddings, score_plan_drift,
+    tactical_drift_texts,
 };
 use baml_rt_observability::metrics::{self, LlmCallMetrics};
 use baml_rt_tools::{
@@ -22,7 +26,7 @@ use baml_rt_tools::{
 };
 use dashmap::DashMap;
 use serde_json::Value;
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::Semaphore;
 
 use crate::{
     events::{
@@ -37,6 +41,103 @@ use crate::{
 };
 
 const DEFAULT_INFERENCE_CONCURRENCY: usize = 4;
+
+// Process-wide ONNX caches. Loading FastEmbed GTE + JINA reranker each costs
+// 1-40s of CPU-blocking init (graph build, weight load). Without these, every
+// `ProvenanceEffectSubscriber` (built per agent deploy) reloaded the models —
+// stalling the QuickJS event-loop probe long enough to flip `/readyz` to 503
+// mid-deploy, dropping the runner from Service endpoints.
+//
+// Populated eagerly at runner boot via `warm_global_drift_models`; lazy callers
+// (tests / embedded users) fall through to per-call `spawn_blocking` and
+// install via `OnceLock::set` (race-tolerant: second writer is silently dropped).
+//
+// SAFETY: stored providers wrap non-Sync ONNX sessions in `std::sync::Mutex`
+// and only ever lock inside `tokio::task::spawn_blocking`. Never on a tokio
+// worker thread. Never across `.await`.
+static GLOBAL_DRIFT_PROVIDER: OnceLock<Option<Arc<dyn EmbeddingProvider>>> = OnceLock::new();
+static GLOBAL_RERANK_PROVIDER: OnceLock<Option<Arc<dyn RerankProvider>>> = OnceLock::new();
+
+/// Sync read of the global embedding provider. Returns `None` until
+/// [`warm_global_drift_models`] (or a lazy fallback in
+/// `ProvenanceEffectSubscriber::drift_provider`) has populated it.
+pub fn global_drift_provider() -> Option<Arc<dyn EmbeddingProvider>> {
+    GLOBAL_DRIFT_PROVIDER.get().and_then(|slot| slot.clone())
+}
+
+/// Sync read of the global rerank provider. Same contract as
+/// [`global_drift_provider`].
+pub fn global_rerank_provider() -> Option<Arc<dyn RerankProvider>> {
+    GLOBAL_RERANK_PROVIDER.get().and_then(|slot| slot.clone())
+}
+
+/// Pre-load embedding + rerank ONNX models once per process.
+///
+/// Call from runner boot **before** flipping the readiness gate. Subsequent
+/// `ProvenanceEffectSubscriber` instances then hit a populated `OnceLock` on
+/// first use and never block on ONNX init during a `/deploy` request.
+///
+/// Re-entrant: safe to call multiple times — short-circuits when already set.
+pub async fn warm_global_drift_models() {
+    let t0 = Instant::now();
+
+    let embedding_ready = if GLOBAL_DRIFT_PROVIDER.get().is_some() {
+        global_drift_provider().is_some()
+    } else {
+        let loaded = match tokio::task::spawn_blocking(FastEmbedProvider::new).await {
+            Ok(Ok(p)) => Some(Arc::new(p) as Arc<dyn EmbeddingProvider>),
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    error = %e,
+                    "global FastEmbed init failed; drift scoring disabled process-wide"
+                );
+                None
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "global FastEmbed init task panicked; drift scoring disabled process-wide"
+                );
+                None
+            }
+        };
+        let ready = loaded.is_some();
+        let _ = GLOBAL_DRIFT_PROVIDER.set(loaded);
+        ready
+    };
+
+    let reranker_ready = if GLOBAL_RERANK_PROVIDER.get().is_some() {
+        global_rerank_provider().is_some()
+    } else {
+        let loaded = match tokio::task::spawn_blocking(FastRerankProvider::new).await {
+            Ok(Ok(p)) => Some(Arc::new(p) as Arc<dyn RerankProvider>),
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    error = %e,
+                    "global JINA reranker init failed; cross-encoder step scoring disabled"
+                );
+                None
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "global JINA reranker init task panicked; cross-encoder step scoring disabled"
+                );
+                None
+            }
+        };
+        let ready = loaded.is_some();
+        let _ = GLOBAL_RERANK_PROVIDER.set(loaded);
+        ready
+    };
+
+    tracing::info!(
+        elapsed_ms = t0.elapsed().as_millis(),
+        embedding_ready,
+        reranker_ready,
+        "global drift models warm-up complete"
+    );
+}
 
 #[derive(Debug, thiserror::Error)]
 enum InferenceError {
@@ -632,11 +733,16 @@ pub struct ProvenanceEffectSubscriber {
     writer: Arc<dyn ProvenanceWriter>,
     drift_config: DriftConfig,
     plan_drift_config: PlanDriftConfig,
-    drift_provider: RwLock<Option<Arc<dyn EmbeddingProvider>>>,
-    /// Cross-encoder reranker for step-level drift detection.
-    /// Lazy-initialised to JINA-v1-turbo-en on first `PlanCommitted` LLM call.
-    /// Combined with GTE-base cosine, achieves 7/7 BIPIA attack coverage.
-    rerank_provider: RwLock<Option<Arc<dyn RerankProvider>>>,
+    /// Explicit per-instance override; when `Some`, takes precedence over the
+    /// process-global cache (`GLOBAL_DRIFT_PROVIDER`). Constructed via
+    /// `new_with_embedding_provider` / `new_with_plan_drift` / `new_with_reranker`
+    /// for tests + benches that inject deterministic mock providers. Production
+    /// path leaves this `None` and consults the global cache.
+    drift_override: Option<Arc<dyn EmbeddingProvider>>,
+    /// Same shape as `drift_override` for the cross-encoder reranker
+    /// (JINA-v1-turbo-en). Combined with GTE-base cosine, achieves 7/7
+    /// BIPIA attack coverage.
+    rerank_override: Option<Arc<dyn RerankProvider>>,
     /// Per-task plan drift trackers. Phase transitions:
     /// Provisional → IntentResolved → PlanCommitted (with linear step execution).
     plan_trackers: DashMap<TaskId, TrackerPhase>,
@@ -664,8 +770,8 @@ impl ProvenanceEffectSubscriber {
             writer,
             drift_config: DriftConfig::default(),
             plan_drift_config: PlanDriftConfig::default(),
-            drift_provider: RwLock::new(None),
-            rerank_provider: RwLock::new(None),
+            drift_override: None,
+            rerank_override: None,
             plan_trackers: DashMap::new(),
             action_describer: None,
             tool_registry: None,
@@ -685,7 +791,7 @@ impl ProvenanceEffectSubscriber {
     ) -> Self {
         Self {
             drift_config,
-            drift_provider: RwLock::new(Some(drift_provider)),
+            drift_override: Some(drift_provider),
             ..Self::base(writer)
         }
     }
@@ -699,7 +805,7 @@ impl ProvenanceEffectSubscriber {
         Self {
             drift_config,
             plan_drift_config,
-            drift_provider: RwLock::new(Some(drift_provider)),
+            drift_override: Some(drift_provider),
             ..Self::base(writer)
         }
     }
@@ -714,8 +820,8 @@ impl ProvenanceEffectSubscriber {
         Self {
             drift_config,
             plan_drift_config,
-            drift_provider: RwLock::new(Some(drift_provider)),
-            rerank_provider: RwLock::new(Some(rerank_provider)),
+            drift_override: Some(drift_provider),
+            rerank_override: Some(rerank_provider),
             ..Self::base(writer)
         }
     }
@@ -743,90 +849,79 @@ impl ProvenanceEffectSubscriber {
     }
 
     async fn drift_provider(&self) -> Option<Arc<dyn EmbeddingProvider>> {
-        if let Some(provider) = self.drift_provider.read().await.clone() {
-            return Some(provider);
+        // Explicit per-instance override (tests/mocks) wins.
+        if let Some(p) = &self.drift_override {
+            return Some(p.clone());
         }
-
-        let provider_result = tokio::task::spawn_blocking(FastEmbedProvider::new).await;
-        let provider = match provider_result {
-            Ok(Ok(provider)) => Arc::new(provider) as Arc<dyn EmbeddingProvider>,
+        // Production fast path: warm-up populated the global cache at boot.
+        if let Some(p) = global_drift_provider() {
+            return Some(p);
+        }
+        // Lazy fallback: tests / embedded users that skipped warm-up.
+        // Pays the ONNX cost once; OnceLock::set is race-tolerant.
+        let loaded = match tokio::task::spawn_blocking(FastEmbedProvider::new).await {
+            Ok(Ok(p)) => Some(Arc::new(p) as Arc<dyn EmbeddingProvider>),
             Ok(Err(error)) => {
                 tracing::warn!(
                     error = %error,
                     "Failed to initialise embedding model in provenance subscriber; drift scoring disabled"
                 );
-                return None;
+                None
             }
             Err(join_error) => {
                 tracing::warn!(
                     error = %join_error,
                     "Embedding model init task panicked in provenance subscriber; drift scoring disabled"
                 );
-                return None;
+                None
             }
         };
-
-        let mut guard = self.drift_provider.write().await;
-        if let Some(existing) = guard.as_ref() {
-            return Some(existing.clone());
-        }
-        *guard = Some(provider.clone());
-        Some(provider)
+        let _ = GLOBAL_DRIFT_PROVIDER.set(loaded.clone());
+        loaded
     }
 
     /// Returns the rerank provider if configured, lazily initialising
     /// `FastRerankProvider` (JINA-v1-turbo-en) on first call.
     async fn rerank_provider(&self) -> Option<Arc<dyn RerankProvider>> {
-        if let Some(p) = self.rerank_provider.read().await.clone() {
+        if let Some(p) = &self.rerank_override {
+            return Some(p.clone());
+        }
+        if let Some(p) = global_rerank_provider() {
             return Some(p);
         }
-
-        let result = tokio::task::spawn_blocking(baml_rt_embedding::FastRerankProvider::new).await;
-
-        let provider = match result {
-            Ok(Ok(p)) => Arc::new(p) as Arc<dyn RerankProvider>,
+        let loaded = match tokio::task::spawn_blocking(FastRerankProvider::new).await {
+            Ok(Ok(p)) => Some(Arc::new(p) as Arc<dyn RerankProvider>),
             Ok(Err(e)) => {
                 tracing::warn!(
                     error = %e,
                     "Failed to initialise JINA reranker; cross-encoder step scoring disabled"
                 );
-                return None;
+                None
             }
             Err(e) => {
                 tracing::warn!(
                     error = %e,
                     "Reranker init task panicked; cross-encoder step scoring disabled"
                 );
-                return None;
+                None
             }
         };
-
-        let mut guard = self.rerank_provider.write().await;
-        if let Some(existing) = guard.as_ref() {
-            return Some(existing.clone());
-        }
-        *guard = Some(provider.clone());
-        Some(provider)
+        let _ = GLOBAL_RERANK_PROVIDER.set(loaded.clone());
+        loaded
     }
 
     /// Load ONNX embedding + JINA rerank models **before** the first chat turn.
     ///
-    /// [`EffectEvent::IntentResolved`] and [`EffectEvent::PlanGenerated`] call
-    /// [`Self::drift_provider`] / [`Self::rerank_provider`] **before** emitting
-    /// provenance rows. Without a warm-up, the first effect on the critical path
-    /// blocks on `spawn_blocking(FastEmbedProvider::new)` (large GTE model) and
-    /// reranker init — often tens of seconds — so the UI shows no graph activity
-    /// until that completes.
+    /// Now delegates to [`warm_global_drift_models`] — the per-process cache
+    /// makes per-subscriber warming a near-free `OnceLock::get` after the
+    /// first call. Kept for callers (e.g. `wire_provenance_subsystems`) that
+    /// haven't been migrated to call the free function directly.
     pub async fn warm_drift_models(&self) {
-        let t0 = Instant::now();
-        let embedding_ok = self.drift_provider().await.is_some();
-        let rerank_ok = self.rerank_provider().await.is_some();
-        tracing::info!(
-            elapsed_ms = t0.elapsed().as_millis(),
-            embedding_ready = embedding_ok,
-            reranker_ready = rerank_ok,
-            "provenance drift models warm-up complete"
-        );
+        // Honor explicit overrides without paying the global cost.
+        if self.drift_override.is_some() && self.rerank_override.is_some() {
+            return;
+        }
+        warm_global_drift_models().await;
     }
 
     async fn embed_batch_async(

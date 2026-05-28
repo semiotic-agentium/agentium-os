@@ -60,6 +60,8 @@ use baml_tools_notion as _;
 use baml_tools_security_eval as _;
 #[cfg(feature = "slack")]
 use baml_tools_slack as _;
+#[cfg(feature = "slack-notify")]
+use baml_tools_slack_notify as _;
 use baml_tools_system::callback_delivery_gate::install_callback_delivery_gate;
 use callback_delivery::RunnerCallbackDeliveryGate;
 use clap::Parser;
@@ -661,6 +663,14 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             None
         }
     };
+
+    // Pre-load ONNX embedding + JINA reranker models once per process. Without
+    // this, every agent deploy reloads them inside `wire_provenance_subsystems`,
+    // CPU-stalling the QuickJS event-loop probe long enough to flip /readyz to
+    // 503 mid-deploy and drop the pod from Service endpoints. Paid as added
+    // pre-ready latency here (~1-40s depending on model cache state); zero
+    // cost per deploy thereafter.
+    baml_rt_provenance::effect_subscriber::warm_global_drift_models().await;
 
     readyz.store(true, Ordering::Release);
     tracing::info!("readyz probe: ready (event producers loaded)");
