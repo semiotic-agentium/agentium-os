@@ -599,8 +599,12 @@ pub fn api_router_with_services_and_deploy(
             public: webhook_public,
             operator: webhook_operator,
         } = crate::webhook_mount::build_webhook_intake_router(webhook_intakes);
-        router = router.merge(webhook_public);
-        router = router.merge(webhook_operator.route_layer(auth_layer.clone()));
+        if let Some(public) = webhook_public {
+            router = router.merge(public);
+        }
+        if let Some(operator) = webhook_operator {
+            router = router.merge(operator.route_layer(auth_layer.clone()));
+        }
         tracing::info!(
             webhook_intake_count,
             "mounted webhook intakes from inventory"

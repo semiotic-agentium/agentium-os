@@ -47,8 +47,8 @@ fn partition(intakes: Vec<Arc<dyn WebhookIntake>>) -> PartitionedIntakes {
 /// how to merge them and is responsible for wrapping [`Self::operator`]
 /// in the runner-token auth layer before merging.
 pub struct WebhookIntakeRouters {
-    pub public: Router,
-    pub operator: Router,
+    pub public: Option<Router>,
+    pub operator: Option<Router>,
 }
 
 /// Build axum sub-routers for the supplied intakes, partitioned by
@@ -63,8 +63,8 @@ pub struct WebhookIntakeRouters {
 /// ```
 pub fn build_webhook_intake_router(intakes: Vec<Arc<dyn WebhookIntake>>) -> WebhookIntakeRouters {
     let PartitionedIntakes { public, operator } = partition(intakes);
-    let public = mount_intakes(Router::new(), public);
-    let operator = mount_intakes(Router::new(), operator);
+    let public = (!public.is_empty()).then(|| mount_intakes(Router::new(), public));
+    let operator = (!operator.is_empty()).then(|| mount_intakes(Router::new(), operator));
     WebhookIntakeRouters { public, operator }
 }
 
@@ -213,6 +213,7 @@ mod tests {
         )]);
         let response = routers
             .public
+            .expect("public arm present when public intake registered")
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
@@ -237,6 +238,7 @@ mod tests {
         )]);
         let response = routers
             .operator
+            .expect("operator arm present when operator intake registered")
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
@@ -256,19 +258,10 @@ mod tests {
             WebhookAuthTier::OperatorToken,
         )]);
         // Operator-tier route must not appear on the public arm — caller is
-        // responsible for merging the operator arm with the auth layer.
-        let response = routers
-            .public
-            .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("/webhooks/secret")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        // responsible for merging the operator arm with the auth layer. With
+        // no public intakes the public arm is absent entirely.
+        assert!(routers.public.is_none());
+        assert!(routers.operator.is_some());
     }
 
     #[tokio::test]
@@ -279,6 +272,7 @@ mod tests {
         )]);
         let response = routers
             .public
+            .expect("public arm present when public intake registered")
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
