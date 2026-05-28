@@ -91,8 +91,7 @@ fn ingress_id_for(message_id: &str) -> IngressId {
     hasher.update(message_id.as_bytes());
     let digest = hasher.finalize();
     let hex = format!("{digest:x}");
-    IngressId::parse(format!("grafana-alerts:{hex}"))
-        .expect("non-empty sha256-derived ingress id")
+    IngressId::parse(format!("grafana-alerts:{hex}")).expect("non-empty sha256-derived ingress id")
 }
 
 /// Parse a Grafana webhook body, resolve each alert's `context_id`, and

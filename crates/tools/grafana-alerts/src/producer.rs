@@ -73,7 +73,9 @@ pub struct GrafanaAlertEventProducer {
 impl GrafanaAlertEventProducer {
     pub fn new() -> Result<Self> {
         let routing_key = AgentDispatchRoutingKey::parse(GRAFANA_ROUTING_KEY).ok_or_else(|| {
-            BamlRtError::InvalidArgument(format!("invalid Grafana routing key '{GRAFANA_ROUTING_KEY}'"))
+            BamlRtError::InvalidArgument(format!(
+                "invalid Grafana routing key '{GRAFANA_ROUTING_KEY}'"
+            ))
         })?;
         let schema_version =
             EventSchemaVersion::parse(GRAFANA_ALERT_SCHEMA_VERSION).ok_or_else(|| {
@@ -95,8 +97,8 @@ impl GrafanaAlertEventProducer {
     }
 
     fn ingress_item_to_event(&self, item: &IngressItem) -> Result<ProducedEvent> {
-        let envelope: GrafanaIngressEnvelope = serde_json::from_str(&item.payload_json)
-            .map_err(|err| {
+        let envelope: GrafanaIngressEnvelope =
+            serde_json::from_str(&item.payload_json).map_err(|err| {
                 BamlRtError::InvalidArgument(format!(
                     "grafana-alerts ingress payload deserialize failed: {err}"
                 ))

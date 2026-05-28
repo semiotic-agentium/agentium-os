@@ -21,8 +21,6 @@ use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_tools::{baml_tool, bundles::Support, tools::BamlTool};
-use serde::{Deserialize, Serialize};
-
 pub use intake::{
     GRAFANA_INTAKE_KEY, GRAFANA_WEBHOOK_PATH, GrafanaAlertsConfig, GrafanaWebhookIntake,
 };
@@ -31,6 +29,7 @@ pub use producer::{
     GRAFANA_ALERT_SCHEMA_VERSION, GRAFANA_INBOX_PRODUCER_KEY, GRAFANA_ROUTING_KEY,
     GRAFANA_SOURCE_KIND, GrafanaAlertEventProducer,
 };
+use serde::{Deserialize, Serialize};
 pub use webhook::{
     DEFAULT_SOURCE_KEY, EnqueueOutcome, GrafanaAlert, GrafanaIngressEnvelope,
     GrafanaWebhookPayload, enqueue_webhook,
