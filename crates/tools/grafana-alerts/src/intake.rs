@@ -169,7 +169,7 @@ inventory::submit! {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::{future::Future, sync::Mutex};
 
     use baml_rt_tools::{WebhookAuthTier, WebhookIntake, WebhookRequest};
     use bytes::Bytes;
@@ -182,6 +182,15 @@ mod tests {
     fn test_lock() -> &'static Mutex<()> {
         static LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn run_serial_test(test: impl Future<Output = ()>) {
+        let _guard = test_lock().lock().unwrap();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(test);
     }
 
     fn empty_request(body: &str) -> WebhookRequest {
@@ -207,53 +216,56 @@ mod tests {
         assert_eq!(intake.intake_key(), "support/grafana-alerts");
     }
 
-    #[tokio::test]
-    async fn malformed_body_returns_bad_request() {
-        let _guard = test_lock().lock().unwrap();
-        let (_store_guard, _store) = install_memory_ingress_store();
-        let response = intake().handle(empty_request("not json")).await.unwrap();
-        assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    #[test]
+    fn malformed_body_returns_bad_request() {
+        run_serial_test(async {
+            let (_store_guard, _store) = install_memory_ingress_store();
+            let response = intake().handle(empty_request("not json")).await.unwrap();
+            assert_eq!(response.status, StatusCode::BAD_REQUEST);
+        });
     }
 
-    #[tokio::test]
-    async fn missing_ingress_store_returns_internal_error() {
-        let _guard = test_lock().lock().unwrap();
-        // Do not install an ingress store. The handler must report 500.
-        baml_rt_tools::ingress_store::clear_ingress_store();
-        let body = serde_json::json!({
-            "status": "firing",
-            "groupKey": "g1",
-            "alerts": [{
+    #[test]
+    fn missing_ingress_store_returns_internal_error() {
+        run_serial_test(async {
+            // Do not install an ingress store. The handler must report 500.
+            baml_rt_tools::ingress_store::clear_ingress_store();
+            let body = serde_json::json!({
                 "status": "firing",
-                "fingerprint": "fp1",
-                "startsAt": "2026-05-25T12:00:00Z",
-            }]
-        })
-        .to_string();
-        let response = intake().handle(empty_request(&body)).await.unwrap();
-        assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
+                "groupKey": "g1",
+                "alerts": [{
+                    "status": "firing",
+                    "fingerprint": "fp1",
+                    "startsAt": "2026-05-25T12:00:00Z",
+                }]
+            })
+            .to_string();
+            let response = intake().handle(empty_request(&body)).await.unwrap();
+            assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
+        });
     }
 
-    #[tokio::test]
-    async fn well_formed_payload_returns_accepted_and_enqueues() {
-        let _guard = test_lock().lock().unwrap();
-        let (_store_guard, store) = install_memory_ingress_store();
-        let body = serde_json::json!({
-            "status": "firing",
-            "groupKey": "g1",
-            "alerts": [{
+    #[test]
+    fn well_formed_payload_returns_accepted_and_enqueues() {
+        run_serial_test(async {
+            let (_store_guard, store) = install_memory_ingress_store();
+            let body = serde_json::json!({
                 "status": "firing",
-                "fingerprint": "fp1",
-                "startsAt": "2026-05-25T12:00:00Z",
-                "labels": {"alertname": "HighLatency"},
-            }]
-        })
-        .to_string();
-        let response = intake().handle(empty_request(&body)).await.unwrap();
-        assert_eq!(response.status, StatusCode::ACCEPTED);
-        let pending = baml_rt_core::IngressStore::list_pending(store.as_ref(), 100)
-            .await
-            .unwrap();
-        assert_eq!(pending.len(), 1);
+                "groupKey": "g1",
+                "alerts": [{
+                    "status": "firing",
+                    "fingerprint": "fp1",
+                    "startsAt": "2026-05-25T12:00:00Z",
+                    "labels": {"alertname": "HighLatency"},
+                }]
+            })
+            .to_string();
+            let response = intake().handle(empty_request(&body)).await.unwrap();
+            assert_eq!(response.status, StatusCode::ACCEPTED);
+            let pending = baml_rt_core::IngressStore::list_pending(store.as_ref(), 100)
+                .await
+                .unwrap();
+            assert_eq!(pending.len(), 1);
+        });
     }
 }
