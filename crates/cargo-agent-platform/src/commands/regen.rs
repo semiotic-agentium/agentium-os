@@ -240,7 +240,16 @@ fn regen_agent(root: &Path) -> Result<()> {
             .generate(&agent_dir, &build_dir)
             .await
             .map_err(|e| {
-                let msg = e.to_string();
+                let msg = {
+                    let mut s = e.to_string();
+                    let mut src: Option<&dyn std::error::Error> = std::error::Error::source(&e);
+                    while let Some(cause) = src {
+                        s.push_str("\n  caused by: ");
+                        s.push_str(&cause.to_string());
+                        src = cause.source();
+                    }
+                    s
+                };
                 if msg.contains("Tool metadata missing for:") {
                     let external_dir = std::env::var("BAML_EXTERNAL_TOOLS_DIR")
                         .ok()
