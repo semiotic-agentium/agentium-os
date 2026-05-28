@@ -17,6 +17,8 @@ use baml_rt_tools_claude as _; // Force link so claude tool metadata is in inven
 use baml_tools_security_eval as _; // Force link so security-eval tool metadata is in inventory
 #[cfg(feature = "slack")]
 use baml_tools_slack as _; // Force link so slack tool metadata is in inventory
+#[cfg(feature = "slack-notify")]
+use baml_tools_slack_notify as _; // Force link so slack-notify tool metadata is in inventory
 use baml_tools_system as _; // Force link so system tool metadata is in inventory
 use clap::Parser;
 
