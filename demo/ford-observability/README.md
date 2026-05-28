@@ -111,39 +111,29 @@ Local `cargo run` may appear to work without LFS pull — runner falls back to `
 
 ## Secrets
 
-Minimum:
-
-```bash
-export OPENROUTER_API_KEY=...
-```
-
-Grafana MCP needs credentials for the Grafana service when enabled in Helm (`agentiumRunner.mcp.grafana.enabled=true`, default). Chart default uses basic auth:
-
-```bash
-export GRAFANA_PASSWORD=admin   # or your Grafana admin password
-```
-
-If overriding MCP config to token auth, provide:
-
-```bash
-export GRAFANA_API_KEY=...      # service account token with read access to datasources/annotations
-```
-
-Slack optional but needed for notification path:
-
-```bash
-export SLACK_BOT_TOKEN=xoxb-...
-export SLACK_NOTIFY_CHANNEL_ID=C0123456789   # channel ID, not name
-```
-
-`install.sh` automatically sources repo-root `.env` when present and maps these env vars into a temporary Helm values file:
+Full E2E demo requires repo-root `.env`. `install.sh` / `just ford-demo-*` automatically source it and map known vars into Helm values.
 
 ```bash
 OPENROUTER_API_KEY=...
 GRAFANA_PASSWORD=admin
-SLACK_BOT_TOKEN=...
+SLACK_BOT_TOKEN=xoxb-...
 SLACK_NOTIFY_CHANNEL_ID=C0123456789
 ```
+
+Notes:
+
+- `OPENROUTER_API_KEY` is required for agent LLM calls.
+- `GRAFANA_PASSWORD` is required for Grafana UI and MCP access with default basic auth.
+- `SLACK_BOT_TOKEN` and `SLACK_NOTIFY_CHANNEL_ID` are required for Slack notification path.
+- `SLACK_NOTIFY_CHANNEL_ID` must be channel ID, not name.
+
+If overriding MCP config to token auth, provide:
+
+```bash
+GRAFANA_API_KEY=...      # service account token with read access to datasources/annotations
+```
+
+Manual `export` also works, but `.env` is recommended for demo operators.
 
 No manual export needed if values are in `.env`:
 
@@ -200,15 +190,16 @@ ROLLOUT_TIMEOUT=5m
 ## Port-forwards
 
 ```bash
-kubectl -n agentium-demo port-forward svc/grafana 3000:3000
-kubectl -n agentium-demo port-forward svc/agentium-runner 18080:18080
-kubectl -n agentium-demo port-forward svc/prometheus 9090:9090   # optional
-kubectl -n agentium-demo port-forward svc/loki 3100:3100         # optional
+kubectl -n agentium-demo port-forward svc/grafana 3000:3000 &
+kubectl -n agentium-demo port-forward svc/agentium-runner 18080:18080 &
+kubectl -n agentium-demo port-forward svc/prometheus 9090:9090 &  # optional
+kubectl -n agentium-demo port-forward svc/loki 3100:3100 &        # optional
 ```
 
 URLs:
 
 - Grafana: <http://127.0.0.1:3000> (`admin` / value `secrets.grafanaAdminPassword`, default `admin`)
+- HighLatency alert rule: <http://127.0.0.1:3000/alerting/grafana/high-latency/view?tab=query>
 - Agentium dashboard: `http://127.0.0.1:18080/?view=dashboard&contextId=<context_id>`
 - Raw transcript: `http://127.0.0.1:18080/contexts/<context_id>/conversation-history`
 - LLM provenance: `http://127.0.0.1:18080/provenance/llm-calls?context_id=<context_id>`
@@ -216,19 +207,42 @@ URLs:
 
 ## Demo flow
 
-### 1. Verify baseline
+### 1. Fresh install
+
+```bash
+just ford-demo-nuke k3d agentium
+```
+
+This deletes `agentium-demo`, rebuilds images, loads them into k3d cluster `agentium`, installs chart, and reads repo-root `.env` secrets.
+
+### 2. Verify baseline
 
 ```bash
 kubectl -n agentium-demo get pods
 kubectl -n agentium-demo get deploy
 ```
 
-Open Grafana. Check service health dashboard. k6 should drive ~50 RPS to `checkout-api`.
+Open Grafana and Slack. Check service health dashboard. k6 should drive ~50 RPS to `checkout-api`.
 
-### 2. Inject latency spike
+Keep port-forwards running:
 
 ```bash
-demo/ford-observability/demo.sh inject
+kubectl -n agentium-demo port-forward svc/agentium-runner 18080:18080 &
+kubectl -n agentium-demo port-forward svc/grafana 3000:3000 &
+```
+
+Open alert query view:
+
+```txt
+http://127.0.0.1:3000/alerting/grafana/high-latency/view?tab=query
+```
+
+Wait at least 10 minutes before injecting. Agents compare incoming alert data against recent baseline/history; if injected after only ~1 minute, there may not be enough prior data to detect and explain latency spike reliably.
+
+### 3. Inject latency spike
+
+```bash
+just ford-demo-inject
 ```
 
 Tunable:
@@ -243,7 +257,7 @@ demo/ford-observability/demo.sh inject
 
 Harness writes ledger row, activates checkout failure mode, writes Grafana incident/trace annotations, then stops after duration.
 
-### 3. Watch alert + investigation
+### 4. Watch alert + investigation
 
 Grafana `HighLatency` alert fires from Prometheus metrics and posts webhook to Agentium runner `/webhooks/grafana`.
 
@@ -263,7 +277,13 @@ http://127.0.0.1:18080/?view=dashboard&contextId=<context_id>
 
 Presenter note: keep Grafana open for telemetry/evidence timeline. Open Agentium dashboard for investigation/report. Grafana does not contain report body.
 
-### 4. Reset
+Watch runner logs during investigation:
+
+```bash
+kubectl -n agentium-demo logs -f agentium-runner-0 -c runner
+```
+
+### 5. Reset
 
 ```bash
 demo/ford-observability/demo.sh reset
@@ -275,7 +295,7 @@ Keep ledger:
 KEEP_LEDGER=1 demo/ford-observability/demo.sh reset
 ```
 
-### 5. Smoke e2e
+### 6. Smoke e2e
 
 ```bash
 demo/ford-observability/demo.sh e2e

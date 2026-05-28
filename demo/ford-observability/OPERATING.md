@@ -8,7 +8,18 @@ Namespace: `agentium-demo`. Release: `agentium-observability-demo`.
 
 - `kubectl`, `helm`, `jq`, `curl`, `docker`, `k3d` (or `kind`)
 - `git lfs pull` once (fastembed ONNX models — build fails on pointer stubs)
-- `.env` at repo root with at least `OPENROUTER_API_KEY`. Optional: `GRAFANA_PASSWORD`, `SLACK_BOT_TOKEN`, `SLACK_NOTIFY_CHANNEL_ID`, `RUNNER_TOKEN`
+- Repo-root `.env` with demo secrets. Install scripts read this automatically.
+
+Required `.env` for full E2E demo:
+
+```bash
+OPENROUTER_API_KEY=...
+GRAFANA_PASSWORD=admin
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_NOTIFY_CHANNEL_ID=C0123456789
+```
+
+`SLACK_NOTIFY_CHANNEL_ID` must be channel ID, not name. Without Slack vars, notification path will not work. Optional: `RUNNER_TOKEN`.
 
 ## Install / Upgrade
 
@@ -54,6 +65,7 @@ URLs:
 - Agentium UI: <http://127.0.0.1:18080>
 - Agentium dashboard for a context: `http://127.0.0.1:18080/?view=dashboard&contextId=<id>`
 - Grafana: <http://127.0.0.1:3000> (`admin` / `$GRAFANA_PASSWORD`)
+- HighLatency alert rule: <http://127.0.0.1:3000/alerting/grafana/high-latency/view?tab=query>
 
 ## Health checks
 
@@ -64,10 +76,33 @@ curl -s http://127.0.0.1:18080/agents | jq
 curl -s http://127.0.0.1:18080/cluster/agents | jq   # cluster runner placement
 ```
 
+## Clean E2E demo run
+
+This is the operator flow used for live demo recording:
+
+```bash
+# 1) Fresh cluster namespace + rebuild/load/install. Reads repo-root .env secrets.
+just ford-demo-nuke k3d agentium
+
+# 2) Keep these running in background terminals.
+kubectl -n agentium-demo port-forward svc/agentium-runner 18080:18080 &
+kubectl -n agentium-demo port-forward svc/grafana 3000:3000 &
+
+# 3) Open Grafana alert query view and Slack.
+# Grafana: http://127.0.0.1:3000/alerting/grafana/high-latency/view?tab=query
+
+# 4) Wait at least 10 minutes before injecting.
+# Reason: agents compare current alert data against recent baseline/history.
+# If injected after only ~1 minute, latency spike may lack enough prior data.
+
+# 5) Trigger latency_spike failure mode.
+just ford-demo-inject
+```
+
 ## Drive the demo
 
 ```bash
-just ford-demo-inject       # trigger latency_spike failure mode
+just ford-demo-inject       # trigger latency_spike failure mode (after warm-up)
 just ford-demo-reset        # clear failure mode + ledger
 just ford-demo-e2e          # inject + wait for coordinator + dump artifacts
 ```
@@ -101,6 +136,7 @@ curl -N -X POST http://127.0.0.1:18080/agents/observability-coordinator/default/
 
 ```bash
 # runner (StatefulSet)
+kubectl -n agentium-demo logs -f agentium-runner-0 -c runner
 kubectl -n agentium-demo logs -f agentium-runner-0 -c runner --tail=200
 
 # agent-deployer hook Job (after install — failed pod sticks for inspection)
