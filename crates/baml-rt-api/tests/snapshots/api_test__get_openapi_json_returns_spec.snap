@@ -1,6 +1,5 @@
 ---
 source: crates/baml-rt-api/tests/api_test.rs
-assertion_line: 1226
 expression: snapshot
 ---
 {
@@ -8,17 +7,16 @@ expression: snapshot
   "body": {
     "openapi": "3.1.0",
     "info": {
-      "title": "utoipa-axum",
-      "description": "Utoipa's axum bindings for seamless integration for the two",
+      "title": "Agentium OS Runner API",
+      "description": "HTTP API for the Agentium OS agent runner: agent discovery, A2A JSON-RPC forwarding, deployment lifecycle, tool configuration, and provenance-backed observability.",
       "contact": {
-        "name": "Juha Kukkonen",
-        "email": "juha7kukkonen@gmail.com"
+        "name": "Agentium OS",
+        "url": "https://github.com/semiotic-agentium/agentium-os"
       },
       "license": {
-        "name": "MIT OR Apache-2.0",
-        "identifier": "MIT OR Apache-2.0"
+        "name": "Apache-2.0"
       },
-      "version": "0.2.0"
+      "version": "0.1.0"
     },
     "paths": {
       "/agents": {

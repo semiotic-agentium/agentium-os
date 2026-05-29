@@ -1,6 +1,6 @@
 # `lgtm-checkout-5xx` — checkout-api 5xx surge after v2.34.0 deploy
 
-First Ford/Grafana seeded outage dataset. Owned by issue
+First Grafana/LGTM seeded outage dataset. Owned by issue
 [#521](https://github.com/semiotic-agentium/agentium-os/issues/521) and
 used by [#519](https://github.com/semiotic-agentium/agentium-os/issues/519),
 [#515](https://github.com/semiotic-agentium/agentium-os/issues/515), and
@@ -67,7 +67,7 @@ manual chat prompt in the demo path.
 | --- | --- | --- | --- |
 | `events/grafana-alert-firing.json` | `grafana.alert.v1` | `grafana` | Primary path — Grafana Alerting fires `CheckoutHighErrorRate` |
 | `events/grafana-alert-resolved.json` | `grafana.alert.v1` | `grafana` | Closing event after rollback; same fingerprint as firing |
-| `events/firehydrant-incident-opened.json` | `firehydrant.incident.v1` | `firehydrant` | Fixture-only — exercises the Ford-recognizable incident-tool input shape |
+| `events/firehydrant-incident-opened.json` | `firehydrant.incident.v1` | `firehydrant` | Fixture-only — exercises a realistic incident-tool input shape |
 | `events/manual-operator-exploratory.json` | `incident.manual.v1` | `operator` | Operator-typed event from the Event Console (#520 / #526) |
 
 Suggested investigation agent subscription (per Natanael's note on
@@ -95,7 +95,7 @@ gathers the deploy annotation in the same window.
   term from `expected_root_cause_terms_any_of`, and the recommendation
   names a term from `expected_recommendation_terms_any_of`.
 - **#520 / #526** — Event Console can load these event files as
-  draftable samples without inventing a Ford-only console.
+  draftable samples without inventing a bespoke console.
 
 ## Loading from Rust
 

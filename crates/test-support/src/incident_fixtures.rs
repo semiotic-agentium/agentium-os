@@ -2,7 +2,7 @@
 //! `tests/fixtures/incidents/`.
 //!
 //! These fixtures are used by:
-//! - Ford/Grafana MCP investigation agent (issue #515).
+//! - Grafana/LGTM MCP investigation agent (issue #515).
 //! - End-to-end rehearsal (issue #513) to assert the agent retrieved
 //!   the expected evidence without brittle prose matching.
 //! - Event Console exploratory dispatch (issues #519 / #520 / #526).

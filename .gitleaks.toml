@@ -1,0 +1,48 @@
+# gitleaks configuration for Agentium OS.
+#
+# Inherits the upstream rule set and layers project-specific allowlists for
+# documented placeholder tokens, deliberate negative-test fixtures, and large
+# vendored/generated paths that are not worth scanning.
+#
+# Run locally:
+#   gitleaks git . --redact      # history-aware scan
+#   gitleaks dir . --redact      # working-tree scan
+#
+# The same scans run in CI (.github/workflows/secret-scan.yml) and as a
+# pre-commit hook (.pre-commit-config.yaml).
+
+title = "Agentium OS gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+# Matches against each finding's matched secret (the default target), NOT the
+# whole source line — a real token never contains these literal placeholder
+# strings, so this cannot suppress a genuine credential.
+description = "Documented placeholder tokens and deliberate test-only fixtures (no live credentials)"
+regexes = [
+  # Negative-path e2e assertion: deliberately-wrong runner token rejected by the server.
+  '''wrong-token-value''',
+  # Placeholder examples in docs, .env.example, and BAML/secret-request descriptions.
+  '''sk-or-v1-\.\.\.''',
+  '''xox[bp]-\.\.\.''',
+  # Slack test fixture literal used across unit tests.
+  '''xoxb-test''',
+]
+
+[[allowlists]]
+# Large vendored/generated trees only. Local secret files (.env, source-slack.json)
+# are deliberately NOT listed here: they are gitignored, and if one is ever
+# force-committed it must still be caught — allowlisting them would hide exactly
+# the highest-risk regression.
+description = "Vendored, generated, and large-blob paths excluded from secret scanning"
+paths = [
+  # Model tensors/LFS blobs are large and binary; their sibling metadata
+  # (config/tokenizer JSON) stays scanned.
+  '''models/.*/blobs/.*''',
+  '''(^|/)node_modules/.*''',
+  '''(^|/)target/.*''',
+  '''(^|/)dist/.*''',
+  '''\.worktrees/.*''',
+]

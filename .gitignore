@@ -60,6 +60,9 @@ models/fastembed/**/blobs/*.part
 deploy/k8s/secret-fnox.yaml
 deploy/k8s/surrealdb-credentials.yaml
 
+# task-daemon Slack source dump — local-only, carries workspace tokens
+source-slack.json
+
 # K8s load-test artifacts (timestamped per run; generated outputs,
 # intentionally not committed).
 /artifacts/load-test/

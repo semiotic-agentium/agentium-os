@@ -2,7 +2,7 @@
   "schema_version": "firehydrant.incident.v1",
   "event_id": "firehydrant-incident-lgtm-checkout-5xx-opened",
   "fixture_only": true,
-  "fixture_note": "Modeled on FireHydrant's incident webhook payload shape so Ford-like incident tooling can be exercised end-to-end. This is NOT a real FireHydrant integration; no FireHydrant API call is made.",
+  "fixture_note": "Modeled on FireHydrant's incident webhook payload shape so realistic incident tooling can be exercised end-to-end. This is NOT a real FireHydrant integration; no FireHydrant API call is made.",
   "emitted_at_unix": 1779286200,
   "source": {
     "source_key": "firehydrant:checkout-api/INC-2026-0517",

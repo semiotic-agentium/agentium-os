@@ -1,6 +1,6 @@
 # Incident Fixtures
 
-Seeded outage datasets used by the Ford/Grafana investigation slice
+Seeded outage datasets used by the Grafana/LGTM investigation slice
 ([#512](https://github.com/semiotic-agentium/agentium-os/issues/512)).
 Each scenario directory pairs LGTM-style evidence (metrics, logs, traces, annotations)
 with sample incident events shaped so a real producer (Grafana Alerting,
@@ -11,7 +11,7 @@ changing the downstream agent or provenance contract.
 
 | Scenario ID | Affected service | Symptom | Owns |
 | --- | --- | --- | --- |
-| [`lgtm-checkout-5xx`](./lgtm-checkout-5xx/README.md) | `checkout-api` | 5xx surge after deploy v2.34.0 | First Ford/Grafana dataset (#521 slice 1) |
+| [`lgtm-checkout-5xx`](./lgtm-checkout-5xx/README.md) | `checkout-api` | 5xx surge after deploy v2.34.0 | First Grafana/LGTM dataset (#521 slice 1) |
 
 ## What lives in a scenario
 
