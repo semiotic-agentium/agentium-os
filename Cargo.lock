@@ -2294,6 +2294,7 @@ dependencies = [
  "baml-rt-tools-claude",
  "baml-tools-calculator",
  "baml-tools-clickup",
+ "baml-tools-grafana-alerts",
  "baml-tools-internal-dev",
  "baml-tools-memory",
  "baml-tools-notion",

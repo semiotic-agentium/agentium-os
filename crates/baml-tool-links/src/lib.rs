@@ -22,8 +22,9 @@
 //! - `security-eval` - CRM/email support tools for security-eval fixtures
 //! - `slack` - Slack read integration tool
 //! - `slack-notify` - Slack notification write tool
+//! - `grafana-alerts` - Grafana alert webhook intake + event producer
 //! - `internal-dev` - Test tool implementations (Calculator, Delay, etc.)
-//! - `http-tools` - Enables `clickup`, `notion`, `slack`, `slack-notify`, `security-eval`
+//! - `http-tools` - Enables `clickup`, `notion`, `slack`, `slack-notify`, `security-eval`, `grafana-alerts`
 //! - `all-tools` - Enables `http-tools` and `memory`
 
 // Re-export tool crates so binaries can access them through baml_tool_links
@@ -36,6 +37,8 @@ pub use baml_tools_calculator;
 // Feature-gated re-exports (integration tools)
 #[cfg(feature = "clickup")]
 pub use baml_tools_clickup;
+#[cfg(feature = "grafana-alerts")]
+pub use baml_tools_grafana_alerts;
 // Test-only re-exports
 #[cfg(feature = "internal-dev")]
 pub use baml_tools_internal_dev;
@@ -74,6 +77,8 @@ macro_rules! force_link_all_tools {
         // Feature-gated (integration tools)
         #[cfg(feature = "clickup")]
         use $crate::baml_tools_clickup as _;
+        #[cfg(feature = "grafana-alerts")]
+        use $crate::baml_tools_grafana_alerts as _;
         // Test-only tools
         #[cfg(feature = "internal-dev")]
         use $crate::baml_tools_internal_dev as _;
