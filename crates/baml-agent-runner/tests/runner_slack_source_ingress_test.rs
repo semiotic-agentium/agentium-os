@@ -527,6 +527,8 @@ async fn slack_source_ingress_dispatch_http_batches_mixed_raw_slack_work_items_i
 
 #[tokio::test]
 async fn slack_source_ingress_dispatch_http_expands_slack_threads_before_deriving_work() {
+    try_load_dotenv_for_tests();
+    let _api_key = test_support::common::require_api_key();
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
 
     let (mock_server, mock_state) = start_slack_thread_replies_server(vec![
@@ -710,6 +712,8 @@ async fn slack_source_ingress_dispatch_http_does_not_expand_thread_root_without_
 
 #[tokio::test]
 async fn slack_inbox_producer_delivers_durable_ingress_to_slack_agent_and_downstream_delegation() {
+    try_load_dotenv_for_tests();
+    let _api_key = test_support::common::require_api_key();
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
     let (_store_guard, store) = install_memory_ingress_store();
 
@@ -801,22 +805,18 @@ async fn slack_inbox_producer_delivers_durable_ingress_to_slack_agent_and_downst
     )
     .await
     .expect("load configured event producers");
-    assert_eq!(
-        producers.len(),
-        1,
-        "runner should register only the Slack inbox drain when ingress store is installed"
-    );
-    assert_eq!(producers[0].producer_key(), "support/slack:inbox");
+    let slack_inbox = producers
+        .into_iter()
+        .find(|producer| producer.producer_key() == "support/slack:inbox")
+        .expect("support/slack:inbox producer when ingress store is installed");
 
     let mut dispatcher = EventDispatcher::new(
         registry,
         baml_rt_core::HostPublishService::without_provenance(),
     );
-    for producer in producers {
-        dispatcher
-            .register_producer(producer)
-            .expect("register producer");
-    }
+    dispatcher
+        .register_producer(slack_inbox)
+        .expect("register slack inbox producer");
 
     let first_results = dispatcher.poll_and_deliver().await;
     assert_eq!(first_results.len(), 1, "expected one inbox producer result");

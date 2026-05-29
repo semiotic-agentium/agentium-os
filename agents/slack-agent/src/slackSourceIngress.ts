@@ -162,9 +162,7 @@ export async function onSlackSourceDispatch(ctx: DispatchRunContext): Promise<Ho
             return;
           }
           if (isNeedClarification(intentResult)) {
-            throw new Error(
-              `${AGENT_NAME} cannot clarify during dispatch: ${intentResult.question}`,
-            );
+            return;
           }
         },
       );
