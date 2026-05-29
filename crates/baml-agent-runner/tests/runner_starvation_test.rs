@@ -106,14 +106,6 @@ impl StandaloneRunner {
         Self::start_with_options(&[], &[], None).await
     }
 
-    /// Start a runner subprocess with additional environment variables. The
-    /// `extra_env` slice supplements the baseline cleanups (which strip CI/dev
-    /// secrets and credentials so the test process inherits a deterministic
-    /// environment).
-    async fn start_with_env(extra_env: &[(&str, &str)]) -> Self {
-        Self::start_with_options(extra_env, &[], None).await
-    }
-
     /// Start a runner subprocess with optional extra env, extra CLI args, and
     /// an explicit readiness deadline override.
     ///

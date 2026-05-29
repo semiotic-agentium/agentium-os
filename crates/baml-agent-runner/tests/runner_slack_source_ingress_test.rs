@@ -19,7 +19,7 @@ use baml_rt_core::{
 };
 use baml_rt_tools::{
     BundleName, ConfigResolver, InventoryCatalog,
-    ingress_store::test_support::install_memory_ingress_store,
+    ingress_store::test_support::{MemoryIngressStore, install_memory_ingress_store},
     load_configured_event_producers_with_checkpoints,
 };
 use baml_tools_slack::SlackTool;
@@ -126,7 +126,7 @@ async fn setup_slack_source_ingress_agent(
 }
 
 async fn enqueue_slack_inbox_source_records(
-    store: &baml_tools_slack::test_support::MemoryIngressStore,
+    store: &MemoryIngressStore,
     channel_id: &str,
     records: Vec<Value>,
     ingress_id: &str,
