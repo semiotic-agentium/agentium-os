@@ -95,7 +95,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 - **baml-rt-embedding** — Embedding and drift detection
 
 **Runtime**
-- **baml-rt-tools** — Tool trait, registry/executor, session FSM (`ToolSessionPlan` with Open/Send/Read/Finish/Abort ops), MCP configuration and secrets management
+- **baml-rt-tools** — Tool trait, registry/executor, session FSM (`ToolSessionPlan` with Open/Send/Read/Finish/Abort ops), MCP configuration and secrets management, webhook intake infrastructure for ingress stores
 - **baml-rt-mcp** — MCP client and importer for the BAML runtime with streamable HTTP transport support, governance and security hardening
 - **baml-rt-interceptor** — Interceptor trait + pipeline (pre/post execution hooks)
 - **baml-rt-observability** — OpenTelemetry tracing setup, spans, metrics; `init_tracing()` uses per-layer filters (`RUST_LOG_FMT`, `RUST_LOG_OTEL`); central `spans.rs` keeps A2A ingress at `info` and agent execution spans at `debug` (see `docs/otel-trace-instrumentation-guide.md`); exported OTLP metric names: `docs/metrics-inventory.md`; runner identity foundation for K8s pilot with service.instance.id and deployment.environment resource attributes; distributed tracing support for cross-pod A2A forwarding
@@ -105,7 +105,7 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 - **baml-rt-provenance** — Provenance graph: event normalization, SurrealDB persistence, cluster-safe archive refs with activity-anchor idempotency, effect subscriber observability, metamodel query system for graph traversal
 - **baml-rt-repository** — Agent package repository: content-addressable archive with lineage, versioning, and search; MCP server registry and schema storage
 - **baml-rt-router** — Cluster routing, SSRF validation, token auth, cross-pod A2A forwarding with distributed trace propagation
-- **baml-rt-api** — HTTP API surface: agent discovery (GET /agents), A2A JSON-RPC forwarding, OpenAPI via utoipa, RFC 7807 errors, operator auth boundary, OpenTelemetry middleware for distributed tracing, conversation history endpoints, context metrics, runtime-progress-gated readiness probe, cluster-wide deployment fan-out (POST /cluster/deploy)
+- **baml-rt-api** — HTTP API surface: agent discovery (GET /agents), A2A JSON-RPC forwarding, OpenAPI via utoipa, RFC 7807 errors, operator auth boundary, OpenTelemetry middleware for distributed tracing, conversation history endpoints, context metrics, runtime-progress-gated readiness probe, cluster-wide deployment fan-out (POST /cluster/deploy), webhook mount infrastructure for external event intake
 
 **Derive macros**
 - **baml-derive-core** — Core types and rendering for derive macro (`BamlType` trait)
@@ -125,6 +125,8 @@ Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchai
 - **tools/clickup** — ClickUp host tool
 - **tools/notion** — Notion host tool
 - **tools/slack** — Slack host tool (read-only)
+- **tools/slack-notify** — Slack notification write tool for outbound messaging
+- **tools/grafana-alerts** — Grafana alert webhook intake and event producer for monitoring integration
 - **tools/system** — System tool bundle (e.g. agent-to-agent calls)
 - **tools/memory** — Persistent graph-based cognitive memory
 - **tools/internal-dev** — Test tool implementations (Calculator, Delay, Uppercase, Weather, A2aRelay) registered via `inventory`
@@ -216,7 +218,7 @@ The runner token is configured via the `RUNNER_TOKEN` environment variable or `r
 ### Test-Gating Feature Flags
 
 - `llm-tests` — LLM-dependent tests requiring API keys (on baml-rt, baml-agent-runner, task-daemon)
-- `http-tools` — HTTP-dependent tools (ClickUp, Notion, Slack) plus **security-eval** mock tools (`support/crm`, `support/email`) on `baml-rt-builder` and `baml-agent-runner`. **`baml-agent-builder package`** and **`regen_fixtures`** need these features when the manifest lists those tools (use `just build-release` / `just regen-fixtures`, or `--all-features`).
+- `http-tools` — HTTP-dependent tools (ClickUp, Notion, Slack, Slack-notify, Grafana-alerts) plus **security-eval** mock tools (`support/crm`, `support/email`) on `baml-rt-builder` and `baml-agent-runner`. **`baml-agent-builder package`** and **`regen_fixtures`** need these features when the manifest lists those tools (use `just build-release` / `just regen-fixtures`, or `--all-features`).
 
 ## CI Structure
 
