@@ -15,8 +15,6 @@ Instead, report privately through GitHub's private vulnerability reporting:
   and open a new draft advisory, or
 - Use the **Report a vulnerability** button on the repository's Security tab.
 
-If you cannot use GitHub private reporting, email **security@semiotic.ai**.
-
 Please include enough detail to reproduce: affected component or crate, the
 version or commit, a description of the impact, and step-by-step reproduction
 where possible.
