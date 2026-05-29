@@ -557,6 +557,26 @@ pub fn api_router_with_services_and_deploy(
     }
     openapi.tags = Some(tags);
 
+    // Override the OpenAPI `info` block. utoipa-axum otherwise fills it with its
+    // own crate metadata — title "utoipa-axum" and the dependency author's
+    // personal contact — which would ship verbatim in the published spec.
+    {
+        use utoipa::openapi::{Contact, Info, License};
+        let mut info = Info::new("Agentium OS Runner API", env!("CARGO_PKG_VERSION"));
+        info.description = Some(
+            "HTTP API for the Agentium OS agent runner: agent discovery, A2A JSON-RPC \
+             forwarding, deployment lifecycle, tool configuration, and provenance-backed \
+             observability."
+                .to_string(),
+        );
+        let mut contact = Contact::new();
+        contact.name = Some("Agentium OS".to_string());
+        contact.url = Some("https://github.com/semiotic-agentium/agentium-os".to_string());
+        info.contact = Some(contact);
+        info.license = Some(License::new("Apache-2.0"));
+        openapi.info = info;
+    }
+
     let state = Arc::new(ApiState {
         registry,
         openapi: Arc::new(openapi),

@@ -686,7 +686,7 @@ k8s-load-test *args='':
 k8s-pilot-cleese-chapman *args='':
     ./scripts/k8s-pilot-cleese-chapman.sh {{args}}
 
-# Ford-pilot demo prep flow (see agentium-os-ford-demo-guide.md).
+# Pilot demo prep flow.
 # Steps chain via --keep-cluster / --keep-deployed so the cluster
 # persists across all three. cleese/chapman needs OPENROUTER_API_KEY
 # in the mounted fnox ConfigMap; use `demo-rehearsal-no-llm` to stop

@@ -2,7 +2,7 @@
   "schema_version": "incident.manual.v1",
   "event_id": "manual-operator-lgtm-checkout-5xx",
   "fixture_only": true,
-  "fixture_note": "Operator-typed exploratory event — for use from the Event Console (#520/#526) to dispatch the same Ford/Grafana investigation without a real alerting producer.",
+  "fixture_note": "Operator-typed exploratory event — for use from the Event Console (#520/#526) to dispatch the same Grafana/LGTM investigation without a real alerting producer.",
   "emitted_at_unix": 1779286170,
   "source": {
     "source_key": "operator:joseph@semiotic.ai",
