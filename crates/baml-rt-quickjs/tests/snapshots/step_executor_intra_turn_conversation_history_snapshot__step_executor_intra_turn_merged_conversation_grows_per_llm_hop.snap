@@ -14,12 +14,24 @@ expression: "&redact_stochastic_strings(&report)"
       {
         "role": "user",
         "content": "<redacted-#ref> intra turn merged snapshot"
+      },
+      {
+        "role": "assistant",
+        "content": "<redacted-#ref> Open"
       }
     ],
     [
       {
         "role": "user",
         "content": "<redacted-#ref> intra turn merged snapshot"
+      },
+      {
+        "role": "assistant",
+        "content": "<redacted-#ref> Open"
+      },
+      {
+        "role": "assistant",
+        "content": "<redacted-#ref> Send"
       },
       {
         "role": "tool",

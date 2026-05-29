@@ -516,7 +516,15 @@ mod tests {
                     "source_key": "clickup:list-1",
                     "source_label": "list"
                 },
-                "records": []
+                "records": [{
+                    "record_kind": "clickup.lifecycle_event",
+                    "key": "clickup-created:1",
+                    "event": "created",
+                    "task_id": "t1",
+                    "list_id": "list-1",
+                    "snapshot": { "name": "Fix ingress" },
+                    "revision": 1
+                }]
             })],
             scope: EventDispatchScopeDto::NewContext,
             message_id: None,

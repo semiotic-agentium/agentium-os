@@ -4,9 +4,9 @@ expression: snapshot_safe_tool_output(output.clone())
 ---
 {
   "appliedCaps": {
-    "max_page_size": 50,
-    "page_size": 5,
-    "top_k": 10
+    "maxPageSize": 50,
+    "pageSize": 5,
+    "topK": 10
   },
   "hotspotGroups": [],
   "resource": "tool_calls",

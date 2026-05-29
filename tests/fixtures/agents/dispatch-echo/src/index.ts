@@ -1,5 +1,10 @@
 /// <reference path="./baml-runtime.d.ts" />
-import type { HostDispatchAck, HostDispatchRequest, SessionResult } from "./baml-runtime";
+import type {
+  DispatchRunContext,
+  HostDispatchAck,
+  HostDispatchRequest,
+  SessionResult,
+} from "./baml-runtime";
 
 type ToolSessionHandle = {
   send(args: Record<string, unknown>): Promise<unknown>;
@@ -153,7 +158,8 @@ __chat_register({
     return { message: "dispatch-echo does not handle A2A messages" };
   },
 
-  onDispatch: async (request: HostDispatchRequest): Promise<HostDispatchAck> => {
+  onDispatch: async (ctx: DispatchRunContext): Promise<HostDispatchAck> => {
+    const request = ctx.request;
     if (request.routing_key === "system:callback") {
       return handleCallbackDispatch(request);
     }

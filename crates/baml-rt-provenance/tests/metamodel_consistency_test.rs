@@ -61,6 +61,7 @@ fn known_edge_labels() -> HashSet<&'static str> {
         a2a_relations::TASK_CALL,
         a2a_relations::TASK_STATUS_TRANSITION,
         a2a_relations::MESSAGE_CALL,
+        a2a_relations::HOST_DISPATCH_TARGET,
     ] {
         s.insert(label);
     }
@@ -96,6 +97,13 @@ fn known_property_keys() -> HashSet<&'static str> {
         a2a::ACTIVITY_OUTCOME,
         a2a::REASON,
         a2a::TOOL_NAME,
+        a2a::HOST_INGRESS_KIND,
+        a2a::HOST_INGRESS_TARGET_PACKAGE,
+        a2a::HOST_INGRESS_TARGET_INSTANCE,
+        a2a::HOST_INGRESS_SOURCE_KIND,
+        a2a::HOST_INGRESS_SOURCE_KEY,
+        a2a::HOST_INGRESS_RECORD_COUNT,
+        a2a::HOST_INGRESS_ROUTING_KEY,
     ] {
         s.insert(key);
     }
