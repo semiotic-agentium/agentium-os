@@ -38,6 +38,7 @@ pub mod tool_fsm;
 pub mod tool_schema;
 pub mod tools;
 pub mod ts_gen;
+pub mod webhook_intake;
 
 pub use access::{
     ACCESS_ALLOWLIST_ENV, ToolAccessPolicy, enforce_tool_access, parse_access_allowlist,
@@ -107,4 +108,8 @@ pub use tools::{
     create_one_shot_tool_from_async, create_one_shot_tool_from_async_with_context,
     parse_tool_name_and_class, parse_unified_step_executors_authoring_json,
     project_archive_action_identity_from_parts,
+};
+pub use webhook_intake::{
+    WebhookAuthTier, WebhookIntake, WebhookIntakeBuildContext, WebhookIntakeBuildFuture,
+    WebhookIntakeProvider, WebhookRequest, WebhookResponse, load_configured_webhook_intakes,
 };

@@ -24,6 +24,7 @@ mod router;
 pub mod runtime_progress;
 pub mod service_error;
 mod spans;
+pub mod webhook_mount;
 
 pub use baml_rt_core::HeartbeatErrorKind;
 pub use cluster_agents::{
@@ -67,3 +68,4 @@ pub use router::{
 };
 pub use runtime_progress::{READYZ_LAG_THRESHOLD_MS, RuntimeProgressMeter};
 pub use service_error::{ServiceError, service_result_to_http};
+pub use webhook_mount::{WebhookIntakeRouters, build_webhook_intake_router};

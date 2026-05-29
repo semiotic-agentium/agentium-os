@@ -44,11 +44,14 @@ use baml_rt_repository::{
 };
 use baml_rt_tools::{
     ACCESS_ALLOWLIST_ENV, InventoryCatalog, ProducerCheckpoint,
-    load_configured_event_producers_with_checkpoints, parse_access_allowlist,
+    load_configured_event_producers_with_checkpoints, load_configured_webhook_intakes,
+    parse_access_allowlist,
 };
 use baml_tools_calculator as _;
 #[cfg(feature = "clickup")]
 use baml_tools_clickup as _;
+#[cfg(feature = "grafana-alerts")]
+use baml_tools_grafana_alerts as _;
 #[cfg(feature = "memory")]
 use baml_tools_memory as _;
 #[cfg(feature = "notion")]
@@ -57,6 +60,8 @@ use baml_tools_notion as _;
 use baml_tools_security_eval as _;
 #[cfg(feature = "slack")]
 use baml_tools_slack as _;
+#[cfg(feature = "slack-notify")]
+use baml_tools_slack_notify as _;
 use baml_tools_system::callback_delivery_gate::install_callback_delivery_gate;
 use callback_delivery::RunnerCallbackDeliveryGate;
 use clap::Parser;
@@ -542,6 +547,16 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             },
             _ => baml_rt_api::ClusterTopology::Standalone,
         };
+        let webhook_intakes = load_configured_webhook_intakes(
+            &InventoryCatalog::new(),
+            Some(runner.provenance_config().config_service()),
+        )
+        .await
+        .context("loading configured webhook intakes")?;
+        info!(
+            webhook_intake_count = webhook_intakes.len(),
+            "configured webhook intakes loaded for HTTP API"
+        );
         let api_config = baml_rt_api::ApiServerConfig {
             mermaid,
             context_metrics,
@@ -559,6 +574,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             runner_token,
             cluster,
             web_dir,
+            webhook_intakes,
             ..baml_rt_api::ApiServerConfig::empty(
                 tool_catalog,
                 config_service,
@@ -647,6 +663,14 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             None
         }
     };
+
+    // Pre-load ONNX embedding + JINA reranker models once per process. Without
+    // this, every agent deploy reloads them inside `wire_provenance_subsystems`,
+    // CPU-stalling the QuickJS event-loop probe long enough to flip /readyz to
+    // 503 mid-deploy and drop the pod from Service endpoints. Paid as added
+    // pre-ready latency here (~1-40s depending on model cache state); zero
+    // cost per deploy thereafter.
+    baml_rt_provenance::effect_subscriber::warm_global_drift_models().await;
 
     readyz.store(true, Ordering::Release);
     tracing::info!("readyz probe: ready (event producers loaded)");

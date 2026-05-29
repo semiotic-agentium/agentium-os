@@ -37,6 +37,8 @@ members = [
   "crates/tools/security-eval",
   "crates/tools/clickup",
   "crates/tools/slack",
+  "crates/tools/slack-notify",
+  "crates/tools/grafana-alerts",
   "crates/tools/notion",
   "crates/tools/system",
   "crates/tools/memory",
@@ -136,6 +138,8 @@ surrealdb = { version = "3", default-features = false, features = ["kv-mem", "kv
 fastembed = { version = "4", default-features = false, features = ["ort-download-binaries", "hf-hub-native-tls"] }
 dashmap = "6"
 axum = "0.8"
+http = "1"
+bytes = "1"
 # Testing / dev
 paste = "1"
 tokio-test = "0.4"

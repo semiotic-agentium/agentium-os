@@ -31,6 +31,8 @@ blake3 = "1.8"
 getrandom = "0.3"
 url = { workspace = true }
 futures-util = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
 zeroize = { version = "1", features = ["derive"] }
 # microsandbox is a beta crate ("expect breaking changes"). Exact pin per
 # tool_sandbox.md §7.3; bumps go through explicit review. Behind the
@@ -43,6 +45,8 @@ microsandbox = { version = "=0.3.13", optional = true }
 default = []
 # No-op for CI/workspace feature parity; runner and builder enable clickup/notion via their own deps.
 http-tools = []
+# Exposes `ingress_store::test_support::MemoryIngressStore` for cross-crate tests.
+test-support = []
 # Compile-time gate for MicrosandboxProvider. When off, the runner uses
 # MockSandboxProvider in tests or no sandbox at all in release builds.
 sandbox-provider = ["dep:microsandbox"]
