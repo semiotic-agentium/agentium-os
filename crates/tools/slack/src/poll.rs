@@ -442,17 +442,56 @@ pub fn polled_messages_to_values(messages: &[SlackPolledMessage]) -> Vec<serde_j
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, sync::Arc};
 
     use axum::{Json, Router, extract::Query, routing::get};
-    use integrations_slack_read::SlackAuthPreference;
+    use integrations_slack_read::{SlackAuthPreference, SlackReadClient};
     use serde_json::json;
+    use test_support::common::TempEnvVar;
 
     use super::*;
-    use crate::{
-        SlackChannelSelector,
-        test_support::http_mock::{ApiHitLog, install_slack_rest_test_env, start_slack_api_mock},
-    };
+    use crate::SlackChannelSelector;
+
+    #[derive(Clone, Default)]
+    struct ApiHitLog {
+        hits: Arc<tokio::sync::Mutex<Vec<String>>>,
+    }
+
+    impl ApiHitLog {
+        async fn push(&self, hit: String) {
+            self.hits.lock().await.push(hit);
+        }
+
+        async fn snapshot(&self) -> Vec<String> {
+            self.hits.lock().await.clone()
+        }
+    }
+
+    struct SlackRestTestEnv {
+        client: SlackReadClient,
+        _token_guard: TempEnvVar,
+        _base_url_guard: TempEnvVar,
+    }
+
+    async fn start_slack_api_mock(app: Router) -> String {
+        let (listener, addr) = test_support::common::bind_ephemeral_tokio("127.0.0.1")
+            .await
+            .expect("bind ephemeral listener");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}/api")
+    }
+
+    async fn install_slack_rest_test_env(base_url: &str) -> SlackRestTestEnv {
+        let _token_guard = TempEnvVar::set("SLACK_BOT_TOKEN", "xoxb-test-token");
+        let _base_url_guard = TempEnvVar::set("SLACK_API_BASE_URL", base_url);
+        SlackRestTestEnv {
+            client: SlackReadClient::new(),
+            _token_guard,
+            _base_url_guard,
+        }
+    }
 
     fn test_poll_config(channel: SlackChannelSelector, max_pages: u16) -> SlackPollConfig {
         SlackPollConfig {
@@ -507,6 +546,7 @@ mod tests {
 
     #[tokio::test]
     async fn max_pages_hit_preserves_backfill_state_with_unread_history() {
+        let _guard = crate::slack_test_env_lock().lock().await;
         let log = ApiHitLog::default();
         let app = Router::new().route(
             "/api/conversations.history",
@@ -564,12 +604,13 @@ mod tests {
             "1700000005.000000",
         );
 
-        let hits = log.snapshot().await;
+        let hits: Vec<String> = log.snapshot().await;
         assert_eq!(hits.len(), 1, "expected one history page, hits={hits:?}");
     }
 
     #[tokio::test]
     async fn backfill_continuation_commits_cursor_after_bounded_window() {
+        let _guard = crate::slack_test_env_lock().lock().await;
         let log = ApiHitLog::default();
         let app = Router::new().route(
             "/api/conversations.history",
@@ -635,7 +676,7 @@ mod tests {
         assert_eq!(outcome.state.pending_last_seen_ts, None);
         assert_eq!(outcome.state.backfill_latest_ts, None);
 
-        let hits = log.snapshot().await;
+        let hits: Vec<String> = log.snapshot().await;
         assert!(
             hits.iter()
                 .any(|hit| hit.contains("latest=Some(\"1700000005.000000\")")),
@@ -645,6 +686,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_cached_channel_id_re_resolves_by_name() {
+        let _guard = crate::slack_test_env_lock().lock().await;
         let log = ApiHitLog::default();
         let app = Router::new()
             .route(
@@ -711,7 +753,7 @@ mod tests {
         assert_eq!(outcome.messages.len(), 1);
         assert_eq!(outcome.messages[0].text, "fresh");
 
-        let hits = log.snapshot().await;
+        let hits: Vec<String> = log.snapshot().await;
         assert_eq!(
             hits,
             vec![
@@ -724,6 +766,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_cached_channel_id_does_not_re_resolve_for_channel_id_selector() {
+        let _guard = crate::slack_test_env_lock().lock().await;
         let log = ApiHitLog::default();
         let app = Router::new()
             .route(
@@ -773,7 +816,7 @@ mod tests {
             ),
             "expected slack api error, got {err:?}"
         );
-        let hits = log.snapshot().await;
+        let hits: Vec<String> = log.snapshot().await;
         assert_eq!(hits, vec!["history channel=COLD12345".to_string()]);
     }
 }

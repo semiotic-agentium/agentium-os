@@ -129,10 +129,8 @@ pub struct ApiState {
     /// Continuously observable signal of tokio-runtime progress; surfaced by `GET /diagnose`.
     /// Distinct from [`ApiState::ready`], which is a one-shot boot latch.
     pub runtime_progress: Arc<RuntimeProgressMeter>,
-    /// DB-first host ingress provenance (publish + dispatch accept).
-    pub host_ingress_recorder: Option<Arc<dyn baml_rt_core::HostIngressRecorder>>,
-    /// Resolve deployed routes to live booted [`AgentId`] for dispatch provenance.
-    pub deployed_agent_lookup: Option<Arc<dyn baml_rt_core::DeployedAgentLookup>>,
+    /// Canonical host publish spine (poll lineage + fan-out + transport failures).
+    pub host_publish: Option<Arc<baml_rt_core::HostPublishService>>,
 }
 
 async fn serve_openapi_json(
@@ -316,8 +314,7 @@ pub struct ApiServerConfig {
     /// each at its declared `mount_path`; operator-tier intakes inherit the
     /// runner-token auth layer applied to the operator route group.
     pub webhook_intakes: Vec<Arc<dyn baml_rt_tools::WebhookIntake>>,
-    pub host_ingress_recorder: Option<Arc<dyn baml_rt_core::HostIngressRecorder>>,
-    pub deployed_agent_lookup: Option<Arc<dyn baml_rt_core::DeployedAgentLookup>>,
+    pub host_publish: Option<Arc<baml_rt_core::HostPublishService>>,
 }
 
 impl ApiServerConfig {
@@ -353,8 +350,7 @@ impl ApiServerConfig {
             runtime_progress,
             web_dir: None,
             webhook_intakes: Vec::new(),
-            host_ingress_recorder: None,
-            deployed_agent_lookup: None,
+            host_publish: None,
         }
     }
 }
@@ -420,7 +416,7 @@ pub fn api_router_with_services_and_deploy(
         runtime_progress,
         web_dir,
         webhook_intakes,
-        host_ingress_recorder,
+        host_publish,
     } = config;
 
     let http_trace_layer =
@@ -625,8 +621,7 @@ pub fn api_router_with_services_and_deploy(
         runner_token,
         cluster,
         runtime_progress,
-        host_ingress_recorder: config.host_ingress_recorder,
-        deployed_agent_lookup: config.deployed_agent_lookup,
+        host_publish,
     });
 
     let mut router = api_router

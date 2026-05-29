@@ -21,7 +21,6 @@ mod producer;
 pub(crate) mod socket_mode;
 mod spans;
 pub mod timestamp;
-use tracing::Instrument;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use async_trait::async_trait;
@@ -43,8 +42,8 @@ pub use producer::{
     SlackTransportConfig,
 };
 use serde::{Deserialize, Serialize};
-use tracing::Instrument;
 pub use timestamp::compact_ts_for_permalink;
+use tracing::Instrument;
 
 /// Slack API base URL.
 pub const BASE_URL: &str = "https://slack.com/api";

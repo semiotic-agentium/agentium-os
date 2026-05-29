@@ -787,6 +787,7 @@ async fn callback_tool_schedules_without_dedupe_and_waits_until_due() {
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();
@@ -1140,6 +1141,7 @@ async fn callback_tool_reschedule_ignores_emitted_pending_rows() {
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();
@@ -1232,6 +1234,7 @@ async fn callback_producer_returns_empty_when_store_is_not_installed() {
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();
@@ -1268,6 +1271,7 @@ async fn callback_producer_errors_on_invalid_stored_source_key() {
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();
@@ -1322,6 +1326,7 @@ async fn callback_producer_defers_until_delivery_gate_opens() {
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();
@@ -1387,6 +1392,7 @@ async fn callback_producer_polls_and_reconciles_delivery() {
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();
@@ -1526,6 +1532,7 @@ async fn callback_producer_reconciles_after_simulated_restart() {
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();
@@ -1558,6 +1565,7 @@ async fn callback_producer_reconciles_after_simulated_restart() {
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();
@@ -1614,6 +1622,7 @@ async fn callback_producer_redelivers_pending_rows_when_checkpoint_is_missing() 
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();
@@ -1675,6 +1684,7 @@ async fn callback_producer_respects_max_poll_limit() {
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();

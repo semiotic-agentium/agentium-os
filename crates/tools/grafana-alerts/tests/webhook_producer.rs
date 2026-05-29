@@ -74,7 +74,7 @@ fn enqueue_then_poll_emits_grafana_alert_event() {
         assert_eq!(outcome.enqueued, 1);
         assert_eq!(outcome.duplicates, 0);
 
-        let producer = GrafanaAlertEventProducer::new().expect("producer");
+        let producer = GrafanaAlertEventProducer::new(store.clone()).expect("producer");
         let poll = producer
             .poll(&ProducerCheckpoint::none())
             .await
@@ -98,7 +98,7 @@ fn repeated_firing_reuses_context_id_across_polls() {
     run_serial_test(async {
         let (_store_guard, store) = install_memory_ingress_store();
         let mapping = MappingStore::open_in_memory().expect("mapping store");
-        let producer = GrafanaAlertEventProducer::new().expect("producer");
+        let producer = GrafanaAlertEventProducer::new(store.clone()).expect("producer");
 
         let p1 = payload(
             "firing",
@@ -133,7 +133,7 @@ fn resolved_then_new_firing_mints_fresh_context() {
     run_serial_test(async {
         let (_store_guard, store) = install_memory_ingress_store();
         let mapping = MappingStore::open_in_memory().expect("mapping store");
-        let producer = GrafanaAlertEventProducer::new().expect("producer");
+        let producer = GrafanaAlertEventProducer::new(store.clone()).expect("producer");
 
         let p1 = payload(
             "firing",

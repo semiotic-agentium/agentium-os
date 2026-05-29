@@ -797,6 +797,7 @@ async fn slack_inbox_producer_delivers_durable_ingress_to_slack_agent_and_downst
         &InventoryCatalog::new(),
         Some(config_resolver),
         HashMap::new(),
+        Some(store.clone() as Arc<dyn baml_rt_core::IngressStore>),
     )
     .await
     .expect("load configured event producers");
@@ -807,7 +808,10 @@ async fn slack_inbox_producer_delivers_durable_ingress_to_slack_agent_and_downst
     );
     assert_eq!(producers[0].producer_key(), "support/slack:inbox");
 
-    let mut dispatcher = EventDispatcher::new(registry);
+    let mut dispatcher = EventDispatcher::new(
+        registry,
+        baml_rt_core::HostPublishService::without_provenance(),
+    );
     for producer in producers {
         dispatcher
             .register_producer(producer)

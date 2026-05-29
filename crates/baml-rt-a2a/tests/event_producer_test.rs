@@ -251,7 +251,10 @@ async fn poll_and_deliver_reaches_subscribed_agent() {
         entries: vec![dispatch_echo_discovery_entry()],
     });
 
-    let mut dispatcher = EventDispatcher::new(registry);
+    let mut dispatcher = EventDispatcher::new(
+        registry,
+        baml_rt_core::HostPublishService::without_provenance(),
+    );
     dispatcher
         .register_producer(Arc::new(StubProducer::matching()))
         .expect("register producer");
@@ -282,7 +285,10 @@ async fn deliver_event_returns_zero_outcome_when_no_subscribers() {
         entries: vec![dispatch_echo_discovery_entry()],
     });
 
-    let dispatcher = EventDispatcher::new(registry);
+    let dispatcher = EventDispatcher::new(
+        registry,
+        baml_rt_core::HostPublishService::without_provenance(),
+    );
 
     // Event with source_kind "unknown_source" — dispatch-echo only subscribes to slack/clickup/github_issues
     let event = ProducedEvent {
@@ -364,7 +370,10 @@ async fn checkpoint_advances_when_no_subscribers() {
         received_checkpoints: Arc::clone(&received),
     };
 
-    let mut dispatcher = EventDispatcher::new(registry);
+    let mut dispatcher = EventDispatcher::new(
+        registry,
+        baml_rt_core::HostPublishService::without_provenance(),
+    );
     dispatcher
         .register_producer(Arc::new(producer))
         .expect("register producer");
@@ -429,7 +438,10 @@ async fn system_callback_checkpoint_not_advanced_without_subscribers() {
         received_checkpoints: Arc::clone(&received),
     };
 
-    let mut dispatcher = EventDispatcher::new(registry);
+    let mut dispatcher = EventDispatcher::new(
+        registry,
+        baml_rt_core::HostPublishService::without_provenance(),
+    );
     dispatcher
         .register_producer(Arc::new(producer))
         .expect("register producer");
@@ -485,7 +497,10 @@ async fn system_callback_checkpoint_advances_when_subscriber_matches() {
         received_checkpoints: Arc::clone(&received),
     };
 
-    let mut dispatcher = EventDispatcher::new(registry);
+    let mut dispatcher = EventDispatcher::new(
+        registry,
+        baml_rt_core::HostPublishService::without_provenance(),
+    );
     dispatcher
         .register_producer(Arc::new(producer))
         .expect("register producer");
@@ -521,7 +536,10 @@ async fn dispatcher_passes_preloaded_checkpoint_to_producer() {
         received_checkpoints: Arc::clone(&received),
     };
 
-    let mut dispatcher = EventDispatcher::new(registry);
+    let mut dispatcher = EventDispatcher::new(
+        registry,
+        baml_rt_core::HostPublishService::without_provenance(),
+    );
     dispatcher
         .register_producer_with_checkpoint(
             Arc::new(producer),
@@ -550,7 +568,10 @@ async fn empty_poll_returns_zero_outcome() {
         entries: vec![dispatch_echo_discovery_entry()],
     });
 
-    let mut dispatcher = EventDispatcher::new(registry);
+    let mut dispatcher = EventDispatcher::new(
+        registry,
+        baml_rt_core::HostPublishService::without_provenance(),
+    );
     dispatcher
         .register_producer(Arc::new(StubProducer::empty()))
         .expect("register producer");
@@ -576,7 +597,10 @@ async fn empty_poll_advances_non_empty_checkpoint() {
         entries: vec![dispatch_echo_discovery_entry()],
     });
 
-    let mut dispatcher = EventDispatcher::new(registry);
+    let mut dispatcher = EventDispatcher::new(
+        registry,
+        baml_rt_core::HostPublishService::without_provenance(),
+    );
     dispatcher
         .register_producer(Arc::new(RecordingProducer {
             key: "test:empty-advance".into(),
@@ -606,7 +630,10 @@ async fn source_kind_mismatch_is_a_hard_error() {
         entries: vec![dispatch_echo_discovery_entry()],
     });
 
-    let mut dispatcher = EventDispatcher::new(registry);
+    let mut dispatcher = EventDispatcher::new(
+        registry,
+        baml_rt_core::HostPublishService::without_provenance(),
+    );
     dispatcher
         .register_producer(Arc::new(StubProducer::mismatched_source_kind()))
         .expect("register producer");
@@ -650,7 +677,10 @@ async fn raw_source_records_deliver_to_slack_subscriber() {
         entries: vec![entry],
     });
 
-    let dispatcher = EventDispatcher::new(registry);
+    let dispatcher = EventDispatcher::new(
+        registry,
+        baml_rt_core::HostPublishService::without_provenance(),
+    );
 
     let event = ProducedEvent {
         routing_key: AgentDispatchRoutingKey::parse("event:intake").unwrap(),

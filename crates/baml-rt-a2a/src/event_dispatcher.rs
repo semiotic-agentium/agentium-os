@@ -14,9 +14,7 @@
 
 use std::{sync::Arc, time::Instant};
 
-use baml_rt_core::{
-    BamlRtError, EventDeliveryOutcome, ProducedEvent, Result, publish_to_subscribers,
-};
+use baml_rt_core::{BamlRtError, EventDeliveryOutcome, ProducedEvent, Result};
 use baml_rt_observability::metrics;
 use baml_rt_tools::{EventProducer, ProducerCheckpoint, ProducerRegistry};
 use baml_tools_system::callback_producer::CALLBACK_SOURCE_KIND;
@@ -29,13 +27,18 @@ use crate::{AgentRegistry, RegistryDispatchPort};
 pub struct EventDispatcher {
     registry: Arc<dyn AgentRegistry>,
     producers: ProducerRegistry,
+    publish_service: Arc<baml_rt_core::HostPublishService>,
 }
 
 impl EventDispatcher {
-    pub fn new(registry: Arc<dyn AgentRegistry>) -> Self {
+    pub fn new(
+        registry: Arc<dyn AgentRegistry>,
+        publish_service: Arc<baml_rt_core::HostPublishService>,
+    ) -> Self {
         Self {
             registry,
             producers: ProducerRegistry::new(),
+            publish_service,
         }
     }
 
@@ -75,7 +78,7 @@ impl EventDispatcher {
         let published = event.as_published_event();
         let entries = self.registry.list_agents();
         let port = RegistryDispatchPort::new(self.registry.as_ref());
-        let outcome = publish_to_subscribers(&entries, event, &port).await?;
+        let outcome = self.publish_service.publish(&entries, event, &port).await?;
         if outcome.subscribers_matched == 0 {
             warn!(
                 schema = %published.schema_version,

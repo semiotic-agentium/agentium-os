@@ -95,8 +95,8 @@ pub use error::{
     baml_error_disposition, retryability_for_a2a,
 };
 pub use event_delivery::{
-    AgentDispatchPort, DiscoveryPublishClient, HostPublishClient, SubscriberIndex,
-    deliver_to_subscribers, matching_subscriber_routes, publish_to_subscribers,
+    AgentDispatchPort, DiscoveryPublishClient, HostPublishClient, HostPublishService,
+    SubscriberIndex, deliver_to_subscribers, matching_subscriber_routes, publish_to_subscribers,
 };
 pub use event_producer::{
     EventDeliveryOutcome, ProducedEvent, SubscriberAcceptance, SubscriberDeliveryFailure,

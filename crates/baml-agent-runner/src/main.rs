@@ -35,9 +35,7 @@ use std::{
 
 use anyhow::Context;
 use baml_rt_api::RuntimeProgressMeter;
-use baml_rt_core::{
-    CallbackStore, DeploymentManager, DeploymentStatus, ExponentialBackoff, IngressStore,
-};
+use baml_rt_core::{CallbackStore, DeploymentManager, DeploymentStatus, ExponentialBackoff};
 use baml_rt_llm_config::{
     FnoxFileSecretResolver, OverlaySecretResolver, SECRET_LINKS_CONFIG_KEY, SecretLinksState,
     apply_secret_links_state,
@@ -258,9 +256,6 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
     // Trait/object type: `baml_rt_core::CallbackStore`; process-wide slot: `baml_tools_system::callback_store`.
     baml_tools_system::callback_store::install_callback_store(
         deployment_state.clone() as Arc<dyn CallbackStore>
-    );
-    baml_rt_tools::ingress_store::install_ingress_store(
-        deployment_state.clone() as Arc<dyn IngressStore>
     );
     let repository_service = Arc::new(RepositoryService::new(
         repository_store.clone() as Arc<dyn BlobStore>,
@@ -498,6 +493,13 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         }
     }
 
+    let runner = ready.runner();
+    let ingress_store: Arc<dyn baml_rt_core::IngressStore> = runner.deployment_state().clone();
+    let host_publish = Arc::new(baml_rt_core::HostPublishService::new(
+        Some(runner.host_ingress_recorder()),
+        Some(runner.clone() as Arc<dyn baml_rt_core::DeployedAgentLookup>),
+    ));
+
     let http_handle = if let Some(bind) = config.serve_http.clone() {
         let runner = ready.runner();
         let prov_config = runner.provenance_config();
@@ -555,6 +557,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         let webhook_intakes = load_configured_webhook_intakes(
             &InventoryCatalog::new(),
             Some(runner.provenance_config().config_service()),
+            Some(Arc::clone(&ingress_store)),
         )
         .await
         .context("loading configured webhook intakes")?;
@@ -562,7 +565,6 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             webhook_intake_count = webhook_intakes.len(),
             "configured webhook intakes loaded for HTTP API"
         );
-        let host_ingress_recorder = runner.host_ingress_recorder();
         let api_config = baml_rt_api::ApiServerConfig {
             mermaid,
             context_metrics,
@@ -582,10 +584,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             cluster,
             web_dir,
             webhook_intakes,
-            host_ingress_recorder: Some(host_ingress_recorder),
-            deployed_agent_lookup: Some(
-                runner.clone() as Arc<dyn baml_rt_core::DeployedAgentLookup>
-            ),
+            host_publish: Some(Arc::clone(&host_publish)),
             ..baml_rt_api::ApiServerConfig::empty(
                 tool_catalog,
                 config_service,
@@ -627,6 +626,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             &InventoryCatalog::new(),
             Some(runner.provenance_config().config_service()),
             persisted_checkpoints.clone(),
+            Some(Arc::clone(&ingress_store)),
         )
         .await
         .context("loading configured event producers")?;
@@ -649,8 +649,10 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         });
 
         if let Some(interval) = effective_interval {
-            let mut dispatcher =
-                baml_rt_a2a::EventDispatcher::new(registry as Arc<dyn baml_rt_a2a::AgentRegistry>);
+            let mut dispatcher = baml_rt_a2a::EventDispatcher::new(
+                registry as Arc<dyn baml_rt_a2a::AgentRegistry>,
+                Arc::clone(&host_publish),
+            );
             for producer in configured_producers {
                 let producer_key = producer.producer_key().to_string();
                 let checkpoint = persisted_checkpoints

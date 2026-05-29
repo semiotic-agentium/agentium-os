@@ -3,13 +3,16 @@
 //! [`matching_subscriber_routes`] and [`deliver_to_subscribers`] are the single
 //! delivery primitive used by in-process event dispatch and HTTP publish ingress.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use tracing::warn;
 
 use crate::{
     AgentDiscoveryEntry, AgentDispatchAck, AgentDispatchRequest, AgentInstanceId, AgentPackageName,
-    AgentRouteKey, EventDeliveryOutcome, ProducedEvent, Result, SubscriberAcceptance,
-    SubscriberDeliveryFailure,
+    AgentRouteKey, DispatchTarget, EventDeliveryOutcome, HostIngressRecorder, ProducedEvent,
+    Result, SubscriberAcceptance, SubscriberDeliveryFailure,
+    deployed_agent_lookup::DeployedAgentLookup,
     event_subscription::{PublishedEvent, subscriptions_match_published_event},
 };
 
@@ -81,6 +84,70 @@ pub async fn publish_to_subscribers(
 #[async_trait]
 pub trait HostPublishClient: Send + Sync {
     async fn publish(&self, event: ProducedEvent) -> Result<EventDeliveryOutcome>;
+}
+
+/// Canonical host publish spine: poll lineage recording, subscriber fan-out,
+/// and transport-failure provenance. Single entry for HTTP publish and
+/// in-process event dispatcher delivery.
+pub struct HostPublishService {
+    recorder: Option<Arc<dyn HostIngressRecorder>>,
+    deployed_agent_lookup: Option<Arc<dyn DeployedAgentLookup>>,
+}
+
+impl HostPublishService {
+    pub fn new(
+        recorder: Option<Arc<dyn HostIngressRecorder>>,
+        deployed_agent_lookup: Option<Arc<dyn DeployedAgentLookup>>,
+    ) -> Self {
+        Self {
+            recorder,
+            deployed_agent_lookup,
+        }
+    }
+
+    /// Publish without provenance recording (tests and minimal dispatchers).
+    pub fn without_provenance() -> Arc<Self> {
+        Arc::new(Self::new(None, None))
+    }
+
+    /// Record poll lineage, fan out to subscribers, and record transport failures.
+    pub async fn publish(
+        &self,
+        entries: &[AgentDiscoveryEntry],
+        event: ProducedEvent,
+        port: &dyn AgentDispatchPort,
+    ) -> Result<EventDeliveryOutcome> {
+        if let Some(recorder) = self.recorder.as_ref() {
+            recorder.record_source_poll(&event).await?;
+        }
+        let dispatch_request = event.clone().into_dispatch_request();
+        let outcome = publish_to_subscribers(entries, event, port).await?;
+        if let Some(recorder) = self.recorder.as_ref() {
+            for (route, failure) in &outcome.failures {
+                // Agent rejections are recorded by the runner dispatch boundary; publish
+                // only records transport failures where dispatch never returned an ack.
+                let SubscriberDeliveryFailure::Dispatch { detail } = failure else {
+                    continue;
+                };
+                let agent_id = self
+                    .deployed_agent_lookup
+                    .as_ref()
+                    .and_then(|lookup| lookup.agent_id_for_route(route));
+                let target = DispatchTarget::with_optional_agent(route.clone(), agent_id);
+                if let Err(err) = recorder
+                    .record_dispatch_rejected(&dispatch_request, target, detail, true)
+                    .await
+                {
+                    warn!(
+                        error = %err,
+                        agent = %route.agent_package,
+                        "host dispatch rejected provenance write failed"
+                    );
+                }
+            }
+        }
+        Ok(outcome)
+    }
 }
 
 /// [`HostPublishClient`] backed by a discovery snapshot and [`AgentDispatchPort`].

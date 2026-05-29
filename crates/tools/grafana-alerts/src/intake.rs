@@ -14,14 +14,14 @@ use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use baml_derive::BamlType;
-use baml_rt_core::{BamlRtError, Result, clock_events};
+use baml_rt_core::{BamlRtError, IngressStore, Result, clock_events};
 use baml_rt_tools::{
     WebhookAuthTier, WebhookIntake, WebhookIntakeBuildContext, WebhookIntakeBuildFuture,
-    WebhookIntakeProvider, WebhookRequest, WebhookResponse, ingress_store::ingress_store,
+    WebhookIntakeProvider, WebhookRequest, WebhookResponse,
 };
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
-use tracing::{error, warn};
+use tracing::warn;
 
 use crate::{
     mapping::MappingStore,
@@ -54,13 +54,19 @@ pub const GRAFANA_INTAKE_KEY: &str = "support/grafana-alerts";
 pub struct GrafanaWebhookIntake {
     mapping: Arc<MappingStore>,
     source_key: String,
+    store: Arc<dyn IngressStore>,
 }
 
 impl GrafanaWebhookIntake {
-    pub fn new(mapping: Arc<MappingStore>, source_key: String) -> Self {
+    pub fn new(
+        mapping: Arc<MappingStore>,
+        source_key: String,
+        store: Arc<dyn IngressStore>,
+    ) -> Self {
         Self {
             mapping,
             source_key,
+            store,
         }
     }
 }
@@ -92,18 +98,11 @@ impl WebhookIntake for GrafanaWebhookIntake {
             }
         };
 
-        let Some(store) = ingress_store() else {
-            error!("grafana webhook received but ingress store is not installed");
-            return Ok(WebhookResponse::internal_error(
-                "ingress store not installed",
-            ));
-        };
-
         let now_ms = baml_rt_core::now_unix_ms(clock_events::GRAFANA_INGRESS);
         let outcome = enqueue_webhook(
             &payload,
             self.mapping.as_ref(),
-            store.as_ref(),
+            self.store.as_ref(),
             &self.source_key,
             now_ms,
         )
@@ -122,6 +121,9 @@ impl WebhookIntake for GrafanaWebhookIntake {
 
 fn build_intakes(ctx: WebhookIntakeBuildContext) -> WebhookIntakeBuildFuture {
     Box::pin(async move {
+        let Some(store) = ctx.ingress_store else {
+            return Ok(Vec::new());
+        };
         let config: GrafanaAlertsConfig = match ctx.config {
             Some(value) => serde_json::from_value(value).map_err(|err| {
                 BamlRtError::InvalidArgument(format!(
@@ -158,8 +160,11 @@ fn build_intakes(ctx: WebhookIntakeBuildContext) -> WebhookIntakeBuildFuture {
             }
         };
 
-        let intake: Arc<dyn WebhookIntake> =
-            Arc::new(GrafanaWebhookIntake::new(Arc::new(mapping), source_key));
+        let intake: Arc<dyn WebhookIntake> = Arc::new(GrafanaWebhookIntake::new(
+            Arc::new(mapping),
+            source_key,
+            store,
+        ));
         Ok(vec![intake])
     })
 }
@@ -208,14 +213,15 @@ mod tests {
         }
     }
 
-    fn intake() -> GrafanaWebhookIntake {
+    fn intake(store: Arc<dyn IngressStore>) -> GrafanaWebhookIntake {
         let mapping = MappingStore::open_in_memory().expect("mapping");
-        GrafanaWebhookIntake::new(Arc::new(mapping), DEFAULT_SOURCE_KEY.to_string())
+        GrafanaWebhookIntake::new(Arc::new(mapping), DEFAULT_SOURCE_KEY.to_string(), store)
     }
 
     #[tokio::test]
     async fn declares_public_post_route_at_canonical_path() {
-        let intake = intake();
+        let (_guard, store) = install_memory_ingress_store();
+        let intake = intake(store);
         assert_eq!(intake.mount_path(), "/webhooks/grafana");
         assert_eq!(intake.auth_tier(), WebhookAuthTier::Public);
         assert_eq!(intake.methods(), &[Method::POST]);
@@ -225,29 +231,12 @@ mod tests {
     #[test]
     fn malformed_body_returns_bad_request() {
         run_serial_test(async {
-            let (_store_guard, _store) = install_memory_ingress_store();
-            let response = intake().handle(empty_request("not json")).await.unwrap();
+            let (_store_guard, store) = install_memory_ingress_store();
+            let response = intake(store)
+                .handle(empty_request("not json"))
+                .await
+                .unwrap();
             assert_eq!(response.status, StatusCode::BAD_REQUEST);
-        });
-    }
-
-    #[test]
-    fn missing_ingress_store_returns_internal_error() {
-        run_serial_test(async {
-            // Do not install an ingress store. The handler must report 500.
-            baml_rt_tools::ingress_store::clear_ingress_store();
-            let body = serde_json::json!({
-                "status": "firing",
-                "groupKey": "g1",
-                "alerts": [{
-                    "status": "firing",
-                    "fingerprint": "fp1",
-                    "startsAt": "2026-05-25T12:00:00Z",
-                }]
-            })
-            .to_string();
-            let response = intake().handle(empty_request(&body)).await.unwrap();
-            assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
         });
     }
 
@@ -266,7 +255,10 @@ mod tests {
                 }]
             })
             .to_string();
-            let response = intake().handle(empty_request(&body)).await.unwrap();
+            let response = intake(store.clone())
+                .handle(empty_request(&body))
+                .await
+                .unwrap();
             assert_eq!(response.status, StatusCode::ACCEPTED);
             let pending = baml_rt_core::IngressStore::list_pending(store.as_ref(), 100)
                 .await

@@ -22,9 +22,9 @@ use axum::{
 use baml_rt_a2a::RegistryDispatchPort;
 use baml_rt_core::{
     A2aWireRequest, AgentDispatchRequest, AgentInstanceId, AgentPackageName, AgentRouteKey,
-    BamlRtError, DeploymentContentHash, DeploymentStatus, DispatchTarget, ProducedEvent,
+    BamlRtError, DeploymentContentHash, DeploymentStatus, ProducedEvent,
     ids::{AgentId, ContextId, TaskId},
-    join_error_message, publish_to_subscribers,
+    join_error_message,
 };
 use baml_rt_provenance::{
     ProvenanceOpsFilters, ProvenanceOpsQueryRequest, ProvenanceOpsResource,
@@ -1549,43 +1549,19 @@ pub async fn post_events_publish(
             return (AxumStatus::BAD_REQUEST, err).into_response();
         }
     };
+    let context_id = event.context_id.as_ref().map(|c| c.to_string());
+    let Some(publish_service) = state.host_publish.as_ref() else {
+        metrics::record_request("post_events_publish", "error", start.elapsed());
+        return (
+            AxumStatus::INTERNAL_SERVER_ERROR,
+            "host publish service not configured",
+        )
+            .into_response();
+    };
     let entries = state.registry.list_agents();
     let port = RegistryDispatchPort::new(state.registry.as_ref());
-    if let Some(recorder) = state.host_ingress_recorder.as_ref()
-        && let Err(err) = recorder.record_source_poll(&event).await
-    {
-        metrics::record_request("post_events_publish", "error", start.elapsed());
-        return (AxumStatus::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
-    }
-    let context_id = event.context_id.as_ref().map(|c| c.to_string());
-    let dispatch_request = event.clone().into_dispatch_request();
-    match publish_to_subscribers(&entries, event, &port).await {
+    match publish_service.publish(&entries, event, &port).await {
         Ok(outcome) => {
-            if let Some(recorder) = state.host_ingress_recorder.as_ref() {
-                for (route, failure) in &outcome.failures {
-                    // Agent rejections are recorded by the runner dispatch boundary; publish
-                    // only records transport failures where dispatch never returned an ack.
-                    let baml_rt_core::SubscriberDeliveryFailure::Dispatch { detail } = failure
-                    else {
-                        continue;
-                    };
-                    let agent_id = state
-                        .deployed_agent_lookup
-                        .as_ref()
-                        .and_then(|lookup| lookup.agent_id_for_route(route));
-                    let target = DispatchTarget::with_optional_agent(route.clone(), agent_id);
-                    if let Err(err) = recorder
-                        .record_dispatch_rejected(&dispatch_request, target, detail, true)
-                        .await
-                    {
-                        tracing::warn!(
-                            error = %err,
-                            agent = %route.agent_package,
-                            "host dispatch rejected provenance write failed"
-                        );
-                    }
-                }
-            }
             metrics::record_request("post_events_publish", "success", start.elapsed());
             Json(crate::openapi::EventPublishResponseDto::from_outcome(
                 outcome, context_id,

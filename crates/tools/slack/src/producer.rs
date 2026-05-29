@@ -12,14 +12,14 @@ use std::{collections::HashSet, sync::Arc};
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::{
-    AgentDispatchRoutingKey, BamlRtError, EventSchemaVersion, EventSourceKind, ProducedEvent,
-    Result, clock_events, host_source_records_schema_version,
+    AgentDispatchRoutingKey, BamlRtError, EventSchemaVersion, EventSourceKind, IngressStore,
+    ProducedEvent, Result, clock_events, host_source_records_schema_version,
     host_wire::wire,
     ingress_store::{IngressId, IngressItem},
 };
 use baml_rt_tools::{
     EventProducer, EventProducerBuildContext, EventProducerBuildFuture, EventProducerProvider,
-    ProducerCheckpoint, ProducerPoll, ingress_store::ingress_store,
+    ProducerCheckpoint, ProducerPoll,
 };
 use integrations_slack_read::SlackReadClient;
 use serde::{Deserialize, Serialize};
@@ -117,15 +117,17 @@ const SLACK_INBOX_PRODUCER_KEY: &str = "support/slack:inbox";
 const SLACK_INGRESS_RETRY_AFTER_MS: u64 = 60_000;
 
 pub struct SlackInboxEventProducer {
+    store: Arc<dyn IngressStore>,
     producer_key: &'static str,
     source_kind: EventSourceKind,
     source_kinds: Vec<EventSourceKind>,
 }
 
 impl SlackInboxEventProducer {
-    fn new() -> Result<Self> {
+    fn new(store: Arc<dyn IngressStore>) -> Result<Self> {
         let (_, _, source_kind) = raw_source_dispatch_contract()?;
         Ok(Self {
+            store,
             producer_key: SLACK_INBOX_PRODUCER_KEY,
             source_kinds: vec![source_kind.clone()],
             source_kind,
@@ -180,11 +182,7 @@ impl EventProducer for SlackInboxEventProducer {
     }
 
     async fn poll(&self, checkpoint: &ProducerCheckpoint) -> Result<ProducerPoll> {
-        let store = ingress_store().ok_or_else(|| {
-            BamlRtError::InvalidArgument(
-                "support/slack inbox producer requires an installed ingress store".to_string(),
-            )
-        })?;
+        let store = self.store.as_ref();
         let now_unix_ms = baml_rt_core::now_unix_ms(clock_events::SLACK_INGRESS);
         let checkpoint_state = SlackInboxProducerCheckpoint::from_checkpoint(checkpoint);
         let reconciled_deliveries = !checkpoint_state.delivered_ingress_ids.is_empty();
@@ -264,7 +262,9 @@ impl EventProducer for SlackInboxEventProducer {
 /// Build all configured Slack event producer instances from tool config.
 pub fn build_slack_event_producers(ctx: EventProducerBuildContext) -> EventProducerBuildFuture {
     Box::pin(async move {
-        let store_installed = ingress_store().is_some();
+        let Some(store) = ctx.ingress_store else {
+            return Ok(vec![]);
+        };
         let config = match ctx.config {
             Some(value) => {
                 serde_json::from_value::<SlackEventProducerConfig>(value).map_err(|err| {
@@ -286,11 +286,7 @@ pub fn build_slack_event_producers(ctx: EventProducerBuildContext) -> EventProdu
                         "Socket Mode transport requires at least one channel".to_string(),
                     ));
                 }
-                let store = ingress_store().ok_or_else(|| {
-                    BamlRtError::InvalidArgument(
-                        "Socket Mode transport requires an installed ingress store".to_string(),
-                    )
-                })?;
+                let store = store.clone();
                 let client = SlackReadClient::new();
                 let app_token = client.auth().app_token.clone().ok_or_else(|| {
                     BamlRtError::InvalidArgument(
@@ -305,7 +301,11 @@ pub fn build_slack_event_producers(ctx: EventProducerBuildContext) -> EventProdu
                 // task abort. Wire this up when EventProducer gains shutdown support.
                 let cancel = tokio_util::sync::CancellationToken::new();
                 let receiver_handle = crate::socket_mode::start_socket_mode_receiver(
-                    client, app_token, channels, store, cancel,
+                    client,
+                    app_token,
+                    channels,
+                    store.clone(),
+                    cancel,
                 )
                 .await?;
                 tokio::spawn(async move {
@@ -316,7 +316,8 @@ pub fn build_slack_event_producers(ctx: EventProducerBuildContext) -> EventProdu
                 });
 
                 let producers: Vec<Arc<dyn EventProducer>> =
-                    vec![Arc::new(SlackInboxEventProducer::new()?) as Arc<dyn EventProducer>];
+                    vec![Arc::new(SlackInboxEventProducer::new(store.clone())?)
+                        as Arc<dyn EventProducer>];
                 Ok(producers)
             }
             SlackTransportConfig::Polling => {
@@ -327,13 +328,9 @@ pub fn build_slack_event_producers(ctx: EventProducerBuildContext) -> EventProdu
                     channel_count = channels.len(),
                     "Slack REST polling is owned by task-daemon; runner registers inbox drain only"
                 );
-                if store_installed {
-                    Ok(vec![
-                        Arc::new(SlackInboxEventProducer::new()?) as Arc<dyn EventProducer>
-                    ])
-                } else {
-                    Ok(vec![])
-                }
+                Ok(vec![
+                    Arc::new(SlackInboxEventProducer::new(store)?) as Arc<dyn EventProducer>
+                ])
             }
         }
     })
@@ -438,7 +435,7 @@ mod tests {
             .await
             .expect("enqueue sample durable ingress item");
 
-        let producer = SlackInboxEventProducer::new().expect("build inbox producer");
+        let producer = SlackInboxEventProducer::new(store.clone()).expect("build inbox producer");
         let first_poll = producer
             .poll(&ProducerCheckpoint::none())
             .await
@@ -515,7 +512,7 @@ mod tests {
             .await
             .expect("enqueue sample durable ingress item");
 
-        let producer = SlackInboxEventProducer::new().expect("build inbox producer");
+        let producer = SlackInboxEventProducer::new(store.clone()).expect("build inbox producer");
         let first_poll = producer
             .poll(&ProducerCheckpoint::none())
             .await
@@ -542,10 +539,9 @@ mod tests {
 
     #[tokio::test]
     async fn polling_transport_registers_no_rest_producers_without_ingress_store() {
-        use baml_rt_tools::{InventoryCatalog, ToolCatalog, ToolName, clear_ingress_store};
+        use baml_rt_tools::{InventoryCatalog, ToolCatalog, ToolName};
 
         let _guard = crate::slack_test_env_lock().lock().await;
-        clear_ingress_store();
         let metadata = InventoryCatalog::new()
             .by_name(&ToolName::parse("support/slack").expect("valid tool name"))
             .cloned()
@@ -557,6 +553,7 @@ mod tests {
                 "channels": ["ops", "C123ABC456"]
             })),
             persisted_checkpoints: Arc::new(HashMap::new()),
+            ingress_store: None,
         })
         .await
         .expect("producer build should succeed");
@@ -692,7 +689,7 @@ mod tests {
         use baml_rt_tools::{InventoryCatalog, ToolCatalog, ToolName};
 
         let _guard = crate::slack_test_env_lock().lock().await;
-        let (_store_guard, _store) = install_memory_ingress_store();
+        let (_store_guard, store) = install_memory_ingress_store();
         let metadata = InventoryCatalog::new()
             .by_name(&ToolName::parse("support/slack").expect("valid tool name"))
             .cloned()
@@ -704,6 +701,7 @@ mod tests {
                 "channels": []
             })),
             persisted_checkpoints: Arc::new(HashMap::new()),
+            ingress_store: Some(store),
         })
         .await
         .expect("producer build should still register the durable inbox producer");
