@@ -18,9 +18,16 @@ env:
   ROOTFS_TAR: sandbox-echo-rootfs.tar
 
 jobs:
+  start-runner:
+    permissions:
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/start-kvm-runner.yml
+
   prepare-fixture:
     name: Prepare local sandbox fixture bind rootfs artifact
-    runs-on: kvm-enabled
+    runs-on: kvm-gcp
+    needs: start-runner
 
     steps:
       - uses: actions/checkout@v4
@@ -127,7 +134,7 @@ jobs:
   kvm-e2e:
     name: KVM E2E (baml-rt-tools)
     needs: prepare-fixture
-    runs-on: kvm-enabled
+    runs-on: kvm-gcp
 
     steps:
       - uses: actions/checkout@v4

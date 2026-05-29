@@ -41,9 +41,20 @@ env:
   OTEL_EXPORTER_OTLP_ENDPOINT: ""
 
 jobs:
+  # Wakes the self-hosted GCP runner (auto-stops after idle). All kvm-gcp
+  # jobs gate on this transitively via `changes`.
+  # id-token: write is required for the reusable workflow's WIF auth; it
+  # has to be granted at the caller side too (intersection semantics).
+  start-runner:
+    permissions:
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/start-kvm-runner.yml
+
   changes:
     name: Detect sandbox lane changes
     runs-on: kvm-gcp
+    needs: start-runner
     outputs:
       sandbox_changed: ${{ steps.filter.outputs.sandbox }}
     steps:
