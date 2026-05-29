@@ -61,8 +61,11 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-authors = ["BAML Runtime Team"]
-description = "BAML Runtime"
+authors = ["Semiotic AI, Inc."]
+description = "Agentium OS — a Rust runtime for executing BAML functions, running JavaScript agents, and serving the A2A protocol"
+license = "Apache-2.0"
+repository = "https://github.com/semiotic-agentium/agentium-os"
+homepage = "https://semiotic.ai"
 
 [workspace.dependencies]
 # Core
