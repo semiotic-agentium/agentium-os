@@ -1,0 +1,110 @@
+name: Start KVM Runner
+
+# Reusable workflow that wakes the self-hosted GCP KVM runner (auto-stops after
+# idle) before jobs that need `runs-on: kvm-gcp`. Authenticates to GCP via
+# Workload Identity Federation — no long-lived keys.
+#
+# Repo-level vars consumed (set via `gh variable set`):
+#   GCP_WIF_PROVIDER  e.g. projects/123456789/locations/global/workloadIdentityPools/github/providers/github-oidc
+#   GCP_RUNNER_SA     e.g. ci-agentium-os-ci-1@agentium-os.iam.gserviceaccount.com
+#
+# Security — self-hosted runner exposure:
+#   The kvm-gcp instance executes arbitrary repo code (build scripts, proc-macros,
+#   tests). Callers triggered by `pull_request` therefore run fork-submitted code
+#   on the GCP box. Two controls must stay in place:
+#     1. Repo setting Settings → Actions → "Require approval for all external
+#        contributors" (or stricter) so fork PRs cannot start the runner or run
+#        code without a maintainer's review.
+#     2. The WIF provider's attribute condition should pin the allowed
+#        `repository` and refuse fork-originated subjects, so a leaked token from
+#        a fork run cannot mint GCP credentials.
+#   Both live outside this file (GitHub repo settings + GCP WIF config); this
+#   workflow only assumes they hold.
+
+on:
+  workflow_call:
+    inputs:
+      instance:
+        description: GCE instance name
+        type: string
+        default: agentium-os-ci-1
+      zone:
+        description: GCE zone
+        type: string
+        default: us-central1-a
+      project:
+        description: GCP project ID
+        type: string
+        default: agentium-os
+      wait_seconds:
+        description: Seconds to wait after `start` returns, so the actions-runner service has time to register with GitHub.
+        type: number
+        default: 60
+  workflow_dispatch:
+    inputs:
+      instance:
+        description: GCE instance name
+        type: string
+        default: agentium-os-ci-1
+      zone:
+        description: GCE zone
+        type: string
+        default: us-central1-a
+      project:
+        description: GCP project ID
+        type: string
+        default: agentium-os
+      wait_seconds:
+        description: Seconds to wait after `start` returns, so the actions-runner service has time to register with GitHub.
+        type: number
+        default: 60
+
+permissions:
+  id-token: write
+  contents: read
+
+# Two concurrent CI runs both call this — the second blocks on the first
+# rather than racing the gcloud start API.
+concurrency:
+  group: start-kvm-runner-${{ inputs.instance }}
+  cancel-in-progress: false
+
+jobs:
+  start:
+    name: Start ${{ inputs.instance }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_RUNNER_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Start instance if not running
+        id: start
+        run: |
+          set -euo pipefail
+          status=$(gcloud compute instances describe "${{ inputs.instance }}" \
+            --zone="${{ inputs.zone }}" --project="${{ inputs.project }}" \
+            --format='value(status)')
+          echo "current status: $status"
+          if [ "$status" = "RUNNING" ]; then
+            echo "instance already running, nothing to do"
+            echo "started=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gcloud compute instances start "${{ inputs.instance }}" \
+            --zone="${{ inputs.zone }}" --project="${{ inputs.project }}"
+          echo "started=true" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for actions-runner to register
+        # Only when we actually cold-booted the box: the idempotent
+        # startup-script + runner service take ≈60s to re-register with GitHub.
+        # Skipped when the instance was already RUNNING (warm box) so we don't
+        # burn the wait on every run. `|| 60` keeps the operand valid on the
+        # workflow_dispatch path even if wait_seconds is somehow unset.
+        if: steps.start.outputs.started == 'true'
+        run: sleep "${{ inputs.wait_seconds || 60 }}"

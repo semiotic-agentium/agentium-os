@@ -41,9 +41,21 @@ env:
   OTEL_EXPORTER_OTLP_ENDPOINT: ""
 
 jobs:
+  # Wakes the self-hosted GCP KVM runner (auto-stops after idle). Every kvm-gcp
+  # job gates on this transitively via `changes`, so the box is awake before any
+  # `runs-on: kvm-gcp` step is scheduled.
+  # `id-token: write` is required for the reusable workflow's WIF auth and must
+  # also be granted here at the caller (permissions use intersection semantics).
+  start-runner:
+    permissions:
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/start-kvm-runner.yml
+
   changes:
     name: Detect sandbox lane changes
-    runs-on: arc-runner-set
+    runs-on: kvm-gcp
+    needs: start-runner
     outputs:
       sandbox_changed: ${{ steps.filter.outputs.sandbox }}
     steps:
@@ -66,7 +78,7 @@ jobs:
 
   doctor:
     name: Workspace integrity (doctor)
-    runs-on: arc-runner-set
+    runs-on: kvm-gcp
     needs: changes
     steps:
       - uses: actions/checkout@v4
@@ -76,7 +88,7 @@ jobs:
 
       - name: Install OS build deps
         run: |
-          sudo apt-get install -y build-essential pkg-config libssl-dev libclang-dev lld
+          sudo apt-get install -y build-essential pkg-config libssl-dev libclang-dev lld libdbus-1-dev libcap-ng-dev
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
@@ -104,7 +116,7 @@ jobs:
 
   nextest:
     name: Nextest (workspace)
-    runs-on: arc-runner-set
+    runs-on: kvm-gcp
     needs: changes
     steps:
       - uses: actions/checkout@v4
@@ -116,6 +128,7 @@ jobs:
         run: |
           sudo apt-get install -y \
             build-essential pkg-config libssl-dev libclang-dev clang llvm-dev util-linux lld \
+            libdbus-1-dev libcap-ng-dev \
             zstd git-lfs
 
       - name: Configure LIBCLANG_PATH for bindgen (hirofa-quickjs-sys)
@@ -312,7 +325,7 @@ jobs:
 
   sandbox-adapter:
     name: Sandbox adapter (stdio E2E + protocol)
-    runs-on: arc-runner-set
+    runs-on: kvm-gcp
     needs: [changes, nextest]
     if: needs.changes.outputs.sandbox_changed == 'true'
     steps:
@@ -332,7 +345,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config libclang-dev clang llvm-dev lld
+          sudo apt update && sudo apt install -y build-essential pkg-config libclang-dev clang llvm-dev lld libdbus-1-dev libcap-ng-dev
 
       - name: Configure LIBCLANG_PATH for bindgen (hirofa-quickjs-sys)
         run: bash scripts/ci/set-libclang-path.sh
@@ -386,7 +399,7 @@ jobs:
 
   sandbox-adapter-image:
     name: Sandbox adapter image (no-publish)
-    runs-on: arc-runner-set
+    runs-on: kvm-gcp
     needs: [changes, nextest]
     if: needs.changes.outputs.sandbox_changed == 'true'
     env:
@@ -575,7 +588,7 @@ jobs:
 
   sandbox-adapter-image-handoff:
     name: Sandbox image metadata handoff validation
-    runs-on: arc-runner-set
+    runs-on: kvm-gcp
     needs: [changes, nextest, sandbox-adapter-image]
     if: needs.changes.outputs.sandbox_changed == 'true'
     steps:

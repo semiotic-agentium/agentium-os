@@ -18,9 +18,19 @@ env:
   ROOTFS_TAR: sandbox-echo-rootfs.tar
 
 jobs:
+  # Wakes the self-hosted GCP KVM runner before the kvm-gcp jobs below.
+  # `id-token: write` is granted per-job here because this workflow's top-level
+  # permissions block omits it; the reusable workflow's WIF auth needs it.
+  start-runner:
+    permissions:
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/start-kvm-runner.yml
+
   prepare-fixture:
     name: Prepare local sandbox fixture bind rootfs artifact
-    runs-on: kvm-enabled
+    runs-on: kvm-gcp
+    needs: start-runner
 
     steps:
       - uses: actions/checkout@v4
@@ -127,7 +137,7 @@ jobs:
   kvm-e2e:
     name: KVM E2E (baml-rt-tools)
     needs: prepare-fixture
-    runs-on: kvm-enabled
+    runs-on: kvm-gcp
 
     steps:
       - uses: actions/checkout@v4
@@ -149,7 +159,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config lld libcap-ng-dev
+          sudo apt update && sudo apt install -y build-essential pkg-config lld libcap-ng-dev libdbus-1-dev
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
