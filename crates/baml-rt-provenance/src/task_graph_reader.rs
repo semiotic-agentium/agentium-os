@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! [`TaskGraphReader`] — graph-only read surface for A2A tasks.
 //!
 //! This trait is the boundary `baml-rt-a2a` (and any other crate that

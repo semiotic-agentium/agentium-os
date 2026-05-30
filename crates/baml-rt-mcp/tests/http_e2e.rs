@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! End-to-end runtime tests for the rmcp Streamable HTTP transport against
 //! an in-process axum fake server.
 //!

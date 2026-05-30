@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Fixture-driven drift scoring tests.
 //!
 //! Parses TOML scenarios from `tests/fixtures/drift/*.toml`, embeds text

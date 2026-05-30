@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! SurrealDB-backed unified repository store.
 //!
 //! A single store implements metadata, lineage, search, and blob operations.

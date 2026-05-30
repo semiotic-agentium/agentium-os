@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tier 1 restricted spawn for import-time MCP discovery.
 //!
 //! Threat model: a yet-to-be-approved MCP server may scribble, exfiltrate,

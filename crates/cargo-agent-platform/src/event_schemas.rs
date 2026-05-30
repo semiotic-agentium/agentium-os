@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared event schema metadata surfaced by the SDK CLI.
 
 /// A schema version the CLI can describe to users when scaffolding subscriptions.

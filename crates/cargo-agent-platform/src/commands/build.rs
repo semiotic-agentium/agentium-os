@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `build` subcommand — package an agent into a distributable tar.gz.
 //!
 //! This uses the builder library directly with a CLI that supports building by

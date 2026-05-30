@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! BAML and await/stream registration with QuickJS.
 //!
 //! All __baml_invoke, __baml_stream, __set_eval_result, await helpers, and

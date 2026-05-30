@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Typed-metamodel surface integration tests.
 //!
 //! Confirms the positive surface (what compiles + emits the right SurrealQL)

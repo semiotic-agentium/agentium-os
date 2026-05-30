@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Integration tests: render → grep → cat_n full pipeline.
 
 use baml_rt_tools::archive_read::{

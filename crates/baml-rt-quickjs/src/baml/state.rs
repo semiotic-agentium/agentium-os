@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Internal state for [`super::BamlRuntimeManager`].
 //!
 //! Fields are `pub(in crate::baml)` so real submodules under `baml` can access them without

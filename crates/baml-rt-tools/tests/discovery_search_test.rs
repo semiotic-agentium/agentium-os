@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tests for tool discovery: ToolRegistry::search_tools is global (whole catalog from inventory).
 
 use baml_rt_tools::ToolRegistry;

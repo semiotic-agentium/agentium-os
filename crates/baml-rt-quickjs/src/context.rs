@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! BAML Context - Isolation per user/request
 //!
 //! Each context gets its own QuickJS runtime for isolation.

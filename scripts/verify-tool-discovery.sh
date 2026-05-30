@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Ad hoc verification: publish+deploy tool-discovery-demo, send messages and expect
 # responses that used system/discover_tools (e.g. mentions "support/calculate" or "Notion").
 # Usage: ./scripts/verify-tool-discovery.sh [--build]

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Graphviz DOT renderer for [`ExportedGraph`].
 //!
 //! Produces a DOT `digraph` string that can be rendered to SVG/PDF via the

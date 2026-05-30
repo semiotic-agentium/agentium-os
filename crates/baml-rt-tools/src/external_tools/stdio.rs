@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Stateless subprocess transport: spawn the tool binary per-invocation, speak
 //! JSON-RPC over stdin/stdout.
 //!

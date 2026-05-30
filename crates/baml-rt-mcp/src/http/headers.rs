@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Reserved-header guard for operator-supplied static headers.
 //!
 //! The MCP Streamable HTTP transport owns a small set of headers that must

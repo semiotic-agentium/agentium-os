@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! JSON to YAML rendering for grep-friendly line-based access.
 //!
 //! Long strings become YAML block scalars (`>-`) so they span multiple

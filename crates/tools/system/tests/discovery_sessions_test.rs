@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tests for system discovery sessions: discover_agents and discover_tools via SystemBundle.
 
 use std::sync::{Arc, OnceLock};

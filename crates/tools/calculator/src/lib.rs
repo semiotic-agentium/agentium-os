@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::Result;

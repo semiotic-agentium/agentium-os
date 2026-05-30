@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tests for SurrealStore: metadata CRUD, lineage traversal, search filters.
 
 use baml_rt_repository::{

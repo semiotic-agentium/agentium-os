@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `SessionToolInvoker` — transport-abstract interface for the session-mode
 //! sandbox protocol from `plans/sandbox_streaming.md` §5.2.
 //!

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Transactional file writer with rollback support.
 //!
 //! Collects all file operations in memory, validates them, then writes

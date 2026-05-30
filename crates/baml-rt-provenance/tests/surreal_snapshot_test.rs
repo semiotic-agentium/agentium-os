@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Snapshot regression tests for the SurrealDB provenance store.
 //!
 //! Structured outputs are captured with `insta` after normalizing volatile fields

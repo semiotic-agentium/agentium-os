@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Plan-level context for drift scoring.
 //!
 //! When a task has an active committed plan, the [`PlanDriftContext`] carries

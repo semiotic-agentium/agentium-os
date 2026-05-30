@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Runs the poll, interpret, and deliver loop for task-daemon.
 
 use std::{collections::BTreeMap, time::Duration};

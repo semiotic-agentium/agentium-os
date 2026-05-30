@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{collections::VecDeque, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;

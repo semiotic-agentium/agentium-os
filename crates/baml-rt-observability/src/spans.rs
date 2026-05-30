@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! OpenTelemetry span helpers for baml-rt
 //!
 //! This module provides structured span instrumentation following the OTel guide pattern.

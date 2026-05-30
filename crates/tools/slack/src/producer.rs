@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Host-managed Slack event producer registration.
 //!
 //! This operationalizes `support/slack` as an event source without hard-coding

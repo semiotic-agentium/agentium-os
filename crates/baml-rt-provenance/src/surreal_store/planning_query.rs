@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! [`ProvenancePlanningQuery`] and planning graph helpers (intents, plans, step gate).
 
 use std::collections::{HashMap, HashSet};

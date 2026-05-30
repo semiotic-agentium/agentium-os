@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Dev-mode local-filesystem resolver for external tools.
 //!
 //! Scans one or more "tool package" directories at construction time. Each dir

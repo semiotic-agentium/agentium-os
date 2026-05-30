@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 import type { ChunkPayload, StreamChunkResult } from "../types/a2a";
 import { collectChunkAssistantPlainText } from "./a2aStreamAssistantText";
 

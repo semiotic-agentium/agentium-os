@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Step-executor hop graph deltas: **provenance-backed** `conversation_context` line changes
 //! (strict prefix extension or set-delta) for composing merged lines that become
 //! `ctx.tags['conversation_transcript']`, using a loop-local `Vec<serde_json::Value>` that augments

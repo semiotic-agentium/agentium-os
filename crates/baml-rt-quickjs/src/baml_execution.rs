@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! BAML function execution engine
 //!
 //! This module executes BAML functions using the compiled IL (Intermediate Language)

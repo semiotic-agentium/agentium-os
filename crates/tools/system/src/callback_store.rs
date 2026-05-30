@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Process-wide registry for [`CallbackStore`](baml_rt_core::CallbackStore).
 //!
 //! Types and the trait live in **`baml-rt-core`** (`callback_store` module). This file only holds

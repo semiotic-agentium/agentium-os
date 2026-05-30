@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Policy tests to keep provenance core typed and graph-native.
 
 const EVENTS_RS: &str = include_str!("../src/events.rs");

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `ExternalInvoker` — transport-abstract interface for the tool protocol.
 //!
 //! V1 default transport is a stateless subprocess speaking JSON-RPC over stdio

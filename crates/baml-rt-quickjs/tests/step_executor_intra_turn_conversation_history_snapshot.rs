@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Verifies the per-hop merged projected history lines (same merge as BAML
 //! `ctx.tags['conversation_transcript']`) seen at each `intercept_llm_call` in a
 //! `run_step_executor_loop` (graph provider + loop-local supplement, mirrored for the interceptor).

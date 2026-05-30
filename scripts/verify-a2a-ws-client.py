@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """DEPRECATED: Runner A2A streaming now uses SSE, not WebSocket.
 Use: curl -s -N -X POST http://HOST/agents/PKG/INST/a2a/sse -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","method":"tasks.list","params":{},"id":null}'
 Or run ./scripts/verify-runner-http.sh (SSE section).

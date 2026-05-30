@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Atomic filesystem writes via temp-file-and-rename.
 
 use std::{io::Write, path::Path};

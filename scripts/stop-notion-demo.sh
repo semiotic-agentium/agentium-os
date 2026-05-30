@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 PID_FILE="${NOTION_DEMO_PID:-/tmp/notion-runner.pid}"

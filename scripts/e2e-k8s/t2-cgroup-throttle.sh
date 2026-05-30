@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Adversarial fixture for runner readiness under cgroup CPU throttling.
 #
 # Constrains the runner pod to runner.resources.limits.cpu=500m and probes

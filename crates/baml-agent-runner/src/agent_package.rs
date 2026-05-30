@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Agent package boot pipeline: typestate machine from inert tar.gz to live A2aAgent.
 
 use std::{

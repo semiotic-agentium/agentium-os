@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /** Synthetic coordinator tool: one graph-backed row per plan-step execution. */
 
 export const EXECUTION_SESSION_STEP_TOOL_NAME = "a2a/execution_session_step";

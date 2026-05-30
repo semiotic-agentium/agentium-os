@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tool configuration storage and resolution.
 //!
 //! Provides ConfigReader/ConfigWriter traits and SurrealDB-backed implementation

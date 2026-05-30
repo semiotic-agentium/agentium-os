@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Bug A regression: after `awaitInput` suspends a task, both the assistant question
 //! AND the user's follow-up turn must land in the provenance graph as `Message`
 //! lifecycle events. Without these writes, conversation history sees only the first

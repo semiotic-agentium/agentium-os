@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Canonical mapping from BamlRtError to A2A JSON-RPC error and classifier string.
 //! Single source of truth for both response formatting and error classification.
 //! I4: every mapped error includes retryable (transient vs permanent) and classifier.

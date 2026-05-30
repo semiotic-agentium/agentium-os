@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Memory tool bundle for the BAML runtime.
 //!
 //! Provides persistent graph-based cognitive memory backed by agentic-memory.

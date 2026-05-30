@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! ClickUp polling implementation for [`crate::daemon::TaskSource`].
 
 use std::{collections::BTreeMap, fmt};

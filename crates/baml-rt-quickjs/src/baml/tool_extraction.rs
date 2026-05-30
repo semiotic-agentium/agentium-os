@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tool call and tool session plan extraction from JSON.
 //!
 //! Session plans are bound to a tool by manifest mapping (function name -> plan type),

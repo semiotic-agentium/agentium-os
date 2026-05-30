@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! External tool metadata — the contract for `tool-metadata.json`.
 //!
 //! [`ExternalToolMetadata`] is the public typed model for everything a scaffolder

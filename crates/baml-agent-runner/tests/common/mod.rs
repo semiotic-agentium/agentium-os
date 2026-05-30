@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared helpers for HTTP / e2e tests. Many items are optional per integration test binary.
 #[cfg(any(
     feature = "clickup",

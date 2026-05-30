@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Builder/registry integration for MCP snapshot approval at the package boundary.
 //!
 //! Verifies that stale registry snapshots cannot be materialized into `build_dir/mcp/`

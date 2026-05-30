@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Pluggable lag signals for the runtime-progress meter.
 //!
 //! The runtime-progress meter on its own measures only tokio-task progress, so

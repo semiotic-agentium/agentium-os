@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Secret resolution for LLM API keys.
 //!
 //! Production must use the **same secret mechanism as the configuration system** (e.g. vault,

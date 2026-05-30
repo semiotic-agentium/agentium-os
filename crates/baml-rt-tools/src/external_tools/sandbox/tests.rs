@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Single end-to-end test for Workstream B.
 //!
 //! Wires `MockSandboxProvider` with a JSON-RPC echo adapter through

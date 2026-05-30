@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Materialize OCI sandbox sidecar bundle from `tool-metadata.json`.
 //!
 //! This command keeps OCI image preparation on the same shared bundle helper

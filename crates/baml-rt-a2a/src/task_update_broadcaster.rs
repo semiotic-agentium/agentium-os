@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! In-memory broadcast for live A2A task updates.
 //!
 //! Replaces the durable `a2a_update` SSE replay queue with a per-`(ContextId,

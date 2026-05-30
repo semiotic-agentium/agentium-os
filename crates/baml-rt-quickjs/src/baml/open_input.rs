@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Defaults and JSON-schema checks for tool `open_input` (session Open / auto-open policy).
 
 use serde_json::Value;

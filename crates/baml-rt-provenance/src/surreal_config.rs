@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Configuration types for the SurrealDB provenance backend.
 //!
 //! Respects SurrealDB's storage semantics:

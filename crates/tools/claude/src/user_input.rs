@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Input variant for the Claude API / session.
 //!
 //! Represents the kinds of input the Claude tool can receive: plain text,

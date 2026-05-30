@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Small line-oriented buffer for emitting BAML source.
 //!
 //! This keeps formatting consistent (`\n` only, no `writeln!` `Result` noise for the happy path).

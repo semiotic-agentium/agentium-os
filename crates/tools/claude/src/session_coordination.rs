@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Session coordination BAML for the claude/dev tool.
 //!
 //! Defines the BAML classes and prompt used to drive the claude/dev session from a controlling agent.

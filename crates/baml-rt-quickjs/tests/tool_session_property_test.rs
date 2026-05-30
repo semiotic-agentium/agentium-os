@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Property tests for tool session lifecycle (valid session plans).
 //!
 //! **Purpose:** Assert that N independent valid sessions (open → send → next → finish)

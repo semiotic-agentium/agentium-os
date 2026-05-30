@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `undeploy` subcommand — remove an active deployed package hash from a running runner.
 
 use anyhow::{Result, bail};

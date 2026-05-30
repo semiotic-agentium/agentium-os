@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Conversation-history service contract and API DTOs.
 //!
 //! Design note (read-envelope choice): we intentionally use a route-scoped DTO

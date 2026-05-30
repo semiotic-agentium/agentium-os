@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use baml_rt_core::event_subscription::EventSourceKey;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

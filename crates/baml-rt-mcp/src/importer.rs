@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Importer: spawns an MCP server in a Tier 1 sandbox, runs discovery,
 //! and produces a pending `McpServerSnapshot`.
 //!

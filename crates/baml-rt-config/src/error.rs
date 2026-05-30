@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Config store error type for clear boundary and HTTP mapping.
 //!
 //! Storage, lock, and JSON failures are distinct so API/runner can map to status codes or logging.

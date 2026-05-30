@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Stream ordering/finality smoke checks.
 //!
 //! High-entropy interleaving properties live in `run_handle_a2a_property_test`.

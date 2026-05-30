@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Internal development bundle type.
 //!
 //! This bundle provides tools used only for testing and internal development.

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Host / client placeholder copy for TASK_STATE_INPUT_REQUIRED when the agent did not
  * supply a real `awaitInput(prompt)`. Must not appear as transcript text — only UI chrome.

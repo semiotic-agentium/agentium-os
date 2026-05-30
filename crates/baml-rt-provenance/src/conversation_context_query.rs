@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Defaults for [`ProvenanceQueryApi::query_conversation_context`]-style APIs.
 //!
 //! Call sites that do not pass an explicit `limit` (for example

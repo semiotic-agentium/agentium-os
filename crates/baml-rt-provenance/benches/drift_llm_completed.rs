@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Criterion benchmarks for `ProvenanceEffectSubscriber` LLM-completion drift path.
 //!
 //! Goal: isolate local runtime/provenance overhead (no real LLM network calls).

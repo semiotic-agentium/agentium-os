@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Test helper for process-global env mutation.
 //!
 //! All tests in this crate that set or unset env vars acquire this shared mutex so

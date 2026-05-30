@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Patcher for baml-rt-builder/src/bin/regen_fixtures.rs to force-link new optional tools.
 
 use std::path::{Path, PathBuf};

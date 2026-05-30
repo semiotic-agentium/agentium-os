@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! MCP client + importer for the BAML runtime.
 //!
 //! Public types live in their submodules. Callers reach them via the module

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tests for tool registration (Rust and JavaScript)
 
 use std::sync::{Arc, Mutex as StdMutex};

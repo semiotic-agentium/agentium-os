@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! system/internal_a2a tool: session-based A2A conversation call.
 
 use std::{collections::VecDeque, sync::Arc};

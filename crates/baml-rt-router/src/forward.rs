@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Cross-pod A2A request forwarding with SSRF protection and response size cap.
 
 use std::{net::SocketAddr, time::Instant};

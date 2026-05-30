@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Stdio E2E suite for the sandbox adapter.
 //!
 //! Drives the reference `sandbox-echo-adapter` binary as a child

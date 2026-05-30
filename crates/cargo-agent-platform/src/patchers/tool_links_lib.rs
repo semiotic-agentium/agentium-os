@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Patcher for baml-tool-links/src/lib.rs to add tool to force_link_all_tools! macro.
 
 use std::path::{Path, PathBuf};

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Semantic edge labels for normalized PROV → Surreal writes (shared by batch planner).
 
 use crate::{graph_model::GraphNodeLabel, vocabulary::semantic_labels};

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Resolve `@N` for Read steps and history projection: live [`ContextRefTables`] first, then virtual replay.
 
 use std::sync::Arc;

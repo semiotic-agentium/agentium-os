@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 #![cfg(feature = "sandbox-e2e-kvm")]
 
 use std::{env, fs, path::Path, time::Duration};

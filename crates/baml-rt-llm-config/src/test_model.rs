@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Test-model selection knob.
 //!
 //! The default model the workspace's `llm-tests` lane runs against is

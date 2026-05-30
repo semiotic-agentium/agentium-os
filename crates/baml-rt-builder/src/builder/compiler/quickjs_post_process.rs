@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Post-process JavaScript emitted by `tsc` so it can run as a script in QuickJS.
 //!
 //! # Invariants (must hold for packaged agents to load in QuickJS)

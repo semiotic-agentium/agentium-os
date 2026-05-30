@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! OTLP exporter wiring driven by OpenTelemetry environment variables.
 //!
 //! Behaviour matches what `opentelemetry-otlp` **0.26** reads at exporter build time

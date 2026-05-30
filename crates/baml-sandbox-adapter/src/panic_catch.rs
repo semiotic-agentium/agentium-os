@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Canonical async panic-containment primitive for the adapter dispatch loop.
 //!
 //! Tool authors write arbitrary async code; a panic in their future must

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Host-only invocation context: no token material in JS.
 //!
 //! The host maintains an active-context stack per bridge. When we enter an invocation

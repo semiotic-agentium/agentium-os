@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # E2E k8s test harness for the Agentium OS k8s deployment feature.
 #
 # Builds a Docker image, boots a k3d cluster, applies manifests, and runs

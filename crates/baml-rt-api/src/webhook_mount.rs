@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Mount `WebhookIntake` instances onto an `axum::Router`.
 //!
 //! This is the host-side adapter for [`baml_rt_tools::WebhookIntake`]. The

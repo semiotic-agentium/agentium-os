@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! JSON renderer for [`ExportedGraph`].
 //!
 //! Serializes the graph to JSON for consumption by frontend libraries

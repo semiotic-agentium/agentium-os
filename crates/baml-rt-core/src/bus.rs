@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Stream-first command/event/effect bus for runtime orchestration.
 //!
 //! This is the canonical transport-agnostic boundary for runtime observation and

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Sealed filter-key types used by [`crate::metamodel::query::GraphQuery`].
 //!
 //! Each filter key is a ZST that implements zero or more subject-specific

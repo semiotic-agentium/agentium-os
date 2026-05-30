@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use super::{BamlRuntimeManager, manager_prelude::*, runtime_io};
 
 impl BamlRuntimeManager {

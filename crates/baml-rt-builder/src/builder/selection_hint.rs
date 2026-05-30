@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use baml_types::ir_type::TypeNonStreaming;
 use internal_baml_core::ir::ir_hasher::IRSignature;
 

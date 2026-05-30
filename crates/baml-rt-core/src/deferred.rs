@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Deferred wiring: holder for late-initialized trait objects.
 //!
 //! Prefer construction-time injection (e.g. typestate builder with concrete providers)

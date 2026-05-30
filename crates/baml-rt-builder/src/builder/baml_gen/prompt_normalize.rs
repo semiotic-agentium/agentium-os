@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Idempotent author-body sanitizer used by both the authored-prompt rewriter and the
 //! phase-executor template stripper.
 //!

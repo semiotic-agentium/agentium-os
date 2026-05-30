@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Grafana alert webhook intake — parses Alertmanager-shape payloads,
 //! resolves Agentium `context_id` via the mapping store, and enqueues an
 //! [`IngressItem`] per alert for the producer to drain.

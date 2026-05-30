@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tracks inflight `store_result` tasks spawned from the live transport drain loop so hosts can
 //! wait for graceful shutdown (SIGINT/SIGTERM) without relying on panic/SIGKILL durability.
 

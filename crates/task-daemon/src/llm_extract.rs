@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! LLM-backed interpretation backend with provider fallback.
 
 use std::collections::HashMap;

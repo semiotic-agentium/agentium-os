@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Search query types for repository metadata and source content.
 //!
 //! Queries are structured values — not raw SQL or free-form strings. The type

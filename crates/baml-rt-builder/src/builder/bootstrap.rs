@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Bootstrap a new BAML agent package with interactive TUI.
 //!
 //! Creates skeletal manifest, BAML prompt, and index.ts; then runs the

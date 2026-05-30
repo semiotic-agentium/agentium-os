@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Discriminated wire outcome for [`crate::error::BamlRtError::StepPlanCorrectable`] and
 //! `__run_step_executor` / `runGeneratedStepExecutor`.
 

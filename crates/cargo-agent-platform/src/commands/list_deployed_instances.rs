@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `list-deployed-instances` subcommand — list currently loaded runner instances.
 
 use anyhow::Result;

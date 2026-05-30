@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! JSON Schema predicates for tool `open_input`.
 //!
 //! Builder codegen (`initial_input` optional `?`) and runtime auto-open policy must agree

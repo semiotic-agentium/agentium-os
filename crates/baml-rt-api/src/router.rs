@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Axum router and API state for the HTTP surface.
 //!
 //! Config, tool catalog, and secret resolver are **injected as required dependencies** (no Option).

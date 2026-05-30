@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Task-local stream-yield sender so tool-session streaming outputs can be pushed
 //! into the same channel as __baml_stream results (see docs/argument-sketch-stream-trace.md).
 //!

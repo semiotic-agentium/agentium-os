@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! OpenTelemetry metrics helpers.
 //!
 //! Metrics are defined here to keep instrumentation orthogonal to business logic.

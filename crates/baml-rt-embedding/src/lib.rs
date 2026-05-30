@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Embedding-based drift scoring utilities.
 //!
 //! This crate extracts intent text from prompts, extracts response text from

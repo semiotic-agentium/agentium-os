@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 export function formatRelativeProvenanceAge(epochMs: number): string {
   const sec = Math.floor((Date.now() - epochMs) / 1000);
   if (sec < 10) return "just now";

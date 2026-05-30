@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! ClickUp tool — `support/clickup`.
 //!
 //! Provides a [`BamlTool`] implementation that calls the ClickUp v2 REST API.

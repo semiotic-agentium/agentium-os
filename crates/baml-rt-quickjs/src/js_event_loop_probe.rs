@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Progress probe for the QuickJS event-loop thread.
 //!
 //! `quickjs_runtime` runs JavaScript on a dedicated `std::thread`, independent

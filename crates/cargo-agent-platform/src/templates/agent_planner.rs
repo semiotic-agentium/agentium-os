@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Planner agent template — 3-phase architecture: Intent -> Plan -> Execute -> Present.
 
 use baml_rt_core::{AgentManifest, EventSubscription, package::ManifestDiscovery};

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Planning → resolver → effect bus. Centralises intent / plan / step-status emission so tests
 //! can drive [`PlanningEmitEnv`] with mock resolvers and emitters without constructing a full
 //! [`super::BamlRuntimeManager`].

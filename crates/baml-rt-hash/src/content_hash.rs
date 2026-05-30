@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! The `ContentHash` newtype — a validated SHA-256 hex-64 digest.
 
 use std::{fmt, str::FromStr};

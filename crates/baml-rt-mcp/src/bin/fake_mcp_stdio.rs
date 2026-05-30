@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Stdio wrapper around the in-memory fake MCP server. Reads a JSON config
 //! file path from argv and serves over its own stdin/stdout. Test-only.
 

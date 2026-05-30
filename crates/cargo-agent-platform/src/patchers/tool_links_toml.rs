@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Patcher for baml-tool-links/Cargo.toml to add new tool dependency and feature.
 
 use std::path::{Path, PathBuf};

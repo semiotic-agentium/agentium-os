@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Derive episode timeline metadata from the same [`ExportedGraph`] path as Mermaid/DOT/JSON.
 //!
 //! The **transcript body** still comes from [`ProvenanceQueryApi::query_conversation_context`]

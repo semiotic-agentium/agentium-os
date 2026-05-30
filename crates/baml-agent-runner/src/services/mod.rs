@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! HTTP API service implementations bridging the provenance store to `baml-rt-api` traits.
 
 pub(crate) mod context_index;

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Patcher for workspace Cargo.toml to add new tool crate to members.
 
 use std::path::{Path, PathBuf};

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tests for JavaScript invocation of BAML functions.
 //! LLM calls are stubbed so no API key is required.
 

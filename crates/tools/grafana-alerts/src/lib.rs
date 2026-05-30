@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `support/grafana-alerts` — Grafana alert webhook intake and event source.
 //!
 //! This tool is **webhook-only** from an agent's perspective: agents do not

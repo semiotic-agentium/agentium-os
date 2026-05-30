@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Minimal stdio JSON-RPC client used only by the import path.
 //!
 //! Speaks just enough of MCP to run stdio discovery:

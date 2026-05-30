@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Property tests for `A2aRequestHandler::handle_a2a` behavior.
 //!
 //! This suite deliberately uses malformed A2A requests so the handler returns JSON-RPC

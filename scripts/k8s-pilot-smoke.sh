@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Kubernetes pilot first-run smoke flow. See `--help` for usage.
 # Packages steps 6–8 of docs/k8s-pilot-operator-guide.md.
 

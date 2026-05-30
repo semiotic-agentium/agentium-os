@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Canonical JSON hashing and payload offload helpers for provenance_payload / provenance_payload_blob.
 //!
 //! **Embedded SurrealDB:** the `surrealdb` Rust crate (v3, `kv-mem` / `kv-surrealkv`) does not expose a

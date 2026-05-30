@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Cluster endpoint validation: blocks SSRF-dangerous targets.
 
 use std::net::{IpAddr, SocketAddr};

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! End-to-end webhook → IngressStore → producer tests for `support/grafana-alerts`.
 
 use std::{future::Future, sync::Mutex};

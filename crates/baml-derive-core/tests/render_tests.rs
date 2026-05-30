@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use baml_derive_core::{
     BamlClassDef, BamlDefinition, BamlEnumDef, BamlFieldDef, BamlUnionDef, BamlVariantDef,
 };

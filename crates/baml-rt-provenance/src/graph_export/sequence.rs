@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Mermaid sequence diagram renderer for [`ExportedGraph`].
 //!
 //! Produces a Mermaid `sequenceDiagram` that shows the temporal narrative of a

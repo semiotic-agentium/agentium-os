@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared newline-delimited JSON framing used by the stdio MCP transport.
 //!
 //! Both the import-time client (`client.rs`) and the test fake server

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Integration tests for graph export and sequence rendering.
 //!
 //! **Why export-scope bugs weren't caught before:** All other tests use a

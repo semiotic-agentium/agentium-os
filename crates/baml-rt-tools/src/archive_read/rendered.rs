@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Single-buffer rendered content with line index.
 //!
 //! One heap allocation for the entire rendered text. Line boundaries

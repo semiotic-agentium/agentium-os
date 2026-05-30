@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Utilities for rendering multiple TypeScript declarations into a single file.
 
 use crate::TsType;

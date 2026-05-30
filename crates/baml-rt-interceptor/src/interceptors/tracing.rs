@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tracing interceptor for LLM and tool calls
 //!
 //! This module provides interceptors that emit structured tracing events

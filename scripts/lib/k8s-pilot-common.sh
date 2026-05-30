@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Shared helpers for Kubernetes pilot operator scripts that use the
 # `==>` / `fail-with-exit` convention.
 #

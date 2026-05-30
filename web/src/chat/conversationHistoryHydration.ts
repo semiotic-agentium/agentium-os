@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Transcript contract: the Primary pane renders **conversation-history** (GET hydrate + SSE
  * snapshot/delta). A2A stream text is progressive decoration only — never treat it as canonical

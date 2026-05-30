@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! OpenTelemetry span instrumentation for tool operations.
 //!
 //! This module provides orthogonal span creation helpers following the pattern

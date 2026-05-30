@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Construct an rmcp Streamable HTTP transport from an `HttpLaunchConfig`.
 //!
 //! Lives next to the launch config so URL policy validation, reserved-header

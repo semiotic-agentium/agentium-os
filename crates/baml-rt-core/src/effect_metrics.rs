@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! OpenTelemetry metrics for effect bus processing (`baml_rt_core.*` meter).
 //!
 //! Follows `docs/otel-metrics-instrumentation-guide.md`: static names, attributes for variants,

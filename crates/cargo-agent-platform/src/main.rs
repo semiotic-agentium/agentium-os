@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `cargo-agent-platform` CLI for scaffolding BAML tools and agents.
 //!
 // Allow unexpected cfg values from the force_link_all_tools! macro - these features

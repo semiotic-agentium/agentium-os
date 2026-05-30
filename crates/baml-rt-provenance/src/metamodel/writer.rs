@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `MetamodelWriter<E>` — the typed write-side facade.
 //!
 //! Consumed by the Message arms of [`crate::normalizer`].

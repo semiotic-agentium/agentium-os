@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // FSM execution for typed ToolSessionPlan fragments (Open/Send/Read/Finish/Abort).
 
 use baml_rt_core::semantics::ErrorDisposition;

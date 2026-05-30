@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Context-level token usage analytics via SurrealDB.
 //!
 //! Returns typed rows as `Vec<HashMap<String, Value>>` for compatibility

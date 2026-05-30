@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Integration test for issue #343: tracing-fmt output must flush per event
 //! so a stalled runner does not silently swallow its last log lines into an
 //! 8 KB pipe BufWriter inside the container.

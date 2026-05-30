@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Trait definitions for runtime components
 //!
 //! This module provides trait-based abstractions for runtime operations,

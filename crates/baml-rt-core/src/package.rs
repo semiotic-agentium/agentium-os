@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Agent package manifest (manifest.json) — shared contract between builder and runner.
 
 use serde::{Deserialize, Serialize};

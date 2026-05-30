@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! JS wrapper and prelude code generation.
 //!
 //! Invocation context is host-only (no token/context prelude in JS). Natives resolve

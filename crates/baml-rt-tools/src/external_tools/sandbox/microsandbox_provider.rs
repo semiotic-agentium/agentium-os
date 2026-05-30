@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! First concrete [`SandboxProvider`] — thin wrapper over the `microsandbox`
 //! crate (`tool_sandbox.md` §7.3).
 //!

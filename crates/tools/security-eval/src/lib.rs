@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Security evaluation tool bundle: CRM + email.
 //!
 //! Realistic synthetic tools for integration testing of drift scoring

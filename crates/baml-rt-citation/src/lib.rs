@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Ref-table **citation** types: validated wire strings (`#N`, `@N`, …) and their parsed form.
 //!
 //! Use [`Citation`] at API and event boundaries so invalid ref strings are rejected at

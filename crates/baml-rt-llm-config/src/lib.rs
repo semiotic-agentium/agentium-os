@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Centralised LLM client configuration for BAML runtime.
 //!
 //! Config defines clients, default, and overrides (agent, agent_function).

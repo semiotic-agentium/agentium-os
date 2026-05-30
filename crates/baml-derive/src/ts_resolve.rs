@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Rust → TypeScript type resolution at the AST level.
 //!
 //! Mirrors `resolve.rs` for BAML but emits TypeScript type expressions instead.

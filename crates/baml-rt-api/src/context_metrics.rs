@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Query-facing context metrics service contract and response DTOs.
 
 use std::{error::Error, fmt};

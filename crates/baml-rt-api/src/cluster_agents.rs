@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `GET /cluster/agents` — cluster-wide agent view with version-skew detection.
 //!
 //! Operators querying a single runner only see that runner's local `/agents`.

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Typestate pipeline for assembling agent-visible conversation context from graph rows.
 //!
 //! ## Stages

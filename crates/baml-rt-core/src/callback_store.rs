@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Host contracts for `system/callback` persistence and delivery gating.
 //!
 //! # Architecture (proportional layering)

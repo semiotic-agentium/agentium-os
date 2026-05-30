@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Print `TypeIR` / union shapes as BAML type text for generated function signatures.
 //!
 //! Shared between session-plan codegen and any other IR → BAML surface that must walk unions.

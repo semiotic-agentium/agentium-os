@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Emit LIBCLANG_PATH for bindgen / clang-sys (e.g. hirofa-quickjs-sys).
 # On Ubuntu, libclang.so often lives under /usr/lib/llvm-*/lib without a reliably
 # detected default path for clang_sys.

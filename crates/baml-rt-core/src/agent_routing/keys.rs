@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Typed route identity: package name, instance id, and route key parsing from A2A requests.
 
 use std::fmt;

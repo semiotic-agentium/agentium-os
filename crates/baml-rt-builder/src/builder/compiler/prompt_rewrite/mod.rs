@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Universal authored-prompt rewriter pipeline.
 //!
 //! Walks every authored `.baml` file under `build_dir/baml_src`, finds top-level function

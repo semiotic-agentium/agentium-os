@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Provenance store traits: write events and read task/conversation context.
 //!
 //! ## Read intents: agent context vs API

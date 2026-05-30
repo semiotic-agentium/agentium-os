@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! JSON-RPC 2.0 wire contract for the sandbox tool protocol.
 //!
 //! Methods supported by the protocol:

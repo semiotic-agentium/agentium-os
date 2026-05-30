@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Interpretation and task-derivation pipeline for Slack discussion.
 
 use std::{collections::HashMap, sync::OnceLock};

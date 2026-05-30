@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Compose multiple `ExternalToolResolver` instances into one.
 //!
 //! Lookups query each inner resolver in registration order. Collisions

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect, it } from "vitest";
 import type { JSONRPCResponse } from "../types/a2a";
 import { readA2aSseJsonRpcStream } from "./a2aSse";

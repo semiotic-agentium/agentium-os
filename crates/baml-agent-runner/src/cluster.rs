@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Cluster registration and agent placement for multi-runner deployments.
 //!
 //! When connected to a shared SurrealDB, each runner registers itself and

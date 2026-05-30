@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Per-task trajectory tracking for plan-anchored drift.
 //!
 //! [`TaskDriftTracker`] maintains a running exponentially-weighted centroid of

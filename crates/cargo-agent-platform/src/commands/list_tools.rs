@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `list-tools` subcommand implementation.
 //!
 //! Lists all registered tools with current workspace-aware metadata.

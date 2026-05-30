@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! End-to-end importer tests against the fake MCP fixture binary.
 
 use std::collections::BTreeMap;

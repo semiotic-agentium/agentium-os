@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Provenance attribution test using SurrealDB in-memory store.
 
 #![recursion_limit = "256"]

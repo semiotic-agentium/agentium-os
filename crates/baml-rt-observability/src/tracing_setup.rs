@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Standard tracing subscriber setup for CLI binaries.
 //!
 //! Per-layer filtering: console (fmt) and OpenTelemetry trace export can use **different**

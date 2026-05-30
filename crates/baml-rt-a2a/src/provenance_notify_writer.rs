@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Wraps a [`ProvenanceWriter`] and notifies subscribers after each committed context-scoped write.
 
 use std::sync::Arc;

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{collections::HashSet, fmt, fs, path::Path};
 
 use baml_rt_tools::{UnifiedStepExecutorFunctionsMap, ts_gen::render_tool_typescript};

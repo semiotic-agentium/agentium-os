@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Kubernetes pilot validation for the distributed Cleese/Chapman conversation.
 # Assumes the supported Helm chart is already installed.
 

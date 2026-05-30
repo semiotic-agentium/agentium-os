@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Stdout file-descriptor swap that keeps framed output pure.
 //!
 //! The adapter wire protocol requires stdout to carry only length-prefixed

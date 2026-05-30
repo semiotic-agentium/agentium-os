@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Translate [`TaskUpdateFrame`]s emitted by
 //! [`crate::task_update_broadcaster::TaskUpdateBroadcaster`] into the
 //! wire-shaped [`TaskUpdateEvent`]s the SSE handler emits, and drain a

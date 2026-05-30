@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Session-scoped archive ref tables.
 //!
 //! Maps short refs (`@N`) to rendered content for the grep/paginate Read path.

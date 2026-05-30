@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Transport-agnostic secret resolution + fingerprinting for MCP.
 //!
 //! The MCP runtime consumes the canonical `SecretSpec` shape from

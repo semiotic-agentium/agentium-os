@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Integration tests for [`baml_rt_provenance::episode::EpisodeReader`] — graph-derived episode
 //! semantics including READ transcripts, citation drift, and rendered text format.
 //!

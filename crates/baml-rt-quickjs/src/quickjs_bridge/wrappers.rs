@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /// Tool wrapper: takes only args (no token). Host resolves invocation context from active context stack.
 pub(crate) fn build_token_args_wrapper(function_name: &str, invoke_expr: &str) -> String {
     const ARG_BLOCK: &str = r#"

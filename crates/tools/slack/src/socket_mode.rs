@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Slack Socket Mode WebSocket receiver.
 //!
 //! Maintains a persistent WebSocket connection to Slack via Socket Mode,

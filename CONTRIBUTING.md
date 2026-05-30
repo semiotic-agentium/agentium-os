@@ -99,6 +99,36 @@ pre-commit run --all-files          # run them manually across the tree
   PR resolves with a closing keyword (`Closes #N`), and make sure the build,
   tests, clippy, and `cargo fmt --check` are green.
 
+## Licensing (REUSE)
+
+The repository follows the [REUSE 3.3](https://reuse.software) specification:
+every file carries copyright and license metadata, and the `reuse` CI job fails
+the build if any file is missing it.
+
+New hand-written source must carry a two-line SPDX header. Use the comment style
+appropriate to the language (`//`, `#`, `<!-- -->`):
+
+```rust
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+```
+
+The headers are reproducible with the `reuse` CLI rather than typed by hand:
+
+```bash
+reuse annotate --copyright "Semiotic AI, Inc." --license Apache-2.0 \
+  --year 2026 --merge-copyrights path/to/new_file.rs
+```
+
+Generated trees, content-hashed agent/fixture bundles, configuration, docs, and
+vendored assets are annotated in bulk via [`REUSE.toml`](REUSE.toml) instead of
+inline headers — add new such paths there. Verify locally with:
+
+```bash
+reuse lint
+```
+
 ## Where to look next
 
 - `README.md` — workspace architecture and runtime flow.

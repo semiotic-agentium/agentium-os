@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Generator for the scaffolded `tool-metadata.json`.
 //!
 //! Builds the runtime's typed [`ExternalToolMetadata`] and delegates

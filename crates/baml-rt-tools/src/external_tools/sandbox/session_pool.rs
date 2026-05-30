@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Session-mode sandbox pool — Phase 3 of `plans/sandbox_streaming.md` §6.
 //!
 //! Sits in front of a [`SandboxProvider`] for `invocation_mode=session`

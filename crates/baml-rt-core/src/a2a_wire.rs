@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Newtype wrappers for A2A wire-level JSON so we don't pass bare `serde_json::Value`
 //! at API boundaries. Documents intent and avoids mixing "any JSON" with "JSON-RPC request body"
 //! or "stream chunk".

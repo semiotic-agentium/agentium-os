@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Property tests for effect system invariants.
 //!
 //! These tests validate system-level invariants with mocked I/O and simulated hangs:

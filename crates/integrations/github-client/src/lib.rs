@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 mod spans;
 
 use baml_rt_llm_config::FnoxFileSecretResolver;

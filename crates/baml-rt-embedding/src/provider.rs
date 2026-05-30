@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Embedding provider abstraction and fastembed-rs implementation.
 //!
 //! [`EmbeddingProvider`] is the trait boundary; production code uses

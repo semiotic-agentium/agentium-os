@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! In-process event dispatch pipeline.
 //!
 //! [`EventDispatcher`] polls registered [`EventProducer`]s, matches their events

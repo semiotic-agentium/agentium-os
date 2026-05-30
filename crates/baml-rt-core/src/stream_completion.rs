@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Explicit stream completion semantics for A2A yield-based streams.
 //!
 //! Completion is no longer inferred from quiescence; it is carried as a

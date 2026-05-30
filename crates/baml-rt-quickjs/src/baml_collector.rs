@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! BAML Collector implementation for LLM call interception
 //!
 //! This module implements a collector that hooks into BAML's execution lifecycle

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Handler builders for memory tools.
 //!
 //! Each function takes pre-built metadata and an `Arc<MemoryManager>`,

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Cardinality invariant for head-pointer edges
 //! (`WAS_LAST_TRANSITIONED_TO`, `WAS_LAST_EXECUTED_BY`).
 //!

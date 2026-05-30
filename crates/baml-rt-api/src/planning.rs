@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Narrow trait for context-scoped planning state serving.
 //! Implemented by the runtime when SurrealDB provenance is enabled.
 

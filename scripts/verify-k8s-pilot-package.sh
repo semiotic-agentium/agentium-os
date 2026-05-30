@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Authoritative Kubernetes pilot package-validation entrypoint.
 #
 # Exercises the supported install surface end-to-end on a local k3d cluster:

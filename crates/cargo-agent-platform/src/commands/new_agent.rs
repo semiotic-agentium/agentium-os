@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `new-agent` subcommand — create a new agent package.
 
 use std::path::{Path, PathBuf};

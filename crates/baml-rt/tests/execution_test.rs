@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tests for BAML function execution.
 //!
 //! `test_load_and_execute_simple_greeting` uses an LLM interceptor stub so it does not call the real LLM.

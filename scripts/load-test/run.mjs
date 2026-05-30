@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // A2A load-test harness entry point. Node 22, zero external dependencies.
 //
 // Benchmarks POST /agents/{package}/{instance}/a2a against the supported

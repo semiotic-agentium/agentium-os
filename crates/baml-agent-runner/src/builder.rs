@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Linear typestate builder for runner construction.
 //!
 //! Phases: Loading (construct builder) → Ready (serve/invoke/stdio). Agents are loaded via

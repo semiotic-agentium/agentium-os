@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `doctor` subcommand implementation.
 //!
 //! Validates workspace integrity with static checks and catalog validation.

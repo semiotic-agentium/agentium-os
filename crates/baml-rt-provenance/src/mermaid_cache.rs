@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Simple cache for Mermaid sequence output. When the cache is lost (invalidated),
 //! restore from the store interface by re-exporting; debounce is just mark-invalid on write.
 

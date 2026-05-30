@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! External tool protocol + execution backend.
 //!
 //! This module defines the wire contract (JSON-RPC `tool/describe` + `tool/invoke`)

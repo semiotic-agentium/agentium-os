@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Build BAML `ClientRegistry` with LLM API keys from a secret resolver (not env vars).
 //!
 //! When a resolver is provided, we iterate the BAML IR clients, resolve API keys via

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Property tests: version monotonicity, lineage cycle detection.
 
 use std::sync::Arc;

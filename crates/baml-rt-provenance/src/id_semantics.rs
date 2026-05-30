@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use baml_rt_core::ids::{ActivityAnchorId, AgentId, ArtifactId, ContextId, MessageId, TaskId};
 use baml_rt_id::{
     ConstantConstructible, ConstantId, DerivedConstructible, DerivedId, ProvActivitySemantics,

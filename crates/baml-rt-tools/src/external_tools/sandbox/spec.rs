@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Value types the runtime hands to a [`super::provider::SandboxProvider`].
 //!
 //! Shapes match `tool_sandbox.md` §7.3 `SandboxSpec` 1:1 so the first

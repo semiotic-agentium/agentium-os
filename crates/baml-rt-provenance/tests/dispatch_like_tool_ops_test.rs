@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Regression: ops tool-calls query must see host tool rows for a minted dispatch
 //! context + UUID task without a prior `TaskExists` / `TaskExecutionStarted` bootstrap
 //! (detached callback dispatch path).

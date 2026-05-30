@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Orchestrator for the runtime codegen pipeline. The real work lives in
 //! [`super::codegen_pipeline`]; this file contains only the [`TypeGenerator`] impl that wires
 //! the named phases together and bridges between blocking and async halves.

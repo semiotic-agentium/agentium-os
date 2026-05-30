@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Row shape for `provenance_payload` (and archive hydration).
 
 use serde::{Deserialize, Serialize};

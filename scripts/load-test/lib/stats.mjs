@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Zero-dependency percentile + histogram helpers for load-test summaries.
 //
 // Inputs are assumed to be finite non-negative millisecond values. Callers

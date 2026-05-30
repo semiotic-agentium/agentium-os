@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! A2A task store backed entirely by the provenance graph.
 //!
 //! Reads route through the typed [`TaskGraphReader`] surface

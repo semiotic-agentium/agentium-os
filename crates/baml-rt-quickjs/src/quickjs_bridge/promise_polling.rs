@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Promise resolution polling for `evaluate()`.
 //!
 //! When JS returns a promise, the host runs pending jobs and checks

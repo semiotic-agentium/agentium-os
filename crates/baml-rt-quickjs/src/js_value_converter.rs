@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Direct conversion between JsValueFacade and serde_json::Value
 //!
 //! This avoids JSON.stringify/parse roundtrips where possible for better performance

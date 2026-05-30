@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Historic **episode** view: types and rendering live in [`baml_rt_conversation`]; graph-backed
 //! assembly and I/O stay in this crate.
 

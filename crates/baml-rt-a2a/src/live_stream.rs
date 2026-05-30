@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Live stream session: per-request response channel for HTTP A2A message.sendStream.
 //!
 //! **Invariants (LS1–LS6)** — keep this design simple as features are added:

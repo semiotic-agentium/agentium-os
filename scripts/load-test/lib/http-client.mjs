@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Thin HTTP client for A2A load testing. Node 22 built-ins only (fetch +
 // AbortController + performance.now). No external deps.
 

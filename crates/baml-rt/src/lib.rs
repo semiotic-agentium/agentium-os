@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! BAML Runtime workspace facade.
 //!
 //! This crate re-exports functionality from the workspace sub-crates.

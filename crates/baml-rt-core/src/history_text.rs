@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /// Remove an optional transcript ordinal prefix like `#12 ` before classification.
 #[must_use]
 pub fn strip_history_notice_prefix(text: &str) -> &str {

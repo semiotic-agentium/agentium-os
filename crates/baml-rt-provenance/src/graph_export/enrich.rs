@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Derive task_id, context_id, agent_id by node properties and edge traversal.
 //!
 //! These properties are read from node properties first, then propagated to

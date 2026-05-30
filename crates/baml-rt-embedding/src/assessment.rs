@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Stateless drift assessment helpers shared by provenance and other callers.
 
 use serde::{Deserialize, Serialize};

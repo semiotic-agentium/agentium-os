@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Deterministic `provenance_payload.payload_id` strings shared by the normalizer, context reader,
 //! and payload store (`payload:{activity_anchor}:{payload_kind}`).
 

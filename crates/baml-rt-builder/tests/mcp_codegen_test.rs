@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Builder-level codegen tests for MCP-imported tools.
 //!
 //! Writes an approved snapshot into a temp cache, points the builder at it

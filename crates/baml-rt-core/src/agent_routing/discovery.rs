@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Agent discovery catalogue: cards, entries, and the [`AgentLister`] trait for GET /agents and tools.
 
 use serde::{Deserialize, Serialize};

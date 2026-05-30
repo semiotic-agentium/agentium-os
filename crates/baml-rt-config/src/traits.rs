@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Config service traits: read-only and read-write.
 //!
 //! **Bundle config** is keyed by bundle name; tools in a bundle share the same config.

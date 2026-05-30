@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Repository entry types: the canonical representation of a stored agent.
 //!
 //! An entry is the atomic unit of the repository. It bundles immutable source

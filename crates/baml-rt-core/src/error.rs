@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Error types for the BAML runtime integration
 //!
 //! Provides a comprehensive error hierarchy using `thiserror` for proper error handling

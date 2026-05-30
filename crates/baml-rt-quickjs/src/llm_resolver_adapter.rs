@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Adapts `baml_rt_llm_config::SecretResolver` to `LlmSecretResolver` so fnox (or other
 //! backends) can supply LLM API keys to the QuickJS bridge without env.
 

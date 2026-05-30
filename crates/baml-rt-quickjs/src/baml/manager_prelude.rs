@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared imports for [`super::BamlRuntimeManager`] impl shards.
 //!
 //! Each submodule does `use super::manager_prelude::*` plus `use super::BamlRuntimeManager`.

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! OpenTelemetry span helpers for the HTTP API surface.
 //!
 //! Instrumentation is kept orthogonal to handlers per the trace guide.

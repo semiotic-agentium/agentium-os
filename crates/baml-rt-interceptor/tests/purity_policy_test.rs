@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Compile-time policy tests for typed interceptor metadata.
 
 use baml_rt_core::context::RuntimeScope;

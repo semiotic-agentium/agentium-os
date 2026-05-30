@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Ephemeral-port reservation helpers for test harnesses.
 //!
 //! Centralizes the "bind to host:0, capture `local_addr()`, drop the listener so

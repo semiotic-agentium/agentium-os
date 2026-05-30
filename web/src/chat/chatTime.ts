@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /** Provenance timestamps may be ns or ms; normalize to ms for `Date`. */
 export function normalizeEpochMs(raw: number | string | undefined): number {
   const numeric = typeof raw === "string" ? Number(raw) : raw;

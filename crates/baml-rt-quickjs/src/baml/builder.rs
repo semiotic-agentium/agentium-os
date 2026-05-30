@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! [`super::BamlRuntimeManagerBuilder`]: optional dependency injection before runtime construction.
 
 use std::{path::Path, sync::Arc};

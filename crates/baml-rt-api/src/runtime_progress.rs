@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Continuously observable signal that the tokio runtime is making progress.
 //!
 //! Distinct from the boot-time `/readyz` gate, which latches `true` once

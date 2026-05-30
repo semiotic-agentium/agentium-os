@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Agent routing identity and discovery catalogue.
 //!
 //! - [`keys`]: typed package/instance identifiers, [`AgentRouteKey`], [`route_key_from_request`].

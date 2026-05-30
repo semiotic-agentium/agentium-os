@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Regression coverage for the SurrealDB MVCC retry loop in
 //! [`SurrealProvenanceStore::run_event_write_plan`].
 //!

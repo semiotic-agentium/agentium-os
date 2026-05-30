@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Cached [`super::Episode`] assembly and replay [`RefTable`] for archive read paths.
 
 use std::{

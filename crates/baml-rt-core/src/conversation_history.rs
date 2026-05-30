@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Payload for notifying subscribers when provenance rows affecting a conversation context
 //! have been committed (so transcript reads are consistent).
 

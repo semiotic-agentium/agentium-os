@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Typed marker for each canonical graph node label. Every variant of
 //! [`crate::graph_model::GraphNodeLabel`] has a corresponding ZST here that
 //! implements the sealed [`NodeLabelTy`] trait. Subject markers in

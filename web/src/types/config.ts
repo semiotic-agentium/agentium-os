@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /** Config API DTOs (match backend ToolConfigSchemaDto, ToolConfigDto, etc.) */
 
 export interface ToolConfigSchemaDto {

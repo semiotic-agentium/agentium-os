@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Procedural attribute macro for BAML tool registration.
 //!
 //! Eliminates the boilerplate of writing metadata functions, build functions,

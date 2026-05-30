@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Run nextest with the same feature set and profile as CI (for local testing).
 # Requires: cargo-nextest (cargo install cargo-nextest)
 # For LLM tests: set OPENROUTER_API_KEY (e.g. source .env before running, or export it).

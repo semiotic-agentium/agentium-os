@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! discover_agents and discover_tools built via create_multi_send_session_tool_from_async
 //! (open + multiple send/read).
 

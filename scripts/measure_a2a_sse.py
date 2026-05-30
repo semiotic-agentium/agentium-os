@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """POST message.sendStream to A2A SSE and print timing (TTFB, first data line, stream end).
 
 For N parallel streams with distinct contextId (multi-session load), use scripts/concurrent_a2a_sse.py.

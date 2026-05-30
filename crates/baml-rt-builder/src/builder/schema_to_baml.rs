@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! JSON Schema to BAML type generation
 //!
 //! Converts JSON Schema definitions into BAML type definitions (classes, enums, etc.)

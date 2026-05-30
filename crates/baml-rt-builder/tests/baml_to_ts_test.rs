@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tests for BAML IR → TypeScript declaration generation.
 //!
 //! Covers typed function signatures (args + return), supporting type declarations

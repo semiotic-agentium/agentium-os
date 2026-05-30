@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `push` subcommand — publish and deploy one or more agents sequentially.
 
 use std::{collections::HashSet, path::Path};

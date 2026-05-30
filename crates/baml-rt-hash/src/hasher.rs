@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Canonical hashing algorithm for agent source bundles.
 //!
 //! The hasher consumes structured inputs in a deterministic order and produces

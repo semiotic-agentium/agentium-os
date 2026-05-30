@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Thin facade over [`prompt_compositor::PromptCompositor`] kept for callers that only need the
 //! authored-rewriter entry point. New code should use [`PromptCompositor`] directly so prompt
 //! composition flows through the single domain object.

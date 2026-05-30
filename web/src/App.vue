@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, watch, ref } from "vue";
 import AgentSelector from "./components/AgentSelector.vue";

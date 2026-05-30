@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Generate minimal BAML client declaration from LlmClientConfig for schema injection.
 //!
 //! Injected at schema load so the compiler sees a single `client Default` definition

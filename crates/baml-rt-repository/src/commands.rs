@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Command types for repository write operations.
 //!
 //! Each command is a complete, validated request to mutate repository state.

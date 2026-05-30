@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Runtime contract for host-managed event producers.
 //!
 //! An [`EventProducer`] is a companion interface to [`ToolHandler`](crate::tools::ToolHandler).

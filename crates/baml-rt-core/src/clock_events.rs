@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Canonical labels for [`now_unix_ms`](crate::now_unix_ms) and
 //! [`now_unix_secs`](crate::now_unix_secs).
 //!

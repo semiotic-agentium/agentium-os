@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Session-shaped archive read text: synthetic `cat -n` / `grep -n` command, optional range
 //! comment, then `format_cat_n` numbered lines. Shared by prompt projection, episode assembly,
 //! and provenance read-replay hydration.

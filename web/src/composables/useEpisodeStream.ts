@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 import { onUnmounted, ref, type Ref } from "vue";
 import type { EpisodeSnapshot } from "../types/provenance";
 

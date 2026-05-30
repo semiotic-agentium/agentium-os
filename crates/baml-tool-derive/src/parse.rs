@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Attribute argument parsing for `#[baml_tool(...)]`.
 //!
 //! Parses the key-value and flag parameters from the macro invocation
