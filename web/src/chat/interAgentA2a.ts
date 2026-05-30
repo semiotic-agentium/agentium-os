@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Summaries for `system/internal_a2a` send_done replay payloads.
  * Only inter-agent signals belong in the UI (not end-user echoes or assistant replies to the user).

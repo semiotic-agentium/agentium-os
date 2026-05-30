@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Assemble [`super::Episode`] from Surreal-backed provenance.
 
 use std::{

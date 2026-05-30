@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Host-managed Grafana alert event producer.
 //!
 //! Drains the shared [`IngressStore`] for items enqueued by the webhook

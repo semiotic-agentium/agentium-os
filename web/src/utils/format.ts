@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /** Format raw UTF-8 byte counts as KiB/MiB for prompt JSON sizing. */
 export function formatKb(bytes: number | undefined | null): string {
   if (bytes == null || !Number.isFinite(bytes) || bytes <= 0) return "—";

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `POST /cluster/deploy` — fan out an agent deploy to every runner in
 //! the cluster with a single request.
 //!

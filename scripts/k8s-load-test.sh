@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Kubernetes pilot load-test orchestrator.
 #
 # Reuses scripts/verify-k8s-pilot-package.sh for supported-install-path

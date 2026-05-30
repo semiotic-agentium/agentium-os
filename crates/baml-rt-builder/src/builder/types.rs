@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Newtype wrappers for type safety at API boundaries
 //!
 //! These newtypes provide compile-time guarantees about the validity and meaning

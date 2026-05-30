@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Schema and type helpers for tools.
 //!
 //! This module provides the [`ToolType`] supertrait and helper functions that

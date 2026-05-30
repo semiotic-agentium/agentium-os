@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Template for generating tool lib.rs files.
 
 /// Generate the lib.rs content for a new tool crate.

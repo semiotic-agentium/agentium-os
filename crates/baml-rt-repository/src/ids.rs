@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Strongly-typed identifiers for the agent repository domain.
 //!
 //! Every distinct concept receives its own newtype. No bare `String` or `Uuid`

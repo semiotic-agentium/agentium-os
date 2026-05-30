@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Typed execution-session command and response models for the JS↔Rust boundary.
 //!
 //! Replaces ad-hoc JSON parsing with serde-tagged enums for strict contract enforcement.

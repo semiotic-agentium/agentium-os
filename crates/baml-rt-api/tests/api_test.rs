@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! HTTP API tests: discovery, A2A forward, and error mapping.
 //! Uses insta snapshots with selective redaction for variant parts (IDs, instance URLs, etc.).
 

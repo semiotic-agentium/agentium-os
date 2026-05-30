@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Rust → JSON Schema resolution at the AST level.
 //!
 //! Mirrors `resolve.rs` and `ts_resolve.rs` but emits `serde_json::Value`

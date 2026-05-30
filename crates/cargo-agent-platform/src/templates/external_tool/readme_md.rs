@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Generator for the scaffolded `README.md`.
 //!
 //! Setup instructions come from the typed `Language` enum so adding a new

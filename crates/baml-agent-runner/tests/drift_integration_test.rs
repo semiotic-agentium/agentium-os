@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Drift scoring integration tests — full pipeline end-to-end.
 //!
 //! Run: `cargo test -p baml-agent-runner --features security-eval -- drift_integration --ignored --nocapture`

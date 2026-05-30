@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! SurrealDB DDL for the provenance store (`DEFINE INDEX`, FTS analyzer).
 
 use surrealdb::{Surreal, engine::any::Any};

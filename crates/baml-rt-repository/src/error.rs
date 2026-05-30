@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Error types for the agent repository.
 //!
 //! Error variant names describe the *operation* that failed, not the error

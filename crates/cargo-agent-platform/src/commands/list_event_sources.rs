@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `list-event-sources` subcommand implementation.
 //!
 //! Lists all event source kinds declared by tools in the inventory,

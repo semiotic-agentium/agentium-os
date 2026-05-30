@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Parse BAML JSON into a structured plan before execution (separates routing from side effects).
 //!
 //! [`resolve_baml_tool_invocation_plan`] is synchronous JSON + manifest work; the caller executes

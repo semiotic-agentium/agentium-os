@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Typed surface drives `ops_query` SQL emission.
 //!
 //! Each `ProvenanceOpsResource` in `surreal_store/ops_query.rs` builds

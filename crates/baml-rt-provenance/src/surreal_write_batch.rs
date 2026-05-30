@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Single `BEGIN…COMMIT` transaction for one provenance event (graph + blob pointers + payloads).
 
 use std::collections::HashMap;

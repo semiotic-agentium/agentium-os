@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Storage trait boundaries for repository persistence.
 //!
 //! The repository keeps these concerns separated at the trait level:

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Parallel `archive_next_local` first-touch races duplicate `CREATE`; losers must retry `UPDATE`.
 
 use std::{collections::HashSet, sync::Arc};

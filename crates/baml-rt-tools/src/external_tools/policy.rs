@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Per-tool invocation policy: concurrency caps, failure tracking, quarantine.
 //!
 //! Scope is per-agent-instance by default. Quarantine is tripped after

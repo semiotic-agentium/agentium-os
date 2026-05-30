@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use baml_rt_core::{
     backoff::{MAX_RATE_LIMIT_RETRIES, rate_limit_backoff_delay},
     retry_after::{RetryAfter, parse_retry_after},

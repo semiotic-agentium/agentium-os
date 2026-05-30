@@ -1,4 +1,9 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 #![recursion_limit = "256"]
+
 //! Tests for A2A error mapping. I4: every mapped error includes retryable and classifier.
 
 use baml_rt_a2a::error_mapping;

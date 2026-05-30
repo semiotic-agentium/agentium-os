@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Manifest load, A2A delegation extract, and tool-session trace helpers (I/O-adjacent, not open-input schema).
 
 use baml_rt_core::BamlRtError;

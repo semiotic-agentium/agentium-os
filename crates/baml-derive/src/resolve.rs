@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Rust → BAML type resolution at the AST level.
 //!
 //! Since proc macros only see token trees (not resolved types), we pattern-match

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Archive / citation micro-grammar prepended to **generated** step-executor phase prompts.
 //!
 //! The policy text is embedded **literally** at the start of each per-phase `prompt` body (see

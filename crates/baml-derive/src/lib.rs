@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Procedural derive macro for generating BAML type definitions from Rust types.
 //!
 //! # Usage

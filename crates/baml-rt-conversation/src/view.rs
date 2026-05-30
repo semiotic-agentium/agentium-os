@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Typed rows for **agent-visible** conversation: messages, tool call/result, and session FSM
 //! steps. Producers (graph readers) construct these; projection renders them for BAML/HTTP/episode.
 

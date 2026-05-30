@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Provider-level requirements enforced at configuration and registry-build time.
 //!
 //! The BAML runtime requires `base_url` in client options when using `openai-generic` (e.g.

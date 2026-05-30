@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Centralized error mapping for `tokio::task::spawn_blocking` failures.
 //!
 //! Tokio's `JoinError` `Display` impl renders string panics as

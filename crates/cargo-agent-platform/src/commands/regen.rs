@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `regen` subcommand — regenerate runtime BAML prelude and baml-runtime.d.ts for agents.
 
 use std::{

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Pre-execution LLM interception
 //!
 //! This module implements pre-execution interception by using BAML's build_request

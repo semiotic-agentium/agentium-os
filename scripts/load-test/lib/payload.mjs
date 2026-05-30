@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // A2A JSON-RPC envelope builder. Single source of truth for the request shape
 // used by the load harness against POST /agents/{package}/{instance}/a2a.
 //

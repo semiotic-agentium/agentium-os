@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /// Truncate text for terminal display, appending "..." when truncated.
 ///
 /// This operates on Unicode scalar values (`char`) to avoid panicking on

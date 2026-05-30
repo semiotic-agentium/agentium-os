@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Context picker index service backed by provenance ops reads.
 
 use std::{collections::HashMap, sync::Arc};

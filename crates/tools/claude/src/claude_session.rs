@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! claude/dev tool: host-owned Claude session orchestration.
 
 // `ToolSessionError` carries rich context; `-D clippy::result_large_err` is not worth API churn here.

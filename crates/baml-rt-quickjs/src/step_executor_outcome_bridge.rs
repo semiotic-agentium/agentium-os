@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Map step-executor loop results and errors into [`baml_rt_core::StepExecutorOutcome`].
 
 use baml_rt_core::{BamlRtError, StepExecutorOutcome, StepPlanRecovery};

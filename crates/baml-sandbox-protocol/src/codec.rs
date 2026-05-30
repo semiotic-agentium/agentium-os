@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Length-prefixed JSON frame codec for the sandbox workload transport (§5.2).
 //!
 //! Each frame: `[u32 big-endian length][JSON payload of exactly that many

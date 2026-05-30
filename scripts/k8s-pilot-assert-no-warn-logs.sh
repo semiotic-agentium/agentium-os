@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # No-unexpected-WARN log assertion for the Kubernetes pilot rehearsal. See `--help`.
 
 set -euo pipefail

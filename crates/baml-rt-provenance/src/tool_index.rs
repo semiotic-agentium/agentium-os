@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tool metadata indexing via the SurrealDB provenance store.
 //!
 //! Indexes `ToolFunction` records into `prov_node` so they can be queried for

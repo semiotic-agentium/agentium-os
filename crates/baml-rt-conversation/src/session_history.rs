@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! BAML-style `session_history` lines for an episode, aligned with live `conversation_history` projection.
 
 use baml_rt_tools::{

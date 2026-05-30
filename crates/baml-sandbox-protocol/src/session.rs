@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Session-mode wire contract for the sandbox tool protocol.
 //!
 //! Adds the `tool/session_*` method family alongside the existing single-shot

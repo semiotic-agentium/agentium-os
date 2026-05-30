@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use std::sync::Arc;
 
 use baml_rt_core::ids::{AgentId, ArtifactId, ContextId, ExternalId, MessageId, TaskId, UuidId};

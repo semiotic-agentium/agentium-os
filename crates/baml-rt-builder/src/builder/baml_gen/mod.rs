@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! BAML text generation: one emitted prelude ([`GENERATED_BAML_PRELUDE_FILE`]), analogous to `src/baml-runtime.d.ts`.
 //!
 //! ## Layout

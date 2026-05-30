@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Eagerly resolved function-to-tool manifest.
 //!
 //! Maps BAML function names to their bound tool names at schema load time.

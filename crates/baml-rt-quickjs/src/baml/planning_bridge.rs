@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use baml_rt_core::Citation;
 
 use super::{BamlRuntimeManager, manager_prelude::*, planning_emit};

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Single source for repeated BAML `@description` text (citations, SearchRead/PageRead archive policy).
 //! [`render_generated_tools_prelude`] emits the shared prelude; [`tool_interfaces`] uses the same
 //! citation/send/read strings for per-tool session classes.

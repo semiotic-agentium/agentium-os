@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Config store backed by SurrealDB.
 //!
 //! Keyed by bundle name. Stores current config, version history, and

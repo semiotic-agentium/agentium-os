@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Render [`crate::episode::Episode`] as grep-friendly plain text with episode-local refs.
 
 use std::fmt::Write as _;

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Canonical runner identity for the K8s pilot observability contract.
 //!
 //! Exposes a single derivation rule for `service.instance.id` that is used by both

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Transport-independent serde types describing an approved MCP server import.
 //!
 //! These types are shared by the builder, runner, and runtime so they can

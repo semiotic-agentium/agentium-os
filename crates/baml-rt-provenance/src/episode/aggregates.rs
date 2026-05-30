@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Surreal-backed aggregates for episode projection (task-scoped LLM usage and timing hints).
 
 use baml_rt_vocabulary::vocabulary::{a2a_relations, node_labels, storage_safe};

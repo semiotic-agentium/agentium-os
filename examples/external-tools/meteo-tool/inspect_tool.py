@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Inspect tool adapter contract.
 
 For `describe` and `schema`, this script reads the bind runtime artifact:

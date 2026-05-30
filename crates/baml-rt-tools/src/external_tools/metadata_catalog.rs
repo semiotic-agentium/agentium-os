@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Build-time catalog of external tools.
 //!
 //! Scans directories for `tool-metadata.json` and projects them into

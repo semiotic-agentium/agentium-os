@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Typed graph-query DSL.
 //!
 //! [`GraphQuery<Subject, Scope>`] is the only legal way to construct a

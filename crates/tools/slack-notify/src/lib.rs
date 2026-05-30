@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `support/slack_notify` — write-only Slack notification tool.
 //!
 //! Posts incident summaries to one configured Slack channel. The model controls

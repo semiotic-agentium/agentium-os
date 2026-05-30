@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `WebhookIntake` — HTTP intake for **external push sources**.
 //!
 //! Mount one per push-based event source (Grafana, PagerDuty, GitHub, …).

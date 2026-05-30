@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Planning domain types and resolver.
 //!
 //! **Wire vs resolved:** Shapes deserialized from `__execution_session_invoke` live in

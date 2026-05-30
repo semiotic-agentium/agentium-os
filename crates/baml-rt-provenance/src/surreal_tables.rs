@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared SurrealDB table names and payload SQL fragments (single source of truth).
 
 pub(crate) const TBL_NODE: &str = "prov_node";

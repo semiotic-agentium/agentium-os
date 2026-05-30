@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Invocation JS code generation.
 //!
 //! Helpers that build the JS strings for __baml_invoke, __baml_stream,

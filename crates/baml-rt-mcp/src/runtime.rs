@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Long-lived MCP client connection used by the runtime tool handler.
 //!
 //! Each `McpConnection` owns a single server-process subscription. The first

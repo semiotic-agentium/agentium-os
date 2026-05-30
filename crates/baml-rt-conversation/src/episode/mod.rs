@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Historic **episode** view: task-scoped transcript and metadata for grep-friendly replay.
 
 use baml_rt_core::ids::{AgentId, ContextId, TaskId};

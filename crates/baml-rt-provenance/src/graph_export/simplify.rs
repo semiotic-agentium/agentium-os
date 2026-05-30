@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Graph simplification pass for human-readable diagrams.
 //!
 //! [`simplify_graph`] transforms an [`ExportedGraph`] by removing noise nodes

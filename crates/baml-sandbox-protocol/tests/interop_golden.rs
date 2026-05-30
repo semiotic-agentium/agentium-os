@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Golden-frame interop test.
 //!
 //! Pins the byte layout of a canonical describe request so that any

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! QuickJS integration bridge
 //!
 //! This module maps BAML function calls (executed in Rust) to QuickJS,

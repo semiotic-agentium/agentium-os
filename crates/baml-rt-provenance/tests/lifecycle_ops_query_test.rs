@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Round-trip test: writing an `AgentStopped` event must make it queryable via
 //! [`ProvenanceOpsResource::LifecycleEvents`]. Isolates the writer/reader loop
 //! from the HTTP runner so regressions in either side surface in

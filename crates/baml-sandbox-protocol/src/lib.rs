@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared wire contract for the sandbox tool protocol (TSRPC).
 //!
 //! This crate is the single source of truth for types exchanged across the

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! SSE framing for HTTP POST `/agents/.../a2a`: each event carries one JSON-RPC 2.0 object in `data:` lines.
 
 use serde_json::Value;

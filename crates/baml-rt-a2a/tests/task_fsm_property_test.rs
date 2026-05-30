@@ -1,4 +1,9 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 #![recursion_limit = "256"]
+
 //! Graph-backed task lifecycle invariants.
 
 mod common;

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use baml_rt_tools::json_schema_value;
 use baml_rt_tools_claude::{
     ClaudeCompletion, ClaudeEventDto, ClaudeToolNextOutput, ClaudeToolOpenInput,

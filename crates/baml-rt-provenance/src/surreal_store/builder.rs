@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! [`SurrealBackend`], [`SurrealStoreBuilder`], and process-wide store caching.
 
 use std::{

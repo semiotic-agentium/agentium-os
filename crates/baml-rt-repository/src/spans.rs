@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! OpenTelemetry span helpers for the agent repository.
 //!
 //! Orthogonal to business logic. All span names are static with the

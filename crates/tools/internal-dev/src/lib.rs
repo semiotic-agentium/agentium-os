@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Internal development tool bundle for BAML runtime tests.
 //!
 //! This crate provides the `internal-dev` bundle, tool types, and metadata registration.

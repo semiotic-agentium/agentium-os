@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 #![cfg(all(feature = "llm-tests", feature = "clickup"))]
 
 mod common;

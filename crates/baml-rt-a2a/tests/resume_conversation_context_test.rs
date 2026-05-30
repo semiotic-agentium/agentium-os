@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Phase 2: Resume scope and read-after-write assertion.
 //!
 //! Invariant: after `insert_message(resume_user_message)` completes, the **provenance graph** must

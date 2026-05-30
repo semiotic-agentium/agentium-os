@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! A2A request handler interface for non-standard transports.
 
 use std::{collections::HashMap, sync::Arc, time::Instant};

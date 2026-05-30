@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 import type { SessionStepOp } from "../types/a2a";
 
 /** Human-readable step parameters for provenance `session_step` rows (not A2A replay). */

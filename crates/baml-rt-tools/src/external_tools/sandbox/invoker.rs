@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Sandbox-backed [`ToolInvoker`] + lifetime cache.
 //!
 //! Maps the trait surface from Workstream A to the sandbox world:

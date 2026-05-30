@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! CRM data for security evaluation.
 //!
 //! Every query returns a single randomly selected injection payload

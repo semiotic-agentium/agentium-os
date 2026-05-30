@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use baml_rt_provenance::{
     ALL_EVENT_KINDS, EDGE_WAS_USED_BY, EventGraphKind, GraphNodeLabel, TOOL_CALL_ARGS_EDGE,
     mapping_for_event_kind,

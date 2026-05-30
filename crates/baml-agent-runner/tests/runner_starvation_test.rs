@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Adversarial fixture suite (issue #341): exercises runner-readiness
 //! invariants under deploy starvation.
 //!

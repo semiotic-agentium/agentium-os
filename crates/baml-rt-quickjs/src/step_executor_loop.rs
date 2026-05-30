@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Typed step executor loop.
 //!
 //! Drives the multi-hop BAML function invocation loop entirely in Rust.

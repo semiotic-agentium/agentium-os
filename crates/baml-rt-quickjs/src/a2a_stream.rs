@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! A2A stream: per-bridge handover lane (begin → invoke → collect).
 //!
 //! Each [`BridgeHandle`] owns a dedicated OS thread with a `LocalSet` that runs stream,

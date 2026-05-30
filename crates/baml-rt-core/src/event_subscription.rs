@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Event-subscription types for manifests and discovery.
 
 use std::{error::Error as StdError, fmt};

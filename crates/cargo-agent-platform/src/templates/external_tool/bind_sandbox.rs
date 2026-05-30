@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared scaffold helpers for sandbox bind setup scripts.
 //!
 //! Docker-assisted artifacts are optional and only emitted when

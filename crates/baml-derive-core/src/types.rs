@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! BAML definition types used by the `BamlType` derive macro.
 //!
 //! These structs represent the structured intermediate form of BAML

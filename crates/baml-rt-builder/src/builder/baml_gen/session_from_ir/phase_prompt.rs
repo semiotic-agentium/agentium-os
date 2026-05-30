@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Generated phase executor (`__entry` / `__active__*`, plus unified-primary roots) prompt
 //! assembly. Delegates the canonical-order knowledge to
 //! [`crate::builder::baml_gen::PromptCompositor`] — this module only owns:

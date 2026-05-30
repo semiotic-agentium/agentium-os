@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 export type ProvenanceResource = "llm_calls" | "tool_calls" | "messages";
 
 export type ProvenanceOutcome = "failed_only" | "successful_only" | "both";

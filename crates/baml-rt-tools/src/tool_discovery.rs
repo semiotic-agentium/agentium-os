@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! In-memory deterministic lexical ranked search for tools.
 //!
 //! Ranking: exact full-name > local-name exact > prefix > token overlap (tags) > token overlap (description).

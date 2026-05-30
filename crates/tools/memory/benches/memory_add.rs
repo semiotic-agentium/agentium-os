@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Microbenchmark for the `MemoryManager::add` hot path across graph sizes.
 //!
 //! Fixes the regression target for the snapshot-serialization work: `add` should perform a

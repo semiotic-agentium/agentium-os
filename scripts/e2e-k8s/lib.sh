@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Shared helpers for the E2E k8s test harness.
 # Sourced by run.sh — not executed directly.
 

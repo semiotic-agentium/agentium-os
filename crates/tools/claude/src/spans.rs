@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Debug-level span helpers for claude/dev session (OTel-style, orthogonal to business logic).
 
 use tracing::Span;

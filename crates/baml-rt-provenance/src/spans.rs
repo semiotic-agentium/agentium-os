@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! OpenTelemetry span helpers for provenance.
 //!
 //! Follows the OTel instrumentation guide: static span names, structured fields.

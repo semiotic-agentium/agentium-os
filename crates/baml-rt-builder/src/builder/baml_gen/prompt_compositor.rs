@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Single owner of canonical model-facing prompt order.
 //!
 //! Callers describe the **shape** they want — authored non-FSM, unified-primary phase, or

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Integrity tests for the seeded LGTM-style outage fixture under
 //! `tests/fixtures/incidents/lgtm-checkout-5xx/`.
 

@@ -1,5 +1,9 @@
 #![cfg(feature = "llm-tests")]
 #![allow(clippy::print_stdout)]
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! End-to-end test using actual LLM via OpenRouter.
 //!
 //! To isolate effect-gated timeout issues locally, run with trace logs:

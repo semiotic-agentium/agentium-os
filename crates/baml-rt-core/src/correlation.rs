@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Correlation ID propagation for async invocation flows.
 //!
 //! This module provides task-local correlation IDs so async boundaries

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Conservative byte-level lexer that recognises BAML's "skippable" trivia (line + block
 //! comments and quoted/raw strings). Production rule: when the lexer reports a region, callers
 //! advance past it without inspecting interior bytes — this keeps brace/paren/`prompt`-keyword

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! **Spec regression:** projected conversation rows (same pipeline as BAML `conversation_transcript`) via
 //! [`baml_rt_a2a::a2a_transport::ProjectingConversationContextProvider`]: store rows →
 //! [`baml_rt_conversation::provenance_item_to_projection_item`] →

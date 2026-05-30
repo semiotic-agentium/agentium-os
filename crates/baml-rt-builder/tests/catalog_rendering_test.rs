@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Integration tests for the stable tool-schema sidecar and prompt layout invariants.
 //!
 //! Verifies the key properties of the model-facing prompt surface:

@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Open-Meteo MCP server (stdio, JSON-RPC line-delimited).
 
 Speaks the Model Context Protocol 2025-06-18 over stdin/stdout so it can be

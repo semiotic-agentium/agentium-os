@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Process-wide registry for [`CallbackDeliveryGate`](baml_rt_core::CallbackDeliveryGate).
 //!
 //! The trait and [`StoredCallback`](baml_rt_core::StoredCallback) live in **`baml-rt-core`**;

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Named phases of the runtime codegen pipeline.
 //!
 //! `RuntimeTypeGenerator::generate` was previously a single ~250-line `spawn_blocking` closure

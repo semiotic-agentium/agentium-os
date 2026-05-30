@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Coordinator agent template — multi-agent delegator pattern.
 //!
 //! Based on the coordinator-agent pattern:

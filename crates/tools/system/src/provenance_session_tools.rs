@@ -1,4 +1,9 @@
 #![expect(
+
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
     clippy::result_large_err,
     reason = "ToolSessionError is large by design; matches the session-tool patterns"
 )]

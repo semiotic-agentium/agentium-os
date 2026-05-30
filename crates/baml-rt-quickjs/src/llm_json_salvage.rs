@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Recover session-plan JSON from raw LLM text when BAML jsonish enum matching fails.
 //!
 //! Models sometimes nest objects where scalar enums belong (e.g. calculator `operation`),

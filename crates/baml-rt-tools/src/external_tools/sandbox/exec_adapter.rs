@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Bridge between `microsandbox::ExecHandle` and [`TsrpcChannel`].
 //!
 //! `ExecHandle` exposes an event-based API (`recv()` → `ExecEvent`) and a

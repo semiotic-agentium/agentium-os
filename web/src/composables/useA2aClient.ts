@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 import { ref, computed, type Ref } from "vue";
 
 /** Per-request page size for GET/stream conversation-history (must match server default chunking). */

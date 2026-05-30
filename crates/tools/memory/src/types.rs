@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tool-facing types for the memory bundle.
 //!
 //! Enum-like fields use explicit tool enums (not raw strings) so the generated

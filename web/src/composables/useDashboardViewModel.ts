@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Dashboard UX/IA — widget inventory (legacy → narrative mapping):
  * - Active Agents hero → SYSTEM SURFACE (inventory table + capacity).

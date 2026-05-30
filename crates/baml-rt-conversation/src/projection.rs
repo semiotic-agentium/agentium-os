@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Convert conversation view rows into [`baml_rt_tools::prompt_projection`] items (feeds
 //! `conversation_transcript` via `format_conversation_history_transcript` in the QuickJS host).
 

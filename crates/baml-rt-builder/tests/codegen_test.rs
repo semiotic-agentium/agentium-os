@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Unit tests for BAML and TypeScript code generation
 //!
 //! Uses insta snapshots to verify generated output, reducing round trips

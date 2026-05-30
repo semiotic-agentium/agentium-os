@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Lineage graph: first-class edges encoding derivation and influence.
 //!
 //! The repository is a DAG of agent entries connected by typed edges.

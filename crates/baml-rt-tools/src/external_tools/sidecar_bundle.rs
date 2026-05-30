@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{fs, path::Path};
 
 use baml_rt_core::{BamlRtError, Result};

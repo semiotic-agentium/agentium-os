@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Vector similarity functions for drift scoring.
 
 /// Cosine similarity between two embedding vectors.

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Archive read: grep/paginate/cat-n over archived tool output.
 //!
 //! Three layers, each pure and independently testable:

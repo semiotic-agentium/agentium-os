@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Session plans and per-phase step executors generated from compiled BAML IR.
 //!
 //! Per-phase functions (`__entry`, `__active__*`) share the parent session-plan

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Core vocabulary types for the event-producer / host-dispatch pipeline.
 //!
 //! A [`ProducedEvent`] is the normalized output of an event producer. It converts

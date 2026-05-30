@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Harvest BAML function signatures from runtime IR for TypeScript declaration generation.
 //!
 //! Uses the loaded BAML runtime's IntermediateRepr (via IRSignature) as the sole type

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared helpers for `baml-rt-api` integration tests.
 //!
 //! Each integration-test file is a separate compilation unit, so cargo

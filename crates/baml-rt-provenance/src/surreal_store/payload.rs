@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Payload rows, archive refs, extraction from [`crate::events::ProvEvent`], and payload queries.
 
 use std::collections::HashMap;

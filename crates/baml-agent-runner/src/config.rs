@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! CLI definition, runner configuration, and provenance store wiring.
 
 use std::{path::PathBuf, sync::Arc};

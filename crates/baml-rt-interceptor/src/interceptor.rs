@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Interceptor system for LLM and tool call governance
 //!
 //! Provides a trait-based system for intercepting, logging, and potentially blocking

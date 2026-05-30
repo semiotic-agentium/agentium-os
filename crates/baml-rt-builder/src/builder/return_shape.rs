@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use baml_types::ir_type::{LiteralValue, TypeNonStreaming, UnionTypeViewGeneric};

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Centralized force-link crate for all BAML tool crates.
 //!
 //! This crate exists to break a dependency cycle: tool crates depend on

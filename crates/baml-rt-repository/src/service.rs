@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Repository service — orchestrates storage, hashing, and lineage.
 //!
 //! This is the primary API surface for the repository. It owns the stores and

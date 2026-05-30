@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! BAML runtime wrapper and function execution.
 //!
 //! [`BamlRuntimeManager`] owns the function registry, tool registry, and session state.

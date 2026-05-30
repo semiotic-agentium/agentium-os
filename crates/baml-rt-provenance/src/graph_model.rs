@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::{
     events::ProvEventData,
     vocabulary::{a2a, a2a_relations, a2a_roles, a2a_types, prov, prov_relations, semantic_labels},

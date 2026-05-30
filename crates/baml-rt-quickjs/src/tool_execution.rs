@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tool execution context and helpers.
 //!
 //! `ToolExecutionContext` bundles the `Arc`-wrapped registries needed for tool

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! CRM support tool — customer relationship management.
 //!
 //! Provides query, contact retrieval, note creation, record deletion,

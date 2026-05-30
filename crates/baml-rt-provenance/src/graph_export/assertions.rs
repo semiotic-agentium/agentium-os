@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Test assertion helpers for [`ExportedGraph`].
 //!
 //! These functions provide semantic assertions over graph structure —

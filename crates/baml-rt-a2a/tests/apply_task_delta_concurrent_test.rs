@@ -1,4 +1,9 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 #![recursion_limit = "256"]
+
 //! I2: concurrent chunk application on the graph-backed task store.
 
 mod common;

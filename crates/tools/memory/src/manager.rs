@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! MemoryManager — owns the graph, engines, and file path for one agent's memory.
 
 use std::{

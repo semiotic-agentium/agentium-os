@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use baml_rt_tools::TOOL_SCHEMA_PRELUDE_TAG;
 
 use super::{BamlRuntimeManager, manager_prelude::*, tool_extraction};

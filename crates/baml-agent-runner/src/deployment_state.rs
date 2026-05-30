@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use std::{collections::HashMap, path::Path, sync::Arc};
 
 use baml_rt_core::{

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! SurrealDB-backed provenance store — the sole provenance persistence engine.
 //!
 //! Implements:

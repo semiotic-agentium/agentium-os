@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Trait impls for [`BamlRuntimeManager`]: executor abstraction + `Default`.
 
 use super::{BamlRuntimeManager, manager_prelude::*};

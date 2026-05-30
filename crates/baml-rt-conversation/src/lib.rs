@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Agent **conversation view model**, projection into LLM-visible `conversation_history`, and
 //! **episode** transcript shapes shared by BAML, HTTP history, and replayed archives.
 //!

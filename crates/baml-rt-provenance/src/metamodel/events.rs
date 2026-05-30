@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Per-`EventGraphKind` ZST markers + the `GraphEvent` trait that ties each
 //! marker to its primary node label and required-properties bundle.
 //!

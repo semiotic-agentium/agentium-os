@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Compiler implementations for BAML and TypeScript
 //!
 //! TypeScript compilation is delegated to `tsc` (the official TypeScript compiler)

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared provenance vocabulary constants.
 //!
 //! Centralized in `baml-rt-vocabulary` so all runtime crates use one metamodel.

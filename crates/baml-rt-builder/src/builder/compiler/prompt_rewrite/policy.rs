@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Pluggable predicate that decides whether a parsed function declaration should have its
 //! authored `prompt #"..."#` rewritten by the universal compositor.
 //!

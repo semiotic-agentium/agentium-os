@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Reusable MCP registry operator commands.
 //!
 //! Kept in library code so CLIs can enable MCP registry entries without

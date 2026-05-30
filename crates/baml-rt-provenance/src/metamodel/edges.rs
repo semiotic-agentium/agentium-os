@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Closed enumeration of edge labels (`SemanticEdge`) plus the sealed
 //! `AllowedPrimaryEdge<E>` witness pattern.
 //!

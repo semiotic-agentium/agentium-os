@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Exploratory integration tests for bootstrap: run_bootstrap in a temp dir
 //! and assert on created layout and key content (no TUI).
 //! Uses insta snapshot testing for generated artifacts.

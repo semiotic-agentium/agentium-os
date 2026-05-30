@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Package loading seam: extract tar.gz and parse manifest.
 //! Tests can use this with fixture tarballs or inject (extract_dir, manifest).
 

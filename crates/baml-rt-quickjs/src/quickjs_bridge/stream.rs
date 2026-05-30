@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Stream invocation and yield buffer for A2A.
 //!
 //! **Invariants:** See `README.md` in this crate for the canonical stream architecture and

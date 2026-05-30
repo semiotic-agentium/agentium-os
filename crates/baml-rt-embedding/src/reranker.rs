@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Cross-encoder reranker abstraction and fastembed implementation.
 //!
 //! A reranker scores a (query, document) *pair* jointly — unlike a bi-encoder

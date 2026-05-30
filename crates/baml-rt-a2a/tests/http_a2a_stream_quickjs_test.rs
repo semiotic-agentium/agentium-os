@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! A2A streaming tests that run **through QuickJS** with real fixture agents.
 //!
 //! These tests build a fixture package (baml-agent-builder), load the compiled agent

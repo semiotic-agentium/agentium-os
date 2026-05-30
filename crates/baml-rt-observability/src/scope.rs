@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Runtime scope attribute helpers for OpenTelemetry spans and provenance.
 //!
 //! This module provides shared utilities for extracting runtime scope context

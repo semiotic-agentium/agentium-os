@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Normalize SessionPlan-shaped JSON into flat step objects for per-phase BAML unions.
 //!
 //! Host tool extraction accepts `{"step":{...}}` or flat `{"op":...}`; step-executor hops parse through

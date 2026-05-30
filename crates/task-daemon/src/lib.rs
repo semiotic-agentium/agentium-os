@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Task-daemon turns source activity such as Slack discussion and ClickUp task
 //! changes into structured work for people and agents.
 //!

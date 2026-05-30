@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Plan-anchored drift assessment: scores an LLM response against the
 //! committed plan (intent, current step, trajectory centroid) in addition to
 //! the existing tactical prompt-vs-response drift.

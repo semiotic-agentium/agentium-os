@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Conversation-history event service: notifies SSE subscribers when the transcript may have changed.
 //!
 //! Notifications fire (1) **after successful provenance commits** (runner wraps the graph writer)

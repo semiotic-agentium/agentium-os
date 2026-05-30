@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Refresh APT indices with retries. Mitigates transient failures when
 # archive.ubuntu.com is mid-sync ("File has unexpected size" / hash mismatch).
 set -euo pipefail

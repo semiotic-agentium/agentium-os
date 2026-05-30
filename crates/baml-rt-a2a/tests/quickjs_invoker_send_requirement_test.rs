@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! **Purpose:** Enforce that the real QuickJS stream handover remains live under
 //! concurrent collection, including INPUT_REQUIRED turn boundaries.
 

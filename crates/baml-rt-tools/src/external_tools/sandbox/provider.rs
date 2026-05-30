@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! The runtime's only entry point into sandbox infrastructure.
 //!
 //! Per `tool_sandbox.md` §17 decision #10: "`SandboxProvider` trait is the

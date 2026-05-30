@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Wait until the local runner responds on routes needed before `publish` / push.
 # Usage: wait-runner-http.sh <base_url> [timeout_secs]
 set -euo pipefail

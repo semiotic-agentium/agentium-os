@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Sandbox backend (`tool_sandbox.md` Workstream B).
 //!
 //! Layout:

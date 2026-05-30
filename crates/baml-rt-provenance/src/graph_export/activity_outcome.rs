@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Activity outcome for graph nodes.
 //!
 //! Inferred from (1) activity having an end time and (2) outcome.

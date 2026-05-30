@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Platform test for the "host-mediated effects" product claim (#393 sub-task A).
 //!
 //! Builds the `host-effects-jail` fixture, loads it into a real `A2aAgent`,

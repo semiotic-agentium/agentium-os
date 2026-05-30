@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Map BAML IR types (TypeNonStreaming) to TypeScript type expressions.
 //!
 //! Semantics aligned with upstream BoundaryML TS generator: primitives, optional

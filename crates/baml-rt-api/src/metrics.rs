@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! OpenTelemetry metrics for the HTTP API surface.
 //!
 //! Instruments are cached with OnceLock per the metrics guide (no repeated creation on hot path).

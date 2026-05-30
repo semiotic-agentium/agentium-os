@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! System tool bundle for the BAML runtime.
 //!
 //! Tools live in **crates/tools** and are **not** built into the agent. The host (runner)

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! SQLite-backed mapping of Grafana alert identity to Agentium `context_id`.
 //!
 //! Identity reuse semantics (see demo_plan §Provenance Link):

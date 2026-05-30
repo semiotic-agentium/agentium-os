@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Pool-backed [`SessionToolInvoker`] for `invocation_mode=session` tools.
 //!
 //! Implements `plans/sandbox_streaming.md` §5–§7 host side: each

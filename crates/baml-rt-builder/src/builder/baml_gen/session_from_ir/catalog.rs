@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Stable agent-wide tool / operation vocabulary rendered directly from compiled IR.
 //!
 //! The rendered text is written to [`CATALOG_SIDECAR_FILE`] inside `baml_src` and loaded by the

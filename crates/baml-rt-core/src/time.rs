@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /// Milliseconds since UNIX epoch.
 ///
 /// Logs a warning on clock skew (system clock before epoch) and returns `0`

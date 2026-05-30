@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Quick encoder: render scenes (with frame cache) and produce output MP4s.
 

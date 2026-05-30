@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! A2A malformed requests and error-path E2E tests.
 //!
 //! **Purpose:** Verify that invalid JSON-RPC input and runtime error paths

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Runner-side wiring helpers (`tool_sandbox.md` Workstream Y).
 //!
 //! Turns a runner bootstrap into a full [`SandboxRuntimeWiring`] ready to

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Minimal A2A JSON-RPC request/response helpers.
 //!
 //! This provides a thin adapter layer without adding external dependencies.

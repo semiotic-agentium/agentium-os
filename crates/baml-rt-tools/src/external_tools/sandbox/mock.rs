@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! In-memory [`SandboxProvider`] for tests and fixture-driven dev runs.
 //!
 //! No VM. Each `create` allocates a duplex pair: one end becomes the runtime

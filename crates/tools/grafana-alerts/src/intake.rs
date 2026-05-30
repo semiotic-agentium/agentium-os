@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `WebhookIntake` implementation for `support/grafana-alerts`.
 //!
 //! Mounts `POST /webhooks/grafana` on the runner's public HTTP surface,

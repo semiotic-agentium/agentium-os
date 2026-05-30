@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Provenance capture and storage.
 //!
 //! This crate provides event types and interceptors for provenance recording,

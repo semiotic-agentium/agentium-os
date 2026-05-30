@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! OpenTelemetry span helpers for GitHub REST client calls.
 //!
 //! Orthogonal to request building per the OTel instrumentation guide.

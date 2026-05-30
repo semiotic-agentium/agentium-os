@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Concurrency driver: N workers cycle through warmup (records dropped) then
 // measured (records kept). Each worker alternates through the full target
 // list per-request (round-robin) so traffic is distributed across all

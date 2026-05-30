@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! HTTP API types for the repository service.
 //!
 //! Request and response types for the REST API surface, plus RFC 7807

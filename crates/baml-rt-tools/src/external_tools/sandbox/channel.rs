@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Length-prefixed JSON frame codec for the sandbox workload transport.
 //!
 //! The codec itself lives in the [`baml_sandbox_protocol`] crate so host and

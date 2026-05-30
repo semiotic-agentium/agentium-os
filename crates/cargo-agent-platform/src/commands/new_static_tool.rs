@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `new-static-tool` subcommand implementation.
 //!
 //! Creates a new *static* (compiled-in) tool crate inside the platform

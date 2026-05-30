@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `new-tool` subcommand implementation (default, external-tool path).
 //!
 //! Creates a standalone external tool scaffold in its own directory —

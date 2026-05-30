@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Bus subscriber: maps command/event/effect envelopes to provenance events.
 
 use std::sync::Arc;

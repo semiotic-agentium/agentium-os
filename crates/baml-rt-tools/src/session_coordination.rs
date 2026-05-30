@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Session coordination BAML provider.
 //!
 //! Two equivalent sources feed the builder's coordination prelude:

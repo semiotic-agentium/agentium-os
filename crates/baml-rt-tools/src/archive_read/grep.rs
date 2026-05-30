@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Line-level grep + paginate.
 //!
 //! Pure `grep | tail -n +OFFSET | head -n LIMIT` semantics.

@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Reject BAML that references ctx.tags conversation_history — canonical history is
 # conversation_transcript only (see docs/intent-based-planning-and-session-prompting.md).
 #

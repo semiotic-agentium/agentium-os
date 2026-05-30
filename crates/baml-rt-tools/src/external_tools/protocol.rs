@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! JSON-RPC 2.0 wire contract for the external tool protocol.
 //!
 //! The authoritative definitions live in the [`baml_sandbox_protocol`] crate

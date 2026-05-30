@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `ToolHandler` and `ToolSession` implementations for MCP-imported tools.
 //!
 //! One `McpToolHandler` per imported tool. Multiple handlers from the same

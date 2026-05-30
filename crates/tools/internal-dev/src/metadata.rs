@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tool metadata registration for the internal-dev bundle.
 //!
 //! Registers metadata with baml-rt-tools inventory so manifest resolution

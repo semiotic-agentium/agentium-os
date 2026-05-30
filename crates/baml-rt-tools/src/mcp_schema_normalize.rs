@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Normalize an MCP `inputSchema` for snapshot storage.
 //!
 //! - Canonicalizes the schema (JCS) and computes a stable digest.

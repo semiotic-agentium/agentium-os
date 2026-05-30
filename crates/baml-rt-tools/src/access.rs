@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Optional cluster-wide cap on host-tool access classes (read / write / delete).
 //!
 //! Tool access is gated by two layers, both of which must permit a tool:

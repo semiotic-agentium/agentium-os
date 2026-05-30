@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Pre-download fastembed ONNX model files to a local cache directory.
 //!
 //! Run once to populate `models/fastembed/` in the repo root so all subsequent

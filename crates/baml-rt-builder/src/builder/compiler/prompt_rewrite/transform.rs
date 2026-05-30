@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Replace the `prompt #"..."#` body inside one parsed function declaration with the canonical
 //! structured skeleton emitted by [`PromptCompositor::authored_non_fsm`].
 //!

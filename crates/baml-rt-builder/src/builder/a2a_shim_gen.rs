@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! A2A runtime shim generator (library code).
 //!
 //! Produces the JS IIFE prepended to agent dist/index.js. Same for every agent;

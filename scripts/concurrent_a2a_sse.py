@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """Concurrent message.sendStream SSE load: N independent sessions (distinct contextId per stream).
 
 Use this to stress Surreal/provenance/QuickJS under parallel streams. Same context would hit

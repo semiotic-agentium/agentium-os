@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! BamlTool implementations for the internal-dev bundle (testing only).
 //!
 //! Lives in test-support to avoid a dependency cycle: internal-dev has no baml-rt dependency

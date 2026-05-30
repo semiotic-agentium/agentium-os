@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Session-mode adapter SDK (Phase 1 skeleton).
 //!
 //! Defines the author-facing [`SandboxSessionTool`] trait and the dispatch

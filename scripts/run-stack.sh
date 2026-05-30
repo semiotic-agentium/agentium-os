@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Start the runner, wait for readiness, publish+deploy a list of agent directories,
 # then stay alive until Ctrl-C (which kills the runner via the trap).
 #

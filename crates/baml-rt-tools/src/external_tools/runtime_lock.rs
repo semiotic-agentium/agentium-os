@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Per-tool runtime lock sidecar (`tool-metadata.lock.json`).
 //!
 //! Carries host-resolved fields that must NOT live in the committed

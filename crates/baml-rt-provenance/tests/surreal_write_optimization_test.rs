@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Integration tests for batched Surreal writes, payload blob offload, and hydration.
 
 use std::sync::Arc;

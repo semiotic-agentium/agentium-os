@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Surreal-backed session archive refs (`@N` / `@prefix/local`) for multi-runtime consistency.
 //!
 //! SurrealDB 3.x uses [`type::record`](https://surrealdb.com/docs/surrealql/functions/type#record)

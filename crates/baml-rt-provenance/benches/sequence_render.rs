@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Criterion benchmarks for sequence diagram rendering.
 //!
 //! Measures simplify_graph + render_sequence_diagram on synthetic graphs.

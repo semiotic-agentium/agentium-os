@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Bundle exposing system/discover_agents and system/discover_tools.
 
 use std::sync::Arc;

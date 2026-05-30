@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Axum HTTP handlers for the repository API.
 //!
 //! Each handler extracts path/query/body parameters, delegates to

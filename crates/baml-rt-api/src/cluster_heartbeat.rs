@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Operator-visible health for the cluster heartbeat task.
 //!
 //! Surfaced by `GET /diagnose` as `cluster_heartbeat_status`,

@@ -1,0 +1,27 @@
+name: reuse
+
+# Enforce REUSE 3.3 licensing compliance: every tracked file must carry
+# copyright + license metadata, either as an inline SPDX header or via an
+# entry in REUSE.toml. Fails the build when a new file ships without it, so
+# the licensing gate cannot regress after publication. Dependency-light and
+# fast — kept separate from the Rust nextest job.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reuse-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  reuse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: fsfe/reuse-action@v5

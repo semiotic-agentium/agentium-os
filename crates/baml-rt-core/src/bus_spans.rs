@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! OpenTelemetry-oriented tracing spans for the effect bus (`baml_rt_core.*` namespace).
 //!
 //! Keeps span names static and low-cardinality; dynamic data is fields only. See

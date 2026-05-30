@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Live-DB regression: Message → owning-agent must be reachable via the
 //! two-hop edge traversal `Message ↔ A2AMessageProcessing -[:WAS_EXECUTED_BY]->
 //! AgentRuntimeInstance`, NOT via a denormalised `props.a2a_agent_id`

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tests for QuickJS sandboxing.
 //!
 //! Single test runs all sandbox checks (require blocked, console.log works, fetch blocked)

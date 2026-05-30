@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Pre-commit: when fixture-relevant paths are staged, run regen_fixtures and
 # require agents/ + tests/fixtures/agents/ to match (no unstaged drift).
 #

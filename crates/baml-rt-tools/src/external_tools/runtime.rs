@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Runtime declarations for external tools (`runtime` block in
 //! `tool-metadata.json`).
 //!

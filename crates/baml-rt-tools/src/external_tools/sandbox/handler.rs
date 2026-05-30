@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! [`ToolHandler`] wrapping the sandbox backend (`tool_sandbox.md` §11 Phase C
 //! step 4 + step 5). Mirrors the semantics of
 //! [`super::super::handler::ProcessToolHandler`] but constructs a fresh

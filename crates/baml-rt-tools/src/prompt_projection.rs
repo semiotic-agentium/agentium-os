@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Conversation context projection for prompts.
 //!
 //! Produces a flat JSON array of `{role, content}` rows for graph/API consumers; the QuickJS host

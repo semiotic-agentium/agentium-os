@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Patcher for baml-agent-runner/Cargo.toml to add feature forwarding.
 
 use std::path::{Path, PathBuf};

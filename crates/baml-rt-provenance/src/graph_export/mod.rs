@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Graph export and rendering for provenance subgraphs.
 //!
 //! This module reads the provenance graph via SurrealDB queries and produces an

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 use tool_invocation_plan::BamlToolInvocationPlan;
 
 use super::{BamlRuntimeManager, manager_prelude::*, tool_invocation_plan};

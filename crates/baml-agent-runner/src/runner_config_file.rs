@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Optional TOML startup config for the runner.
 //!
 //! Provides path lists that would otherwise come from env vars

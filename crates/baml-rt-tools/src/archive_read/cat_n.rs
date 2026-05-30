@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! GNU `cat -n` style line number formatting.
 //!
 //! Right-justified number, tab separator, 6-char minimum width.

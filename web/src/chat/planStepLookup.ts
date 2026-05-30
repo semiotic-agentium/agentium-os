@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 import type { ContextPlanningTaskSnapshot, PlanningPlanView } from "../types/provenance";
 
 /** Composite key for plan-local step identity (matches synthetic execution-session tool args). */

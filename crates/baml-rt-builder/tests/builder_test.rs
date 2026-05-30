@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Integration tests for baml-agent-builder
 //!
 //! These tests use the builder library to package agents and verify

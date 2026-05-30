@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Guest-side SDK for sandbox tool adapters.
 //!
 //! The adapter SDK layers above microsandbox (a byte-stream transport) and

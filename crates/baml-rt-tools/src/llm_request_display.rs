@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Normalize LLM request JSON for **human** display (interceptor context, logging).
 //!
 //! Chat Completions often use `content: [ { "type": "text", "text": "…" } ]` even for plain

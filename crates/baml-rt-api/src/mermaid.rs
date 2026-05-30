@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Narrow trait for Mermaid diagram serving. Implemented by the runtime when
 //! provenance (SurrealDB) is enabled; the API consumes this trait only.
 

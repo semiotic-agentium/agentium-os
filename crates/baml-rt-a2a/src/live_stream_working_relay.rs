@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Pushes tool/status chunks into the **relay channel** so the collect path drains them in order (single stream).
 //!
 //! **HTTP A2A only** — for `message.sendStream` only. Chunks are pushed as raw `Value` to the

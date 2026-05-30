@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Start baml-agent-runner with --serve-http and embedded repository, publish+deploy
 # two fixture agents, then verify with curl: GET /agents, GET /openapi.json, POST /agents/.../a2a.
 # Usage: ./scripts/verify-runner-http.sh [--build]

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Config resolution for tool sessions.
 //!
 //! Implemented by baml-rt-config; used by ToolRegistry when opening sessions.

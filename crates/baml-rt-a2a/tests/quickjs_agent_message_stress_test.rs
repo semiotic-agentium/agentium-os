@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Stress the **QuickJS + A2A** path: many concurrent `message.sendStream` calls on **one** agent
 //! (one [`BridgeHandle`] / handover lane → `invoke_js_function_stream` → `onChatMessage`).
 //!

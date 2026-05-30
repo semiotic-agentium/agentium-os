@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Fixture types are used only by the derive macro; fields are serialized/deserialized by generated impls, not read in test code.
 #![expect(
     dead_code,

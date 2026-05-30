@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Two runtime managers sharing one [`baml_rt_tools::SharedContextRefStore`] must resolve the same
 //! `@N` table for a provenance `context_id` (coordinator vs internal-A2A callee).
 

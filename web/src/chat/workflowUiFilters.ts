@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /** Workflow phase lines rendered in `WorkflowProgress`; hide from chat bubbles. */
 export function isWorkflowStatusText(text: string): boolean {
   const t = text.trim();

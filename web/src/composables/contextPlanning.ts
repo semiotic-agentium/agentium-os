@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 import type { ComputedRef, InjectionKey, Ref } from "vue";
 import { computed, ref, watch } from "vue";
 import { buildPlanStepDescriptionLookup } from "../chat/planStepLookup";

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Typed metamodel surface for the provenance graph.
 //!
 //! The submodules together turn the inert `MAPPING_*` constants in

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Template for generating tool Cargo.toml files.
 
 /// Generate the Cargo.toml content for a new tool crate.

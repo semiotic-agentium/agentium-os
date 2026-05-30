@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Slack tool — `support/slack`.
 //!
 //! Read-only Slack Web API integration for conversation and thread retrieval.

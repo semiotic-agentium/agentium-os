@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Email support tool — send email messages.
 //!
 //! Accepts recipients, subjects, and bodies. Records the invocation

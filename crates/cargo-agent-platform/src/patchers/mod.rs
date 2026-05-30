@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! File patchers for workspace configuration files.
 //!
 //! Each patcher knows how to modify a specific configuration file

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Newtype wrappers for typed node-id values used by [`crate::metamodel::query`].
 //!
 //! The wrappers exist to ensure that, e.g., `GraphQuery::scoped_to_ctx` can

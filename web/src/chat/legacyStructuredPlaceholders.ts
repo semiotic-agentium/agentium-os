@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /** Provenance used to store these literals for non-text parts; strip when hydrating old rows. */
 const LEGACY_LINE_PLACEHOLDERS = new Set([
   "[structured-data part]",

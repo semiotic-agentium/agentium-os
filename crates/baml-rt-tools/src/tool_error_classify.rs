@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Session-side classification helpers.
 //!
 //! [`ClassifiedToolError`] lives in [`baml_rt_core`] and is built from **typed** integration errors

@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 """
 WebSocket client to test the A2A interface.
 Tests JSON-RPC A2A protocol over WebSocket.

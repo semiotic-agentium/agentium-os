@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Canonical QuickJS global names for the A2A **chat host** surface.
 //!
 //! All registration of these identifiers in

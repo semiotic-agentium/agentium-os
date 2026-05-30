@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `sandbox-digest` subcommand implementation.
 //!
 //! Computes content digests for sandbox image sources.

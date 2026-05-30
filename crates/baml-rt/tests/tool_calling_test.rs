@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! LLM and BAML tool calling tests.
 //!
 //! **Purpose:** Exercise tool registration, execution from Rust/JS, and the authoritative

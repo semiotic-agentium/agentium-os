@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Network policy + URL guardrails for Streamable HTTP MCP transport.
 //!
 //! Validated **before** any TCP connection is opened. The transport refuses to

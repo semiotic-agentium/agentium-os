@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! In-process A2A routing and registry adapters.
 
 use std::sync::{Arc, Weak};

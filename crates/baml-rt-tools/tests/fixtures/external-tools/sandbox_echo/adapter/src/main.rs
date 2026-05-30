@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Reference echo adapter fixture.
 //!
 //! Runs the `baml-sandbox-adapter` SDK with a minimal tool that echoes

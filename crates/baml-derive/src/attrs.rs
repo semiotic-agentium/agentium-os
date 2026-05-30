@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Parsing of `#[baml(...)]` attributes on structs, enums, fields, and variants.
 
 use syn::{Attribute, Expr, ExprLit, Lit, Meta, MetaNameValue};

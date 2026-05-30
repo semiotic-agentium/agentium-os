@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! JSON Schema generation trait for types derived with `#[derive(BamlType)]`.
 
 use serde_json::Value;

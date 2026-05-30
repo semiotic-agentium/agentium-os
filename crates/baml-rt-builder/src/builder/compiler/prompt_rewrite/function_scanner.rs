@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Locate top-level `function NAME(args) -> RET { ... }` declarations in a BAML source file.
 //!
 //! The scanner is comment- and string-aware via [`super::lexer::scan_trivia`]. Bracket counting

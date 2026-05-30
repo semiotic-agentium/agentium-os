@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tool catalog: type-level metadata sources for tool discovery and resolution.
 //! Supports composing multiple catalog sources (inventory, external, etc.).
 

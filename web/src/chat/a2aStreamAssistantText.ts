@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Extract assistant-visible text from A2A stream chunks (POST /a2a SSE JSON-RPC `result.chunk`).
  * Centralizes wire shapes so the Primary pane stays in sync with runners that emit text on

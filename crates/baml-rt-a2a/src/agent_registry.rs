@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Internal agent routing surface: listing and dispatching A2A by route key.
 //! Consumed by the HTTP API surface (baml-rt-api); implemented by the runner.
 

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! OpenTelemetry metrics instrumentation for tool operations.
 //!
 //! This module provides orthogonal metrics recording helpers following the pattern

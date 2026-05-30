@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Cross-reference the metamodel's `expected_edges` and
 //! `required_properties` lists against the closed vocabulary set.
 //!

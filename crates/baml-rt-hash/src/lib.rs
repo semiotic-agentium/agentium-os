@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Canonical content-addressable hashing for agent source bundles.
 //!
 //! This crate owns two things:

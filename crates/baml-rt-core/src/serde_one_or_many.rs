@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Deserialize JSON that may be **one `T` or a `Vec<T>`** into `Vec<T>` / `Option<Vec<T>>`.
 //!
 //! BAML unions such as `Block | Block[]` often deserialize from the LLM as a **single object**;

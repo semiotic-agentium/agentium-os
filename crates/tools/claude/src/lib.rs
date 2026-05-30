@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Claude tool bundle for the BAML runtime.
 //!
 //! The host registers this crate's [`ClaudeSessionBundle`] as bundle `claude`.

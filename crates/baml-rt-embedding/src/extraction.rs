@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Intent and response text extraction from LLM call context.
 //!
 //! The prompt JSON sent to the LLM is an array of `{role, content}` messages.

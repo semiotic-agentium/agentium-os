@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Helpers for Notion / ClickUp / Slack integration test binaries only.
 //!
 //! This module is declared only from those `tests/runner_*` roots—not from `common/mod.rs`—so

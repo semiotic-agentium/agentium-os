@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Host registration: register manifest tools from the single tool-provider inventory.
 //! Supports an optional external fallback resolver for tools not found in inventory.
 

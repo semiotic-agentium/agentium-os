@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 import type { ChatMessage, SessionStepOp } from "../types/a2a";
 import { appendInterAgentA2aSendDoneArtifacts } from "./internalA2aComms";
 import { deriveToolStatus, getOrCreateToolBlockForAppend, type ToolAppendMode } from "./toolBlocks";

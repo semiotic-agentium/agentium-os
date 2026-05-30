@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Trait-based tool system: registration, Rust execution, JS visibility, metadata.
 //!
 //! **Purpose:** Verify that tools implemented with the BamlTool trait can be

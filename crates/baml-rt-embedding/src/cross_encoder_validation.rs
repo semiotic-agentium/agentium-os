@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Cross-encoder validation: pairwise scoring for plan drift detection.
 //!
 //! Validates the hypothesis that a cross-encoder reranker (JINA-v1-turbo-en)

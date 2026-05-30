@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Deterministic in-memory fake MCP server over JSON-RPC.
 //!
 //! Used by snapshot/importer/runtime tests so MCP support can be developed

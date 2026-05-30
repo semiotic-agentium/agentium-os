@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Optional lookup surface for ref-table content outside a live session (e.g. historic episodes).
 //!
 //! [`crate::archive_refs::RefTable`] implements [`VirtualArchiveSource`] so callers can treat
