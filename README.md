@@ -1,8 +1,76 @@
 # Agentium OS
 
-Agentium OS is a Rust workspace that hosts BAML execution, QuickJS agent
-integration, tool systems, and A2A protocol handling. The public entry point is
-the `baml-rt` facade crate, which re-exports feature-gated subcrates.
+Agentium OS is a runtime for building and operating AI agents that take real
+actions — calling external tools, coordinating with other agents, and holding
+multi-turn conversations — while the host stays in control of every effect.
+Agents are authored in [BAML](https://github.com/BoundaryML/baml) and
+TypeScript, run inside an embedded QuickJS sandbox, and speak the A2A
+(agent-to-agent) protocol over HTTP. Tool calls — HTTP APIs, MCP servers, and
+inter-agent delegation — execute in Rust on the host, never in agent
+JavaScript, and every step is recorded to a provenance graph you can query
+after the fact.
+
+**With Agentium OS you can:**
+
+- Write agents that call tools and other agents through a single host-mediated
+  contract, so the runtime governs what each agent is actually allowed to do.
+- Connect external capabilities over [MCP](https://modelcontextprotocol.io/)
+  (Model Context Protocol) or as native Rust host tools.
+- Serve agents over A2A with streaming responses, multi-turn task lifecycles,
+  and suspension/resume for human input.
+- Trace what happened — which tools ran, what each agent decided, and why — from
+  a graph-native provenance store, with OpenTelemetry metrics and traces.
+
+## Quickstart
+
+The shortest path to a running agent. The example below is a weather agent that
+answers questions by calling a local MCP server.
+
+### Prerequisites
+
+- A Rust toolchain — the version is pinned in `rust-toolchain.toml`, so
+  [`rustup`](https://rustup.rs/) selects it automatically.
+- TypeScript 6.x on `PATH` (`npm install -g typescript@6`) for the agent build
+  pipeline.
+- On Linux only: `sudo apt install -y libdbus-1-dev libcap-ng-dev pkg-config`.
+- An LLM API key — the examples call a model through OpenRouter, so export
+  `OPENROUTER_API_KEY` (or configure `fnox.toml`; see [CONTRIBUTING.md](CONTRIBUTING.md)).
+- Python 3 — the weather example runs a small MCP server as a child process.
+
+### Build
+
+```bash
+cargo build --release
+```
+
+### Run an example agent
+
+The `meteo` example imports a local MCP weather server into the registry,
+packages and deploys the agent, then opens a chat session:
+
+```bash
+# Terminal 1 — start the runner (HTTP A2A + embedded repository)
+scripts/meteo_mcp.sh runner
+
+# Terminal 2 — import the MCP server, deploy the agent, and chat with it
+scripts/meteo_mcp.sh chat
+```
+
+Ask it something like "What's the weather in Berlin?" — on the first tool call
+the runner spawns the MCP server and routes the request through the host tool
+session.
+
+### Learn more
+
+- **[How to write agents](docs/how-to-write-agents.md)** — package layout, A2A
+  entrypoints, tool sessions, and citations.
+- **[Agent runner](docs/agent-runner.md)** — runner CLI, HTTP endpoints, and the
+  publish/deploy flow.
+- **[Kubernetes operator guide](docs/k8s-pilot-operator-guide.md)** — installing
+  the Helm chart.
+- **[Contributing](CONTRIBUTING.md)** — full build/test/lint setup and
+  conventions.
+- **License:** Apache-2.0 — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
 
 ## Workspace Architecture
 
