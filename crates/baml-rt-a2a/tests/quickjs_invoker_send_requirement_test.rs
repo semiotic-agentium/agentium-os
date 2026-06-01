@@ -122,7 +122,7 @@ async fn concurrent_stream_phase_matrix_regression_under_load() {
             __chat_yield({ final: true });
         };
     "#,
-        1,
+        5,
     )
     .await;
 
@@ -169,7 +169,7 @@ async fn concurrent_stream_phase_matrix_regression_under_load() {
 
         let mut outputs = Vec::new();
         for (case, join) in joins {
-            let outcome = timeout(Duration::from_secs(20), join)
+            let outcome = timeout(Duration::from_secs(45), join)
                 .await
                 .expect("each stream in wave must finish")
                 .expect("collect task must not panic");

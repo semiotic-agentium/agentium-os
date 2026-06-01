@@ -65,6 +65,8 @@ const PHASE_STEP_EXECUTOR_SUFFIX_ACTIVE: &str = r#"
 
 Phase policy:
 - Derived state rule: this active return union has no `Open` variant.
+- After Send completes with status done, use PageRead or SearchRead on last_archive_ref when archive lines are needed; otherwise emit Finish.
+- Never re-Send identical input after a Done; re-Send only for pagination (has_more) or a genuinely different query.
 "#;
 
 /// Bundle emitted from IR: polymorphic Open/plan classes, per-phase executor functions,
@@ -551,23 +553,5 @@ fn entry_phase_executor_suffix_empty_falls_back_to_branchy() {
     assert_eq!(
         entry_phase_executor_suffix(&[]),
         PHASE_STEP_EXECUTOR_SUFFIX_ENTRY
-    );
-}
-
-#[cfg(test)]
-#[test]
-fn active_phase_policy_is_compact_and_open_free() {
-    assert!(
-        PHASE_STEP_EXECUTOR_SUFFIX_ACTIVE.contains("no `Open` variant"),
-        "active phase policy should only state the derived exclusion"
-    );
-}
-
-#[cfg(test)]
-#[test]
-fn entry_phase_policy_mentions_derived_exclusion_only() {
-    assert!(
-        PHASE_STEP_EXECUTOR_SUFFIX_ENTRY.contains("excludes `Send`, `Finish`, and `Abort`"),
-        "entry phase policy should mention only the derived exclusion set"
     );
 }

@@ -298,6 +298,49 @@ fn result_is_read_only_finish(result: &Value) -> bool {
     )
 }
 
+fn llm_step_op(result: &Value) -> Option<&str> {
+    result.get("op").and_then(Value::as_str).or_else(|| {
+        result
+            .get("step")
+            .and_then(|s| s.get("op"))
+            .and_then(Value::as_str)
+    })
+}
+
+fn llm_step_input(result: &Value) -> Option<&Value> {
+    result
+        .get("input")
+        .or_else(|| result.get("step").and_then(|s| s.get("input")))
+}
+
+/// True when the model re-emits Send with the same input immediately after a Send hop completed Done.
+fn is_redundant_repeat_send(result: &Value, last_step: &LastStepContext, steps: &[Value]) -> bool {
+    if llm_step_op(result) != Some("Send") {
+        return false;
+    }
+    if last_step.op != Some("send") || last_step.status != Some("done") {
+        return false;
+    }
+    let current_input = match llm_step_input(result) {
+        Some(v) => v,
+        None => return false,
+    };
+    steps
+        .iter()
+        .rev()
+        .find_map(|step| {
+            if llm_step_op(step) != Some("Send") {
+                return None;
+            }
+            if extract_status(step)? != StepStatus::Done {
+                return None;
+            }
+            let prev_input = llm_step_input(step)?;
+            (prev_input == current_input).then_some(())
+        })
+        .is_some()
+}
+
 /// Unified-primary `__entry` hops return structured variants without tool-session `status`.
 fn unified_entry_status_fallback(result: &Value) -> Option<StepStatus> {
     let v = result
@@ -583,6 +626,19 @@ pub async fn run_step_executor_loop(
                 next_step_context.completion = last_step_context.completion.clone();
             }
         }
+
+        if steps.len() > 1
+            && is_redundant_repeat_send(&result, &last_step_context, &steps[..steps.len() - 1])
+        {
+            tracing::warn!(
+                hop = hop_idx,
+                function = %current_function,
+                "step_executor_loop: redundant repeat Send after Done; terminating with last result"
+            );
+            last_step_context = next_step_context;
+            phase = Phase::Terminal(TerminalReason::Finished);
+            break;
+        }
         last_step_context = next_step_context;
 
         // Advance FSM based on current phase + status.
@@ -701,5 +757,34 @@ mod session_context_wire_tests {
         assert_eq!(v["status"], "done");
         assert_eq!(v["last_step_op"], "send");
         assert_eq!(v["last_completion"], "DONE");
+    }
+
+    #[test]
+    fn redundant_repeat_send_detects_identical_input_after_done() {
+        use super::{LastStepContext, StepStatus, is_redundant_repeat_send};
+
+        let send_input = serde_json::json!({"block_id": "abc", "raw_blocks": "Enriched"});
+        let prior_send = serde_json::json!({
+            "op": "Send",
+            "input": send_input,
+            "status": "done",
+            "archive_ref": "@1",
+        });
+        let repeat_send = serde_json::json!({
+            "op": "Send",
+            "input": send_input,
+        });
+        let last = LastStepContext {
+            op: Some("send"),
+            status: Some(StepStatus::Done.as_str()),
+            archive_ref: Some("@1".to_string()),
+            output_header: None,
+            completion: None,
+        };
+        assert!(is_redundant_repeat_send(
+            &repeat_send,
+            &last,
+            std::slice::from_ref(&prior_send),
+        ));
     }
 }

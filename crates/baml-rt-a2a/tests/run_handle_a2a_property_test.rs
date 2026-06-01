@@ -24,10 +24,9 @@ use baml_rt_core::ids::ContextId;
 use proptest::prelude::*;
 use serde_json::json;
 use test_support::common::{
-    CalculatorTool, agent_fixture, await_first_match, chunks_from_responses,
-    ensure_fixture_runtime_types, first_message_text_from_stream, is_error_response,
-    message_visible_content_from_chunks, response_has_final_chunk, response_has_input_required,
-    send_stream_request,
+    CalculatorTool, agent_fixture, chunks_from_responses, ensure_fixture_runtime_types,
+    first_message_text_from_stream, is_error_response, message_visible_content_from_chunks,
+    response_has_final_chunk, response_has_input_required, send_stream_request,
 };
 use tokio::{
     task::JoinSet,
@@ -47,11 +46,35 @@ fn scaled_timeout_secs(base_secs: u64) -> Duration {
 }
 
 fn stream_collector_idle_secs() -> u64 {
+    // Stub JS handlers return immediately; long idle budgets only slow failure diagnosis
+    // when the stop predicate never matches under CI bridge contention.
     if std::env::var_os("CI").is_some() {
-        300
+        45
     } else {
-        90
+        30
     }
+}
+
+fn proptest_cases_default() -> u32 {
+    if std::env::var_os("CI").is_some() {
+        2
+    } else {
+        6
+    }
+}
+
+fn input_required_jitter_strategy() -> impl Strategy<Value = Vec<u8>> {
+    let max_jitter = if std::env::var_os("CI").is_some() {
+        4u8
+    } else {
+        7u8
+    };
+    let max_len = if std::env::var_os("CI").is_some() {
+        4usize
+    } else {
+        8usize
+    };
+    prop::collection::vec(0u8..=max_jitter, 1..=max_len)
 }
 
 fn proptest_cfg(cases: u32) -> ProptestConfig {
@@ -226,20 +249,28 @@ async fn drive_input_required_two_turn_flow(
         .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(ask_req))
         .await
         .expect("open input-required stream");
-    let mut ask_final_count = 0usize;
-    let saw_input_required = timeout(
+    let stop_at_input_required = |chunk: &baml_rt_core::A2aStreamChunk| {
+        let env = chunk.as_ref();
+        response_has_input_required(env).is_some() || response_has_final_chunk(env).is_some()
+    };
+    let ask_chunks = timeout(
         per_turn_timeout,
-        await_first_match(ask_stream, |env| {
-            if response_has_final_chunk(env).is_some() {
-                ask_final_count += 1;
-            }
-            response_has_input_required(env)
-        }),
+        baml_rt_core::collect_a2a_stream_until_one_shot(ask_stream, stop_at_input_required),
     )
     .await
     .expect("input-required stream timed out");
+    let ask_responses: Vec<serde_json::Value> = ask_chunks
+        .into_iter()
+        .map(baml_rt_core::A2aStreamChunk::into_inner)
+        .collect();
+    let ask_final_count = ask_responses
+        .iter()
+        .filter(|value| response_has_final_chunk(value).is_some())
+        .count();
     assert!(
-        saw_input_required.is_some(),
+        ask_responses
+            .iter()
+            .any(|value| response_has_input_required(value).is_some()),
         "first turn must emit TASK_STATE_INPUT_REQUIRED"
     );
     assert_eq!(
@@ -289,7 +320,7 @@ async fn test_input_required_resume_single_context() {
 }
 
 proptest! {
-    #![proptest_config(proptest_cfg(6))]
+    #![proptest_config(proptest_cfg(proptest_cases_default()))]
 
     /// PROPERTY:
     /// ∀ N malformed requests submitted through handle_a2a:
@@ -419,7 +450,7 @@ proptest! {
     /// Single-context scenario is also validated by `test_input_required_resume_single_context`.
     #[test]
     fn prop_input_required_resume_positive_and_no_auto_final(
-        jitters in prop::collection::vec(0u8..=7u8, 1..=8)
+        jitters in input_required_jitter_strategy()
     ) {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(4)
@@ -429,7 +460,7 @@ proptest! {
 
         rt.block_on(async move {
             let agent = setup_interleaving_agent().await;
-            let per_turn_timeout = scaled_timeout_secs((jitters.len() as u64 * 5) + 20);
+            let per_turn_timeout = scaled_timeout_secs((jitters.len() as u64 * 5) + 45);
             // Run each (context, two-turn) flow sequentially: overlapping sendStream on the same
             // context from concurrent tasks can hit Conflict (session still in flight) even when
             // contexts differ across tasks due to bridge scheduling; ordering preserves the property

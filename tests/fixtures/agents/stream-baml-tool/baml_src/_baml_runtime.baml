@@ -257,6 +257,8 @@ Do not add text before or after the JSON object.
 
 Phase policy:
 - Derived state rule: this active return union has no `Open` variant.
+- After Send completes with status done, use PageRead or SearchRead on last_archive_ref when archive lines are needed; otherwise emit Finish.
+- Never re-Send identical input after a Done; re-Send only for pagination (has_more) or a genuinely different query.
 "#
 
 }

@@ -289,14 +289,18 @@ async function processClickupLifecycleUnit(
   if (isNotRelevant(intentResult)) {
     return { ok: true, detail: "skipped:not_relevant" };
   }
+
+  let resolvedIntent: ClickUpIntent;
   if (isNeedClarification(intentResult)) {
-    return {
-      ok: false,
-      detail:
-        `${INGRESS_AGENT_NAME} cannot clarify during dispatch: ${intentResult.question}`,
+    // Dispatch cannot suspend for user input; lifecycle ingress always reconciles as read.
+    resolvedIntent = {
+      kind: "intent",
+      intent: "Reconcile ClickUp lifecycle ingress records for this unit",
+      operation_kind: "read",
     };
-  }
-  if (!isClickUpIntent(intentResult)) {
+  } else if (isClickUpIntent(intentResult)) {
+    resolvedIntent = intentResult;
+  } else {
     return {
       ok: false,
       detail:
@@ -305,8 +309,8 @@ async function processClickupLifecycleUnit(
   }
 
   const planResult = await PlanClickUpWork({
-    intent: intentResult.intent,
-    operation_kind: intentResult.operation_kind,
+    intent: resolvedIntent.intent,
+    operation_kind: resolvedIntent.operation_kind,
   });
   const structured = parseClickUpStructuredPlanFromPlanning(planResult);
   if (!structured) {
@@ -326,8 +330,8 @@ async function processClickupLifecycleUnit(
   const result = await runClickUpStructuredPlan(
     `clickup-ingress-${unitKey}`,
     structured,
-    intentResult.intent,
-    intentResult.operation_kind,
+    resolvedIntent.intent,
+    resolvedIntent.operation_kind,
     stepsOrErr,
   );
   if ("error" in result) {

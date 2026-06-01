@@ -360,7 +360,15 @@ async fn list_changed_with_schema_drift_marks_stale_and_persists() {
     // Drift handler runs async; poll until either the connection flips
     // stale or the per-call timeout budget elapses.
     let mut stale_seen = false;
-    for _ in 0..50 {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
+        if read_server(cache.path(), "grafana")
+            .map(|record| record.approval.state == McpApprovalState::Stale)
+            .unwrap_or(false)
+        {
+            stale_seen = true;
+            break;
+        }
         let mut session = handler
             .open_session(session_context(&name), json!({}))
             .await

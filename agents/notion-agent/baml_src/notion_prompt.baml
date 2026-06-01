@@ -167,6 +167,22 @@ function ChooseNotionAction(
     You are executing one step of a read-only Notion retrieval plan.
     Overall goal: {{ goal }}
     This step: {{ step_description }}
+
+    Current FSM state from the host:
+    - status: {{ session_context.status }}
+    - last_step_op: {{ session_context.last_step_op }}
+    - last_step_status: {{ session_context.last_step_status }}
+    - last_archive_ref: {{ session_context.last_archive_ref }}
+    - last_output_header: {{ session_context.last_output_header }}
+
+    Deterministic overrides:
+    - After Send completes with status done and the tool output satisfies this step, emit Finish.
+      Do not re-Send the same block_id, page_id, or search query after a Done.
+    - Re-Send only when the prior Send returned has_more=true and you must paginate with start_cursor.
+    - When archive lines are needed for synthesis, PageRead last_archive_ref before Finish.
+    - If status is done and last_step_op is read, emit Finish — never read the same @N twice.
+
+    Output: one JSON object matching the narrowed phase return type. No markdown or prose.
   "#
 }
 
