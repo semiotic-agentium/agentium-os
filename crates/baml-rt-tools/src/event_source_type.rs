@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Inventory-backed event source type descriptors (schema authority for host event kinds).
 
 use baml_rt_core::{AgentDispatchRoutingKey, EventSchemaVersion, EventSourceKind};

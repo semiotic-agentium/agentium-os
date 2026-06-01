@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /** Parse dispatch-unit and subscriber progress from agent ack detail strings. */
 
 import type { EventPublishAcceptance } from "../types/events";

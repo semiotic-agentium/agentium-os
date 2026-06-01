@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /** Message-shape registry helpers for the Event Console. */
 
 import type { EventSubscriptionInfo } from "../types/a2a";

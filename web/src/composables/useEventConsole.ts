@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 import { computed, ref, watch } from "vue";
 import type { AgentDiscoveryEntry, ContextPickerPage, ConversationHistoryOption } from "../types/a2a";
 import {

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /** Event Console dispatch phase predicates (single source for UI + provenance pane). */
 
 import type { EventDispatchPhase } from "../types/events";

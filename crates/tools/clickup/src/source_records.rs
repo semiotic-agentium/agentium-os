@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `host.source-records.v1` batch types for ClickUp lifecycle polling (raw events, no host interpretation).
 
 use baml_rt_core::{

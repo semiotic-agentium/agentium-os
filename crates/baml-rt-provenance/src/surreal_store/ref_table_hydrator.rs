@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Rebuild a session [`RefTable`] from durable provenance (graph-backed refs).
 
 use std::sync::Arc;

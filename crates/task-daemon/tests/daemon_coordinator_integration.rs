@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Integration: task-daemon publishes `host.source-records.v1` to runner `/events/publish`.
 
 use std::sync::{

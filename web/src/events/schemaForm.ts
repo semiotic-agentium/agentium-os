@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /** Generic JSON Schema → form field descriptors for the Event Console. */
 
 export type SchemaFieldKind =

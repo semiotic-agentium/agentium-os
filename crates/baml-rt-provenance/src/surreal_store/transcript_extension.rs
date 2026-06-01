@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Transcript projection: operational failures, planning lifecycle, merged into operator timeline.
 
 use std::collections::HashSet;

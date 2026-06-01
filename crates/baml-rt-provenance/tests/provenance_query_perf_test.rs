@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Query-shape inventory: seeded high-cardinality context + EXPLAIN smoke for hot read paths.
 
 use std::{sync::Arc, time::Instant};

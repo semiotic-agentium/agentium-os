@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Durable `#N` history refs survive store rebuild (graph-backed ref cutover).
 
 use baml_rt_core::ids::{ContextId, ExternalId, MessageId};

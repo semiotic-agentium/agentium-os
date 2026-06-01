@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Task-daemon polls external sources and publishes `host.source-records.v1` to the runner.
 
 pub mod clickup_source;

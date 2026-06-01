@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! GitHub Issues polling for the task-daemon substrate.
 //!
 //! List/issue polling is not implemented yet. When added, this module should own the

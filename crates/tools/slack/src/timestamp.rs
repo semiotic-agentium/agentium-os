@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Slack `ts` string comparison helpers (shared by polling implementations).
 
 use tracing::warn;

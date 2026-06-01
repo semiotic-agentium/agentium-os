@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /** Must match `baml_rt_core::host_source_records_body::INGRESS_WIRE_BODY_DELIMITER`. */
 export const INGRESS_WIRE_BODY_DELIMITER = "--- host.source-records.v1 ---";
 

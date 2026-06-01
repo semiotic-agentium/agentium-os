@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Write-maintained planning index per `(context_id, task_id)`.
 
 use baml_rt_core::ids::{ContextId, TaskId};

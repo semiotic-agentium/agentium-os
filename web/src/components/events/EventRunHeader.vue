@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 <script setup lang="ts">
 import { ref } from "vue";
 import type { AgentDiscoveryEntry, ConversationHistoryOption } from "../../types/a2a";

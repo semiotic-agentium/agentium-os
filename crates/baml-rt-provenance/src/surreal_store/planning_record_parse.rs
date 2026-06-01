@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared Surreal node props → planning record parsing (batch + per-task reads).
 
 use std::collections::HashMap;

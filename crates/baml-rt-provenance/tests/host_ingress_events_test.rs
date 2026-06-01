@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Host ingress `ProvEvent` variants validate, normalize, and project to conversation context.
 
 use std::sync::Arc;

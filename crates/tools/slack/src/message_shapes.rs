@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! JSON Schema exports for agent-deliverable Slack source-record batches.
 
 use serde_json::Value;

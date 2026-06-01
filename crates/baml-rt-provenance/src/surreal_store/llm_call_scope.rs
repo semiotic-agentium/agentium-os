@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Resolve persisted LLM call scope from graph nodes (cross-batch PromptRejected linking).
 
 use serde_json::Value;

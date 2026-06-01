@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 import { computed, onUnmounted, ref } from "vue";
 import type { ChatMessage, ConversationHistoryPage, HistoryHydrateState } from "../types/a2a";
 import type { ConversationHistoryIngressMode } from "../chat/conversationHistorySync";

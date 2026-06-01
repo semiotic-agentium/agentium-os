@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 import { ref, watch, type ComputedRef, type Ref } from "vue";
 import type { ObservationBundle } from "../types/provenance";
 

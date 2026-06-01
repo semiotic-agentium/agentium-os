@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 <script setup lang="ts">
 import { computed } from "vue";
 import type { EventTranscriptRow } from "../../events/eventTranscriptModel";

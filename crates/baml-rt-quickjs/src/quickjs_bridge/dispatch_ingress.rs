@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Host dispatch ingress natives: unit task scope push/pop around `withTask` preludes.
 
 use std::sync::atomic::Ordering;

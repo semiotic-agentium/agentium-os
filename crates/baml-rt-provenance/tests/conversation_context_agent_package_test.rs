@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `query_conversation_context` with `agent_package` must not emit invalid Surreal `IN` syntax.
 
 use baml_rt_core::{

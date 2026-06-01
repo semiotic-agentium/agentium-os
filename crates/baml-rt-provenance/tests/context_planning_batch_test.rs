@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Batched planning reads — index-authoritative contract.
 
 use baml_rt_core::ids::{AgentId, ContextId, ExternalId, TaskId, UuidId};

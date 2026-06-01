@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Write/read contract for normalized `user_speaker_kind` on user transcript rows.
 
 use baml_rt_conversation::view::UserSpeakerKind;

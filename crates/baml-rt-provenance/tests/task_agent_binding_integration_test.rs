@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Integration tests for task executing-agent binding (`WAS_LAST_EXECUTED_BY` head pointer).
 
 use std::sync::Arc;

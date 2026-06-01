@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Integration: linked tool crates register event source type descriptors.
 
 use baml_rt_tools::all_event_source_type_descriptors;

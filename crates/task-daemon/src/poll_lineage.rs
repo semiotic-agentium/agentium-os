@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Bridge [`SourcePoll`] to [`HostPollLineage`] minting in `baml-rt-core`.
 
 use baml_rt_core::{HostPollLineage, PollLineageSeed, mint_host_poll_lineage};

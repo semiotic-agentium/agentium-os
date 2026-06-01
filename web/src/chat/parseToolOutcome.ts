@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /** Wire shape from GET /conversation-history tool_result.outcome */
 export type ToolOutcomeWire =
   | { kind: "result"; value: unknown }

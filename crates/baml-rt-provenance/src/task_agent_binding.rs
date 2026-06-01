@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Task executing-agent binding — canonical write-side ceremony for `WAS_LAST_EXECUTED_BY`.
 //!
 //! ## Invariants

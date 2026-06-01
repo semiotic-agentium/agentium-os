@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! `host.source-records.v1` batch types for GitHub Issues polling (raw events).
 
 use baml_rt_core::{

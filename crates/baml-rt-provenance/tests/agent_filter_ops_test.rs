@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Graph-query tests for call-activity agent edge traversal.
 
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Event source type descriptor for system callbacks (`system.callback.v1`).
 
 use std::sync::OnceLock;

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Batched context-scoped planning reads — index-authoritative, O(1) round-trips per phase.
 
 use std::collections::{HashMap, HashSet};

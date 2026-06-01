@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! ClickUp list polling and lifecycle diffing for the task-daemon substrate.
 //!
 //! The host runner does not poll ClickUp directly; task-daemon calls this module and

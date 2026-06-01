@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Bounded transcript reads via `context_transcript_index`.
 
 use async_trait::async_trait;

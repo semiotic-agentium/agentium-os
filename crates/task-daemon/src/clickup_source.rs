@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! ClickUp polling for task-daemon — delegates lifecycle diffing to `baml_tools_clickup::poll`.
 
 use std::collections::BTreeMap;

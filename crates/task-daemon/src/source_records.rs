@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Build [`ProducedEvent`] payloads for host pub/sub (`host.source-records.v1`).
 
 use anyhow::{Context, Result, anyhow};

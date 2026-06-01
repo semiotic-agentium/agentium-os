@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Slack channel selectors and name→id resolution shared by task-daemon and runner ingress.
 
 use std::collections::HashSet;

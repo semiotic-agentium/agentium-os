@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! GitHub host tool — `support/github`.
 //!
 //! Declares GitHub Issues as an event source and owns `host.source-records.v1` payload schemas.

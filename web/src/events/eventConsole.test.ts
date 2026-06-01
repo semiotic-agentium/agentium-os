@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 import { describe, expect, it, vi } from "vitest";
 import type { AgentDiscoveryEntry } from "../types/a2a";
 import type { AgentDeliverableMessageShape, EventDispatchScope } from "../types/events";

@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Stop any process listening on host:port (e.g. 127.0.0.1:18080).
 # Used before starting a fresh release runner so publish does not hit a stale binary.
 set -euo pipefail

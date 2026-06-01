@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /** Scope resolution and operator publish summary helpers for Event Console observation. */
 
 import type { ChatMessage } from "../types/a2a";

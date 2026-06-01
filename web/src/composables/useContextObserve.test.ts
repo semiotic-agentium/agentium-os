@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 import { ref } from "vue";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { useContextObserve } from "./useContextObserve";

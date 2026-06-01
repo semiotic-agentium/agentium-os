@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /** Scoped URL params for chat vs Event Console (legacy `agentPackage` fallback). */
 
 export type ViewName = "dashboard" | "chat" | "events" | "settings";

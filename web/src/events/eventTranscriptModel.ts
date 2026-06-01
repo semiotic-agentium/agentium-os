@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /** Event Console transcript row model — presentation layer over ChatMessage[]. */
 
 import type { ChatMessage, ContentBlock, OperationalContentBlock } from "../types/a2a";

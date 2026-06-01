@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Slack channel polling for the task-daemon substrate.
 //!
 //! Single implementation of `conversations.history` incremental fetch, cursor

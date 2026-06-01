@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 import { computed, toValue, type MaybeRefOrGetter } from "vue";
 
 /** Mirrors backend `ObservationScope` — one scope for transcript, ops, and planning. */

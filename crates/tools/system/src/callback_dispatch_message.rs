@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Typed `messages[]` body for `system.callback.v1` host dispatch (matches callback producer).
 
 use schemars::JsonSchema;
