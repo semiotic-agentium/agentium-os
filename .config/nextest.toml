@@ -81,6 +81,12 @@ filter = 'package(baml-agent-runner) and test(~test_e2e_notion_direct_id_path)'
 slow-timeout = { period = "120s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 3, delay = "8s" }
 
+# Notion search e2e: 300s SSE collect + provenance poll loop can exceed generic test_e2e_ budget.
+[[profile.ci.overrides]]
+filter = 'package(baml-agent-runner) and test(~test_e2e_notion_real_model_search_with_mock_server)'
+slow-timeout = { period = "480s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "8s" }
+
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-interceptor) and test(~test_e2e_)'
 retries = { backoff = "fixed", count = 1, delay = "2s" }
@@ -99,7 +105,7 @@ retries = { backoff = "fixed", count = 1, delay = "3s" }
 [[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and binary(runner_slack_source_ingress_test)'
 test-group = "slack-source-ingress-e2e"
-slow-timeout = { period = "120s", terminate-after = 2 }
+slow-timeout = { period = "180s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 2, delay = "3s" }
 
 [[profile.ci.overrides]]
@@ -195,7 +201,7 @@ test-group = "runner-subprocess"
 [[profile.ci-merged.overrides]]
 filter = 'package(baml-agent-runner) and binary(runner_slack_source_ingress_test)'
 test-group = "slack-source-ingress-e2e"
-slow-timeout = { period = "120s", terminate-after = 2 }
+slow-timeout = { period = "180s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 2, delay = "3s" }
 
 [[profile.ci-merged.overrides]]
@@ -316,6 +322,11 @@ retries = { backoff = "fixed", count = 2, delay = "2s" }
 [[profile.ci-merged.overrides]]
 filter = 'package(baml-agent-runner) and test(~test_e2e_notion_direct_id_path)'
 retries = { backoff = "fixed", count = 3, delay = "8s" }
+
+[[profile.ci-merged.overrides]]
+filter = 'package(baml-agent-runner) and test(~test_e2e_notion_real_model_search_with_mock_server)'
+slow-timeout = { period = "480s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "8s" }
 
 # LLM-dependent e2e tests in ci-merged: wall-clock budget must exceed the
 # agent-side stream-collector idle (up to 300s for slow grok-4.1-fast yield

@@ -316,7 +316,7 @@ async fn wait_for_provenance_tool_call_status(
     let start = Instant::now();
     // Callback delivery + discover_tools session + Surreal indexing can exceed 15s on cold CI
     // runners (especially under parallel `cargo test --workspace` load).
-    let timeout = Duration::from_secs(60);
+    let timeout = Duration::from_secs(e2e_secs_ci_or_local(90, 60));
     let url = format!("{base_url}/provenance/tool-calls");
 
     loop {

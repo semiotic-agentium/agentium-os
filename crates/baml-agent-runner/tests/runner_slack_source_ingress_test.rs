@@ -26,7 +26,7 @@ use baml_tools_slack::SlackTool;
 use baml_tools_system::SystemBundle;
 use common::{
     CapturingA2aHandler, DispatchRegistry, RunningHttpServer, StaticAgentList,
-    build_agent_dir_to_temp_async, discovery_entry, e2e_serial_gate,
+    build_agent_dir_to_temp_async, discovery_entry, e2e_secs_ci_or_local, e2e_serial_gate,
     quickjs_config_with_host_ingress, start_http_server, try_load_dotenv_for_tests,
 };
 use serde_json::{Value, json};
@@ -358,7 +358,7 @@ async fn slack_source_ingress_dispatch_http_routes_raw_slack_source_records_to_t
     });
 
     let response = timeout(
-        Duration::from_secs(30),
+        Duration::from_secs(e2e_secs_ci_or_local(120, 60)),
         client.post(&dispatch_url).json(&dispatch_body).send(),
     )
     .await
@@ -386,6 +386,9 @@ async fn slack_source_ingress_dispatch_http_routes_raw_slack_source_records_to_t
 
 #[tokio::test]
 async fn slack_source_ingress_dispatch_http_noops_raw_slack_chatter_without_action_cues() {
+    try_load_dotenv_for_tests();
+    let _api_key = test_support::common::require_api_key();
+
     let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
         entries: vec![discovery_entry(
             "clickup-agent",
@@ -428,7 +431,7 @@ async fn slack_source_ingress_dispatch_http_noops_raw_slack_chatter_without_acti
     });
 
     let response = timeout(
-        Duration::from_secs(30),
+        Duration::from_secs(e2e_secs_ci_or_local(120, 60)),
         client.post(&dispatch_url).json(&dispatch_body).send(),
     )
     .await
@@ -457,6 +460,9 @@ async fn slack_source_ingress_dispatch_http_noops_raw_slack_chatter_without_acti
 #[tokio::test]
 async fn slack_source_ingress_dispatch_http_batches_mixed_raw_slack_work_items_into_one_delegation()
 {
+    try_load_dotenv_for_tests();
+    let _api_key = test_support::common::require_api_key();
+
     let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
         entries: vec![discovery_entry(
             "clickup-agent",
@@ -498,7 +504,7 @@ async fn slack_source_ingress_dispatch_http_batches_mixed_raw_slack_work_items_i
     });
 
     let response = timeout(
-        Duration::from_secs(30),
+        Duration::from_secs(e2e_secs_ci_or_local(120, 60)),
         client.post(&dispatch_url).json(&dispatch_body).send(),
     )
     .await
