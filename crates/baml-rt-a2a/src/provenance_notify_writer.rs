@@ -1,12 +1,8 @@
-<<<<<<< HEAD
 // SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Wraps a [`ProvenanceWriter`] and notifies subscribers after each committed context-scoped write.
-=======
 //! Delegates provenance writes and emits [`ObservationUpdate`] after each commit.
->>>>>>> 1fb3d596 (feat: unify operator observation with typed ops and planning index)
 
 use std::sync::Arc;
 

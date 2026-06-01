@@ -1,12 +1,8 @@
-<<<<<<< HEAD
 // SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Planning and intent/plan history service.
-=======
 //! Planning and intent/plan history service — batched graph reads.
->>>>>>> 1fb3d596 (feat: unify operator observation with typed ops and planning index)
 
 use std::sync::Arc;
 

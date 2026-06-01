@@ -1,16 +1,8 @@
-<<<<<<< HEAD:crates/baml-agent-runner/src/services/conversation_history_events.rs
 // SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Conversation-history event service: notifies SSE subscribers when the transcript may have changed.
-//!
-//! Notifications fire (1) **after successful provenance commits** (runner wraps the graph writer)
-//! and (2) on **A2A task
-//! updates** (e.g. task-only status transitions that affect resume hints without new graph rows).
-=======
 //! Observation event service: SSE subscribers for unified operator bundles.
->>>>>>> 1fb3d596 (feat: unify operator observation with typed ops and planning index):crates/baml-agent-runner/src/services/observation_events.rs
 
 use std::sync::Arc;
 
