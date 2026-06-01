@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use baml_rt_core::{
     Citation,
+    history_text::{is_history_infrastructure_notice, strip_history_notice_prefix},
     ids::{ActivityAnchorId, ContextId, MessageId},
 };
 use serde::{Deserialize, Serialize};
@@ -93,15 +94,62 @@ pub enum ConversationItemContent {
     Planning(PlanningEventContent),
 }
 
+/// True when message text is only an FSM opcode label (sometimes mirrored as assistant noise).
+fn is_fsm_opcode_message_noise(text: &str) -> bool {
+    let core = strip_history_notice_prefix(text).trim();
+    matches!(
+        core,
+        "Open" | "Send" | "Finish" | "Abort" | "SearchRead" | "PageRead"
+    )
+}
+
+fn session_tool_args_non_empty(args: &Value) -> bool {
+    let step = args.get("step").unwrap_or(args);
+    if let Some(input) = step.get("input") {
+        return !value_is_empty(input);
+    }
+    !value_is_empty(args)
+}
+
+fn value_is_empty(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Bool(_) | Value::Number(_) => false,
+        Value::String(s) => s.trim().is_empty(),
+        Value::Array(a) => a.is_empty() || a.iter().all(value_is_empty),
+        Value::Object(m) => m.is_empty() || m.values().all(value_is_empty),
+    }
+}
+
 impl ConversationItemContent {
     /// Whether this item carries meaningful content worth projecting into a prompt.
     /// `StatusOnly` tool results return false.
     pub fn is_meaningful(&self) -> bool {
         match self {
-            Self::Message { text, .. } => !text.trim().is_empty(),
-            Self::ToolCall(_) => true,
-            Self::ToolResult(tr) => !matches!(tr.outcome, ToolOutcome::StatusOnly),
-            Self::SessionStep(_) => true,
+            Self::Message { text, .. } => {
+                let t = text.trim();
+                !t.is_empty()
+                    && !is_history_infrastructure_notice(text)
+                    && !is_fsm_opcode_message_noise(text)
+            }
+            Self::ToolCall(tc) => {
+                if !tc.fsm_phase.is_session_phase() {
+                    return true;
+                }
+                matches!(tc.fsm_phase, ToolSessionPhase::Send)
+                    && session_tool_args_non_empty(&tc.args)
+            }
+            Self::ToolResult(tr) => {
+                if matches!(tr.outcome, ToolOutcome::StatusOnly) {
+                    return false;
+                }
+                !tr.fsm_phase.is_session_phase()
+            }
+            Self::SessionStep(ss) => {
+                // `Open` is FSM bookkeeping only. `SendDone` is omitted from the transcript but
+                // must still flow through projection so replay payloads seed the ref table.
+                !matches!(ss.op, SessionStepOp::Open)
+            }
             Self::Operational(op) => op.is_meaningful(),
             Self::Planning(plan) => plan.is_meaningful(),
         }
@@ -354,5 +402,46 @@ mod tests {
         let ctx = ContextId::new(1, 2);
         let anchor = ActivityAnchorId::from_counter(102);
         assert!(classify_user_speaker_kind(&ctx, &anchor, None, "assistant").is_none());
+    }
+
+    #[test]
+    fn session_open_tool_call_not_meaningful_for_prompt() {
+        use serde_json::json;
+
+        let open_call = ConversationItemContent::ToolCall(ToolCallContent {
+            tool_name: "support/notion".into(),
+            args: json!({ "step": { "op": "Open", "input": {} } }),
+            fsm_phase: ToolSessionPhase::Open,
+        });
+        assert!(!open_call.is_meaningful());
+
+        let send_call = ConversationItemContent::ToolCall(ToolCallContent {
+            tool_name: "support/notion".into(),
+            args: json!({
+                "step": {
+                    "op": "Send",
+                    "input": { "operation": "search_pages", "query": "OAuth" }
+                }
+            }),
+            fsm_phase: ToolSessionPhase::Send,
+        });
+        assert!(send_call.is_meaningful());
+    }
+
+    #[test]
+    fn session_open_step_and_opcode_messages_not_meaningful() {
+        let open_step = ConversationItemContent::SessionStep(SessionStepContent {
+            tool_name: "support/notion".into(),
+            op: SessionStepOp::Open,
+            send_done_replay_payload: None,
+            read_replay_lines: None,
+        });
+        assert!(!open_step.is_meaningful());
+
+        let msg = ConversationItemContent::Message {
+            text: "#18 Open".into(),
+            citations: vec![],
+        };
+        assert!(!msg.is_meaningful());
     }
 }

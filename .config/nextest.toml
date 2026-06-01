@@ -75,18 +75,6 @@ filter = 'package(baml-agent-runner) and test(~test_e2e_)'
 slow-timeout = { period = "120s", terminate-after = 3 }
 retries = { backoff = "fixed", count = 1, delay = "5s" }
 
-# Notion direct-id e2e: extra retries (LLM plan extraction occasionally skips tool path).
-[[profile.ci.overrides]]
-filter = 'package(baml-agent-runner) and test(~test_e2e_notion_direct_id_path)'
-slow-timeout = { period = "120s", terminate-after = 2 }
-retries = { backoff = "fixed", count = 3, delay = "8s" }
-
-# Notion search e2e: 300s SSE collect + provenance poll loop can exceed generic test_e2e_ budget.
-[[profile.ci.overrides]]
-filter = 'package(baml-agent-runner) and test(~test_e2e_notion_real_model_search_with_mock_server)'
-slow-timeout = { period = "480s", terminate-after = 2 }
-retries = { backoff = "fixed", count = 2, delay = "8s" }
-
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-interceptor) and test(~test_e2e_)'
 retries = { backoff = "fixed", count = 1, delay = "2s" }
@@ -317,16 +305,6 @@ slow-timeout = { period = "300s", terminate-after = 1 }
 filter = 'package(baml-rt-a2a) and test(concurrent_stream_phase_matrix_regression_under_load)'
 slow-timeout = { period = "30s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 2, delay = "2s" }
-
-# Notion direct-id e2e: extra retries (LLM plan extraction occasionally skips tool path).
-[[profile.ci-merged.overrides]]
-filter = 'package(baml-agent-runner) and test(~test_e2e_notion_direct_id_path)'
-retries = { backoff = "fixed", count = 3, delay = "8s" }
-
-[[profile.ci-merged.overrides]]
-filter = 'package(baml-agent-runner) and test(~test_e2e_notion_real_model_search_with_mock_server)'
-slow-timeout = { period = "480s", terminate-after = 2 }
-retries = { backoff = "fixed", count = 2, delay = "8s" }
 
 # LLM-dependent e2e tests in ci-merged: wall-clock budget must exceed the
 # agent-side stream-collector idle (up to 300s for slow grok-4.1-fast yield

@@ -834,15 +834,6 @@ pub async fn build_clickup_agent_to_temp_async() -> PathBuf {
     build_agent_dir_to_temp_async(clickup_agent_dir, "clickup-agent").await
 }
 
-#[cfg(feature = "notion")]
-#[allow(dead_code)] // Helper is consumed by notion integration tests when compiled as their own test target.
-pub async fn build_notion_agent_to_temp_async() -> PathBuf {
-    let notion_agent_dir = test_support::common::workspace_root()
-        .join("agents")
-        .join("notion-agent");
-    build_agent_dir_to_temp_async(notion_agent_dir, "notion-agent").await
-}
-
 #[cfg(feature = "slack")]
 #[allow(dead_code)] // Helper is consumed by slack integration tests when compiled as their own test target.
 pub async fn build_slack_agent_to_temp_async() -> PathBuf {

@@ -862,16 +862,16 @@ impl SurrealProvenanceStore {
                         (result, error)
                     };
 
-                    let has_outcome = (has_meaningful_result(&result)
-                        && !is_session_bookkeeping_result(&phase, &result))
-                        || error.is_some();
                     // Non-session (execute/unknown) invocations always surface so the UI can render
-                    // tool cards even when args/results are empty. Session FSM phases are usually
-                    // narrated by SessionStep rows; still emit ToolCall pairs when the send carries
-                    // args or a terminal outcome so host tools (e.g. session Send with LLM payload)
-                    // remain visible if session-step projection is incomplete.
-                    let include_call =
-                        !phase.is_session_phase() || !is_empty_object(&args) || has_outcome;
+                    // tool cards even when args/results are empty. Session FSM phases are narrated
+                    // by `SessionStep` rows in the graph; only session **Send** with non-empty step
+                    // args is mirrored as ToolCall for `describe_invocation` (Open/Finish/etc. stay
+                    // out of the raw tool-call pair).
+                    let include_call = if phase.is_session_phase() {
+                        matches!(phase, ToolSessionPhase::Send) && !is_empty_object(&args)
+                    } else {
+                        true
+                    };
 
                     let tool_event_order = stored_event_order(props);
 
