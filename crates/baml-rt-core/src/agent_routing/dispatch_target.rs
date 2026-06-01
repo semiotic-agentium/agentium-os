@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Typed host dispatch target: route identity + live booted runtime id.
 
 use super::keys::AgentRouteKey;

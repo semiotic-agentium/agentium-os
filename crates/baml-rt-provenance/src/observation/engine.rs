@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! [`ObservationLoader`] — load once, project operator surfaces.
 
 use async_trait::async_trait;

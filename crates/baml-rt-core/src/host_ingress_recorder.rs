@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Host-boundary provenance recording (implemented by the runner, not task-daemon).
 
 use async_trait::async_trait;

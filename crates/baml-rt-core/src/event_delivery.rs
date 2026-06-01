@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared host pub/sub: subscription matching and fan-out dispatch to agents.
 //!
 //! [`matching_subscriber_routes`] and [`deliver_to_subscribers`] are the single

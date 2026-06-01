@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Host dispatch ingress: stable unit scopes and `withTask` prelude contract.
 
 use serde_json::Value;

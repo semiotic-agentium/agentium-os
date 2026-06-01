@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Event Console HTTP support: message-shape registry and draft validation.
 
 /// Force-link tool crates so descriptor inventory is present in this binary.

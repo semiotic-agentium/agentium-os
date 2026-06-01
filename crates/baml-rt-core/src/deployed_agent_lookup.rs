@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Resolve deployed route keys to live booted [`AgentId`] values.
 
 use async_trait::async_trait;

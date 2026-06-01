@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /** Event Console API types (mirror baml-rt-api event_console DTOs). */
 
 export type EventDispatchScope =

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Validation for Event Console dispatch drafts.
 
 use std::sync::atomic::{AtomicU64, Ordering};

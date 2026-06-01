@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Operator-facing operational transcript rows (failures, dispatch, task status).
 //! Included in episode plain-text export and HTTP `profile=full` conversation-history;
 //! excluded from BAML `conversation_transcript` / `session_history` agent projection.

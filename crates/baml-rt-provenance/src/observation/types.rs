@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Typed operator observation scope and loaded graph slice.
 
 use baml_rt_conversation::view::ProvenanceConversationContextItem;

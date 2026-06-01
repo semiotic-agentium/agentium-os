@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Typed host ingress transcript identity parts (no stringly `unknown` buckets).
 
 use baml_rt_core::{

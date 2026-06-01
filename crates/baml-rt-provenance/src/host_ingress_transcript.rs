@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Format host ingress lines for operator conversation-history rows.
 
 use baml_rt_conversation::operational::{

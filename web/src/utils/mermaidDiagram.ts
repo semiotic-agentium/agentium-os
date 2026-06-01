@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /** True when text looks like a Mermaid sequence diagram from the runner export API. */
 export function looksLikeMermaidDiagram(text: string): boolean {
   return /^\s*sequenceDiagram\b/m.test(text.trim());

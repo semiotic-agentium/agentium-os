@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Operator-facing planning lifecycle rows (intent, plan, step transitions).
 //! Not projected into BAML `conversation_transcript`.
 

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Surreal-backed [`HostIngressRecorder`] for publish and dispatch `withTask` preludes.
 
 use std::{collections::HashMap, sync::Arc};

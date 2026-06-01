@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Stable poll-root identifiers for host ingress (`host.source-records.v1`).
 
 use serde::{Deserialize, Serialize};

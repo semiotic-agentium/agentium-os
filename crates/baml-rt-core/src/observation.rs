@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Operator observation invalidation — broadcast after provenance commits.
 
 /// Bit flags indicating which operator read surfaces may have changed.

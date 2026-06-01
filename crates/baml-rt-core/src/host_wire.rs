@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Canonical wire schema identifiers and shared envelope headers for host event delivery.
 
 use serde::{Deserialize, Serialize};

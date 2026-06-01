@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Task id resolution for planning reads from observation scope.
 
 use baml_rt_core::ids::ContextId;

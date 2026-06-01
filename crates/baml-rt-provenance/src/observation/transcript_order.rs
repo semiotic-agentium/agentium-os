@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Transcript row ordering — single comparator for all operator timelines.
 
 use std::cmp::Ordering;

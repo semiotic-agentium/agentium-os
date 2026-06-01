@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Ops projection helpers — align summary counts with episode TASK_CALL semantics.
 
 use crate::{ops_types::ProvenanceOpsSummary, store::ProvenanceOpsQueryResponse};

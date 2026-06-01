@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared Surreal filter fragments for observation reads.
 
 /// Filter clause for rows after an exclusive event order.

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Ops page reads (delegates to [`crate::store::ProvenanceOpsQuery`] with budget semantics).
 
 use async_trait::async_trait;

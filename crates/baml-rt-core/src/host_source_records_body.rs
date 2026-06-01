@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Wire-faithful text for `host.source-records.v1` ingress rows (conversation history).
 //!
 //! The host does not interpret records (no title lines, summaries, or field extraction).

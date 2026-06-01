@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Load unified graph observations for operator surfaces.
 
 use baml_rt_conversation::view::ProvenanceConversationContextItem;

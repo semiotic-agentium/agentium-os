@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Deterministic activity anchors and message ids for host ingress transcript rows.
 //!
 //! Identity is content-addressable via [`HostIngressTranscriptId`] (`DerivedId::from_parts`).

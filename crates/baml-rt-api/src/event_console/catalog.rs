@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Project tool-owned event source descriptors into Event Console message shapes.
 
 use baml_rt_core::event_subscription::EventSourceKey;
