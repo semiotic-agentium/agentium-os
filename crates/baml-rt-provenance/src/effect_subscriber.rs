@@ -2149,7 +2149,11 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 self.writer
                     .add_event_with_logging(completed_event, "effect subscriber")
                     .await;
-                if bool::from(*outcome) {
+                if bool::from(*outcome)
+                    && baml_rt_embedding::extraction::llm_completion_should_materialize_assistant_message(
+                        result_payload.as_ref(),
+                    )
+                {
                     emit_llm_assistant_transcript_message(
                         self.writer.as_ref(),
                         context_id,

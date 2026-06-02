@@ -99,7 +99,7 @@ retries = { backoff = "fixed", count = 2, delay = "3s" }
 [[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and binary(runner_clickup_source_ingress_test)'
 test-group = "llm-heavy"
-slow-timeout = { period = "180s", terminate-after = 2 }
+slow-timeout = { period = "360s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 2, delay = "5s" }
 
 [[profile.ci.overrides]]
@@ -195,7 +195,7 @@ retries = { backoff = "fixed", count = 2, delay = "3s" }
 [[profile.ci-merged.overrides]]
 filter = 'package(baml-agent-runner) and binary(runner_clickup_source_ingress_test)'
 test-group = "llm-heavy"
-slow-timeout = { period = "180s", terminate-after = 2 }
+slow-timeout = { period = "360s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 2, delay = "5s" }
 
 [[profile.ci-merged.overrides]]

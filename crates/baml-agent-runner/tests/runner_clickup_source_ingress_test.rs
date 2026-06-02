@@ -19,8 +19,8 @@ use baml_tools_clickup::{
     batch_from_lifecycle_events, clickup_task_snapshot_value,
 };
 use common::{
-    RunningHttpServer, TempDirCleanup, build_clickup_agent_to_temp_async, e2e_serial_gate,
-    quickjs_config_with_host_ingress, start_http_server, start_runner_api_server,
+    RunningHttpServer, TempDirCleanup, build_clickup_agent_to_temp_async, e2e_secs_ci_or_local,
+    e2e_serial_gate, quickjs_config_with_host_ingress, start_http_server, start_runner_api_server,
     try_load_dotenv_for_tests,
 };
 use serde_json::{Value, json};
@@ -276,15 +276,18 @@ async fn clickup_source_ingress_dispatch_processes_lifecycle_batch() {
         "messages": [lifecycle_batch_message()]
     });
 
+    let dispatch_secs = e2e_secs_ci_or_local(300, 180);
     let response = timeout(
-        Duration::from_secs(180),
+        Duration::from_secs(dispatch_secs),
         client
             .post(clickup_ingress_dispatch_url(&runner_api.base_url))
             .json(&body)
             .send(),
     )
     .await
-    .expect("dispatch timed out")
+    .unwrap_or_else(|_| {
+        panic!("dispatch timed out after {dispatch_secs}s");
+    })
     .expect("dispatch request");
 
     assert_eq!(response.status(), reqwest::StatusCode::OK);

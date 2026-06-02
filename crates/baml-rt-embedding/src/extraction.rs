@@ -311,6 +311,44 @@ fn extract_from_content(value: &Value) -> String {
     value.to_string()
 }
 
+/// True when the BAML semantic result is a plain string (e.g. `ArgumentReply`).
+///
+/// Chat agents surface these via `ctx.emit.message` or `SessionResult.message`; they must
+/// not also get an assistant `Message` row from the LLM completion effect.
+pub fn baml_output_is_plain_string_result(value: &Value) -> bool {
+    let unwrapped = unwrap_llm_call_trace(value);
+    let effective = unwrapped.as_ref().unwrap_or(value);
+    effective.as_str().is_some()
+}
+
+/// True when the BAML result is a tool-session FSM step or multi-step plan object.
+///
+/// These are persisted via tool-session graph events, not as assistant chat lines.
+pub fn baml_output_is_tool_session_planning_payload(value: &Value) -> bool {
+    let unwrapped = unwrap_llm_call_trace(value);
+    let effective = unwrapped.as_ref().unwrap_or(value);
+    if effective.get("step").and_then(|s| s.get("op")).is_some() {
+        return true;
+    }
+    if effective.as_object().is_some_and(|m| m.contains_key("op")) {
+        return true;
+    }
+    effective.get("steps").and_then(Value::as_array).is_some()
+}
+
+/// Whether a successful LLM completion should materialize an assistant [`Message`] row.
+pub fn llm_completion_should_materialize_assistant_message(result_payload: Option<&Value>) -> bool {
+    let Some(payload) = result_payload else {
+        return false;
+    };
+    if baml_output_is_plain_string_result(payload)
+        || baml_output_is_tool_session_planning_payload(payload)
+    {
+        return false;
+    }
+    !extract_response_text(payload).trim().is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -413,6 +451,43 @@ mod tests {
             text.contains("Do something"),
             "should fall through to session plan extraction, got: {text}"
         );
+    }
+
+    #[test]
+    fn plain_string_and_session_step_results_skip_assistant_message_materialization() {
+        assert!(baml_output_is_plain_string_result(&json!("No it isn't.")));
+        assert!(!llm_completion_should_materialize_assistant_message(Some(
+            &json!("No it isn't.")
+        )));
+
+        let open_step = json!({
+            "op": "Open",
+            "tool_name": "system/internal_a2a",
+            "initial_input": { "target": { "agent_package": "argument-chapman" } }
+        });
+        assert!(baml_output_is_tool_session_planning_payload(&open_step));
+        assert!(!llm_completion_should_materialize_assistant_message(Some(
+            &open_step
+        )));
+
+        let session_plan = json!({
+            "reason": "send line",
+            "steps": [{ "type": "Send", "input": "No it isn't." }]
+        });
+        assert!(baml_output_is_tool_session_planning_payload(&session_plan));
+        assert!(!llm_completion_should_materialize_assistant_message(Some(
+            &session_plan
+        )));
+    }
+
+    #[test]
+    fn intent_only_objects_still_materialize_assistant_messages() {
+        let intent = json!({ "intent": "List pages" });
+        assert!(!baml_output_is_plain_string_result(&intent));
+        assert!(!baml_output_is_tool_session_planning_payload(&intent));
+        assert!(llm_completion_should_materialize_assistant_message(Some(
+            &intent
+        )));
     }
 
     #[test]
