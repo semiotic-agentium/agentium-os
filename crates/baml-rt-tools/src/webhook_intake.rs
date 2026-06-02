@@ -28,7 +28,7 @@
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{BamlRtError, IngressStore, Result};
 use bytes::Bytes;
 use http::{HeaderMap, Method, StatusCode, Uri};
 use serde_json::Value;
@@ -185,12 +185,14 @@ pub trait WebhookIntake: Send + Sync {
 }
 
 /// Inputs provided when constructing configured webhook intakes from inventory.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WebhookIntakeBuildContext {
     /// Tool metadata this intake operationalizes.
     pub metadata: ToolFunctionMetadata,
     /// Effective config for this tool after resolver/default merge.
     pub config: Option<Value>,
+    /// Durable ingress queue for push webhook payloads.
+    pub ingress_store: Option<Arc<dyn IngressStore>>,
 }
 
 pub type WebhookIntakeBuildFuture =
@@ -218,6 +220,7 @@ inventory::collect!(WebhookIntakeProvider);
 pub async fn load_configured_webhook_intakes<C: ToolCatalog>(
     catalog: &C,
     config_resolver: Option<Arc<dyn ConfigResolver>>,
+    ingress_store: Option<Arc<dyn IngressStore>>,
 ) -> Result<Vec<Arc<dyn WebhookIntake>>> {
     let mut intakes: Vec<Arc<dyn WebhookIntake>> = Vec::new();
     let mut seen_paths: HashMap<String, &'static str> = HashMap::new();
@@ -236,6 +239,7 @@ pub async fn load_configured_webhook_intakes<C: ToolCatalog>(
         let built = (provider.build)(WebhookIntakeBuildContext {
             metadata: metadata.clone(),
             config,
+            ingress_store: ingress_store.clone(),
         })
         .await?;
 
@@ -428,7 +432,7 @@ mod tests {
         let catalog = StubCatalog { items: vec![] };
         let _ = metadata("support/stub");
         let _ = build_one;
-        let intakes = super::load_configured_webhook_intakes(&catalog, None)
+        let intakes = super::load_configured_webhook_intakes(&catalog, None, None)
             .await
             .expect("loader succeeds with empty catalog");
         // The crate test suite cannot register fresh inventory entries, so we

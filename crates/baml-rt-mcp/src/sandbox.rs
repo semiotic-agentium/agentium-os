@@ -75,7 +75,10 @@ pub fn spawn(spec: SpawnSpec) -> Result<SandboxedChild, SandboxError> {
         .prefix("mcp-import-")
         .tempdir()
         .map_err(SandboxError::Scratch)?;
-    let scratch_path = scratch.path().to_path_buf();
+    let scratch_path = scratch
+        .path()
+        .canonicalize()
+        .map_err(SandboxError::Scratch)?;
 
     let mut cmd = Command::new(&spec.command);
     cmd.args(&spec.args)
@@ -164,9 +167,13 @@ mod tests {
         let marker = lines.next().unwrap();
         let home = lines.next().unwrap_or("");
 
+        let cwd_path = std::path::Path::new(cwd)
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from(cwd));
         assert!(
-            cwd.starts_with(sandboxed.scratch_path.to_str().unwrap()),
-            "cwd `{cwd}` not under scratch `{}`",
+            cwd_path.starts_with(&sandboxed.scratch_path),
+            "cwd `{}` not under scratch `{}`",
+            cwd_path.display(),
             sandboxed.scratch_path.display()
         );
         assert_eq!(marker, "yes");

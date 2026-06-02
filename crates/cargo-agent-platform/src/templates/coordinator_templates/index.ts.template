@@ -1,6 +1,6 @@
 // Coordinator agents handle orchestration via conversational A2A, not raw event
 // ingress. They do not implement onDispatch and should not declare event
-// subscriptions. For event-driven ingress, use semantic-ingress-agent or create
+// subscriptions. For event-driven ingress, use slack-agent (or source-family agents) or create
 // an agent with an onDispatch handler using the simple/planner template.
 
 /// <reference path="./baml-runtime.d.ts" />
@@ -160,8 +160,8 @@ function parseDiscoveredAgent(value: unknown): DiscoveredAgent | null {
     agent_instance_id: agentInstanceId,
     tools: value.tools.filter((t): t is string => typeof t === "string"),
     description: typeof value.description === "string" ? value.description : undefined,
-    capabilities: Array.isArray(value.capabilities) 
-      ? value.capabilities.filter((c): c is string => typeof c === "string") 
+    capabilities: Array.isArray(value.capabilities)
+      ? value.capabilities.filter((c): c is string => typeof c === "string")
       : [],
   };
 }
@@ -187,7 +187,7 @@ async function delegateToAgent(target: RouteTarget, prompt: string): Promise<str
     const drained = await drainToolSession(sessionHandle, MAX_DELEGATION_CONTINUE_STEPS);
     await sessionHandle.finish();
     sessionHandle = null;
-    
+
     // Extract text from chunks
     const texts: string[] = [];
     for (const step of drained.steps) {
@@ -241,7 +241,7 @@ function parseWorkflowPlan(value: unknown): WorkflowPlan | null {
       };
     })
     .filter((n): n is WorkflowNode => n != null);
-  
+
   if (nodes.length === 0) return null;
   return {
     goal: typeof value.goal === "string" ? value.goal : "Coordinate user request",
@@ -273,16 +273,16 @@ async function executeWorkflow(
 ): Promise<void> {
   const pending = new Set(plan.nodes.map((n) => n.id));
   const completed = new Set<string>();
-  
+
   while (pending.size > 0) {
-    const ready = plan.nodes.filter((n) => 
+    const ready = plan.nodes.filter((n) =>
       pending.has(n.id) && n.depends_on.every((dep) => completed.has(dep))
     );
-    
+
     if (ready.length === 0 && pending.size > 0) {
       throw new Error("Workflow has unresolvable dependencies");
     }
-    
+
     const batch = ready.slice(0, MAX_FANOUT_CONCURRENCY);
     await Promise.all(batch.map(async (node) => {
       pending.delete(node.id);
@@ -310,18 +310,18 @@ async function executeNode(
     const texts = await delegateToAgent(node.target, node.prompt_template);
     return { node_id: node.id, status: "completed", output_text: texts.join("\n") };
   }
-  
+
   if (node.kind === "direct_answer" && node.prompt_template) {
     return { node_id: node.id, status: "completed", output_text: node.prompt_template };
   }
-  
+
   if (node.kind === "synthesize") {
     const depTexts = node.depends_on
       .map((dep) => artifacts.get(dep)?.output_text)
       .filter((t): t is string => !!t);
     return { node_id: node.id, status: "completed", output_text: depTexts.join("\n\n") };
   }
-  
+
   return { node_id: node.id, status: "skipped" };
 }
 
@@ -330,18 +330,18 @@ function toCoordinatorAnswer(value: unknown): CoordinatorAnswer | null {
   if (!isObject(value) || typeof value.answer !== "string") return null;
   return {
     answer: value.answer.trim(),
-    actionable_goals: Array.isArray(value.actionable_goals) 
+    actionable_goals: Array.isArray(value.actionable_goals)
       ? value.actionable_goals.filter((g) => isObject(g) && typeof g.goal === "string")
       : [],
-    sources: Array.isArray(value.sources) 
+    sources: Array.isArray(value.sources)
       ? value.sources.filter((s): s is string => typeof s === "string")
       : ["None"],
     confidence: typeof value.confidence === "number" ? value.confidence : 0,
-    gaps: Array.isArray(value.gaps) 
+    gaps: Array.isArray(value.gaps)
       ? value.gaps.filter((g): g is string => typeof g === "string")
       : [],
-    clarification_question: typeof value.clarification_question === "string" 
-      ? value.clarification_question 
+    clarification_question: typeof value.clarification_question === "string"
+      ? value.clarification_question
       : null,
   };
 }
@@ -399,14 +399,14 @@ function buildTranscript(plan: WorkflowPlan, artifacts: Map<string, NodeArtifact
 // Main coordinator flow
 async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
   const userText = typeof ctx.text === "string" && ctx.text.length > 0 ? ctx.text : "unknown";
-  
+
   ctx.emit.message("Discovering available specialist agents...");
   const agents = await discoverAgents(userText);
-  
+
   if (agents.length === 0) {
     return { message: textReply("No specialist agents are currently available. Please try again later.") };
   }
-  
+
   ctx.emit.message("Planning workflow...");
   let plan: WorkflowPlan;
   try {
@@ -414,7 +414,7 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
   } catch (err) {
     return { error: `Workflow planning failed: ${err instanceof Error ? err.message : String(err)}` };
   }
-  
+
   const clarifyNode = plan.nodes.find((n) => n.kind === "clarify");
   if (clarifyNode && clarifyNode.prompt_template) {
     const reply = await ctx.emit.awaitInput(clarifyNode.prompt_template);
@@ -423,12 +423,12 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
       plan = await planWorkflow(clarifiedText, agents, userText);
     }
   }
-  
+
   const directNode = plan.nodes.find((n) => n.kind === "direct_answer");
   if (directNode && directNode.prompt_template && plan.nodes.length === 1) {
     return { message: textReply(directNode.prompt_template) };
   }
-  
+
   ctx.emit.message("Executing workflow...");
   const artifacts = new Map<string, NodeArtifact>();
   try {
@@ -436,10 +436,10 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
   } catch (err) {
     return { error: `Workflow execution failed: ${err instanceof Error ? err.message : String(err)}` };
   }
-  
+
   const transcript = buildTranscript(plan, artifacts);
   const response = await synthesize(userText, transcript, null);
-  
+
   return { message: response };
 }
 

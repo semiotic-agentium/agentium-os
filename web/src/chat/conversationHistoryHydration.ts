@@ -12,6 +12,7 @@ import type {
   ChatMessage,
   ConversationHistoryItem,
   ConversationHistoryPage,
+  UserSpeakerKind,
 } from "../types/a2a";
 import { normalizeEpochMs } from "./chatTime";
 import { appendExecutionErrorCard } from "./executionErrorCard";
@@ -22,24 +23,58 @@ import { deriveToolStatus, getOrCreateToolBlockForAppend } from "./toolBlocks";
 import {
   pushSystemNoticeEvent,
   pushTerminalResultEvent,
+  pushExecutionErrorDetailEvent,
   stableJsonSignature,
 } from "./toolNotificationEvents";
 import { stripLegacyStructuredPlaceholderLines } from "./legacyStructuredPlaceholders";
 import { isSyntheticInputRequiredPrompt } from "./inputRequiredUi";
 import { isWorkflowStatusText, shouldSuppressAgentTranscriptText } from "./workflowUiFilters";
+import { parseToolOutcome } from "./parseToolOutcome";
+import type { OperationalContentBlock } from "../types/a2a";
 
-/** Best-effort: relay / delegation user rows often carry distinctive activity anchors. */
-export function inferUserSpeakerKind(item: ConversationHistoryItem): "relay" | "human" {
-  const a = item.activityAnchor.toLowerCase();
-  if (
-    a.includes("relay") ||
-    a.includes("delegat") ||
-    a.includes("sub_agent") ||
-    a.includes("subagent")
-  ) {
-    return "relay";
+function operationalBlockFromHistoryContent(
+  content: Extract<ConversationHistoryItem["content"], { type: "operational_event" }>,
+): OperationalContentBlock {
+  return {
+    type: "operational",
+    kind: content.kind,
+    severity: content.severity,
+    summary: content.summary,
+    detail: content.detail,
+    agentPackage: content.agent_package,
+    agentInstanceId: content.agent_instance_id,
+    failureClass: content.failure_class,
+    failureEvidence: content.failure_evidence,
+    oldStatus: content.old_status,
+    newStatus: content.new_status,
+  };
+}
+
+function pushOperationalHistoryRow(
+  rebuilt: ChatMessage[],
+  item: ConversationHistoryItem,
+  ts: Date,
+): void {
+  if (item.content.type !== "operational_event") return;
+  const id = `prov-op-${item.activityAnchor}`;
+  const row: ChatMessage = {
+    id,
+    role: "agent",
+    text: "",
+    timestamp: ts,
+    speakerKind: item.role === "host" ? "host" : "system",
+    contentBlocks: [operationalBlockFromHistoryContent(item.content)],
+  };
+  const existing = rebuilt.findIndex((m) => m.id === id);
+  if (existing >= 0) {
+    rebuilt[existing] = row;
+  } else {
+    rebuilt.push(row);
   }
-  return "human";
+}
+
+function speakerKindFromHistoryItem(item: ConversationHistoryItem): UserSpeakerKind {
+  return item.userSpeakerKind ?? "human";
 }
 
 /** Non-user message entries with `type: message` and visible text (assistant output in provenance). */
@@ -182,6 +217,15 @@ export function syncResumeHintsFromPage(
   }
 }
 
+function sortConversationHistoryItems(
+  items: ConversationHistoryItem[],
+): ConversationHistoryItem[] {
+  return [...items].sort((a, b) => {
+    if (a.timestampMs !== b.timestampMs) return a.timestampMs - b.timestampMs;
+    return a.activityAnchor.localeCompare(b.activityAnchor);
+  });
+}
+
 export function applyConversationHistoryPage(
   messages: Ref<ChatMessage[]>,
   page: ConversationHistoryPage,
@@ -194,7 +238,7 @@ export function applyConversationHistoryPage(
       );
     }
   };
-  const sorted = [...page.items].sort((a, b) => a.timestampMs - b.timestampMs);
+  const sorted = sortConversationHistoryItems(page.items);
   const rebuilt: ChatMessage[] = [];
   let turnOrdinal = 0;
   let activeAgentMsg: ChatMessage | null = null;
@@ -219,18 +263,23 @@ export function applyConversationHistoryPage(
     const ts = new Date(normalizeEpochMs(item.timestampMs));
     const content = item.content;
 
+    if (content.type === "operational_event") {
+      activeAgentMsg = null;
+      pushOperationalHistoryRow(rebuilt, item, ts);
+      continue;
+    }
+
     if (isUser) {
       turnOrdinal += 1;
       activeAgentMsg = null;
       sendDonePayloadSignaturesByTool = new Map<string, Set<string>>();
       const text = content.type === "message" ? content.text : "";
-      const sk = inferUserSpeakerKind(item);
       rebuilt.push({
         id: `prov-user-${item.activityAnchor}`,
         role: "user",
         text,
         timestamp: ts,
-        ...(sk === "relay" ? { speakerKind: "relay" as const } : {}),
+        speakerKind: speakerKindFromHistoryItem(item),
       });
       continue;
     }
@@ -300,13 +349,19 @@ export function applyConversationHistoryPage(
         const status = statusFromFsmPhase(content.fsm_phase);
         const completion = completionFromStatus(status) ?? "DONE";
         const block = getOrCreateToolBlockForAppend(msg, content.tool_name, "end");
+        const parsed = parseToolOutcome(content.outcome);
         pushSystemNoticeEvent(block, `FSM phase: ${content.fsm_phase}`, `FSM phase: ${content.fsm_phase}`);
         pushTerminalResultEvent(
           block,
-          "success",
-          typeof content.outcome === "string" ? content.outcome : JSON.stringify(content.outcome),
+          parsed.kind === "error" ? "error" : "success",
+          parsed.detail,
         );
-        block.completion = completion;
+        if (parsed.kind === "error") {
+          pushExecutionErrorDetailEvent(block, parsed.detail);
+          block.completion = "INTERRUPTED";
+        } else {
+          block.completion = completion;
+        }
         block.status = deriveToolStatus(block);
         break;
       }
@@ -352,23 +407,26 @@ export function applyConversationHistoryDelta(
   applyMode: ConversationHistoryDeltaApplyMode = ConversationHistoryDeltaApplyMode.Full,
 ): void {
   if (Array.isArray(page.items) && page.items.length > 0) {
-    const sorted = [...page.items].sort((a, b) => a.timestampMs - b.timestampMs);
+    const sorted = sortConversationHistoryItems(page.items);
     for (const item of sorted) {
       const isUser = item.role.toLowerCase() === "user";
       const ts = new Date(normalizeEpochMs(item.timestampMs));
       const content = item.content;
+      if (content.type === "operational_event") {
+        pushOperationalHistoryRow(messages.value, item, ts);
+        continue;
+      }
       if (isUser) {
         if (applyMode === ConversationHistoryDeltaApplyMode.StructuralOnly) {
           continue;
         }
         const text = content.type === "message" ? content.text : "";
-        const sk = inferUserSpeakerKind(item);
         messages.value.push({
           id: `prov-user-${item.activityAnchor}`,
           role: "user",
           text,
           timestamp: ts,
-          ...(sk === "relay" ? { speakerKind: "relay" as const } : {}),
+          speakerKind: speakerKindFromHistoryItem(item),
         });
         continue;
       }
@@ -422,13 +480,19 @@ export function applyConversationHistoryDelta(
           const status = statusFromFsmPhase(content.fsm_phase);
           const completion = completionFromStatus(status) ?? "DONE";
           const block = getOrCreateToolBlockForAppend(msg, content.tool_name, "end");
+          const parsed = parseToolOutcome(content.outcome);
           pushSystemNoticeEvent(block, `FSM phase: ${content.fsm_phase}`, `FSM phase: ${content.fsm_phase}`);
           pushTerminalResultEvent(
             block,
-            "success",
-            typeof content.outcome === "string" ? content.outcome : JSON.stringify(content.outcome),
+            parsed.kind === "error" ? "error" : "success",
+            parsed.detail,
           );
-          block.completion = completion;
+          if (parsed.kind === "error") {
+            pushExecutionErrorDetailEvent(block, parsed.detail);
+            block.completion = "INTERRUPTED";
+          } else {
+            block.completion = completion;
+          }
           block.status = deriveToolStatus(block);
           break;
         }

@@ -151,9 +151,15 @@ pub struct RefTable {
     history_text_by_activity: DashMap<String, Arc<str>>,
 }
 
+/// Stable registry key for durable `#N` mapping (`activity_anchor` + `source`).
 #[inline]
-fn history_stable_key(entry: &HistoryEntry) -> String {
+pub fn history_stable_key(entry: &HistoryEntry) -> String {
     format!("{}\0{}", entry.activity_anchor, entry.source)
+}
+
+#[inline]
+fn history_stable_key_parts(activity_anchor: &str, source: &str) -> String {
+    format!("{activity_anchor}\0{source}")
 }
 
 impl RefTable {
@@ -200,7 +206,7 @@ impl RefTable {
     /// [`insert_virtual_history`]), returns the **existing** [`HistoryRef`] and
     /// refreshes the stored text.
     pub fn insert_history(&self, entry: HistoryEntry, content: impl Into<Arc<str>>) -> HistoryRef {
-        let key = history_stable_key(&entry);
+        let key = history_stable_key_parts(&entry.activity_anchor, &entry.source);
         let content: Arc<str> = content.into();
         if let Some(existing) = self.history_stable_key_to_n.get(&key) {
             let n = *existing;
@@ -273,7 +279,7 @@ impl RefTable {
         content: impl Into<Arc<str>>,
     ) {
         debug_assert!(n > 0, "ref indices start at 1");
-        let key = history_stable_key(&entry);
+        let key = history_stable_key_parts(&entry.activity_anchor, &entry.source);
         if let Some(existing) = self.history_stable_key_to_n.get(&key) {
             assert_eq!(
                 *existing, n,
@@ -344,6 +350,11 @@ pub fn get_or_create_ref_table(tables: &ContextRefTables, context_id: &str) -> A
 /// Get the `RefTable` for a context ID if it exists; returns `None` if not yet created.
 pub fn get_ref_table(tables: &ContextRefTables, context_id: &str) -> Option<Arc<RefTable>> {
     tables.get(context_id).map(|r| r.clone())
+}
+
+/// Drop the in-process cache for a context (call after provenance writes that may change refs).
+pub fn invalidate_ref_table(tables: &ContextRefTables, context_id: &str) {
+    tables.remove(context_id);
 }
 
 #[cfg(test)]

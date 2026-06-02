@@ -1,6 +1,5 @@
 ---
 source: crates/baml-rt-api/tests/api_test.rs
-assertion_line: 1638
 expression: snapshot
 ---
 {
@@ -8,6 +7,6 @@ expression: snapshot
   "body": {
     "status": 400,
     "title": "Bad Request",
-    "detail": "invalid cursor: missing v1 prefix"
+    "detail": "invalid cursor: missing v2 prefix"
   }
 }

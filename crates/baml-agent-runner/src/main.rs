@@ -35,9 +35,7 @@ use std::{
 
 use anyhow::Context;
 use baml_rt_api::RuntimeProgressMeter;
-use baml_rt_core::{
-    CallbackStore, DeploymentManager, DeploymentStatus, ExponentialBackoff, IngressStore,
-};
+use baml_rt_core::{CallbackStore, DeploymentManager, DeploymentStatus, ExponentialBackoff};
 use baml_rt_llm_config::{
     FnoxFileSecretResolver, OverlaySecretResolver, SECRET_LINKS_CONFIG_KEY, SecretLinksState,
     apply_secret_links_state,
@@ -72,9 +70,9 @@ use clap::Parser;
 use config::{Cli, ProvenanceDb, parse_surreal_credentials, provenance_config_builder};
 use serde_json::Value;
 use services::{
-    ContextIndexServiceImpl, ContextMetricsServiceImpl, ConversationHistoryEventServiceImpl,
-    ConversationHistoryServiceImpl, EpisodeServiceImpl, MermaidServiceImpl, PlanningServiceImpl,
-    ProvenanceOpsServiceImpl,
+    ContextIndexServiceImpl, ContextMetricsServiceImpl, ConversationHistoryServiceImpl,
+    EpisodeServiceImpl, MermaidServiceImpl, ObservationEventServiceImpl, ObservationServiceImpl,
+    PlanningServiceImpl, ProvenanceOpsServiceImpl,
 };
 use stdio::unix_timestamp_secs;
 use tracing::{error, info, warn};
@@ -259,9 +257,6 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
     baml_tools_system::callback_store::install_callback_store(
         deployment_state.clone() as Arc<dyn CallbackStore>
     );
-    baml_rt_tools::ingress_store::install_ingress_store(
-        deployment_state.clone() as Arc<dyn IngressStore>
-    );
     let repository_service = Arc::new(RepositoryService::new(
         repository_store.clone() as Arc<dyn BlobStore>,
         repository_store.clone() as Arc<dyn MetadataStore>,
@@ -332,7 +327,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         external_tools_dirs: config.external_tools_dirs.clone(),
         sandbox_bind_roots: config.sandbox_bind_roots.clone(),
         runtime_progress: runtime_progress.clone(),
-        conversation_history_notify: None,
+        observation_notify: None,
     })
     .map_err(|e| anyhow::anyhow!("runner builder init: {e}"))?;
 
@@ -498,6 +493,13 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         }
     }
 
+    let runner = ready.runner();
+    let ingress_store: Arc<dyn baml_rt_core::IngressStore> = runner.deployment_state().clone();
+    let host_publish = Arc::new(baml_rt_core::HostPublishService::new(
+        Some(runner.host_ingress_recorder()),
+        Some(runner.clone() as Arc<dyn baml_rt_core::DeployedAgentLookup>),
+    ));
+
     let http_handle = if let Some(bind) = config.serve_http.clone() {
         let runner = ready.runner();
         let prov_config = runner.provenance_config();
@@ -512,10 +514,12 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         )) as Arc<dyn baml_rt_api::MermaidService>);
         let context_metrics = Some(Arc::new(ContextMetricsServiceImpl::new(store.clone()))
             as Arc<dyn baml_rt_api::ContextMetricsService>);
-        let provenance_ops = Some(Arc::new(ProvenanceOpsServiceImpl::new(store.clone()))
-            as Arc<dyn baml_rt_api::ProvenanceOpsService>);
-        let planning = Some(Arc::new(PlanningServiceImpl::new(store.clone()))
-            as Arc<dyn baml_rt_api::PlanningService>);
+        let planning = Arc::new(PlanningServiceImpl::new(store.clone()))
+            as Arc<dyn baml_rt_api::PlanningService>;
+        let provenance_ops = Arc::new(ProvenanceOpsServiceImpl::new(store.clone()))
+            as Arc<dyn baml_rt_api::ProvenanceOpsService>;
+        let observation = Some(Arc::new(ObservationServiceImpl::new(store.clone()))
+            as Arc<dyn baml_rt_api::ObservationService>);
         let registry_impl = ready.registry();
         let episode =
             Some(Arc::new(EpisodeServiceImpl::new(store)) as Arc<dyn baml_rt_api::EpisodeService>);
@@ -523,11 +527,10 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             runner.provenance_config().store().clone(),
         ))
             as Arc<dyn baml_rt_api::ConversationHistoryService>);
-        let conversation_history_events = Some(Arc::new(ConversationHistoryEventServiceImpl::new(
+        let observation_events = Some(Arc::new(ObservationEventServiceImpl::new(
             runner.clone(),
-            ready.conversation_history_tx(),
-        ))
-            as Arc<dyn baml_rt_api::ConversationHistoryEventService>);
+            ready.observation_tx(),
+        )) as Arc<dyn baml_rt_api::ObservationEventService>);
         let context_index = Some(Arc::new(ContextIndexServiceImpl::new(
             runner.provenance_config().store().clone(),
         )) as Arc<dyn baml_rt_api::ContextIndexService>);
@@ -554,6 +557,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         let webhook_intakes = load_configured_webhook_intakes(
             &InventoryCatalog::new(),
             Some(runner.provenance_config().config_service()),
+            Some(Arc::clone(&ingress_store)),
         )
         .await
         .context("loading configured webhook intakes")?;
@@ -564,11 +568,12 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         let api_config = baml_rt_api::ApiServerConfig {
             mermaid,
             context_metrics,
-            provenance_ops,
-            planning,
+            provenance_ops: Some(provenance_ops),
+            planning: Some(planning),
+            observation,
+            observation_events,
             episode,
             conversation_history,
-            conversation_history_events,
             context_index,
             deployment_manager: Some(runner.clone() as Arc<dyn DeploymentManager>),
             repository_url: Some(config.repository_url.clone()),
@@ -579,6 +584,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             cluster,
             web_dir,
             webhook_intakes,
+            host_publish: Some(Arc::clone(&host_publish)),
             ..baml_rt_api::ApiServerConfig::empty(
                 tool_catalog,
                 config_service,
@@ -620,6 +626,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             &InventoryCatalog::new(),
             Some(runner.provenance_config().config_service()),
             persisted_checkpoints.clone(),
+            Some(Arc::clone(&ingress_store)),
         )
         .await
         .context("loading configured event producers")?;
@@ -642,8 +649,10 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         });
 
         if let Some(interval) = effective_interval {
-            let mut dispatcher =
-                baml_rt_a2a::EventDispatcher::new(registry as Arc<dyn baml_rt_a2a::AgentRegistry>);
+            let mut dispatcher = baml_rt_a2a::EventDispatcher::new(
+                registry as Arc<dyn baml_rt_a2a::AgentRegistry>,
+                Arc::clone(&host_publish),
+            );
             for producer in configured_producers {
                 let producer_key = producer.producer_key().to_string();
                 let checkpoint = persisted_checkpoints
@@ -961,7 +970,7 @@ mod tests {
     use std::sync::Arc;
 
     use baml_rt::baml::BamlRuntimeManager;
-    use baml_rt_api::PlanningService;
+    use baml_rt_api::{PlanningScopeRequest, PlanningService};
     use baml_rt_core::{BamlRtError, bus::BusWithEffects};
     use baml_rt_llm_config::EmptySecretResolver;
     use baml_rt_provenance::SurrealStoreBuilder;
@@ -1068,7 +1077,7 @@ globalThis.onChatMessage = async function(_message) {
                 external_tools_dirs: Vec::new(),
                 sandbox_bind_roots: Vec::new(),
                 runtime_progress: baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
-                conversation_history_notify: None,
+                observation_notify: None,
             })
             .expect("test runner construction"),
         );
@@ -1676,7 +1685,14 @@ globalThis.onChatMessage = async function(_message) {
         let prov = test_provenance_config().await;
         let svc = PlanningServiceImpl::new(prov.store().clone());
         let result = svc
-            .planning_for_context("ctx-nonexistent-000")
+            .planning_for_scope(PlanningScopeRequest {
+                context_id: "ctx-nonexistent-000".to_string(),
+                task_id: None,
+                agent_package: None,
+                agent_id: None,
+                include_drift: false,
+                history_limit: 20,
+            })
             .await
             .expect("planning ok");
         assert!(result.tasks.is_empty());
@@ -1744,7 +1760,14 @@ globalThis.onChatMessage = async function(_message) {
 
         let svc = PlanningServiceImpl::new(store);
         let result = svc
-            .planning_for_context(context_id.as_str())
+            .planning_for_scope(PlanningScopeRequest {
+                context_id: context_id.as_str().to_string(),
+                task_id: None,
+                agent_package: None,
+                agent_id: None,
+                include_drift: false,
+                history_limit: 20,
+            })
             .await
             .expect("planning ok");
 

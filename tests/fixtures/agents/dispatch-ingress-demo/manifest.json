@@ -1,0 +1,18 @@
+{
+  "version": "1.0.0",
+  "name": "dispatch-ingress-demo",
+  "entry_point": "src/index.ts",
+  "signature": "dispatch-ingress-demo@1.0.0",
+  "tools": [],
+  "discovery": {
+    "description": "Fixture: dispatch ingress with per-record withTask units and transcript-only BAML",
+    "capabilities": ["dispatch:ingress-demo"],
+    "subscriptions": [
+      {
+        "schema_versions": ["host.source-records.v1"],
+        "source_kinds": ["clickup"]
+      }
+    ]
+  },
+  "tags": ["fixture"]
+}

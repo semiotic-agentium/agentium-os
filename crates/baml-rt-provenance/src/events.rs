@@ -22,7 +22,16 @@ use baml_rt_tools::prompt_message_char_count;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, Value as JsonValue};
 
-use crate::metamodel::TaskStatusKind;
+use crate::{
+    host_ingress_identity::{
+        activity_anchor_for_dispatch_outcome, activity_anchor_for_poll, dispatch_outcome_key,
+    },
+    host_ingress_types::{
+        HostDispatchFailureKind, HostDispatchRejectedSpec, HostIngressKind, HostIngressPollKey,
+        HostIngressSourceRef,
+    },
+    metamodel::TaskStatusKind,
+};
 
 // Process-local monotonic counter for provenance event IDs.
 //
@@ -706,6 +715,40 @@ pub enum ProvEventData {
         dispatch_context_id: ContextId,
         dispatch_task_id: TaskId,
         agent_id: AgentId,
+    },
+    /// Host recorded one task-daemon / producer poll window (`host.source-records.v1`).
+    HostSourcePollRecorded {
+        source_kind: String,
+        source_key: String,
+        source_cursor: String,
+        schema_version: String,
+        record_count: usize,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        source_message_ts: Vec<String>,
+    },
+    /// Host delivered a source-records batch to an agent instance.
+    HostDispatchAccepted {
+        routing_key: String,
+        schema_version: String,
+        target_package: String,
+        target_instance: String,
+        source_kind: String,
+        source_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_agent_id: Option<AgentId>,
+    },
+    /// Host dispatch to a subscriber failed (agent rejected or transport error).
+    HostDispatchRejected {
+        routing_key: String,
+        schema_version: String,
+        target_package: String,
+        target_instance: String,
+        source_kind: String,
+        source_key: String,
+        detail: String,
+        failure_kind: HostDispatchFailureKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_agent_id: Option<AgentId>,
     },
 }
 
@@ -1804,6 +1847,111 @@ impl ProvEvent {
                 dispatch_context_id,
                 dispatch_task_id,
                 agent_id,
+            },
+        })
+    }
+
+    pub fn host_source_poll_recorded(
+        context_id: ContextId,
+        source_kind: String,
+        source_key: String,
+        source_cursor: String,
+        schema_version: String,
+        record_count: usize,
+        source_message_ts: Vec<String>,
+    ) -> Self {
+        let poll_key = HostIngressPollKey {
+            context_id: context_id.clone(),
+            source_kind: source_kind.clone(),
+            source_key: source_key.clone(),
+            source_cursor: source_cursor.clone(),
+        };
+        ProvEvent::Global(GlobalEvent {
+            id: activity_anchor_for_poll(&poll_key),
+            context_id,
+            timestamp_ms: now_millis(),
+            data: ProvEventData::HostSourcePollRecorded {
+                source_kind,
+                source_key,
+                source_cursor,
+                schema_version,
+                record_count,
+                source_message_ts,
+            },
+        })
+    }
+
+    pub fn host_dispatch_accepted(
+        context_id: ContextId,
+        routing_key: String,
+        schema_version: String,
+        target: baml_rt_core::DispatchTarget,
+        source_kind: String,
+        source_key: String,
+    ) -> Self {
+        let outcome = dispatch_outcome_key(
+            context_id.clone(),
+            HostIngressKind::DispatchAccepted,
+            &routing_key,
+            target.package(),
+            target.instance(),
+            HostIngressSourceRef::from_fields(&source_kind, &source_key),
+        );
+        ProvEvent::Global(GlobalEvent {
+            id: activity_anchor_for_dispatch_outcome(&outcome),
+            context_id,
+            timestamp_ms: now_millis(),
+            data: ProvEventData::HostDispatchAccepted {
+                routing_key,
+                schema_version,
+                target_package: target.package().to_string(),
+                target_instance: target.instance().to_string(),
+                source_kind,
+                source_key,
+                target_agent_id: target.agent_id,
+            },
+        })
+    }
+
+    pub fn host_dispatch_rejected(spec: HostDispatchRejectedSpec) -> Self {
+        let HostDispatchRejectedSpec {
+            context_id,
+            routing_key,
+            schema_version,
+            target,
+            source,
+            detail,
+            failure_kind,
+        } = spec;
+        let outcome = dispatch_outcome_key(
+            context_id.clone(),
+            HostIngressKind::from_dispatch_failure(failure_kind),
+            routing_key,
+            target.package(),
+            target.instance(),
+            source,
+        );
+        let (source_kind, source_key) = match &outcome.source {
+            HostIngressSourceRef::SourceRecords { kind, key } => (kind.clone(), key.clone()),
+            HostIngressSourceRef::Unspecified => (
+                HostIngressSourceRef::UNSPECIFIED_KIND.to_string(),
+                HostIngressSourceRef::UNSPECIFIED_KEY.to_string(),
+            ),
+        };
+        ProvEvent::Global(GlobalEvent {
+            id: activity_anchor_for_dispatch_outcome(&outcome),
+            context_id,
+            timestamp_ms: now_millis(),
+            data: ProvEventData::HostDispatchRejected {
+                routing_key: outcome.routing_key.as_str().to_string(),
+                schema_version: schema_version.as_str().to_string(),
+                target_package: outcome.target_package,
+                target_instance: outcome.target_instance,
+                source_kind,
+                source_key,
+                detail,
+                failure_kind,
+                target_agent_id: target.agent_id,
             },
         })
     }

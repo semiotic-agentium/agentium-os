@@ -21,7 +21,7 @@ class ClickUpIntent {
   operation_kind "read" | "write" | "delete" @description("Broad category: read (list/get), write (create/update), delete.")
 }
 
-function InferClickUpIntent(user_message: string) -> NeedClarification | NotRelevant | ClickUpIntent {
+function InferClickUpIntent() -> NeedClarification | NotRelevant | ClickUpIntent {
   client DefaultClient
   prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
@@ -35,6 +35,8 @@ Tool and operation types:
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+Current step instructions:
+
 Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
@@ -61,6 +63,9 @@ You are the intent classifier for a ClickUp workspace assistant.
     - "list tasks assigned to me" → list tasks assigned to me, operation_kind "read"
     - "create a task called Deploy v2 in the backend list" → create that task, operation_kind "write"
     - "delete the task fix login bug" → delete that task, operation_kind "delete"
+    - Host lifecycle ingress batches (clickup-created / clickup-terminal / clickup-removed record keys) →
+      reconcile via read or write tool passes; prefer "read" to verify new or terminal tasks, "write" only when
+      an explicit update is required; NEVER not_relevant when the message describes ClickUp lifecycle records.
     - "do the thing" → ask which task or workspace they mean
     - "send an email to my boss" → not relevant to ClickUp tasks or workspaces
     - "what is the weather?" → not relevant to ClickUp tasks or workspaces
@@ -73,8 +78,7 @@ You are the intent classifier for a ClickUp workspace assistant.
     "fetch the data", "use tool calls to finish"), carry forward the SAME intent and
     operation_kind as the prior turn — do NOT ask again.
 
-    {{ _.role('user') }}
-    {{ user_message }}
+    Classify from Session history above (host ingress poll and per-unit task lines).
 
 {{ ctx.output_format }}
 
@@ -88,9 +92,23 @@ Do not add text before or after the JSON object.
 "#
 }
 
-/// Phase 2 — Plan using shared StandardStructuredPlan / StandardAgentPlanStep (same contract as Slack, Notion, etc.).
-/// Sentinels are host-local: clickup-execute vs clickup-format.
-function PlanClickUpWork(intent: string, operation_kind: string) -> StandardStructuredPlan {
+/// One row in the ClickUp host plan — wire keys match coordination `StandardAgentPlanStep`.
+class ClickUpPlanStep {
+  agent_package string @description("Sentinel only: clickup-execute (one ClickUp tool session pass: navigate/list/get/create/update/delete) or clickup-format (final user answer from session evidence; no new API calls). Never clickup-agent, support/clickup, or discovery agent_package names.")
+  agent_instance_id string @description("Always the literal default for this host: default")
+  sub_message string @description("clickup-execute: concrete executor instruction (IDs, operation, limits). clickup-format: how to frame the final reply (counts, table, summary).")
+}
+
+/// ClickUp host structured plan — top-level keys align with shared StandardStructuredPlan for coordination code.
+class ClickUpStructuredPlan {
+  intent_description string @description("One sentence: user-visible outcome (not low-level API mechanics).")
+  objective string @description("One sentence: what this turn achieves (may echo intent).")
+  plan_steps ClickUpPlanStep[] @description("Ordered steps: at least one clickup-execute, then exactly one clickup-format as the LAST step. Extra clickup-execute rows only when separate tool passes are needed.")
+  citations string[]? @description("Optional #N / @N line refs for observability when grounded in history; otherwise omit or [].")
+}
+
+/// Phase 2 — Plan ClickUp work. Contract is in `ClickUpStructuredPlan` / `ClickUpPlanStep` and `{{ ctx.output_format }}`.
+function PlanClickUpWork(intent: string, operation_kind: string) -> ClickUpStructuredPlan {
   client DefaultClient
   prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
@@ -104,6 +122,8 @@ Tool and operation types:
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+Current step instructions:
+
 Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
@@ -112,12 +132,12 @@ You are the planner for a ClickUp workspace assistant.
     Operation kind: {{ operation_kind }}
     Plan only — do NOT call tools or fetch data.
 
-    Output StandardStructuredPlan:
-    - intent_description — one sentence, user-level outcome (not low-level API steps).
+    Output ClickUpStructuredPlan (not StandardStructuredPlan):
+    - intent_description — one sentence, user-visible outcome (not low-level API steps).
     - objective — one sentence, what we achieve this turn (may echo intent).
-    - plan_steps — ordered StandardAgentPlanStep rows. For THIS host only (not real multi-agent delegation):
+    - plan_steps — ordered ClickUpPlanStep rows. For THIS host only (not multi-agent delegation):
 
-    SENTINEL agent_package values (required):
+    SENTINEL agent_package values (required — never use clickup-agent, support/clickup, or names from discover_agents):
     - clickup-execute — one executor pass: navigate/list/get/create/update/delete via the ClickUp tool session.
       sub_message = concrete instruction for this hop (which IDs to discover, which operation, limits, task_id, etc.).
     - clickup-format — final user-facing answer from tool results already gathered this turn; no new API calls.
@@ -135,7 +155,7 @@ You are the planner for a ClickUp workspace assistant.
 
 {{ ctx.output_format }}
 
-Return exactly one `StandardStructuredPlan` JSON object.
+Return exactly one `ClickUpStructuredPlan` JSON object.
 Do not add text before or after the JSON object.
 "#
 }
@@ -175,8 +195,6 @@ function ChooseClickUpAction(
     Results from previous steps (use IDs and data from here):
     {{ prior_results }}
     {% endif %}
-
-    session_context: {{ session_context }}
   "#
 }
 

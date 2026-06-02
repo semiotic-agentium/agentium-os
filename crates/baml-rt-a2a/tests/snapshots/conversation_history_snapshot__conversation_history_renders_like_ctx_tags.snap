@@ -4,16 +4,16 @@ expression: history
 ---
 [
   {
-    "role": "user",
-    "content": "#2 what can you do"
-  },
-  {
     "role": "tool",
-    "content": "#3 discover_agents query=\"all\""
+    "content": "#1 discover_agents query=\"all\""
   },
   {
     "role": "tool",
     "content": "system/discover_agents:\n     1\t- name: crm-agent\n     2\t  description: Business reporting agent\n     3\t- name: dev-agent\n     4\t  description: Code generation agent\n"
+  },
+  {
+    "role": "user",
+    "content": "#2 what can you do"
   },
   {
     "role": "tool",

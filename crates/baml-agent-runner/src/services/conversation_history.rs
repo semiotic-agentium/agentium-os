@@ -2,12 +2,14 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Conversation history service backed by provenance query API.
+//! Conversation history service backed by provenance transcript engine.
 
 use std::sync::Arc;
 
 use baml_rt_provenance::{
-    ProvenanceQueryApi as _, context_metrics_queries, resolve_resume_ui_hints,
+    EventOrder, LoadedObservation, PageVersionEnvelope, PromptOpsVersionRow, ResumeVersionHints,
+    TranscriptEngine, TranscriptPageRequest, TranscriptProjectionProfile,
+    observation_scope_from_history, observation_version_page, resolve_resume_ui_hints,
 };
 
 use super::metrics::{value_as_string, value_as_u64};
@@ -21,6 +23,67 @@ impl ConversationHistoryServiceImpl {
         Self { store }
     }
 
+    fn transcript_page_request(
+        request: &baml_rt_api::ConversationHistoryRequest,
+        after_event_order: u64,
+    ) -> TranscriptPageRequest {
+        let scope = observation_scope_from_history(
+            request.context_id.clone(),
+            request.task_id.clone(),
+            request.agent_package.clone(),
+            if after_event_order > 0 {
+                Some(after_event_order)
+            } else {
+                None
+            },
+        );
+        let profile = match request.profile {
+            baml_rt_api::ConversationHistoryProfile::Full => {
+                TranscriptProjectionProfile::OperatorTimeline
+            }
+            baml_rt_api::ConversationHistoryProfile::Compact => {
+                TranscriptProjectionProfile::OperatorTimeline
+            }
+        };
+        TranscriptPageRequest {
+            scope,
+            limit: request.page.limit(),
+            profile,
+        }
+    }
+
+    fn finalize_version(
+        page: &mut baml_rt_api::ConversationHistoryPageDto,
+        loaded: &LoadedObservation,
+    ) {
+        page.llm_call_count = loaded.llm_call_count();
+        let prompt_ops: Vec<PromptOpsVersionRow<'_>> = page
+            .llm_prompt_operations
+            .iter()
+            .map(|op| PromptOpsVersionRow {
+                activity_anchor: &op.activity_anchor,
+                event_order: op.event_order,
+                prompt_context_bytes_current: op.prompt_context_bytes_current,
+                prompt_message_chars_current: op.prompt_message_chars_current,
+            })
+            .collect();
+        page.version = observation_version_page(
+            &loaded.transcript,
+            loaded.metrics.as_ref(),
+            PageVersionEnvelope {
+                prompt_ops: &prompt_ops,
+                prompt_context_bytes_session_current: page.prompt_context_bytes_session_current,
+                prompt_message_chars_session_current: page.prompt_message_chars_session_current,
+                resume: ResumeVersionHints {
+                    awaiting_input: page.awaiting_input,
+                    input_required_prompt: page.input_required_prompt.as_deref(),
+                },
+            },
+        )
+        .as_str()
+        .to_string();
+    }
+
     async fn enrich_prompt_metrics(
         &self,
         page: &mut baml_rt_api::ConversationHistoryPageDto,
@@ -29,9 +92,13 @@ impl ConversationHistoryServiceImpl {
         let ctx = page.context_id.as_str();
         let tid = page.task_id.as_deref();
 
-        let tail = context_metrics_queries::session_prompt_context_tail(&self.store, ctx, tid)
-            .await
-            .map_err(|e| baml_rt_api::ConversationHistoryError::Other(Box::new(e)))?;
+        let tail = baml_rt_provenance::context_metrics_queries::session_prompt_context_tail(
+            &self.store,
+            ctx,
+            tid,
+        )
+        .await
+        .map_err(|e| baml_rt_api::ConversationHistoryError::Other(Box::new(e)))?;
 
         page.prompt_context_bytes_session_current = tail
             .as_ref()
@@ -41,15 +108,16 @@ impl ConversationHistoryServiceImpl {
             .map(|r| value_as_u64(r.get("prompt_message_chars_current")));
 
         let max_eo = page.max_event_order;
-        let op_rows = context_metrics_queries::llm_prompt_operations_for_context(
-            &self.store,
-            ctx,
-            tid,
-            max_eo,
-            after_exclusive,
-        )
-        .await
-        .map_err(|e| baml_rt_api::ConversationHistoryError::Other(Box::new(e)))?;
+        let op_rows =
+            baml_rt_provenance::context_metrics_queries::llm_prompt_operations_for_context(
+                &self.store,
+                ctx,
+                tid,
+                max_eo,
+                after_exclusive,
+            )
+            .await
+            .map_err(|e| baml_rt_api::ConversationHistoryError::Other(Box::new(e)))?;
 
         page.llm_prompt_operations = op_rows
             .into_iter()
@@ -79,14 +147,6 @@ impl ConversationHistoryServiceImpl {
             page.max_event_order = page.max_event_order.max(op.event_order);
         }
 
-        page.version = baml_rt_api::page_version(
-            &page.items,
-            &page.llm_prompt_operations,
-            page.prompt_context_bytes_session_current,
-            page.prompt_message_chars_session_current,
-            page.awaiting_input,
-            page.input_required_prompt.as_deref(),
-        );
         Ok(())
     }
 
@@ -109,14 +169,6 @@ impl ConversationHistoryServiceImpl {
         }
         page.awaiting_input = hints.awaiting_input;
         page.input_required_prompt = hints.input_required_prompt;
-        page.version = baml_rt_api::page_version(
-            &page.items,
-            &page.llm_prompt_operations,
-            page.prompt_context_bytes_session_current,
-            page.prompt_message_chars_session_current,
-            page.awaiting_input,
-            page.input_required_prompt.as_deref(),
-        );
         Ok(())
     }
 }
@@ -130,23 +182,39 @@ impl baml_rt_api::ConversationHistoryService for ConversationHistoryServiceImpl 
         baml_rt_api::ConversationHistoryPageDto,
         baml_rt_api::ConversationHistoryError,
     > {
-        let rows = self
-            .store
-            .query_conversation_context(&request.context_id, None, request.task_id.as_ref())
+        let after = request
+            .after_event_order_from_cursor()
+            .map_err(|e| baml_rt_api::ConversationHistoryError::Other(Box::new(e)))?;
+        let transcript_req = Self::transcript_page_request(request, after);
+        let transcript_page = TranscriptEngine::page(self.store.as_ref(), transcript_req)
             .await
             .map_err(|e| baml_rt_api::ConversationHistoryError::Other(Box::new(e)))?;
 
-        let mut page = baml_rt_api::paginate_items(rows, request)?;
-        if matches!(
-            request.profile,
-            baml_rt_api::ConversationHistoryProfile::Compact
-        ) {
-            page.items = page
-                .items
-                .into_iter()
-                .map(|item| baml_rt_api::profile_filter(item, request.profile))
-                .collect();
-        }
+        let scope = transcript_page.scope.clone();
+        let llm_call_count = self
+            .store
+            .load_task_metrics(&scope)
+            .await
+            .map_err(|e| baml_rt_api::ConversationHistoryError::Other(Box::new(e)))?
+            .map(|m| m.llm_call_count)
+            .unwrap_or(0);
+
+        let items = transcript_page.items.clone();
+        let mut page = baml_rt_api::page_from_transcript_slice(
+            transcript_page.items,
+            request,
+            llm_call_count,
+            transcript_page.next_after_event_order,
+        );
+        page.items = baml_rt_api::apply_conversation_history_profile(page.items, request.profile);
+
+        let loaded = LoadedObservation {
+            scope,
+            transcript: items,
+            max_event_order: EventOrder(page.max_event_order),
+            metrics: None,
+        };
+
         self.enrich_prompt_metrics(&mut page, None).await?;
         self.enrich_resume_ui_hints(
             &mut page,
@@ -154,6 +222,7 @@ impl baml_rt_api::ConversationHistoryService for ConversationHistoryServiceImpl 
             request.task_id.as_ref(),
         )
         .await?;
+        Self::finalize_version(&mut page, &loaded);
         Ok(page)
     }
 
@@ -164,30 +233,24 @@ impl baml_rt_api::ConversationHistoryService for ConversationHistoryServiceImpl 
         baml_rt_api::ConversationHistoryPageDto,
         baml_rt_api::ConversationHistoryError,
     > {
-        let rows = self
+        let scope = observation_scope_from_history(
+            request.context_id.clone(),
+            request.task_id.clone(),
+            request.agent_package.clone(),
+            Some(request.after_event_order),
+        );
+        let (loaded, delta_rows) = self
             .store
-            .query_conversation_context_after(
-                &request.context_id,
-                request.after_event_order,
-                Some(request.limit),
-                request.task_id.as_ref(),
-            )
+            .load_observation_delta(scope, EventOrder(request.after_event_order), request.limit)
             .await
             .map_err(|e| baml_rt_api::ConversationHistoryError::Other(Box::new(e)))?;
 
-        let mut items = rows
+        let mut items = delta_rows
             .into_iter()
             .map(baml_rt_api::ConversationHistoryItemDto::from)
             .collect::<Vec<_>>();
-        if matches!(
-            request.profile,
-            baml_rt_api::ConversationHistoryProfile::Compact
-        ) {
-            items = items
-                .into_iter()
-                .map(|item| baml_rt_api::profile_filter(item, request.profile))
-                .collect();
-        }
+        items = baml_rt_api::apply_conversation_history_profile(items, request.profile);
+
         let max_event_order = items
             .iter()
             .map(|item| item.timestamp_ms)
@@ -206,6 +269,7 @@ impl baml_rt_api::ConversationHistoryService for ConversationHistoryServiceImpl 
             llm_prompt_operations: Vec::new(),
             awaiting_input: false,
             input_required_prompt: None,
+            llm_call_count: loaded.llm_call_count(),
         };
 
         let after_exclusive = if max_event_order > request.after_event_order {
@@ -222,6 +286,7 @@ impl baml_rt_api::ConversationHistoryService for ConversationHistoryServiceImpl 
             request.task_id.as_ref(),
         )
         .await?;
+        Self::finalize_version(&mut page, &loaded);
         Ok(page)
     }
 }

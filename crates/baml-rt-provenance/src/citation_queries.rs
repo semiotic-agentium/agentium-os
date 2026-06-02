@@ -20,6 +20,8 @@
 //! resolving ref numbers to activity anchors via RefTable at call time,
 //! before the emission is recorded.
 
+use std::collections::HashMap;
+
 use baml_rt_core::Citation;
 use serde_json::Value;
 
@@ -110,6 +112,59 @@ pub async fn query_plan_citations(
         .filter_map(|v| parse_citation_row(&v))
         .filter(|e| !e.citations.is_empty())
         .collect())
+}
+
+/// Citations for plan steps across multiple plans in one graph traversal.
+pub async fn query_plan_citations_for_plans(
+    store: &SurrealProvenanceStore,
+    task_id: &str,
+    plan_ids: &[String],
+) -> Result<HashMap<String, Vec<CitationEntry>>> {
+    if plan_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let plan_node_ids: Vec<String> = plan_ids
+        .iter()
+        .map(|plan_id| crate::id_semantics::plan_entity_id_string_raw(task_id, plan_id))
+        .collect();
+    let in_list = plan_node_ids
+        .iter()
+        .map(|id| format!("'{id}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let derived = crate::vocabulary::prov_relations::WAS_DERIVED_FROM;
+    let query = format!(
+        "SELECT id, props.citations AS citations, \
+               props.a2a_task_id AS task_id, \
+               props.a2a_step_id AS step_id, \
+               props.a2a_plan_id AS plan_id \
+        FROM {TBL_NODE} \
+        WHERE label = 'PlanStep' \
+          AND node_id IN (SELECT VALUE from_id FROM {TBL_EDGE} \
+            WHERE to_id IN [{in_list}] AND rel_type = '{derived}' AND from_label = 'PlanStep') \
+          AND props.citations IS NOT NONE"
+    );
+    let response = store.db().query(&query).await.map_err(map_surreal_error)?;
+    let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
+    let mut by_plan: HashMap<String, Vec<CitationEntry>> = HashMap::new();
+    for v in rows {
+        let Some(entry) = parse_citation_row(&v) else {
+            continue;
+        };
+        if entry.citations.is_empty() {
+            continue;
+        }
+        let Some(plan_id) = v
+            .get("plan_id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        by_plan.entry(plan_id).or_default().push(entry);
+    }
+    Ok(by_plan)
 }
 
 /// Coverage analysis: find plan steps within a task that have no citations.

@@ -25,6 +25,9 @@ use crate::view::{
 pub fn provenance_item_to_projection_item(
     item: ProvenanceConversationContextItem,
 ) -> Option<PromptProjectionItem> {
+    if !item.content.is_meaningful() {
+        return None;
+    }
     let content = match item.content {
         ConversationItemContent::Message { text, citations } => PromptProjectionContent::Message {
             text,
@@ -48,6 +51,8 @@ pub fn provenance_item_to_projection_item(
             },
             ToolOutcome::StatusOnly => return None,
         },
+        ConversationItemContent::Operational(_) => return None,
+        ConversationItemContent::Planning(_) => return None,
         ConversationItemContent::SessionStep(step) => {
             let projection_op = match step.op {
                 SessionStepOp::Open => SessionStepProjection::Open,
@@ -108,10 +113,6 @@ pub fn projection_pairs_for_conv_item(
     archive_reader: Option<ArchiveReader<'_>>,
     opts: ProjectionRenderOptions,
 ) -> Option<Vec<(String, String)>> {
-    if !item.content.is_meaningful() {
-        return None;
-    }
-
     let proj = provenance_item_to_projection_item(item.clone())?;
     Some(projection_history_pairs(
         &proj,
@@ -127,6 +128,25 @@ mod tests {
     use baml_rt_core::{Citation, ids::ActivityAnchorId};
 
     use super::*;
+    use crate::view::{ToolCallContent, ToolSessionPhase};
+
+    #[test]
+    fn session_open_tool_call_skipped_at_projection_boundary() {
+        use serde_json::json;
+
+        let item = ProvenanceConversationContextItem {
+            timestamp_ms: 1,
+            activity_anchor: ActivityAnchorId::from_counter(1),
+            role: "tool".into(),
+            content: ConversationItemContent::ToolCall(ToolCallContent {
+                tool_name: "support/notion".into(),
+                args: json!({ "step": { "op": "Open" } }),
+                fsm_phase: ToolSessionPhase::Open,
+            }),
+            user_speaker_kind: None,
+        };
+        assert!(provenance_item_to_projection_item(item).is_none());
+    }
 
     #[test]
     fn message_maps_citations_into_projection() {
@@ -139,6 +159,7 @@ mod tests {
                 text: "hi".into(),
                 citations: vec![c],
             },
+            user_speaker_kind: None,
         };
         let p = provenance_item_to_projection_item(item).expect("proj");
         match p.content {

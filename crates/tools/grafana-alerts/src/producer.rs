@@ -12,13 +12,13 @@ use std::{collections::HashSet, sync::Arc};
 
 use async_trait::async_trait;
 use baml_rt_core::{
-    AgentDispatchRoutingKey, BamlRtError, EventSchemaVersion, EventSourceKind, ProducedEvent,
-    Result, clock_events,
+    AgentDispatchRoutingKey, BamlRtError, EventSchemaVersion, EventSourceKind, IngressStore,
+    ProducedEvent, Result, clock_events,
     ingress_store::{IngressId, IngressItem},
 };
 use baml_rt_tools::{
     EventProducer, EventProducerBuildContext, EventProducerBuildFuture, EventProducerProvider,
-    ProducerCheckpoint, ProducerPoll, ingress_store::ingress_store,
+    ProducerCheckpoint, ProducerPoll,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
@@ -68,6 +68,7 @@ impl InboxCheckpoint {
 }
 
 pub struct GrafanaAlertEventProducer {
+    store: Arc<dyn IngressStore>,
     producer_key: &'static str,
     routing_key: AgentDispatchRoutingKey,
     schema_version: EventSchemaVersion,
@@ -75,7 +76,7 @@ pub struct GrafanaAlertEventProducer {
 }
 
 impl GrafanaAlertEventProducer {
-    pub fn new() -> Result<Self> {
+    pub fn new(store: Arc<dyn IngressStore>) -> Result<Self> {
         let routing_key = AgentDispatchRoutingKey::parse(GRAFANA_ROUTING_KEY).ok_or_else(|| {
             BamlRtError::InvalidArgument(format!(
                 "invalid Grafana routing key '{GRAFANA_ROUTING_KEY}'"
@@ -93,6 +94,7 @@ impl GrafanaAlertEventProducer {
             ))
         })?;
         Ok(Self {
+            store,
             producer_key: GRAFANA_INBOX_PRODUCER_KEY,
             routing_key,
             schema_version,
@@ -138,11 +140,7 @@ impl EventProducer for GrafanaAlertEventProducer {
     }
 
     async fn poll(&self, checkpoint: &ProducerCheckpoint) -> Result<ProducerPoll> {
-        let store = ingress_store().ok_or_else(|| {
-            BamlRtError::InvalidArgument(
-                "grafana-alerts producer requires an installed ingress store".to_string(),
-            )
-        })?;
+        let store = self.store.as_ref();
         let now_ms = baml_rt_core::now_unix_ms(clock_events::GRAFANA_INGRESS);
         let checkpoint_state = InboxCheckpoint::from_checkpoint(checkpoint);
         let reconciled = !checkpoint_state.delivered_ingress_ids.is_empty();
@@ -218,14 +216,13 @@ impl EventProducer for GrafanaAlertEventProducer {
 }
 
 pub fn build_grafana_alert_event_producers(
-    _ctx: EventProducerBuildContext,
+    ctx: EventProducerBuildContext,
 ) -> EventProducerBuildFuture {
     Box::pin(async move {
-        if ingress_store().is_none() {
-            // No ingress store installed → nothing to drain.
+        let Some(store) = ctx.ingress_store else {
             return Ok(Vec::new());
-        }
-        let producer: Arc<dyn EventProducer> = Arc::new(GrafanaAlertEventProducer::new()?);
+        };
+        let producer: Arc<dyn EventProducer> = Arc::new(GrafanaAlertEventProducer::new(store)?);
         Ok(vec![producer])
     })
 }

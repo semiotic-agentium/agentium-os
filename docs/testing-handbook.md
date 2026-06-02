@@ -58,11 +58,11 @@ We keep **one authoritative E2E per behavior** to avoid overlapping coverage and
 - **Streaming E2E (full agent → stream):**
   `crates/baml-agent-runner/tests/runner_test.rs`
   - `test_e2e_stream_baml_tool`, `test_e2e_stream_js_tool` — full runner + fixture package + stream.
-- **Semantic-ingress dispatch E2E (raw Slack source → downstream route):**
-  `crates/baml-agent-runner/tests/runner_semantic_ingress_test.rs`
-  - `semantic_ingress_dispatch_http_routes_raw_slack_source_records_to_task_management_creation_capability` — authoritative for `semantic-ingress-agent` HTTP dispatch routing from raw Slack source records to downstream task-management delegation.
-  - `slack_producer_poll_and_deliver_reaches_semantic_ingress_and_downstream_delegation` — authoritative stitched end-to-end proof for real Slack producer polling, host delivery, semantic ingress, and downstream delegation.
-  - `semantic_ingress_dispatch_http_rejects_noncanonical_raw_source_routing_key` — authoritative for the raw-source routing-key guard on the semantic-ingress dispatch surface.
+- **Slack source ingress dispatch E2E (raw Slack source → downstream route):**
+  `crates/baml-agent-runner/tests/runner_slack_source_ingress_test.rs`
+  - `slack_source_ingress_dispatch_http_routes_raw_slack_source_records_to_task_management_creation_capability` — authoritative for `slack-agent` HTTP dispatch routing from raw Slack source records to downstream task-management delegation.
+  - `slack_inbox_producer_delivers_durable_ingress_to_slack_agent_and_downstream_delegation` — runner inbox drain → slack-agent source ingress → downstream delegation (REST channel polling E2E is in `task-daemon` tests).
+  - `slack_source_ingress_dispatch_http_rejects_noncanonical_raw_source_routing_key` — authoritative for the raw-source routing-key guard on the slack-agent dispatch surface.
 - **Tool/LLM E2E (single request):**
   `crates/baml-rt/tests/tool_calling_test.rs`
   - `test_e2e_voidship_baml_tool_calling` — single-request tool E2E from fixture.
@@ -112,7 +112,7 @@ Single source of truth for each behavior; do not add overlapping coverage elsewh
 
 | Behavior | Authoritative location | Do not duplicate in |
 |----------|-------------------------|---------------------|
-| Semantic-ingress raw-source routing, stitched Slack producer delivery, and routing-key guard | `baml-agent-runner/tests/runner_semantic_ingress_test.rs` — `semantic_ingress_dispatch_http_routes_raw_slack_source_records_to_task_management_creation_capability`, `slack_producer_poll_and_deliver_reaches_semantic_ingress_and_downstream_delegation`, `semantic_ingress_dispatch_http_rejects_noncanonical_raw_source_routing_key` | Additional runner tests re-covering the same raw-Slack semantic-ingress contract in `workflow-intake` or elsewhere |
+| Slack source ingress raw-source routing, inbox delivery, and routing-key guard | `baml-agent-runner/tests/runner_slack_source_ingress_test.rs` — `slack_source_ingress_dispatch_http_routes_raw_slack_source_records_to_task_management_creation_capability`, `slack_inbox_producer_delivers_durable_ingress_to_slack_agent_and_downstream_delegation`, `slack_source_ingress_dispatch_http_rejects_noncanonical_raw_source_routing_key` | Additional runner tests re-covering the same raw-Slack source-ingress contract elsewhere |
 | Schema/function discovery | `baml-rt/tests/invoke_test.rs` — `test_load_schema_discovers_functions` | `execution_test.rs` or other invoke tests |
 | SimpleGreeting invocation (direct runtime) | `baml-rt/tests/invoke_test.rs` — `test_invoke_simple_greeting`; `execution_test.rs` — `test_load_and_execute_simple_greeting` (superset: list + invoke) | Additional tests that only assert “invoke SimpleGreeting” via same API |
 | Tool result contract (no success wrapper, steps/result shape) | `baml-rt/tests/contracts_test.rs` — one direct BAML path, one JS-wrapper path | Extra contract tests with same setup and same assertions |

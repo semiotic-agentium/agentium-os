@@ -13,9 +13,11 @@ use serde_json::{Map, Value};
 
 use super::{
     SurrealProvenanceStore,
+    agent_runtime_index::{
+        TaskAgentPackageCheck, normalize_agent_field_for_ops, task_agent_package_check,
+    },
     helpers::{
-        check_and_take_zero, json_value_from_embedded_string, map_surreal_error,
-        normalize_payload_text_query, parse_json_object_field,
+        json_value_from_embedded_string, normalize_payload_text_query, parse_json_object_field,
     },
     payload::{
         ParsedArchiveRef, archive_payload_from_record, archive_ref_for_activity,
@@ -25,9 +27,11 @@ use super::{
 use crate::{
     error::{ProvenanceError, Result},
     metamodel::{
-        AgentPackage, AgentRuntimeInstanceNodeId, ContextNodeId, EdgeProjection, FilterOp,
-        GraphQuery, ScopeState, SemanticEdge, TaskExecutionNodeId, TaskNodeId, keys, labels,
+        AgentRuntimeInstanceNodeId, ContextNodeId, EdgeProjection, FilterOp, GraphQuery,
+        ScopeState, SemanticEdge, TaskExecutionNodeId, TaskNodeId, keys, labels,
     },
+    observation::ops::build_ops_summary,
+    ops_types::{ProvenanceOpsAppliedCaps, ProvenanceOpsHotspotGroup, ProvenanceOpsRow},
     store::{
         ArchiveRef, ProvenanceArchiveRecord, ProvenanceOpsFilters, ProvenanceOpsQuery,
         ProvenanceOpsQueryRequest, ProvenanceOpsQueryResponse, ProvenanceOpsResource,
@@ -36,49 +40,12 @@ use crate::{
 };
 
 impl SurrealProvenanceStore {
-    /// Load agent identity map: agent_id -> (agent_package, agent_version).
-    /// Queries AgentRuntimeInstance nodes for package/version metadata.
-    /// Routed through the typed [`GraphQuery`] surface — no
-    /// `format!`-of-edge-labels or raw label literals leak into the SQL
-    /// builder.
-    async fn load_agent_identity_map(&self) -> Result<HashMap<String, (String, String)>> {
-        let (sql, binds) = GraphQuery::<labels::AgentRuntimeInstance, _>::new()
-            .all()
-            .into_surreal();
-        let rows = self.execute_typed_node_query(&sql, &binds).await?;
-
-        let mut out: HashMap<String, (String, String)> = HashMap::new();
-        for row in rows {
-            let Some(props) = row.get("props").and_then(Value::as_object) else {
-                continue;
-            };
-            let Some(agent_id) = props
-                .get("a2a_agent_id")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-            else {
-                continue;
-            };
-            let agent_id = agent_id.to_string();
-            let agent_package = normalize_agent_field(
-                props.get("a2a_agent_type").and_then(Value::as_str),
-                "unknown",
-            );
-            let agent_version = normalize_agent_field(
-                props.get("a2a_agent_version").and_then(Value::as_str),
-                "unknown",
-            );
-            out.insert(agent_id, (agent_package, agent_version));
-        }
-        Ok(out)
-    }
-
     /// Load failure classification for the given activity node ids only
     /// (failed LLM/tool rows). Traverses `WAS_CLASSIFIED_BY` →
     /// `FailureClassification` entity via the typed [`EdgeProjection`]
     /// surface; no global graph scan and no raw edge-label string
     /// interpolation.
-    async fn load_failure_classification_for_activity_ids(
+    pub(super) async fn load_failure_classification_for_activity_ids(
         &self,
         activity_ids: &[String],
     ) -> Result<HashMap<String, (String, String)>> {
@@ -127,13 +94,13 @@ impl SurrealProvenanceStore {
                 continue;
             }
             let props = row.get("props").and_then(Value::as_object);
-            let class = normalize_agent_field(
+            let class = normalize_agent_field_for_ops(
                 props
                     .and_then(|p| p.get("a2a_failure_class"))
                     .and_then(Value::as_str),
                 "failed_graph_incomplete",
             );
-            let evidence = normalize_agent_field(
+            let evidence = normalize_agent_field_for_ops(
                 props
                     .and_then(|p| p.get("a2a_failure_evidence"))
                     .and_then(Value::as_str),
@@ -207,19 +174,6 @@ impl SurrealProvenanceStore {
             .into_surreal();
         let rows = self.execute_typed_node_query(&sql, &binds).await?;
         Ok(aggregate_duration_by_message(&rows))
-    }
-
-    /// Helper: bind the JSON object produced by [`GraphQuery::into_surreal`]
-    /// or [`EdgeProjection::into_surreal`] and execute the query.
-    async fn execute_typed_node_query(&self, sql: &str, binds: &Value) -> Result<Vec<Value>> {
-        let mut q = self.db.query(sql);
-        if let Some(obj) = binds.as_object() {
-            for (k, v) in obj {
-                q = q.bind((k.clone(), v.clone()));
-            }
-        }
-        let response = q.await.map_err(map_surreal_error)?;
-        check_and_take_zero(response, map_surreal_error)
     }
 }
 
@@ -349,14 +303,6 @@ fn parse_ops_group_by(raw: &[String]) -> Result<Vec<String>> {
 // ---------------------------------------------------------------------------
 // Row enrichment helpers (finalize_call_row, apply_agent_identity_fields)
 // ---------------------------------------------------------------------------
-
-/// Normalize agent field: trim, filter empty/null strings, use fallback.
-fn normalize_agent_field(raw: Option<&str>, fallback: &str) -> String {
-    raw.map(str::trim)
-        .filter(|s| !s.is_empty() && *s != "null")
-        .unwrap_or(fallback)
-        .to_string()
-}
 
 /// Parse a JSON-like string field from row props.
 fn parse_json_field(row: &Map<String, Value>, field: &str) -> Option<Value> {
@@ -572,7 +518,9 @@ fn build_hotspot_groups(
     rows: &[Map<String, Value>],
     group_dims: &[String],
     top_k: usize,
-) -> Vec<Value> {
+) -> Vec<ProvenanceOpsHotspotGroup> {
+    use crate::ops_types::ProvenanceOpsHotspotGroup;
+
     type HotspotAggregate = (Vec<Option<String>>, u64, u64, u64, u64);
     if rows.is_empty() {
         return Vec::new();
@@ -609,7 +557,7 @@ fn build_hotspot_groups(
         entry.4 += tokens;
     }
 
-    let mut out: Vec<Value> = groups
+    let mut out: Vec<ProvenanceOpsHotspotGroup> = groups
         .into_iter()
         .map(
             |(_k, (group_values, count, failed, duration_sum, token_sum))| {
@@ -628,29 +576,27 @@ fn build_hotspot_groups(
                     .map(|v| v.clone().unwrap_or_default())
                     .collect::<Vec<_>>()
                     .join("|");
-                serde_json::json!({
-                    "groupKey": group_key,
-                    "groupValues": group_values,
-                    "groupDimensions": group_dims,
-                    "count": count,
-                    "failed": failed,
-                    "failureRate": if count == 0 { 0.0 } else { failed as f64 / count as f64 },
-                    "avgDurationMs": avg_duration,
-                    "avgTotalTokens": avg_tokens
-                })
+                ProvenanceOpsHotspotGroup {
+                    group_key,
+                    group_values,
+                    group_dimensions: group_dims.to_vec(),
+                    count,
+                    failed,
+                    failure_rate: if count == 0 {
+                        0.0
+                    } else {
+                        failed as f64 / count as f64
+                    },
+                    avg_duration_ms: avg_duration,
+                    avg_total_tokens: avg_tokens,
+                }
             },
         )
         .collect();
     out.sort_by(|a, b| {
-        let ad = a
-            .get("avgDurationMs")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
-        let bd = b
-            .get("avgDurationMs")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0);
-        bd.partial_cmp(&ad).unwrap_or(std::cmp::Ordering::Equal)
+        b.avg_duration_ms
+            .partial_cmp(&a.avg_duration_ms)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
     out.truncate(top_k);
     out
@@ -678,56 +624,145 @@ fn provenance_ops_query_op_label(r: &ProvenanceOpsResource) -> &'static str {
 // at compile time.
 // ---------------------------------------------------------------------------
 
-fn build_messages_query(filters: &ProvenanceOpsFilters) -> (String, Value) {
+// ---------------------------------------------------------------------------
+// Agent package resolution (task-scoped validation + registry instances).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpsAgentPackageResolution {
+    None,
+    TaskValidatedOmit,
+    Empty,
+    ApplyInstances,
+}
+
+impl SurrealProvenanceStore {
+    async fn resolve_ops_agent_package_filter(
+        &self,
+        filters: &ProvenanceOpsFilters,
+        index: &super::agent_runtime_index::AgentRuntimeIndex,
+    ) -> Result<OpsAgentPackageResolution> {
+        let Some(pkg) = filters.agent_package.as_deref() else {
+            return Ok(OpsAgentPackageResolution::None);
+        };
+
+        let task_resolution = if let Some(ref task_id) = filters.task_id {
+            Some(self.get_task_agent_id(task_id).await?)
+        } else {
+            None
+        };
+
+        match task_agent_package_check(
+            filters.task_id.as_ref(),
+            Some(pkg),
+            task_resolution.as_ref(),
+            index,
+        ) {
+            TaskAgentPackageCheck::OmitAgentFilter => {
+                Ok(OpsAgentPackageResolution::TaskValidatedOmit)
+            }
+            TaskAgentPackageCheck::MismatchEmpty => Ok(OpsAgentPackageResolution::Empty),
+            TaskAgentPackageCheck::ApplyPackageFilter => {
+                match index.instance_node_ids_by_package.get(pkg) {
+                    Some(instances) if instances.is_empty() => Ok(OpsAgentPackageResolution::Empty),
+                    Some(_) => Ok(OpsAgentPackageResolution::ApplyInstances),
+                    None => Ok(OpsAgentPackageResolution::Empty),
+                }
+            }
+        }
+    }
+}
+
+fn build_messages_query(
+    filters: &ProvenanceOpsFilters,
+    package_resolution: OpsAgentPackageResolution,
+    package_instances: Option<&[String]>,
+    sql_page: Option<(u64, u64, bool)>,
+) -> (String, Value) {
     if let Some(ref ctx) = filters.context_id {
         let q = GraphQuery::<labels::Message, _>::new()
             .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
-        apply_message_filters(q, filters).into_surreal()
+        let q = apply_message_filters(q, filters, package_resolution, package_instances);
+        match sql_page {
+            Some((offset, limit, sort_desc)) => {
+                apply_sql_page(q, offset, limit, sort_desc).into_surreal()
+            }
+            None => q.into_surreal(),
+        }
     } else {
         let q = GraphQuery::<labels::Message, _>::new().all();
-        apply_message_filters(q, filters).into_surreal()
+        let q = apply_message_filters(q, filters, package_resolution, package_instances);
+        match sql_page {
+            Some((offset, limit, sort_desc)) => {
+                apply_sql_page(q, offset, limit, sort_desc).into_surreal()
+            }
+            None => q.into_surreal(),
+        }
     }
 }
 
 fn apply_message_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>(
     mut q: GraphQuery<labels::Message, S>,
     filters: &ProvenanceOpsFilters,
+    package_resolution: OpsAgentPackageResolution,
+    package_instances: Option<&[String]>,
 ) -> GraphQuery<labels::Message, S> {
-    if let Some(ref agent_id) = filters.agent_id {
-        q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
-    }
-    if let Some(ref agent_package) = filters.agent_package {
-        q = q.for_agent_package(AgentPackage::new(agent_package.clone()));
-    }
     if let Some(ref task_id) = filters.task_id {
         q = q.for_task(TaskNodeId::for_task_id(task_id));
+    }
+    if let Some(ref agent_id) = filters.agent_id {
+        q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
+    } else if package_resolution == OpsAgentPackageResolution::ApplyInstances
+        && let Some(instances) = package_instances
+    {
+        q = q.for_agent_instances(instances);
     }
     q
 }
 
-fn build_llm_query(filters: &ProvenanceOpsFilters) -> (String, Value) {
+fn build_llm_query(
+    filters: &ProvenanceOpsFilters,
+    package_resolution: OpsAgentPackageResolution,
+    package_instances: Option<&[String]>,
+    sql_page: Option<(u64, u64, bool)>,
+) -> (String, Value) {
     if let Some(ref ctx) = filters.context_id {
         let q = GraphQuery::<labels::LlmCall, _>::new()
             .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
-        apply_llm_filters(q, filters).into_surreal()
+        let q = apply_llm_filters(q, filters, package_resolution, package_instances);
+        match sql_page {
+            Some((offset, limit, sort_desc)) => {
+                apply_sql_page(q, offset, limit, sort_desc).into_surreal()
+            }
+            None => q.into_surreal(),
+        }
     } else {
         let q = GraphQuery::<labels::LlmCall, _>::new().all();
-        apply_llm_filters(q, filters).into_surreal()
+        let q = apply_llm_filters(q, filters, package_resolution, package_instances);
+        match sql_page {
+            Some((offset, limit, sort_desc)) => {
+                apply_sql_page(q, offset, limit, sort_desc).into_surreal()
+            }
+            None => q.into_surreal(),
+        }
     }
 }
 
 fn apply_llm_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>(
     mut q: GraphQuery<labels::LlmCall, S>,
     filters: &ProvenanceOpsFilters,
+    package_resolution: OpsAgentPackageResolution,
+    package_instances: Option<&[String]>,
 ) -> GraphQuery<labels::LlmCall, S> {
-    if let Some(ref agent_id) = filters.agent_id {
-        q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
-    }
-    if let Some(ref agent_package) = filters.agent_package {
-        q = q.for_agent_package(AgentPackage::new(agent_package.clone()));
-    }
     if let Some(ref task_id) = filters.task_id {
         q = q.for_task_execution(TaskExecutionNodeId::for_task_id(task_id));
+    }
+    if let Some(ref agent_id) = filters.agent_id {
+        q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
+    } else if package_resolution == OpsAgentPackageResolution::ApplyInstances
+        && let Some(instances) = package_instances
+    {
+        q = q.for_agent_instances(instances);
     }
     if let Some(ref provider) = filters.provider {
         q = q.filter(keys::Provider, FilterOp::Eq, provider.clone());
@@ -738,29 +773,49 @@ fn apply_llm_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>
     q
 }
 
-fn build_tool_query(filters: &ProvenanceOpsFilters) -> (String, Value) {
+fn build_tool_query(
+    filters: &ProvenanceOpsFilters,
+    package_resolution: OpsAgentPackageResolution,
+    package_instances: Option<&[String]>,
+    sql_page: Option<(u64, u64, bool)>,
+) -> (String, Value) {
     if let Some(ref ctx) = filters.context_id {
         let q = GraphQuery::<labels::ToolCall, _>::new()
             .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
-        apply_tool_filters(q, filters).into_surreal()
+        let q = apply_tool_filters(q, filters, package_resolution, package_instances);
+        match sql_page {
+            Some((offset, limit, sort_desc)) => {
+                apply_sql_page(q, offset, limit, sort_desc).into_surreal()
+            }
+            None => q.into_surreal(),
+        }
     } else {
         let q = GraphQuery::<labels::ToolCall, _>::new().all();
-        apply_tool_filters(q, filters).into_surreal()
+        let q = apply_tool_filters(q, filters, package_resolution, package_instances);
+        match sql_page {
+            Some((offset, limit, sort_desc)) => {
+                apply_sql_page(q, offset, limit, sort_desc).into_surreal()
+            }
+            None => q.into_surreal(),
+        }
     }
 }
 
 fn apply_tool_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>(
     mut q: GraphQuery<labels::ToolCall, S>,
     filters: &ProvenanceOpsFilters,
+    package_resolution: OpsAgentPackageResolution,
+    package_instances: Option<&[String]>,
 ) -> GraphQuery<labels::ToolCall, S> {
-    if let Some(ref agent_id) = filters.agent_id {
-        q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
-    }
-    if let Some(ref agent_package) = filters.agent_package {
-        q = q.for_agent_package(AgentPackage::new(agent_package.clone()));
-    }
     if let Some(ref task_id) = filters.task_id {
         q = q.for_task_execution(TaskExecutionNodeId::for_task_id(task_id));
+    }
+    if let Some(ref agent_id) = filters.agent_id {
+        q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
+    } else if package_resolution == OpsAgentPackageResolution::ApplyInstances
+        && let Some(instances) = package_instances
+    {
+        q = q.for_agent_instances(instances);
     }
     if let Some(ref tool_name) = filters.tool_name {
         q = q.filter(keys::ToolName, FilterOp::Eq, tool_name.clone());
@@ -768,28 +823,100 @@ fn apply_tool_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter
     q
 }
 
-fn build_lifecycle_query(filters: &ProvenanceOpsFilters) -> (String, Value) {
+fn build_lifecycle_query(
+    filters: &ProvenanceOpsFilters,
+    package_resolution: OpsAgentPackageResolution,
+    package_instances: Option<&[String]>,
+    sql_page: Option<(u64, u64, bool)>,
+) -> (String, Value) {
     if let Some(ref ctx) = filters.context_id {
         let q = GraphQuery::<labels::AgentStop, _>::new()
             .scoped_to_ctx(ContextNodeId::for_context_id(ctx));
-        apply_lifecycle_filters(q, filters).into_surreal()
+        let q = apply_lifecycle_filters(q, filters, package_resolution, package_instances);
+        match sql_page {
+            Some((offset, limit, sort_desc)) => {
+                apply_sql_page(q, offset, limit, sort_desc).into_surreal()
+            }
+            None => q.into_surreal(),
+        }
     } else {
         let q = GraphQuery::<labels::AgentStop, _>::new().all();
-        apply_lifecycle_filters(q, filters).into_surreal()
+        let q = apply_lifecycle_filters(q, filters, package_resolution, package_instances);
+        match sql_page {
+            Some((offset, limit, sort_desc)) => {
+                apply_sql_page(q, offset, limit, sort_desc).into_surreal()
+            }
+            None => q.into_surreal(),
+        }
     }
 }
 
 fn apply_lifecycle_filters<S: ScopeState + crate::metamodel::query::ScopeQueryEmitter>(
     mut q: GraphQuery<labels::AgentStop, S>,
     filters: &ProvenanceOpsFilters,
+    package_resolution: OpsAgentPackageResolution,
+    package_instances: Option<&[String]>,
 ) -> GraphQuery<labels::AgentStop, S> {
     if let Some(ref agent_id) = filters.agent_id {
         q = q.for_agent(AgentRuntimeInstanceNodeId::for_agent_id(agent_id));
-    }
-    if let Some(ref agent_package) = filters.agent_package {
-        q = q.for_agent_package(AgentPackage::new(agent_package.clone()));
+    } else if package_resolution == OpsAgentPackageResolution::ApplyInstances
+        && let Some(instances) = package_instances
+    {
+        q = q.for_agent_instances(instances);
     }
     q
+}
+
+fn apply_sql_page<Subject, S>(
+    q: GraphQuery<Subject, S>,
+    offset: u64,
+    limit: u64,
+    sort_desc: bool,
+) -> GraphQuery<Subject, S>
+where
+    Subject: labels::NodeLabelTy,
+    S: ScopeState + crate::metamodel::query::ScopeQueryEmitter,
+{
+    use crate::metamodel::query::{SortDir, SortKey};
+    q.order_by(
+        SortKey::EventOrder,
+        if sort_desc {
+            SortDir::Desc
+        } else {
+            SortDir::Asc
+        },
+    )
+    .paginate(offset, limit)
+}
+
+fn empty_ops_query_response(
+    request: &ProvenanceOpsQueryRequest,
+    page_size: usize,
+    page_cap: u32,
+    requested_page: u32,
+) -> ProvenanceOpsQueryResponse {
+    use crate::ops_types::ProvenanceOpsSummary;
+
+    let mut summary = ProvenanceOpsSummary::empty();
+    if matches!(
+        request.resource,
+        ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates
+    ) {
+        summary.cached_input_tokens_total = Some(0);
+    }
+    ProvenanceOpsQueryResponse {
+        resource: request.resource.clone(),
+        rows: Vec::new(),
+        summary,
+        hotspot_groups: Vec::new(),
+        next_cursor: None,
+        truncated: requested_page > page_cap,
+        applied_caps: ProvenanceOpsAppliedCaps {
+            page_size: page_size as u32,
+            max_page_size: page_cap,
+            top_k: request.top_k.unwrap_or(10),
+        },
+    }
 }
 
 #[async_trait]
@@ -801,10 +928,14 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
         let start = std::time::Instant::now();
         let resource_op = provenance_ops_query_op_label(&request.resource);
         let result = async {
-        let profile = request
-            .response_profile
-            .clone()
-            .unwrap_or(ProvenanceResponseProfile::UiFull);
+        let profile = if request.budget_mode {
+            ProvenanceResponseProfile::ToolCompact
+        } else {
+            request
+                .response_profile
+                .clone()
+                .unwrap_or(ProvenanceResponseProfile::UiFull)
+        };
         let page_cap = match profile {
             ProvenanceResponseProfile::UiFull => 200_u32,
             ProvenanceResponseProfile::ToolCompact => 50_u32,
@@ -819,21 +950,77 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
         request.page_size = Some(page_size as u32);
 
         let compact_profile = matches!(profile, ProvenanceResponseProfile::ToolCompact);
+        let sort_desc = parse_ops_sort_dir(request.sort_dir.as_deref())?;
+        let sql_paginated = request.group_by.is_empty() || request.paginate_rows_in_sql;
+        let sql_page = if sql_paginated {
+            Some((
+                offset as u64,
+                page_size.saturating_add(1) as u64,
+                sort_desc,
+            ))
+        } else if request.budget_mode {
+            Some((0, page_size.saturating_mul(25).clamp(500, 2000) as u64, sort_desc))
+        } else {
+            None
+        };
 
-        // Load enrichment maps for row post-processing.
-        let identity_by_agent_id = self.load_agent_identity_map().await?;
+        let agent_runtime_index = self.load_agent_runtime_index().await?;
+        let identity_by_agent_id = agent_runtime_index.identity_by_agent_id.clone();
+        let package_resolution = self
+            .resolve_ops_agent_package_filter(&request.filters, &agent_runtime_index)
+            .await?;
+        if package_resolution == OpsAgentPackageResolution::Empty {
+            return Ok(empty_ops_query_response(
+                &request,
+                page_size,
+                page_cap,
+                requested_page,
+            ));
+        }
+        let resolved_package_instances = request.filters.agent_package.as_deref().and_then(|pkg| {
+            agent_runtime_index
+                .instance_node_ids_by_package
+                .get(pkg)
+                .cloned()
+        });
+        let package_instances = match package_resolution {
+            OpsAgentPackageResolution::ApplyInstances => resolved_package_instances.as_deref(),
+            OpsAgentPackageResolution::None
+            | OpsAgentPackageResolution::TaskValidatedOmit
+            | OpsAgentPackageResolution::Empty => None,
+        };
 
         // Per-resource typed dispatch. Each `build_*_query` returns a
         // `(SQL, bindings)` pair from `GraphQuery::into_surreal()` — the
         // only legal SQL emitter for graph-targeted reads in this crate.
         // No `format!` of edge labels appears below.
         let (query, binds_value) = match request.resource {
-            ProvenanceOpsResource::Messages => build_messages_query(&request.filters),
+            ProvenanceOpsResource::Messages => build_messages_query(
+                &request.filters,
+                package_resolution,
+                package_instances,
+                sql_page,
+            ),
             ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates => {
-                build_llm_query(&request.filters)
+                build_llm_query(
+                    &request.filters,
+                    package_resolution,
+                    package_instances,
+                    sql_page,
+                )
             }
-            ProvenanceOpsResource::ToolCalls => build_tool_query(&request.filters),
-            ProvenanceOpsResource::LifecycleEvents => build_lifecycle_query(&request.filters),
+            ProvenanceOpsResource::ToolCalls => build_tool_query(
+                &request.filters,
+                package_resolution,
+                package_instances,
+                sql_page,
+            ),
+            ProvenanceOpsResource::LifecycleEvents => build_lifecycle_query(
+                &request.filters,
+                package_resolution,
+                package_instances,
+                sql_page,
+            ),
         };
         let rows = self.execute_typed_node_query(&query, &binds_value).await?;
 
@@ -1433,42 +1620,78 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
             }
         });
 
-        // Validate and apply sort parameters.
-        let sort_by = parse_ops_sort_by(request.sort_by.as_deref())?;
-        let sort_desc = parse_ops_sort_dir(request.sort_dir.as_deref())?;
-        ops_rows.sort_by(|a, b| {
-            let av = a.get(sort_by).cloned().unwrap_or(Value::Null);
-            let bv = b.get(sort_by).cloned().unwrap_or(Value::Null);
-            let ord = match (&av, &bv) {
-                (Value::Number(an), Value::Number(bn)) => an
-                    .as_f64()
-                    .partial_cmp(&bn.as_f64())
-                    .unwrap_or(std::cmp::Ordering::Equal),
-                (Value::String(as_), Value::String(bs_)) => as_.cmp(bs_),
-                _ => std::cmp::Ordering::Equal,
-            };
-            let ord = if ord == std::cmp::Ordering::Equal {
-                let aid = a
-                    .get("activity_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let bid = b
-                    .get("activity_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                aid.cmp(bid)
-            } else {
-                ord
-            };
-            if sort_desc { ord.reverse() } else { ord }
-        });
+        let effective_group_by = parse_ops_group_by(&request.group_by)?;
+        let mut sql_budget_truncated = false;
+        if sql_page.is_some() && !sql_paginated {
+            let cap = sql_page.map(|(_, limit, _)| limit as usize).unwrap_or(0);
+            if cap > 0 && ops_rows.len() > cap {
+                sql_budget_truncated = true;
+                ops_rows.truncate(cap);
+            }
+        }
 
-        let mut durations: Vec<f64> = ops_rows
+        let (page_rows, next_cursor, summary_rows) = if sql_paginated {
+            let has_more = ops_rows.len() > page_size;
+            if has_more {
+                ops_rows.truncate(page_size);
+            }
+            let next = if has_more {
+                Some((offset + page_size).to_string())
+            } else {
+                None
+            };
+            let rows = ops_rows.clone();
+            (rows, next, ops_rows)
+        } else {
+            let sort_by = parse_ops_sort_by(request.sort_by.as_deref())?;
+            let sort_desc = parse_ops_sort_dir(request.sort_dir.as_deref())?;
+            ops_rows.sort_by(|a, b| {
+                let av = a.get(sort_by).cloned().unwrap_or(Value::Null);
+                let bv = b.get(sort_by).cloned().unwrap_or(Value::Null);
+                let ord = match (&av, &bv) {
+                    (Value::Number(an), Value::Number(bn)) => an
+                        .as_f64()
+                        .partial_cmp(&bn.as_f64())
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                    (Value::String(as_), Value::String(bs_)) => as_.cmp(bs_),
+                    _ => std::cmp::Ordering::Equal,
+                };
+                let ord = if ord == std::cmp::Ordering::Equal {
+                    let aid = a
+                        .get("activity_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let bid = b
+                        .get("activity_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    aid.cmp(bid)
+                } else {
+                    ord
+                };
+                if sort_desc { ord.reverse() } else { ord }
+            });
+            let total_rows = ops_rows.len();
+            let page_end = std::cmp::min(offset.saturating_add(page_size), total_rows);
+            let page_rows = if offset < total_rows {
+                ops_rows[offset..page_end].to_vec()
+            } else {
+                Vec::new()
+            };
+            let next_cursor = if page_end < total_rows {
+                Some(page_end.to_string())
+            } else {
+                None
+            };
+            (page_rows, next_cursor, ops_rows)
+        };
+
+        let mut durations: Vec<f64> = summary_rows
             .iter()
             .filter_map(|r| r.get("duration_ms").and_then(Value::as_f64))
             .collect();
         durations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let mut tokens: Vec<f64> = ops_rows
+        let mut tokens: Vec<f64> = summary_rows
             .iter()
             .filter_map(|r| r.get("total_tokens").and_then(Value::as_f64))
             .collect();
@@ -1478,101 +1701,44 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
         let token_p95 = percentile(&tokens, 0.95);
         let token_p99 = percentile(&tokens, 0.99);
 
-        let total_rows = ops_rows.len();
-        let page_end = std::cmp::min(offset.saturating_add(page_size), total_rows);
-        let page_rows = if offset < total_rows {
-            ops_rows[offset..page_end].to_vec()
-        } else {
-            Vec::new()
-        };
-        let next_cursor = if page_end < total_rows {
-            Some(page_end.to_string())
-        } else {
-            None
-        };
-
+        let total_rows = summary_rows.len();
         let top_k = request.top_k.unwrap_or(10) as usize;
-        // Validate group_by.
-        let effective_group_by = parse_ops_group_by(&request.group_by)?;
-        let hotspot_groups = build_hotspot_groups(&ops_rows, &effective_group_by, top_k);
-        let failed_count = ops_rows.iter().filter(|r| ops_row_is_failed(r)).count();
-        let total_tokens_sum: u64 = ops_rows
-            .iter()
-            .map(|r| r.get("total_tokens").and_then(Value::as_u64).unwrap_or(0))
-            .sum();
-        let prompt_tokens_sum: u64 = ops_rows
-            .iter()
-            .map(|r| r.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0))
-            .sum();
-        let completion_tokens_sum: u64 = ops_rows
-            .iter()
-            .map(|r| {
-                r.get("completion_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0)
-            })
-            .sum();
-        let cached_input_tokens_sum: u64 = ops_rows
-            .iter()
-            .map(|r| {
-                r.get("cached_input_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0)
-            })
-            .sum();
-        let total_duration_sum: u64 = ops_rows
-            .iter()
-            .map(|r| r.get("duration_ms").and_then(Value::as_u64).unwrap_or(0))
-            .sum();
-
-        let mut summary = serde_json::json!({
-            "count": total_rows,
-            "failedCount": failed_count,
-            "durationMsTotal": total_duration_sum,
-            "totalTokens": total_tokens_sum,
-            "promptTokensTotal": prompt_tokens_sum,
-            "completionTokensTotal": completion_tokens_sum,
-            "latencyHotspots": {
-                "p95": duration_p95,
-                "p99": duration_p99
-            },
-            "tokenHotspots": {
-                "p95": token_p95,
-                "p99": token_p99
-            }
-        });
-        if matches!(
+        let hotspot_groups = build_hotspot_groups(&summary_rows, &effective_group_by, top_k);
+        let has_more_page = next_cursor.is_some();
+        let failed_count = summary_rows.iter().filter(|r| ops_row_is_failed(r)).count() as u64;
+        let include_cached = matches!(
             request.resource,
             ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates
-        ) && let Some(obj) = summary.as_object_mut()
-        {
-            obj.insert(
-                "cachedInputTokensTotal".to_string(),
-                Value::from(cached_input_tokens_sum),
-            );
-        }
+        );
+        let mut summary = build_ops_summary(
+            &summary_rows,
+            include_cached,
+            duration_p95,
+            duration_p99,
+            token_p95,
+            token_p99,
+        );
+        summary.count = total_rows as u64;
+        summary.failed_count = failed_count;
 
         Ok(ProvenanceOpsQueryResponse {
             resource: request.resource,
-            rows: page_rows.into_iter().map(Value::Object).collect(),
+            rows: page_rows
+                .into_iter()
+                .map(ProvenanceOpsRow::from_map)
+                .collect(),
             summary,
             hotspot_groups,
             next_cursor,
-            truncated: total_rows > page_size || requested_page > page_cap,
-            applied_caps: Map::from_iter([
-                (
-                    "page_size".to_string(),
-                    Value::Number((page_size as u64).into()),
-                ),
-                (
-                    "max_page_size".to_string(),
-                    Value::Number((page_cap as u64).into()),
-                ),
-                (
-                    "top_k".to_string(),
-                    Value::Number((request.top_k.unwrap_or(10) as u64).into()),
-                ),
-            ]),
+            truncated: sql_budget_truncated
+                || has_more_page
+                || total_rows > page_size
+                || requested_page > page_cap,
+            applied_caps: ProvenanceOpsAppliedCaps {
+                page_size: page_size as u32,
+                max_page_size: page_cap,
+                top_k: request.top_k.unwrap_or(10),
+            },
         })
         }.await;
         let result_label = match &result {

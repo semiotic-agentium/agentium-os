@@ -21,12 +21,14 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 reqwest = { workspace = true }
 thiserror = { workspace = true }
+anyhow = { workspace = true }
 inventory = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 tokio-tungstenite = { workspace = true }
 tokio-util = { workspace = true }
 futures-util = { workspace = true }
 sha2 = { workspace = true }
+schemars = { workspace = true }
 
 [dev-dependencies]
 axum = { workspace = true }

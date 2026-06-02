@@ -270,6 +270,7 @@ pub(crate) fn absorb_episode_entry_into_ref_table(
                 summary.as_str(),
             );
         }
+        EpisodeContent::Operational(_) => {}
     }
 }
 
@@ -330,6 +331,10 @@ mod tests {
     use serde_json::json;
     use uuid::Uuid;
 
+    fn fixture_agent_id() -> AgentId {
+        AgentId::from_uuid(UuidId::new(Uuid::new_v4()))
+    }
+
     use super::{
         absorb_episode_entry_into_ref_table, episode_ref_table, episode_ref_table_with_merged,
         seed_replay_payload_slots_from_merged,
@@ -345,7 +350,7 @@ mod tests {
         let ep = Episode {
             task_id: task_id.clone(),
             context_id: ContextId::new(1, 1),
-            agent_id: AgentId::from_uuid(UuidId::new(Uuid::nil())),
+            agent_id: fixture_agent_id(),
             ref_prefix: EpisodeRefPrefix::from_task_id(&task_id),
             status: TerminalStatus::Completed,
             started_timestamp_ms: 0,
@@ -395,6 +400,7 @@ mod tests {
                         ])),
                         read_replay_lines: None,
                     }),
+                    user_speaker_kind: None,
                 },
                 false,
             ),
@@ -408,6 +414,7 @@ mod tests {
                         fsm_phase: ToolSessionPhase::Execute,
                         outcome: ToolOutcome::Result(json!({"citations": []})),
                     }),
+                    user_speaker_kind: None,
                 },
                 false,
             ),
@@ -430,7 +437,7 @@ mod tests {
         let ep = crate::episode::Episode {
             task_id: task_id.clone(),
             context_id: ContextId::new(1, 1),
-            agent_id: AgentId::from_uuid(UuidId::new(Uuid::nil())),
+            agent_id: fixture_agent_id(),
             ref_prefix: EpisodeRefPrefix::from_task_id(&task_id),
             status: TerminalStatus::Completed,
             started_timestamp_ms: 0,
@@ -497,7 +504,7 @@ mod tests {
         let ep = Episode {
             task_id: task_id.clone(),
             context_id: ContextId::new(1, 1),
-            agent_id: AgentId::from_uuid(UuidId::new(Uuid::nil())),
+            agent_id: fixture_agent_id(),
             ref_prefix: EpisodeRefPrefix::from_task_id(&task_id),
             status: TerminalStatus::Completed,
             started_timestamp_ms: 0,
@@ -547,6 +554,7 @@ mod tests {
                         ])),
                         read_replay_lines: None,
                     }),
+                    user_speaker_kind: None,
                 },
                 false,
             ),
@@ -560,6 +568,7 @@ mod tests {
                         fsm_phase: ToolSessionPhase::Execute,
                         outcome: ToolOutcome::Result(json!({"citations": []})),
                     }),
+                    user_speaker_kind: None,
                 },
                 false,
             ),

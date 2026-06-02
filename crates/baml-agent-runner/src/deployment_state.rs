@@ -1263,7 +1263,7 @@ mod tests {
         let store = DeploymentStateStore::open(&path).await.unwrap();
         let scheduled = store
             .schedule_callback(&ScheduleCallbackRequest {
-                source_key: "workflow-intake:resume".to_string(),
+                source_key: "coordinator-agent:resume".to_string(),
                 dedupe_key: Some("resume-once".to_string()),
                 payload: serde_json::json!({"goal": "resume"}),
                 scheduled_for_unix_ms: 10,
@@ -1279,7 +1279,7 @@ mod tests {
             .unwrap();
         let deduped = store
             .schedule_callback(&ScheduleCallbackRequest {
-                source_key: "workflow-intake:resume".to_string(),
+                source_key: "coordinator-agent:resume".to_string(),
                 dedupe_key: Some("resume-once".to_string()),
                 payload: serde_json::json!({"goal": "resume"}),
                 scheduled_for_unix_ms: 11,
@@ -1301,7 +1301,7 @@ mod tests {
         let due = reopened.list_due_callbacks(10, 10).await.unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].callback_id, scheduled.callback.callback_id);
-        assert_eq!(due[0].source_key, "workflow-intake:resume");
+        assert_eq!(due[0].source_key, "coordinator-agent:resume");
         assert_eq!(due[0].requesting_agent_id.as_deref(), Some("agent-42"));
         assert_eq!(
             due[0].context_id.as_ref().map(|c| c.as_str()),
@@ -1333,7 +1333,7 @@ mod tests {
         let store = DeploymentStateStore::open_in_memory().await.unwrap();
         let first = store
             .schedule_callback(&ScheduleCallbackRequest {
-                source_key: "workflow-intake:resume".to_string(),
+                source_key: "coordinator-agent:resume".to_string(),
                 dedupe_key: Some("resume-once".to_string()),
                 payload: serde_json::json!({"goal": "resume"}),
                 scheduled_for_unix_ms: 10,
@@ -1360,7 +1360,7 @@ mod tests {
 
         let rescheduled = store
             .schedule_callback(&ScheduleCallbackRequest {
-                source_key: "workflow-intake:resume".to_string(),
+                source_key: "coordinator-agent:resume".to_string(),
                 dedupe_key: Some("resume-once".to_string()),
                 payload: serde_json::json!({"goal": "resume-again"}),
                 scheduled_for_unix_ms: 20,

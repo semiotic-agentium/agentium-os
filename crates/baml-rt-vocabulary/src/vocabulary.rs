@@ -38,6 +38,8 @@ pub mod a2a {
     pub const ROLE: &str = "a2a:role";
     pub const CONTENT: &str = "a2a:content";
     pub const DIRECTION: &str = "a2a:direction";
+    /// Who spoke on a user transcript row (`human` | `relay` | `ingress`). See `user_speaker_kinds`.
+    pub const USER_SPEAKER_KIND: &str = "a2a:user_speaker_kind";
     pub const METADATA: &str = "a2a:metadata";
     pub const PHASE: &str = "a2a:phase";
     pub const RESULT: &str = "a2a:result";
@@ -94,6 +96,23 @@ pub mod a2a {
     pub const TIMESTAMP_MS: &str = "a2a:timestamp_ms";
     /// Monotonic event counter parsed from the activity anchor at write time.
     pub const EVENT_ORDER: &str = "a2a:event_order";
+    /// Wall-clock ordering key mirrored from the write event (`prov_time` on `prov_node`).
+    pub const PROV_TIME: &str = "prov_time";
+    /// Supersession relation written on the source revision at normalize time (`replaced_by` | `refined_by`).
+    pub const SUPERSEDED_BY_NEXT: &str = "a2a_superseded_by_next";
+    /// Supersession relation written on the target revision at normalize time.
+    pub const SUPERSESSION_FROM_PREVIOUS: &str = "a2a_supersession_from_previous";
+    /// Host ingress transcript discriminator (`source_poll_recorded` | `dispatch_accepted`).
+    pub const HOST_INGRESS_KIND: &str = "a2a:host_ingress_kind";
+    /// Host dispatch target (`HostDispatchAccepted`).
+    pub const HOST_INGRESS_TARGET_PACKAGE: &str = "a2a:host_ingress_target_package";
+    pub const HOST_INGRESS_TARGET_INSTANCE: &str = "a2a:host_ingress_target_instance";
+    /// Host source poll identity (`HostSourcePollRecorded`).
+    pub const HOST_INGRESS_SOURCE_KIND: &str = "a2a:host_ingress_source_kind";
+    pub const HOST_INGRESS_SOURCE_KEY: &str = "a2a:host_ingress_source_key";
+    pub const HOST_INGRESS_RECORD_COUNT: &str = "a2a:host_ingress_record_count";
+    /// Routing key on host dispatch (`HostDispatchAccepted`).
+    pub const HOST_INGRESS_ROUTING_KEY: &str = "a2a:host_ingress_routing_key";
     pub const DELEGATION_TARGET: &str = "a2a:delegation_target";
     pub const FAILURE_CLASS: &str = "a2a:failure_class";
     pub const FAILURE_EVIDENCE: &str = "a2a:failure_evidence";
@@ -218,6 +237,10 @@ pub mod semantic_labels {
     /// from a multi-hop traversal to a single indexed edge hop and
     /// obsoletes the application-level `task_agent_id_cache`.
     pub const WAS_LAST_EXECUTED_BY: &str = "WAS_LAST_EXECUTED_BY";
+    /// Head-pointer edge `Task -> Intent` naming the current resolved intent for the task.
+    pub const WAS_LAST_RESOLVED_TO: &str = "WAS_LAST_RESOLVED_TO";
+    /// Head-pointer edge `Task -> Plan` naming the current committed plan for the task.
+    pub const WAS_LAST_PLANNED_TO: &str = "WAS_LAST_PLANNED_TO";
     /// Archive / observation citation lineage (contrast `prov_relations::WAS_DERIVED_FROM` for `#N` intent history).
     pub const WAS_INFORMED_BY: &str = "WAS_INFORMED_BY";
     pub const WAS_REPLACED_BY: &str = "WAS_REPLACED_BY";
@@ -264,6 +287,13 @@ pub mod message_directions {
     pub const SENT: &str = "sent";
 }
 
+/// Wire values for [`a2a::USER_SPEAKER_KIND`](a2a::USER_SPEAKER_KIND) on user transcript rows.
+pub mod user_speaker_kinds {
+    pub const HUMAN: &str = "human";
+    pub const RELAY: &str = "relay";
+    pub const INGRESS: &str = "ingress";
+}
+
 pub mod a2a_relations {
     // Relation types whose DB rel_type is from this module (used directly by write-batch dynamic arm
     // and read paths). Keep in sync with `A2aRelationType::as_str()` in normalizer.rs.
@@ -275,6 +305,8 @@ pub mod a2a_relations {
     pub const TASK_CALL: &str = "A2A_TASK_CALL";
     pub const TASK_STATUS_TRANSITION: &str = "A2A_TASK_STATUS_TRANSITION";
     pub const MESSAGE_CALL: &str = "A2A_MESSAGE_CALL";
+    /// Host ingress dispatch outcome Message → target AgentRuntimeInstance.
+    pub const HOST_DISPATCH_TARGET: &str = "A2A_HOST_DISPATCH_TARGET";
     /// Reserved — `InformedByObservation` variant is not yet emitted;
     /// this value is used as the `prov_type` attribute on WAS_DERIVED_FROM edges when it is.
     pub const INFORMED_BY_OBSERVATION: &str = "A2A_INFORMED_BY_OBSERVATION";

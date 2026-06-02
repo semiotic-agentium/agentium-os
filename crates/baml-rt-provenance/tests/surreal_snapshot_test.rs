@@ -158,7 +158,7 @@ struct NormalizedOpsRow {
     total_tokens: Option<u64>,
 }
 
-fn normalize_ops_row(row: &Value) -> NormalizedOpsRow {
+fn normalize_ops_row(row: &baml_rt_provenance::ProvenanceOpsRow) -> NormalizedOpsRow {
     NormalizedOpsRow {
         activity_id: row
             .get("activity_id")
@@ -287,6 +287,20 @@ fn normalize_context_item(
         ConversationItemContent::SessionStep(ss) => (
             vec!["op".to_string(), "tool_name".to_string()],
             Some(ss.tool_name.clone()),
+            None,
+            false,
+            false,
+        ),
+        ConversationItemContent::Operational(_) => (
+            vec!["summary".to_string(), "kind".to_string()],
+            None,
+            None,
+            false,
+            false,
+        ),
+        ConversationItemContent::Planning(_) => (
+            vec!["summary".to_string(), "kind".to_string()],
+            None,
             None,
             false,
             false,

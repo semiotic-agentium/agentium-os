@@ -16,8 +16,8 @@ use baml_rt_api::RuntimeProgressMeter;
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
     AgentDispatchRequest, AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey,
-    BamlRtError, ConversationHistoryUpdate, DeploymentContentHash, DeploymentManager,
-    DeploymentRecord, DeploymentStatus, Result, UndeployResult,
+    BamlRtError, DeployedAgentLookup, DeploymentContentHash, DeploymentManager, DeploymentRecord,
+    DeploymentStatus, DispatchTarget, ObservationUpdate, Result, UndeployResult,
     bus::BusStream,
     callback_scheduling_scopes_differ_from_dispatch, context,
     ids::{AgentId, ContextId, TaskId},
@@ -89,7 +89,7 @@ pub(crate) struct AgentRunnerConfig {
     pub(crate) external_tools_dirs: Vec<std::path::PathBuf>,
     pub(crate) sandbox_bind_roots: Vec<std::path::PathBuf>,
     pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
-    pub(crate) conversation_history_notify: Option<broadcast::Sender<ConversationHistoryUpdate>>,
+    pub(crate) observation_notify: Option<broadcast::Sender<ObservationUpdate>>,
 }
 
 /// Agent runner host: manages agents and composes the tool catalogue at startup.
@@ -117,13 +117,15 @@ pub(crate) struct AgentRunner {
     /// JS-event-loop probe), not just on the tokio runtime.
     pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
     /// When set, wrapped provenance writes notify the operator `/conversation-history` stream after commit.
-    pub(crate) conversation_history_notify: Option<broadcast::Sender<ConversationHistoryUpdate>>,
+    pub(crate) observation_notify: Option<broadcast::Sender<ObservationUpdate>>,
+    pub(crate) host_ingress_recorder: Arc<dyn baml_rt_core::HostIngressRecorder>,
 }
 
 impl AgentRunner {
     pub(crate) fn new(config: AgentRunnerConfig) -> baml_rt_core::Result<Self> {
         let routed_agents = std::sync::RwLock::new(HashMap::new());
         let internal_a2a_router = Arc::new(InternalA2aRouter::new());
+        let provenance_store = config.provenance_config.store().clone();
         Ok(Self {
             agents: RwLock::new(HashMap::new()),
             provenance_config: config.provenance_config,
@@ -141,8 +143,15 @@ impl AgentRunner {
             external_tools_dirs: config.external_tools_dirs,
             sandbox_bind_roots: config.sandbox_bind_roots,
             runtime_progress: config.runtime_progress,
-            conversation_history_notify: config.conversation_history_notify,
+            observation_notify: config.observation_notify,
+            host_ingress_recorder: Arc::new(crate::services::HostIngressRecorderImpl::new(
+                provenance_store,
+            )),
         })
+    }
+
+    pub(crate) fn host_ingress_recorder(&self) -> Arc<dyn baml_rt_core::HostIngressRecorder> {
+        self.host_ingress_recorder.clone()
     }
 
     pub(crate) fn external_tools_dirs(&self) -> &[std::path::PathBuf] {
@@ -153,10 +162,8 @@ impl AgentRunner {
         &self.sandbox_bind_roots
     }
 
-    pub(crate) fn conversation_history_notify_tx(
-        &self,
-    ) -> Option<broadcast::Sender<ConversationHistoryUpdate>> {
-        self.conversation_history_notify.clone()
+    pub(crate) fn observation_notify_tx(&self) -> Option<broadcast::Sender<ObservationUpdate>> {
+        self.observation_notify.clone()
     }
 
     pub(crate) fn deployment_state(&self) -> &Arc<crate::deployment_state::DeploymentStateStore> {
@@ -430,7 +437,7 @@ impl AgentRunner {
                 external_tools_dirs: self.external_tools_dirs(),
                 sandbox_bind_roots: self.sandbox_bind_roots(),
                 runtime_progress: self.runtime_progress.clone(),
-                conversation_history_notify: self.conversation_history_notify_tx(),
+                observation_notify: self.observation_notify_tx(),
             })
             .await?;
         let manifest = package.manifest().clone();
@@ -627,14 +634,34 @@ impl AgentRunner {
             })?
         };
         let link_event = callback_dispatch_context_link_event(&request, routed_agent.agent_id());
+        let dispatch_target = DispatchTarget::new(key.clone(), routed_agent.agent_id().clone());
+        let dispatch_snapshot = request.clone();
         let ack = routed_agent.handle_dispatch(request).await?;
-        if ack.accepted
-            && let Some(event) = link_event
+        if ack.accepted {
+            if let Err(err) = self
+                .host_ingress_recorder
+                .record_dispatch_accepted(&dispatch_snapshot, dispatch_target.clone())
+                .await
+            {
+                tracing::warn!(error = %err, "host dispatch accepted provenance write failed");
+            }
+            if let Some(event) = link_event {
+                routed_agent
+                    .provenance_writer()
+                    .add_event_with_logging(event, "runner callback dispatch context link")
+                    .await;
+            }
+        } else if let Err(err) = self
+            .host_ingress_recorder
+            .record_dispatch_rejected(
+                &dispatch_snapshot,
+                dispatch_target,
+                ack.detail.as_deref().unwrap_or("rejected"),
+                false,
+            )
+            .await
         {
-            routed_agent
-                .provenance_writer()
-                .add_event_with_logging(event, "runner callback dispatch context link")
-                .await;
+            tracing::warn!(error = %err, "host dispatch rejected provenance write failed");
         }
         Ok(ack)
     }
@@ -1070,5 +1097,14 @@ impl DeploymentManager for AgentRunner {
 
     async fn list_deployments(&self) -> Result<Vec<DeploymentRecord>> {
         self.deployment_state.list_deployments().await
+    }
+}
+
+impl DeployedAgentLookup for AgentRunner {
+    fn agent_id_for_route(&self, route: &AgentRouteKey) -> Option<AgentId> {
+        let routed_agents = self.routed_agents.read().expect("RwLock poison");
+        routed_agents
+            .get(route)
+            .map(|agent| agent.agent_id().clone())
     }
 }

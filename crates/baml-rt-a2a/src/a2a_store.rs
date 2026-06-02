@@ -132,6 +132,10 @@ pub trait TaskChunkApplier: Send + Sync {
 /// For resume, the caller must use the same `context_id` as the session. A caller-provided
 /// `limit` truncates in the provenance reader; the A2A prompt path uses
 /// [`baml_rt_provenance::DEFAULT_LLM_CONTEXT_ITEM_CAP`] as the default cap.
+///
+/// When `task_id` is `Some`, [`Self::conversation_context_with_task`] must return only rows
+/// linked to that task (same filter as
+/// [`baml_rt_provenance::ProvenanceContextReader::conversation_context_with_task`]).
 #[async_trait]
 pub trait ConversationContextSource: Send + Sync {
     async fn conversation_context(
@@ -139,6 +143,17 @@ pub trait ConversationContextSource: Send + Sync {
         context_id: &ContextId,
         limit: Option<usize>,
     ) -> Result<Vec<ProvenanceConversationContextItem>>;
+
+    /// Task-filtered conversation read for task-scoped BAML invocations (dispatch units, resume).
+    async fn conversation_context_with_task(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+        task_id: Option<&TaskId>,
+    ) -> Result<Vec<ProvenanceConversationContextItem>> {
+        let _ = task_id;
+        self.conversation_context(context_id, limit).await
+    }
 }
 
 /// Conversation context read **only** from the provenance writer / graph (e.g. SurrealDB).
@@ -164,6 +179,20 @@ impl ConversationContextSource for ProvenanceWriterConversationSource {
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
         self.writer
             .conversation_context(context_id, limit)
+            .await
+            .map_err(|source| BamlRtError::ProvenanceContextRead {
+                source: Box::new(source),
+            })
+    }
+
+    async fn conversation_context_with_task(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+        task_id: Option<&TaskId>,
+    ) -> Result<Vec<ProvenanceConversationContextItem>> {
+        self.writer
+            .conversation_context_with_task(context_id, limit, task_id)
             .await
             .map_err(|source| BamlRtError::ProvenanceContextRead {
                 source: Box::new(source),

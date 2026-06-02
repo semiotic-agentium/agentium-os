@@ -33,7 +33,7 @@ class SlackStructuredPlan {
   citations string[]? @description("Optional #N / @N line refs for observability when grounded in history; otherwise omit or [].")
 }
 
-function InferSlackIntent(user_message: string) -> NeedClarification | NotRelevant | SlackIntent {
+function InferSlackIntent() -> NeedClarification | NotRelevant | SlackIntent {
   client DefaultClient
   prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
@@ -47,6 +47,8 @@ Tool and operation types:
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+Current step instructions:
+
 Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
@@ -62,8 +64,7 @@ You classify messages for a read-only Slack assistant (history, threads, search,
     If history shows you already asked a clarifying question and the user replied vaguely, reuse earlier context
     and prefer a concrete Slack goal when a reasonable read-only interpretation exists.
 
-    {{ _.role('user') }}
-    {{ user_message }}
+    Classify from Session history above (host ingress poll and per-unit Slack lines).
 
 {{ ctx.output_format }}
 
@@ -92,6 +93,8 @@ Tool and operation types:
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+Current step instructions:
+
 Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 
@@ -175,6 +178,8 @@ Tool and operation types:
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+Current step instructions:
+
 Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
 Evidence refs: use `#N` for transcript evidence already visible in Session history, `@N:L` / `@N:L1-L2` for materialized archive lines, and prefix `!` for counter-evidence.
 

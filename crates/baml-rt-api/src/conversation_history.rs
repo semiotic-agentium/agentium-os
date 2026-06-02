@@ -13,12 +13,16 @@ use std::{
     collections::{HashSet, hash_map::DefaultHasher},
     error::Error,
     fmt,
-    hash::{Hash, Hasher},
+    hash::Hash,
 };
 
 use async_trait::async_trait;
-use baml_rt_conversation::view::{
-    ConversationItemContent, ProvenanceConversationContextItem, ToolOutcome, ToolSessionPhase,
+use baml_rt_conversation::{
+    operational::{OperationalEventContent, OperationalEventKind, OperationalEventSeverity},
+    planning::{PlanningEventContent, PlanningEventKind},
+    view::{
+        ConversationItemContent, ProvenanceConversationContextItem, ToolOutcome, ToolSessionPhase,
+    },
 };
 use baml_rt_core::{
     Citation,
@@ -38,8 +42,6 @@ pub const DEFAULT_CONVERSATION_HISTORY_LIMIT: u32 = 50;
 
 /// Service errors for conversation-history reads.
 pub type ConversationHistoryError = crate::service_error::ServiceError;
-
-pub use baml_rt_core::ConversationHistoryUpdate;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConversationHistoryProfile {
@@ -81,34 +83,41 @@ impl ConversationHistoryFormat {
 pub struct CursorToken(pub String);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct CursorStateV1 {
+struct CursorStateV2 {
     v: u8,
-    offset: usize,
+    after_event_order: u64,
     context_id: String,
     task_id: Option<String>,
+    agent_package: Option<String>,
 }
 
 impl CursorToken {
-    pub fn encode_v1(offset: usize, context_id: &ContextId, task_id: Option<&TaskId>) -> Self {
-        let state = CursorStateV1 {
-            v: 1,
-            offset,
+    pub fn encode_v2(
+        after_event_order: u64,
+        context_id: &ContextId,
+        task_id: Option<&TaskId>,
+        agent_package: Option<&str>,
+    ) -> Self {
+        let state = CursorStateV2 {
+            v: 2,
+            after_event_order,
             context_id: context_id.as_str().to_string(),
             task_id: task_id.map(|id| id.as_str().to_string()),
+            agent_package: agent_package.map(str::to_string),
         };
-        let bytes = serde_json::to_vec(&state).expect("cursor state v1 serializes");
-        Self(format!("v1.{:x}", HexBytes(bytes)))
+        let bytes = serde_json::to_vec(&state).expect("cursor state v2 serializes");
+        Self(format!("v2.{:x}", HexBytes(bytes)))
     }
 
-    fn decode_v1(&self) -> Result<CursorStateV1, ConversationHistoryRequestParseError> {
-        let payload = self.0.strip_prefix("v1.").ok_or_else(|| {
-            ConversationHistoryRequestParseError::InvalidCursor("missing v1 prefix".to_string())
+    fn decode_v2(&self) -> Result<CursorStateV2, ConversationHistoryRequestParseError> {
+        let payload = self.0.strip_prefix("v2.").ok_or_else(|| {
+            ConversationHistoryRequestParseError::InvalidCursor("missing v2 prefix".to_string())
         })?;
         let bytes = decode_hex(payload)
             .map_err(|e| ConversationHistoryRequestParseError::InvalidCursor(e.to_string()))?;
-        let state: CursorStateV1 = serde_json::from_slice(&bytes)
+        let state: CursorStateV2 = serde_json::from_slice(&bytes)
             .map_err(|e| ConversationHistoryRequestParseError::InvalidCursor(e.to_string()))?;
-        if state.v != 1 {
+        if state.v != 2 {
             return Err(ConversationHistoryRequestParseError::UnknownCursorVersion(
                 state.v as u32,
             ));
@@ -165,6 +174,7 @@ impl ConversationHistoryPageRequest {
 pub struct ConversationHistoryRequest {
     pub context_id: ContextId,
     pub task_id: Option<TaskId>,
+    pub agent_package: Option<String>,
     pub page: ConversationHistoryPageRequest,
     pub profile: ConversationHistoryProfile,
     pub format: ConversationHistoryFormat,
@@ -174,6 +184,7 @@ pub struct ConversationHistoryRequest {
 pub struct ConversationHistoryDeltaRequest {
     pub context_id: ContextId,
     pub task_id: Option<TaskId>,
+    pub agent_package: Option<String>,
     pub after_event_order: u64,
     pub limit: usize,
     pub profile: ConversationHistoryProfile,
@@ -184,6 +195,7 @@ pub struct ConversationHistoryDeltaRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationHistoryQueryParams {
     pub task_id: Option<String>,
+    pub agent_package: Option<String>,
     pub limit: Option<u32>,
     pub cursor: Option<String>,
     pub profile: Option<String>,
@@ -215,7 +227,7 @@ impl fmt::Display for ConversationHistoryRequestParseError {
             Self::CursorScopeMismatch => {
                 write!(
                     f,
-                    "cursor does not match contextId/taskId scope for this request"
+                    "cursor does not match contextId/taskId/agentPackage scope for this request"
                 )
             }
         }
@@ -251,13 +263,18 @@ impl ConversationHistoryRequest {
         let limit = raw_limit as usize;
         let profile = ConversationHistoryProfile::parse(params.profile.as_deref())?;
         let format = ConversationHistoryFormat::parse(params.format.as_deref())?;
+        let agent_package = params
+            .agent_package
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
 
         let page = match params.cursor.map(CursorToken) {
             None => ConversationHistoryPageRequest::First { limit },
             Some(cursor) => {
-                let state = cursor.decode_v1()?;
+                let state = cursor.decode_v2()?;
                 if state.context_id != context_id.as_str()
                     || state.task_id.as_deref() != task_id.as_ref().map(TaskId::as_str)
+                    || state.agent_package != agent_package
                 {
                     return Err(ConversationHistoryRequestParseError::CursorScopeMismatch);
                 }
@@ -268,16 +285,21 @@ impl ConversationHistoryRequest {
         Ok(Self {
             context_id,
             task_id,
+            agent_package,
             page,
             profile,
             format,
         })
     }
 
-    pub fn offset_from_cursor(&self) -> Result<usize, ConversationHistoryRequestParseError> {
+    pub fn after_event_order_from_cursor(
+        &self,
+    ) -> Result<u64, ConversationHistoryRequestParseError> {
         match &self.page {
             ConversationHistoryPageRequest::First { .. } => Ok(0),
-            ConversationHistoryPageRequest::Next { cursor, .. } => Ok(cursor.decode_v1()?.offset),
+            ConversationHistoryPageRequest::Next { cursor, .. } => {
+                Ok(cursor.decode_v2()?.after_event_order)
+            }
         }
     }
 }
@@ -311,6 +333,13 @@ pub struct ConversationHistoryPageDto {
     /// treat absence as unknown rather than as a signal.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_required_prompt: Option<String>,
+    /// Task-scoped LLM count via `A2A_TASK_CALL` (observation fingerprint input).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub llm_call_count: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// One completed LLM call’s prompt telemetry (for UI / SSE merge).
@@ -332,6 +361,9 @@ pub struct ConversationHistoryItemDto {
     pub activity_anchor: String,
     pub role: String,
     pub content: ConversationHistoryContentDto,
+    /// Present only for `role == "user"` transcript rows (`human` | `relay` | `ingress`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_speaker_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -359,6 +391,41 @@ pub enum ConversationHistoryContentDto {
         send_done_replay_payload: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         read_replay_lines: Option<Vec<String>>,
+    },
+    OperationalEvent {
+        kind: String,
+        severity: String,
+        summary: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_package: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_instance_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        failure_class: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        failure_evidence: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        old_status: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        new_status: Option<String>,
+    },
+    PlanningEvent {
+        kind: String,
+        summary: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        intent_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        plan_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        step_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        old_status: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        new_status: Option<String>,
     },
 }
 
@@ -452,6 +519,59 @@ impl From<ToolOutcome> for ToolOutcomeDto {
     }
 }
 
+fn operational_kind_wire(kind: OperationalEventKind) -> String {
+    serde_json::to_value(kind)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn operational_severity_wire(severity: OperationalEventSeverity) -> String {
+    serde_json::to_value(severity)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| "info".to_string())
+}
+
+fn planning_kind_wire(kind: PlanningEventKind) -> String {
+    serde_json::to_value(kind)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+impl From<PlanningEventContent> for ConversationHistoryContentDto {
+    fn from(value: PlanningEventContent) -> Self {
+        Self::PlanningEvent {
+            kind: planning_kind_wire(value.kind),
+            summary: value.summary,
+            detail: value.detail,
+            intent_id: value.intent_id,
+            plan_id: value.plan_id,
+            step_id: value.step_id,
+            old_status: value.old_status,
+            new_status: value.new_status,
+        }
+    }
+}
+
+impl From<OperationalEventContent> for ConversationHistoryContentDto {
+    fn from(value: OperationalEventContent) -> Self {
+        Self::OperationalEvent {
+            kind: operational_kind_wire(value.kind),
+            severity: operational_severity_wire(value.severity),
+            summary: value.summary,
+            detail: value.detail,
+            agent_package: value.agent_package,
+            agent_instance_id: value.agent_instance_id,
+            failure_class: value.failure_class,
+            failure_evidence: value.failure_evidence,
+            old_status: value.old_status,
+            new_status: value.new_status,
+        }
+    }
+}
+
 impl From<ConversationItemContent> for ConversationHistoryContentDto {
     fn from(value: ConversationItemContent) -> Self {
         match value {
@@ -478,23 +598,28 @@ impl From<ConversationItemContent> for ConversationHistoryContentDto {
                 send_done_replay_payload: session_step.send_done_replay_payload,
                 read_replay_lines: session_step.read_replay_lines,
             },
+            ConversationItemContent::Operational(op) => op.into(),
+            ConversationItemContent::Planning(plan) => plan.into(),
         }
     }
 }
 
 impl From<ProvenanceConversationContextItem> for ConversationHistoryItemDto {
     fn from(value: ProvenanceConversationContextItem) -> Self {
+        let user_speaker_kind = value.user_speaker_kind.map(|k| k.as_wire_str().to_string());
         Self {
             timestamp_ms: value.timestamp_ms,
             activity_anchor: value.activity_anchor.as_str().to_string(),
             role: value.role,
             content: value.content.into(),
+            user_speaker_kind,
         }
     }
 }
 
 /// Loads every page for `request` (same `limit` per chunk), merges items and prompt-operation rows,
 /// clears `next_cursor`, and recomputes [`page_version`] for the merged transcript.
+#[allow(dead_code)]
 pub async fn merge_conversation_history_pages(
     svc: &dyn ConversationHistoryService,
     request: &ConversationHistoryRequest,
@@ -536,6 +661,7 @@ pub async fn merge_conversation_history_pages(
                 page.prompt_message_chars_session_current,
                 page.awaiting_input,
                 page.input_required_prompt.as_deref(),
+                page.llm_call_count,
             );
             return Ok(page);
         };
@@ -543,6 +669,7 @@ pub async fn merge_conversation_history_pages(
         req = ConversationHistoryRequest {
             context_id: request.context_id.clone(),
             task_id: request.task_id.clone(),
+            agent_package: request.agent_package.clone(),
             page: ConversationHistoryPageRequest::Next {
                 limit,
                 cursor: CursorToken(cursor),
@@ -574,8 +701,10 @@ pub fn page_version(
     prompt_message_chars_session_current: Option<u64>,
     awaiting_input: bool,
     input_required_prompt: Option<&str>,
+    llm_call_count: u32,
 ) -> String {
     let mut hasher = DefaultHasher::new();
+    llm_call_count.hash(&mut hasher);
     for item in items {
         item.timestamp_ms.hash(&mut hasher);
         item.activity_anchor.hash(&mut hasher);
@@ -583,56 +712,52 @@ pub fn page_version(
         let content = serde_json::to_string(&item.content).unwrap_or_default();
         content.hash(&mut hasher);
     }
-    for op in llm_prompt_operations {
-        op.activity_anchor.hash(&mut hasher);
-        op.event_order.hash(&mut hasher);
-        op.prompt_context_bytes_current.hash(&mut hasher);
-        op.prompt_message_chars_current.hash(&mut hasher);
-    }
-    prompt_context_bytes_session_current.hash(&mut hasher);
-    prompt_message_chars_session_current.hash(&mut hasher);
-    awaiting_input.hash(&mut hasher);
-    input_required_prompt.hash(&mut hasher);
-    format!("v1:{:x}", hasher.finish())
+    let prompt_ops: Vec<baml_rt_provenance::PromptOpsVersionRow<'_>> = llm_prompt_operations
+        .iter()
+        .map(|op| baml_rt_provenance::PromptOpsVersionRow {
+            activity_anchor: &op.activity_anchor,
+            event_order: op.event_order,
+            prompt_context_bytes_current: op.prompt_context_bytes_current,
+            prompt_message_chars_current: op.prompt_message_chars_current,
+        })
+        .collect();
+    baml_rt_provenance::hash_page_envelope(
+        &mut hasher,
+        baml_rt_provenance::PageVersionEnvelope {
+            prompt_ops: &prompt_ops,
+            prompt_context_bytes_session_current,
+            prompt_message_chars_session_current,
+            resume: baml_rt_provenance::ResumeVersionHints {
+                awaiting_input,
+                input_required_prompt,
+            },
+        },
+    );
+    baml_rt_provenance::observation_version_from_hasher(hasher)
+        .as_str()
+        .to_string()
 }
-
-pub trait ConversationHistoryEventService: Send + Sync {
-    fn subscribe_updates(&self) -> tokio::sync::broadcast::Receiver<ConversationHistoryUpdate>;
-}
-
-pub fn paginate_items(
-    mut rows: Vec<ProvenanceConversationContextItem>,
+pub fn page_from_transcript_slice(
+    items: Vec<ProvenanceConversationContextItem>,
     request: &ConversationHistoryRequest,
-) -> Result<ConversationHistoryPageDto, ConversationHistoryError> {
-    rows.sort_by(|a, b| {
-        a.timestamp_ms
-            .cmp(&b.timestamp_ms)
-            .then_with(|| a.activity_anchor.as_str().cmp(b.activity_anchor.as_str()))
-    });
-
-    let start = request
-        .offset_from_cursor()
-        .map_err(|e| ConversationHistoryError::Other(Box::new(e)))?;
-    if start > rows.len() {
-        return Err(ConversationHistoryError::NotFound);
-    }
-    let limit = request.page.limit();
-    let end = start.saturating_add(limit).min(rows.len());
-    let page_rows = rows[start..end].to_vec();
-    let next_cursor = if end < rows.len() {
-        Some(
-            CursorToken::encode_v1(end, &request.context_id, request.task_id.as_ref())
-                .0
-                .to_string(),
-        )
-    } else {
-        None
-    };
-    let items: Vec<ConversationHistoryItemDto> = page_rows.into_iter().map(Into::into).collect();
+    llm_call_count: u32,
+    next_after_event_order: Option<u64>,
+) -> ConversationHistoryPageDto {
+    let items: Vec<ConversationHistoryItemDto> = items.into_iter().map(Into::into).collect();
     let max_event_order = items.last().map(|item| item.timestamp_ms).unwrap_or(0);
-    let version = page_version(&items, &[], None, None, false, None);
+    let next_cursor = next_after_event_order.map(|after| {
+        CursorToken::encode_v2(
+            after,
+            &request.context_id,
+            request.task_id.as_ref(),
+            request.agent_package.as_deref(),
+        )
+        .0
+        .to_string()
+    });
+    let version = page_version(&items, &[], None, None, false, None, llm_call_count);
 
-    Ok(ConversationHistoryPageDto {
+    ConversationHistoryPageDto {
         context_id: request.context_id.as_str().to_string(),
         task_id: request.task_id.as_ref().map(|id| id.as_str().to_string()),
         version,
@@ -644,7 +769,36 @@ pub fn paginate_items(
         llm_prompt_operations: Vec::new(),
         awaiting_input: false,
         input_required_prompt: None,
-    })
+        llm_call_count,
+    }
+}
+
+pub fn apply_conversation_history_profile(
+    items: Vec<ConversationHistoryItemDto>,
+    profile: ConversationHistoryProfile,
+) -> Vec<ConversationHistoryItemDto> {
+    if matches!(profile, ConversationHistoryProfile::Full) {
+        return items;
+    }
+    items
+        .into_iter()
+        .filter(|item| include_in_conversation_history_profile(item, profile))
+        .map(|item| profile_filter(item, profile))
+        .collect()
+}
+
+pub fn include_in_conversation_history_profile(
+    item: &ConversationHistoryItemDto,
+    profile: ConversationHistoryProfile,
+) -> bool {
+    match profile {
+        ConversationHistoryProfile::Full => true,
+        ConversationHistoryProfile::Compact => !matches!(
+            item.content,
+            ConversationHistoryContentDto::OperationalEvent { .. }
+                | ConversationHistoryContentDto::PlanningEvent { .. }
+        ),
+    }
 }
 
 pub fn profile_filter(
@@ -729,6 +883,7 @@ mod tests {
             "ctx-scope-test",
             ConversationHistoryQueryParams {
                 task_id: None,
+                agent_package: None,
                 limit: None,
                 cursor: None,
                 profile: None,

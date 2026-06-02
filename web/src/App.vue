@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, watch, ref } from "vue";
-import AgentSelector from "./components/AgentSelector.vue";
+import OperatorAgentSelector from "./components/OperatorAgentSelector.vue";
 import ChatTabs from "./components/ChatTabs.vue";
 import ChatWindow from "./components/ChatWindow.vue";
 import ConversationHistorySelector from "./components/ConversationHistorySelector.vue";
@@ -16,14 +16,23 @@ import ErrorBoundary from "./components/ErrorBoundary.vue";
 import Navbar from "./components/Navbar.vue";
 import ProvenancePane from "./components/ProvenancePane.vue";
 import SettingsView from "./components/SettingsView.vue";
+import EventConsole from "./components/events/EventConsole.vue";
 import ToastContainer from "./components/ToastContainer.vue";
 import { useProvenanceOps } from "./composables/useProvenanceOps";
+import { useEventConsole } from "./composables/useEventConsole";
 import { useChatTabs } from "./composables/useChatTabs";
+import {
+  chatRouteKey,
+  parseView,
+  readChatRouteFromUrl,
+  writeChatRouteToUrl,
+} from "./events/operatorRoute";
 import { useTheme } from "./composables/useTheme";
 import { useConfirm } from "./composables/useConfirm";
 import { parseMermaidBlocks } from "./utils/parseMermaid";
 import type { AgentDiscoveryEntry, ChatMessage, LlmPromptOperation } from "./types/a2a";
 import type { ProvenancePaneTab } from "./composables/useDashboardViewModel";
+import { deriveChatRunStatus } from "./operator/runStatus";
 
 /** First inline mermaid block in agent messages (stops at first hit). */
 function firstInlineMermaidDiagram(messages: ChatMessage[]): string | null {
@@ -44,6 +53,8 @@ const {
   switchTab,
   renameTab,
 } = useChatTabs();
+
+const eventConsole = useEventConsole();
 
 // Derived refs from the active tab's client
 const agents = computed(() => activeClient.value?.agents.value ?? []);
@@ -94,6 +105,16 @@ function onDashboardGoChat(payload?: { tabId?: string; provenanceTab?: Provenanc
 }
 const workflowProgress = computed(() => activeClient.value?.workflowProgress.value ?? { phase: "idle" as const, nodes: [], completedNodes: [] });
 const awaitingInput = computed(() => activeClient.value?.awaitingInput.value ?? false);
+const chatRunStatus = computed(() =>
+  deriveChatRunStatus({
+    isLoading: isLoading.value,
+    awaitingInput: awaitingInput.value,
+    hydrateState: historyHydrateState.value,
+    workflowProgress: workflowProgress.value,
+    messages: messages.value,
+    contextId: contextId.value,
+  }),
+);
 const inputRequiredPrompt = computed(() => activeClient.value?.inputRequiredPrompt.value ?? "");
 function normalizeChatTitle(text: string): string {
   const compact = text.replace(/\s+/g, " ").trim();
@@ -135,93 +156,51 @@ async function handleSelectAgent(agent: AgentDiscoveryEntry): Promise<void> {
   }
   selectAgent(agent);
 }
+
+async function ensureEventConsoleLoaded(): Promise<void> {
+  await Promise.all([eventConsole.fetchAgents(), eventConsole.fetchMessageShapes()]);
+  eventConsole.applyRouteFromUrl();
+}
+
 const { theme, toggle: toggleTheme } = useTheme();
 const { createQuery } = useProvenanceOps();
 
 // Active view — chat is the landing page; dashboard is a debug/metrics surface
-const view = ref<"dashboard" | "chat" | "settings">("chat");
+const view = ref<"dashboard" | "chat" | "events" | "settings">("chat");
 
-// Traces pane: hidden by default; persisted so power users keep it open across reloads
-const TRACES_STORAGE_KEY = "agentium:showTraces";
-const showTraces = ref<boolean>(
-  typeof localStorage !== "undefined" && localStorage.getItem(TRACES_STORAGE_KEY) === "1",
-);
-function toggleTraces() {
-  showTraces.value = !showTraces.value;
-  if (typeof localStorage !== "undefined") {
-    localStorage.setItem(TRACES_STORAGE_KEY, showTraces.value ? "1" : "0");
-  }
-}
 const isApplyingRouteState = ref(false);
 let lastRouteKey = "";
 
-type ViewName = "dashboard" | "chat" | "settings";
-type UiRouteState = {
-  view: ViewName;
-  agentPackage: string | null;
-  agentInstance: string | null;
-  contextId: string | null;
-};
-
-function parseView(raw: string | null): ViewName {
-  if (raw === "chat" || raw === "settings" || raw === "dashboard") return raw;
-  return "chat";
-}
-
-function readRouteStateFromUrl(): UiRouteState {
-  const params = new URLSearchParams(window.location.search);
-  return {
-    view: parseView(params.get("view")),
-    agentPackage: params.get("agentPackage"),
-    agentInstance: params.get("agentInstance"),
-    contextId: params.get("contextId"),
-  };
-}
-
-function routeStateKey(state: UiRouteState): string {
-  return JSON.stringify(state);
-}
-
-function currentRouteState(): UiRouteState {
-  return {
-    view: view.value,
+function currentChatRouteKey(): string {
+  return chatRouteKey({
+    view: "chat",
     agentPackage: selectedAgent.value?.agent_package ?? null,
     agentInstance: selectedAgent.value?.agent_instance_id ?? null,
     contextId: selectedHistoryContextId.value ?? contextId.value ?? null,
-  };
+  });
 }
 
-function writeRouteState(push: boolean): void {
-  if (isApplyingRouteState.value) return;
-  const state = currentRouteState();
-  const key = routeStateKey(state);
+function syncChatRouteToUrl(push: boolean): void {
+  if (isApplyingRouteState.value || view.value !== "chat") return;
+  const key = currentChatRouteKey();
   if (key === lastRouteKey) return;
-  const url = new URL(window.location.href);
-  const params = new URLSearchParams(url.search);
-  params.set("view", state.view);
-  if (state.agentPackage) params.set("agentPackage", state.agentPackage);
-  else params.delete("agentPackage");
-  if (state.agentInstance) params.set("agentInstance", state.agentInstance);
-  else params.delete("agentInstance");
-  if (state.contextId) params.set("contextId", state.contextId);
-  else params.delete("contextId");
-  url.search = params.toString();
-
-  if (push) {
-    window.history.pushState(state, "", url.toString());
-  } else {
-    window.history.replaceState(state, "", url.toString());
-  }
+  writeChatRouteToUrl(
+    {
+      agentPackage: selectedAgent.value?.agent_package ?? null,
+      agentInstance: selectedAgent.value?.agent_instance_id ?? null,
+      contextId: selectedHistoryContextId.value ?? contextId.value ?? null,
+    },
+    { push },
+  );
   lastRouteKey = key;
 }
 
-async function applyRouteStateFromUrl(): Promise<void> {
-  const next = readRouteStateFromUrl();
-  const nextKey = routeStateKey(next);
+async function applyChatRouteFromUrl(): Promise<void> {
+  const next = readChatRouteFromUrl();
+  const nextKey = chatRouteKey({ view: "chat", ...next });
   if (nextKey === lastRouteKey) return;
   isApplyingRouteState.value = true;
   try {
-    view.value = next.view;
     if (activeClient.value) {
       await activeClient.value.fetchAgents();
     }
@@ -236,8 +215,6 @@ async function applyRouteStateFromUrl(): Promise<void> {
         const sameAgent =
           cur?.agent_package === match.agent_package &&
           cur?.agent_instance_id === match.agent_instance_id;
-        // selectAgent clears the transcript; skip when URL already matches the active agent so we
-        // do not wipe messages before loadConversationHistoryContext runs (or on redundant applies).
         if (!sameAgent) {
           activeClient.value.selectAgent(match);
         }
@@ -249,6 +226,17 @@ async function applyRouteStateFromUrl(): Promise<void> {
     lastRouteKey = nextKey;
   } finally {
     isApplyingRouteState.value = false;
+  }
+}
+
+async function applyRouteStateFromUrl(): Promise<void> {
+  const params = new URLSearchParams(window.location.search);
+  const nextView = parseView(params.get("view"));
+  view.value = nextView;
+  if (nextView === "chat") {
+    await applyChatRouteFromUrl();
+  } else if (nextView === "events") {
+    await ensureEventConsoleLoaded();
   }
 }
 
@@ -349,7 +337,7 @@ async function checkHealth() {
 
 onMounted(() => {
   void applyRouteStateFromUrl().then(() => {
-    writeRouteState(false);
+    if (view.value === "chat") syncChatRouteToUrl(false);
   });
   checkHealth();
   healthTimer = setInterval(checkHealth, 30_000);
@@ -361,16 +349,22 @@ onUnmounted(() => {
   window.removeEventListener("popstate", onPopState);
 });
 
+watch(view, (next, prev) => {
+  if (next === "events" && prev !== "events") {
+    void ensureEventConsoleLoaded();
+  }
+});
+
 watch(
   [
-    view,
+    () => view.value,
     () => activeTabId.value,
     () => selectedAgent.value?.agent_package ?? null,
     () => selectedAgent.value?.agent_instance_id ?? null,
     () => selectedHistoryContextId.value ?? contextId.value ?? null,
   ],
   () => {
-    writeRouteState(true);
+    syncChatRouteToUrl(true);
   },
 );
 </script>
@@ -407,6 +401,13 @@ watch(
       <ErrorBoundary v-else-if="view === 'chat'">
         <div class="chat-layout">
         <div class="chat-toolbar">
+          <OperatorAgentSelector
+            variant="chat"
+            :agents="agents"
+            :selected="selectedAgent"
+            class="chat-toolbar__agent"
+            @select="handleSelectAgent"
+          />
           <ChatTabs
             :tabs="tabs"
             :active-tab-id="activeTabId"
@@ -414,25 +415,15 @@ watch(
             @close="closeTab"
             @create="createTab()"
           />
-          <AgentSelector :agents="agents" :selected="selectedAgent" @select="handleSelectAgent" />
           <ConversationHistorySelector
             v-if="selectedAgent"
+            class="chat-toolbar__history"
             :histories="conversationHistoryOptions"
             :selected-context-id="selectedHistoryContextId"
             :loading="historyLoading"
             @select="selectConversationHistory"
             @refresh="refreshConversationHistories"
           />
-          <button
-            type="button"
-            class="traces-toggle"
-            :class="{ 'traces-toggle--on': showTraces }"
-            :aria-pressed="showTraces"
-            :title="showTraces ? 'Hide traces panel' : 'Show traces panel'"
-            @click="toggleTraces"
-          >
-            {{ showTraces ? "Hide traces" : "Show traces" }}
-          </button>
         </div>
 
         <div class="app-body">
@@ -442,21 +433,18 @@ watch(
             :disabled="!selectedAgent"
             :awaiting-input="awaitingInput"
             :input-required-prompt="inputRequiredPrompt"
-            :workflow-progress="workflowProgress"
+            :run-status="chatRunStatus"
             :history-hydrate-state="historyHydrateState"
             :selected-context-id="selectedHistoryContextId"
-            :agents="agents"
             @send="sendMessage"
             @cancel="cancelStream"
-            @select-agent="handleSelectAgent"
             @open-settings="view = 'settings'"
           />
           <ProvenancePane
-            v-if="showTraces"
             :context-id="contextId"
             :task-id="taskId ?? undefined"
-            :selected-agent-id="undefined"
-            :is-streaming="isLoading"
+            :selected-agent-id="selectedAgent?.agent_instance_id ?? undefined"
+            :run-status="chatRunStatus"
             :diagrams="provenancePaneDiagrams"
             :trace-refresh-tick="traceRefreshGeneration"
             :llm-prompt-operations="llmPromptOperations"
@@ -464,6 +452,10 @@ watch(
           />
         </div>
       </div>
+      </ErrorBoundary>
+
+      <ErrorBoundary v-else-if="view === 'events'">
+        <EventConsole />
       </ErrorBoundary>
 
       <ErrorBoundary v-else-if="view === 'settings'">

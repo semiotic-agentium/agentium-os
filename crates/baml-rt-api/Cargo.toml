@@ -15,11 +15,17 @@ baml-rt-conversation = { path = "../baml-rt-conversation" }
 baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-router = { path = "../baml-rt-router" }
 baml-rt-observability = { path = "../baml-rt-observability" }
-baml-rt-builder = { path = "../baml-rt-builder" }
+baml-rt-builder = { path = "../baml-rt-builder", features = ["http-tools"] }
 baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
 baml-rt-repository = { path = "../baml-rt-repository" }
 baml-rt-tools = { path = "../baml-rt-tools" }
+baml-tools-clickup = { path = "../tools/clickup" }
+baml-tools-github = { path = "../tools/github" }
+baml-tools-notion = { path = "../tools/notion" }
+baml-tools-security-eval = { path = "../tools/security-eval" }
+baml-tools-slack = { path = "../tools/slack" }
+baml-tools-system = { path = "../tools/system" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 jsonschema = { workspace = true }

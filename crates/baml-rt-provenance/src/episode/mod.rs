@@ -11,6 +11,7 @@ mod drift;
 mod from_graph;
 mod reader;
 
+pub(crate) use aggregates::token_summary_for_task;
 pub use archive::{CachedEpisode, EpisodeArchiveSource, episode_ref_table};
 /// Episode transcript / drift types and ref-prefix helpers.
 pub use baml_rt_conversation::episode::*;

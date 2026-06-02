@@ -105,8 +105,8 @@ pub(crate) struct AgentPackageBootArgs<'a> {
     pub(crate) sandbox_bind_roots: &'a [PathBuf],
     /// Meter to register the agent's JS-event-loop progress probe with.
     pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
-    pub(crate) conversation_history_notify:
-        Option<tokio::sync::broadcast::Sender<baml_rt_core::ConversationHistoryUpdate>>,
+    pub(crate) observation_notify:
+        Option<tokio::sync::broadcast::Sender<baml_rt_core::ObservationUpdate>>,
 }
 
 impl AgentPackage {
@@ -281,9 +281,7 @@ impl AgentPackage {
         registered: ToolsRegistered,
         provenance_config: &ProvenanceConfig,
         stream_idle_secs: Option<u64>,
-        conversation_history_notify: Option<
-            tokio::sync::broadcast::Sender<baml_rt_core::ConversationHistoryUpdate>,
-        >,
+        observation_notify: Option<tokio::sync::broadcast::Sender<baml_rt_core::ObservationUpdate>>,
     ) -> Result<JsInitialized> {
         use baml_rt_quickjs::QuickJSConfig;
 
@@ -330,7 +328,12 @@ impl AgentPackage {
         }
 
         let runtime_manager_arc = Arc::new(tokio::sync::RwLock::new(runtime_manager));
-        let quickjs_config = QuickJSConfig::new().with_stream_collector_idle_secs(stream_idle_secs);
+        let store = provenance_config.store().clone();
+        let host_ingress_recorder =
+            Arc::new(crate::services::HostIngressRecorderImpl::new(store.clone()));
+        let quickjs_config = QuickJSConfig::new()
+            .with_stream_collector_idle_secs(stream_idle_secs)
+            .with_host_ingress_recorder(Some(host_ingress_recorder));
         let agent_package = AgentPackageName::parse(&self.manifest.name).ok_or_else(|| {
             BamlRtError::InvalidArgument(format!(
                 "manifest agent name '{name}' is not a valid agent_package identifier",
@@ -343,9 +346,9 @@ impl AgentPackage {
             .with_quickjs_config(quickjs_config)
             .with_baml_helpers(true)
             .with_agent_identity(agent_package, agent_instance_id)
-            .with_surreal_store(provenance_config.store().clone());
-        if let Some(tx) = conversation_history_notify.clone() {
-            agent_builder = agent_builder.with_conversation_history_notify(tx);
+            .with_surreal_store(store);
+        if let Some(tx) = observation_notify.clone() {
+            agent_builder = agent_builder.with_observation_notify(tx);
         }
         let agent_builder =
             agent_builder.with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()));
@@ -422,7 +425,7 @@ impl AgentPackage {
                     registered,
                     args.provenance_config,
                     args.stream_idle_secs,
-                    args.conversation_history_notify.clone(),
+                    args.observation_notify.clone(),
                 )
                 .await?;
             // Register before `initialize_js_phase`: a CPU-bound JS top-level

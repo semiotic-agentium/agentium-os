@@ -26,8 +26,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::{
+    channel::{SlackChannelSelector, resolve_selector_channel_id},
     normalize::{SocketModeEventContext, normalize_socket_mode_batch},
-    producer::{RAW_SOURCE_SCHEMA_VERSION, SlackChannelSelector, resolve_selector_channel_id},
+    producer::RAW_SOURCE_SCHEMA_VERSION,
 };
 
 /// Read timeout for the Socket Mode WebSocket stream. Slack sends pings

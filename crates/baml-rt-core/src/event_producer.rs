@@ -8,20 +8,24 @@
 //! losslessly to [`PublishedEvent`](crate::event_subscription::PublishedEvent) for
 //! subscription matching and to [`AgentDispatchRequest`] for delivery.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    AgentDispatchRequest, AgentDispatchRoutingKey, AgentRouteKey, EventSchemaVersion,
+    AgentDispatchRequest, AgentDispatchRoutingKey, AgentRouteKey, BamlRtError, EventSchemaVersion,
+    Result,
     event_subscription::{EventSourceKey, EventSourceKind, PublishedEvent},
+    host_source_records_schema_version,
+    host_wire::wire,
     ids::{ContextId, TaskId},
 };
 
 /// One event emitted by a producer, ready for the host to match and deliver.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProducedEvent {
     /// Routing key for dispatch (e.g. `slack:intake`).
     pub routing_key: AgentDispatchRoutingKey,
-    /// Schema version / message family (e.g. `task-daemon.interpretation.v1`).
+    /// Schema version / message family (e.g. `host.source-records.v1`).
     pub schema_version: EventSchemaVersion,
     /// Source kind for subscription matching (e.g. `slack`).
     pub source_kind: EventSourceKind,
@@ -40,6 +44,34 @@ pub struct ProducedEvent {
 }
 
 impl ProducedEvent {
+    /// Build a `host.source-records.v1` event for pub/sub delivery.
+    pub fn host_source_records(
+        source_kind: EventSourceKind,
+        source_key: EventSourceKey,
+        payload: Value,
+        message_id: Option<String>,
+        metadata: Option<Value>,
+    ) -> Result<Self> {
+        let routing_key = AgentDispatchRoutingKey::parse(wire::SOURCE_RECORDS_ROUTING_KEY)
+            .ok_or_else(|| {
+                BamlRtError::InvalidArgument(format!(
+                    "invalid source-records routing key: {}",
+                    wire::SOURCE_RECORDS_ROUTING_KEY
+                ))
+            })?;
+        Ok(Self {
+            routing_key,
+            schema_version: host_source_records_schema_version(),
+            source_kind,
+            source_key,
+            messages: vec![payload],
+            context_id: None,
+            task_id: None,
+            message_id,
+            metadata,
+        })
+    }
+
     /// Build the [`PublishedEvent`] descriptor used for subscription matching.
     pub fn as_published_event(&self) -> PublishedEvent {
         // All constituent types are pre-validated at construction, so we can
@@ -65,15 +97,51 @@ impl ProducedEvent {
     }
 }
 
+/// Per-subscriber delivery failure (rejection or transport error).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SubscriberDeliveryFailure {
+    /// Agent returned `accepted: false` with an optional detail string.
+    Rejected { detail: String },
+    /// Host dispatch to the agent route failed (`BamlRtError` captured at fan-out).
+    Dispatch { detail: String },
+}
+
+impl SubscriberDeliveryFailure {
+    /// Human-readable detail for logs and HTTP responses.
+    pub fn detail(&self) -> String {
+        match self {
+            Self::Rejected { detail } | Self::Dispatch { detail } => detail.clone(),
+        }
+    }
+
+    pub fn from_dispatch_error(err: BamlRtError) -> Self {
+        Self::Dispatch {
+            detail: err.to_string(),
+        }
+    }
+}
+
+/// Accepted dispatch with operator-facing detail from the agent `onDispatch` ack.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscriberAcceptance {
+    pub agent_package: String,
+    pub agent_instance_id: String,
+    pub detail: String,
+}
+
 /// Aggregate outcome of dispatching one [`ProducedEvent`] to all matched subscribers.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventDeliveryOutcome {
     /// Number of agents whose subscriptions matched the event.
     pub subscribers_matched: usize,
     /// Number of agents that accepted the dispatch.
     pub subscribers_accepted: usize,
-    /// Per-subscriber failures: route key and error detail.
-    pub failures: Vec<(AgentRouteKey, String)>,
+    /// Per-subscriber acceptances with agent ack detail (noop vs processed units, etc.).
+    #[serde(default)]
+    pub acceptances: Vec<SubscriberAcceptance>,
+    /// Per-subscriber failures: route key and failure reason.
+    pub failures: Vec<(AgentRouteKey, SubscriberDeliveryFailure)>,
 }
 
 #[cfg(test)]

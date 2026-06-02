@@ -5,9 +5,9 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"page1\": snapshot_
 {
   "page1": {
     "appliedCaps": {
-      "max_page_size": 50,
-      "page_size": 1,
-      "top_k": 10
+      "maxPageSize": 50,
+      "pageSize": 1,
+      "topK": 10
     },
     "hotspotGroups": [
       {
@@ -65,6 +65,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"page1\": snapshot_
         "model": "gpt-4o-mini",
         "prompt_tokens": 5,
         "prov_endTime": 200,
+        "prov_time": 200,
         "prov_type": "a2a:LlmCall",
         "provider": "openai",
         "timestamp_ms": "[timestamp_ms]",
@@ -92,9 +93,9 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"page1\": snapshot_
   },
   "page2": {
     "appliedCaps": {
-      "max_page_size": 50,
-      "page_size": 1,
-      "top_k": 10
+      "maxPageSize": 50,
+      "pageSize": 1,
+      "topK": 10
     },
     "hotspotGroups": [
       {
@@ -155,6 +156,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"page1\": snapshot_
         "model": "gpt-4o-mini",
         "prompt_tokens": 7,
         "prov_endTime": 300,
+        "prov_time": 300,
         "prov_type": "a2a:LlmCall",
         "provider": "openai",
         "timestamp_ms": "[timestamp_ms]",

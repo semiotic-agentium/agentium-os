@@ -284,4 +284,31 @@ mod tests {
             err
         );
     }
+
+    #[test]
+    fn dispatch_unit_enter_exit_is_lifo_and_drains_stack() {
+        let parent_agent = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
+        let unit_agent = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
+        let parent_scope = InvocationScope::synthetic_message(parent_agent)
+            .as_scope()
+            .clone();
+        let unit_scope = InvocationScope::synthetic_message(unit_agent)
+            .as_scope()
+            .clone();
+
+        let mut registry = InvocationContextRegistry::new();
+        let parent_id = registry.enter(parent_scope.clone(), None);
+        let unit_id = registry.enter(unit_scope.clone(), None);
+
+        registry.exit(&unit_id);
+        assert_eq!(
+            registry.current_scope().expect("parent scope"),
+            parent_scope
+        );
+
+        registry.exit(&parent_id);
+        registry
+            .current_scope()
+            .expect_err("stack empty after matched enter/exit");
+    }
 }

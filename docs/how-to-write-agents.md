@@ -50,14 +50,15 @@ For API details and invariants, see [crates/baml-rt-quickjs/README.md](../crates
 
 ### Event-driven semantic ingress
 
-Agents can also register `onDispatch(request)` for host-delivered events. This is the right place for source-family semantic ingress:
+Agents can also register `onDispatch(request)` (or `dispatch(request).run(ctx)` when using the generated dispatch DSL) for host-delivered events. This is the right place for source-family semantic ingress:
 
-- accept raw or interpreted event payloads
-- normalize them into your domain event shape
-- optionally call a host tool for enrichment
-- route only after the meaning is clear
+- accept `host.source-records.v1` batches from the wire
+- choose cardinality (one task for the whole poll vs `withTask` per unit)
+- run BAML and host tools **inside** the agent handler — the host does not pre-fetch, pre-interpret, or LLM-enrich ingress for you
 
-For example, a Slack semantic-ingress agent can receive `host.source-records.v1`, group records into conversations, call `support/slack` to expand a thread, and only then hand off tracked work to ClickUp or a coordinator.
+At publish the host writes the poll as a normal `user` line in conversation history (`#1`). For each `withTask({ unitKey, records })`, the host formats that **record slice** into the unit’s task-scoped `#1` before your callback runs. You pass structured `records[]` only; never build duplicate transcript prose for BAML.
+
+For example, `clickup-agent` runs `InferClickUpIntent({})` against `ctx.tags['conversation_transcript']` on a full batch. `slack-agent` groups records into conversation units and uses `withTask` per unit; thread expansion and interpretation belong in BAML/tool steps inside that unit, not in host code before `withTask`.
 
 ---
 

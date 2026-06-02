@@ -16,8 +16,7 @@ store-failure-output = true
 [test-groups]
 provenance = { max-threads = 1 }
 runner-subprocess = { max-threads = 1 }
-workflow-intake-e2e = { max-threads = 1 }
-semantic-ingress-e2e = { max-threads = 1 }
+slack-source-ingress-e2e = { max-threads = 1 }
 llm-heavy = { max-threads = 1 }
 
 [[profile.ci.overrides]]
@@ -76,12 +75,6 @@ filter = 'package(baml-agent-runner) and test(~test_e2e_)'
 slow-timeout = { period = "120s", terminate-after = 3 }
 retries = { backoff = "fixed", count = 1, delay = "5s" }
 
-# Notion direct-id e2e: extra retries (LLM plan extraction occasionally skips tool path).
-[[profile.ci.overrides]]
-filter = 'package(baml-agent-runner) and test(~test_e2e_notion_direct_id_path)'
-slow-timeout = { period = "120s", terminate-after = 2 }
-retries = { backoff = "fixed", count = 3, delay = "8s" }
-
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-interceptor) and test(~test_e2e_)'
 retries = { backoff = "fixed", count = 1, delay = "2s" }
@@ -97,18 +90,45 @@ filter = 'package(baml-rt-a2a) and binary(task_streaming_test)'
 slow-timeout = { period = "60s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "3s" }
 
-# Workflow intake tests spawn subprocesses with HTTP servers; flaky under load.
 [[profile.ci.overrides]]
-filter = 'package(baml-agent-runner) and binary(runner_workflow_intake_test)'
-test-group = "workflow-intake-e2e"
-slow-timeout = { period = "120s", terminate-after = 2 }
+filter = 'package(baml-agent-runner) and binary(runner_slack_source_ingress_test)'
+test-group = "slack-source-ingress-e2e"
+slow-timeout = { period = "180s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 2, delay = "3s" }
 
 [[profile.ci.overrides]]
-filter = 'package(baml-agent-runner) and binary(runner_semantic_ingress_test)'
-test-group = "semantic-ingress-e2e"
-slow-timeout = { period = "120s", terminate-after = 2 }
-retries = { backoff = "fixed", count = 2, delay = "3s" }
+filter = 'package(baml-agent-runner) and binary(runner_clickup_source_ingress_test)'
+test-group = "llm-heavy"
+slow-timeout = { period = "360s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "5s" }
+
+[[profile.ci.overrides]]
+filter = 'package(baml-agent-runner) and binary(runner_dispatch_ingress_demo_test)'
+test-group = "llm-heavy"
+slow-timeout = { period = "180s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "5s" }
+
+[[profile.ci.overrides]]
+filter = 'package(baml-agent-runner) and binary(coordinator_routing_eval)'
+test-group = "llm-heavy"
+slow-timeout = { period = "360s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "5s" }
+
+[[profile.ci.overrides]]
+filter = 'package(baml-agent-runner) and binary(drift_integration_test)'
+test-group = "llm-heavy"
+slow-timeout = { period = "360s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "5s" }
+
+[[profile.ci.overrides]]
+filter = 'package(baml-agent-runner) and binary(runner_starvation_test)'
+test-group = "runner-subprocess"
+slow-timeout = { period = "300s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 1, delay = "5s" }
+
+[[profile.ci.overrides]]
+filter = 'package(baml-rt-quickjs) and binary(execution_session_fsm_test)'
+retries = { backoff = "fixed", count = 2, delay = "2s" }
 
 [[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and binary(runner_callback_test)'
@@ -166,23 +186,46 @@ slow-timeout = { period = "300s", terminate-after = 2 }
 filter = 'package(baml-agent-runner) and binary(runner_cluster_test)'
 test-group = "runner-subprocess"
 
-# Workflow intake tests spawn subprocesses with HTTP servers; flaky under load.
 [[profile.ci-merged.overrides]]
-filter = 'package(baml-agent-runner) and binary(runner_workflow_intake_test)'
-test-group = "workflow-intake-e2e"
-slow-timeout = { period = "120s", terminate-after = 2 }
+filter = 'package(baml-agent-runner) and binary(runner_slack_source_ingress_test)'
+test-group = "slack-source-ingress-e2e"
+slow-timeout = { period = "180s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 2, delay = "3s" }
 
 [[profile.ci-merged.overrides]]
-filter = 'package(baml-agent-runner) and binary(runner_semantic_ingress_test)'
-test-group = "semantic-ingress-e2e"
-slow-timeout = { period = "120s", terminate-after = 2 }
-retries = { backoff = "fixed", count = 2, delay = "3s" }
+filter = 'package(baml-agent-runner) and binary(runner_clickup_source_ingress_test)'
+test-group = "llm-heavy"
+slow-timeout = { period = "360s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "5s" }
+
+[[profile.ci-merged.overrides]]
+filter = 'package(baml-agent-runner) and binary(runner_dispatch_ingress_demo_test)'
+test-group = "llm-heavy"
+slow-timeout = { period = "180s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "5s" }
+
+[[profile.ci-merged.overrides]]
+filter = 'package(baml-agent-runner) and binary(coordinator_routing_eval)'
+test-group = "llm-heavy"
+slow-timeout = { period = "360s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "5s" }
 
 # Security-eval + LLM drift integration is timing/network heavy; serialize this binary.
 [[profile.ci-merged.overrides]]
 filter = 'package(baml-agent-runner) and binary(drift_integration_test)'
 test-group = "llm-heavy"
+slow-timeout = { period = "360s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 2, delay = "5s" }
+
+[[profile.ci-merged.overrides]]
+filter = 'package(baml-agent-runner) and binary(runner_starvation_test)'
+test-group = "runner-subprocess"
+slow-timeout = { period = "300s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 1, delay = "5s" }
+
+[[profile.ci-merged.overrides]]
+filter = 'package(baml-rt-quickjs) and binary(execution_session_fsm_test)'
+retries = { backoff = "fixed", count = 2, delay = "2s" }
 
 # Two-agent real-LLM handoff test is especially timing/resource sensitive in CI.
 [[profile.ci-merged.overrides]]
@@ -262,11 +305,6 @@ slow-timeout = { period = "300s", terminate-after = 1 }
 filter = 'package(baml-rt-a2a) and test(concurrent_stream_phase_matrix_regression_under_load)'
 slow-timeout = { period = "30s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 2, delay = "2s" }
-
-# Notion direct-id e2e: extra retries (LLM plan extraction occasionally skips tool path).
-[[profile.ci-merged.overrides]]
-filter = 'package(baml-agent-runner) and test(~test_e2e_notion_direct_id_path)'
-retries = { backoff = "fixed", count = 3, delay = "8s" }
 
 # LLM-dependent e2e tests in ci-merged: wall-clock budget must exceed the
 # agent-side stream-collector idle (up to 300s for slow grok-4.1-fast yield

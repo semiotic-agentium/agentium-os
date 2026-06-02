@@ -5,12 +5,17 @@
 //! Typed rows for **agent-visible** conversation: messages, tool call/result, and session FSM
 //! steps. Producers (graph readers) construct these; projection renders them for BAML/HTTP/episode.
 
+use std::collections::HashMap;
+
 use baml_rt_core::{
     Citation,
-    ids::{ActivityAnchorId, MessageId},
+    history_text::{is_history_infrastructure_notice, strip_history_notice_prefix},
+    ids::{ActivityAnchorId, ContextId, MessageId},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::{operational::OperationalEventContent, planning::PlanningEventContent};
 
 /// Re-export: session step op in conversation history (same as core bus wire).
 pub type SessionStepOp = baml_rt_core::bus::SessionStepOp;
@@ -83,6 +88,37 @@ pub enum ConversationItemContent {
     ToolResult(ToolResultContent),
     /// An individual session step — Open/SendDone/SearchRead/PageRead within an in-progress session.
     SessionStep(SessionStepContent),
+    /// Host dispatch, LLM/tool failure classification, or task status (operator transcript only).
+    Operational(OperationalEventContent),
+    /// Intent, plan, and step lifecycle (operator transcript only).
+    Planning(PlanningEventContent),
+}
+
+/// True when message text is only an FSM opcode label (sometimes mirrored as assistant noise).
+fn is_fsm_opcode_message_noise(text: &str) -> bool {
+    let core = strip_history_notice_prefix(text).trim();
+    matches!(
+        core,
+        "Open" | "Send" | "Finish" | "Abort" | "SearchRead" | "PageRead"
+    )
+}
+
+fn session_tool_args_non_empty(args: &Value) -> bool {
+    let step = args.get("step").unwrap_or(args);
+    if let Some(input) = step.get("input") {
+        return !value_is_empty(input);
+    }
+    !value_is_empty(args)
+}
+
+fn value_is_empty(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Bool(_) | Value::Number(_) => false,
+        Value::String(s) => s.trim().is_empty(),
+        Value::Array(a) => a.is_empty() || a.iter().all(value_is_empty),
+        Value::Object(m) => m.is_empty() || m.values().all(value_is_empty),
+    }
 }
 
 impl ConversationItemContent {
@@ -90,12 +126,98 @@ impl ConversationItemContent {
     /// `StatusOnly` tool results return false.
     pub fn is_meaningful(&self) -> bool {
         match self {
-            Self::Message { text, .. } => !text.trim().is_empty(),
-            Self::ToolCall(_) => true,
-            Self::ToolResult(tr) => !matches!(tr.outcome, ToolOutcome::StatusOnly),
-            Self::SessionStep(_) => true,
+            Self::Message { text, .. } => {
+                let t = text.trim();
+                !t.is_empty()
+                    && !is_history_infrastructure_notice(text)
+                    && !is_fsm_opcode_message_noise(text)
+            }
+            Self::ToolCall(tc) => {
+                if !tc.fsm_phase.is_session_phase() {
+                    return true;
+                }
+                matches!(tc.fsm_phase, ToolSessionPhase::Send)
+                    && session_tool_args_non_empty(&tc.args)
+            }
+            Self::ToolResult(tr) => {
+                if matches!(tr.outcome, ToolOutcome::StatusOnly) {
+                    return false;
+                }
+                !tr.fsm_phase.is_session_phase()
+            }
+            Self::SessionStep(ss) => {
+                // `Open` is FSM bookkeeping only. `SendDone` is omitted from the transcript but
+                // must still flow through projection so replay payloads seed the ref table.
+                !matches!(ss.op, SessionStepOp::Open)
+            }
+            Self::Operational(op) => op.is_meaningful(),
+            Self::Planning(plan) => plan.is_meaningful(),
         }
     }
+}
+
+/// Who spoke on a **user** transcript row (trust / UI styling). Symmetric with HTTP `user_speaker_kind`
+/// and client `userSpeakerKind` / `ChatMessage.speakerKind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserSpeakerKind {
+    Human,
+    Relay,
+    Ingress,
+}
+
+impl UserSpeakerKind {
+    #[must_use]
+    pub const fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::Human => baml_rt_vocabulary::vocabulary::user_speaker_kinds::HUMAN,
+            Self::Relay => baml_rt_vocabulary::vocabulary::user_speaker_kinds::RELAY,
+            Self::Ingress => baml_rt_vocabulary::vocabulary::user_speaker_kinds::INGRESS,
+        }
+    }
+
+    pub fn from_wire_str(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            baml_rt_vocabulary::vocabulary::user_speaker_kinds::HUMAN => Some(Self::Human),
+            baml_rt_vocabulary::vocabulary::user_speaker_kinds::RELAY => Some(Self::Relay),
+            baml_rt_vocabulary::vocabulary::user_speaker_kinds::INGRESS => Some(Self::Ingress),
+            _ => None,
+        }
+    }
+}
+
+/// Classify a user transcript row. Returns `None` when `role` is not a user turn.
+#[must_use]
+pub fn classify_user_speaker_kind(
+    context_id: &ContextId,
+    activity_anchor: &ActivityAnchorId,
+    metadata: Option<&HashMap<String, String>>,
+    role: &str,
+) -> Option<UserSpeakerKind> {
+    let r = role.trim();
+    if !(r.eq_ignore_ascii_case("ROLE_USER") || r.eq_ignore_ascii_case("user")) {
+        return None;
+    }
+    let anchor = activity_anchor.as_str();
+    if let Some(meta) = metadata
+        && let Some(raw) = meta.get("user_speaker_kind").map(String::as_str)
+        && let Some(kind) = UserSpeakerKind::from_wire_str(raw)
+    {
+        return Some(kind);
+    }
+    if anchor.starts_with("ingress-poll-user:") || anchor.starts_with("ingress-unit-user:") {
+        return Some(UserSpeakerKind::Ingress);
+    }
+    if metadata
+        .and_then(|m| m.get("kind"))
+        .is_some_and(|k| k == "agent-to-agent")
+    {
+        return Some(UserSpeakerKind::Relay);
+    }
+    if context_id.as_str().starts_with("a2a:") {
+        return Some(UserSpeakerKind::Relay);
+    }
+    Some(UserSpeakerKind::Human)
 }
 
 /// Maps a graph Message `a2a_role` into the `role` field on projected history rows (rendered into `conversation_transcript`).
@@ -117,6 +239,9 @@ pub fn conversation_history_role_for_message(a2a_role: &str) -> String {
     {
         return "assistant".to_string();
     }
+    if r.eq_ignore_ascii_case("ROLE_HOST") || r.eq_ignore_ascii_case("host") {
+        return "host".to_string();
+    }
     a2a_role.to_string()
 }
 
@@ -128,6 +253,9 @@ pub struct ProvenanceConversationContextItem {
     /// `user` / `assistant` for chat turns; `tool` for host tool calls and session FSM steps; `read` for inlined read bodies.
     pub role: String,
     pub content: ConversationItemContent,
+    /// Present only for `role == "user"` transcript rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_speaker_kind: Option<UserSpeakerKind>,
 }
 
 impl ProvenanceConversationContextItem {
@@ -138,6 +266,8 @@ impl ProvenanceConversationContextItem {
             ConversationItemContent::ToolCall(_) => "tool_call",
             ConversationItemContent::ToolResult(_) => "tool_result",
             ConversationItemContent::SessionStep(_) => "session_step",
+            ConversationItemContent::Operational(_) => "operational_event",
+            ConversationItemContent::Planning(_) => "planning_event",
         }
     }
 }
@@ -199,5 +329,119 @@ impl ToolSessionPhase {
             Self::Abort => "abort".to_string(),
             Self::Unknown(value) => value.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use baml_rt_core::ids::{ContextId, TaskId, UuidId};
+    use uuid::Uuid;
+
+    use super::*;
+
+    #[test]
+    fn classify_ingress_from_metadata() {
+        let ctx = ContextId::new(1, 2);
+        let anchor = ActivityAnchorId::from("derived-host-ingress-anchor");
+        let mut meta = HashMap::new();
+        meta.insert(
+            "user_speaker_kind".to_string(),
+            baml_rt_vocabulary::vocabulary::user_speaker_kinds::INGRESS.to_string(),
+        );
+        let kind = classify_user_speaker_kind(&ctx, &anchor, Some(&meta), "user").expect("user");
+        assert_eq!(kind, UserSpeakerKind::Ingress);
+    }
+
+    #[test]
+    fn classify_ingress_poll_anchor() {
+        let ctx = ContextId::new(1, 2);
+        let anchor = ActivityAnchorId::from("ingress-poll-user:ctx-1-2:msg-1");
+        let kind = classify_user_speaker_kind(&ctx, &anchor, None, "user").expect("user");
+        assert_eq!(kind, UserSpeakerKind::Ingress);
+    }
+
+    #[test]
+    fn classify_ingress_unit_anchor() {
+        let ctx = ContextId::new(1, 2);
+        let anchor = ActivityAnchorId::from("ingress-unit-user:ctx-1-2:unit-a");
+        let kind = classify_user_speaker_kind(&ctx, &anchor, None, "user").expect("user");
+        assert_eq!(kind, UserSpeakerKind::Ingress);
+    }
+
+    #[test]
+    fn classify_relay_from_metadata() {
+        let ctx = ContextId::new(1, 2);
+        let anchor = ActivityAnchorId::from_counter(99);
+        let mut meta = HashMap::new();
+        meta.insert("kind".to_string(), "agent-to-agent".to_string());
+        let kind =
+            classify_user_speaker_kind(&ctx, &anchor, Some(&meta), "ROLE_USER").expect("user");
+        assert_eq!(kind, UserSpeakerKind::Relay);
+    }
+
+    #[test]
+    fn classify_relay_from_a2a_child_context() {
+        let caller = ContextId::new(1, 2);
+        let child_task = TaskId::for_delegated_child(UuidId::new(Uuid::nil()));
+        let ctx = ContextId::for_a2a_child(&caller, "pkg", "default", &child_task);
+        let anchor = ActivityAnchorId::from_counter(100);
+        let kind = classify_user_speaker_kind(&ctx, &anchor, None, "user").expect("user");
+        assert_eq!(kind, UserSpeakerKind::Relay);
+    }
+
+    #[test]
+    fn classify_human_default() {
+        let ctx = ContextId::new(1, 2);
+        let anchor = ActivityAnchorId::from_counter(101);
+        let kind = classify_user_speaker_kind(&ctx, &anchor, None, "user").expect("user");
+        assert_eq!(kind, UserSpeakerKind::Human);
+    }
+
+    #[test]
+    fn classify_non_user_returns_none() {
+        let ctx = ContextId::new(1, 2);
+        let anchor = ActivityAnchorId::from_counter(102);
+        assert!(classify_user_speaker_kind(&ctx, &anchor, None, "assistant").is_none());
+    }
+
+    #[test]
+    fn session_open_tool_call_not_meaningful_for_prompt() {
+        use serde_json::json;
+
+        let open_call = ConversationItemContent::ToolCall(ToolCallContent {
+            tool_name: "support/notion".into(),
+            args: json!({ "step": { "op": "Open", "input": {} } }),
+            fsm_phase: ToolSessionPhase::Open,
+        });
+        assert!(!open_call.is_meaningful());
+
+        let send_call = ConversationItemContent::ToolCall(ToolCallContent {
+            tool_name: "support/notion".into(),
+            args: json!({
+                "step": {
+                    "op": "Send",
+                    "input": { "operation": "search_pages", "query": "OAuth" }
+                }
+            }),
+            fsm_phase: ToolSessionPhase::Send,
+        });
+        assert!(send_call.is_meaningful());
+    }
+
+    #[test]
+    fn session_open_step_and_opcode_messages_not_meaningful() {
+        let open_step = ConversationItemContent::SessionStep(SessionStepContent {
+            tool_name: "support/notion".into(),
+            op: SessionStepOp::Open,
+            send_done_replay_payload: None,
+            read_replay_lines: None,
+        });
+        assert!(!open_step.is_meaningful());
+
+        let msg = ConversationItemContent::Message {
+            text: "#18 Open".into(),
+            citations: vec![],
+        };
+        assert!(!msg.is_meaningful());
     }
 }

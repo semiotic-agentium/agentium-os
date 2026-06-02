@@ -25,10 +25,9 @@
 //! ## No-stale-read invariant (ProvenanceContextReader only)
 //!
 //! - **Property:** ∀ write W completed before read R via [ProvenanceContextReader]: R reflects W.
-//! - **Enforcement:** Implementations use a single serialized worker for writes and reads so that
-//!   any read that starts after a write completes sees that write. Callers must await
-//!   [ProvenanceWriter::add_event] (or [ProvenanceWriter::add_events]) before calling the reader
-//!   methods if they need to see those events.
+//! - **Enforcement:** Implementations must ensure any read that starts after a completed write
+//!   sees that write (SurrealDB MVCC + awaiting [ProvenanceWriter::add_event]). Callers must await
+//!   writes before reader methods when they need those events visible.
 //!
 //! ## Graph-first design constraint
 //!
@@ -66,9 +65,12 @@ use baml_rt_core::{
     ids::{ActivityAnchorId, AgentId, ContextId, TaskId},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
 
-use crate::{error::Result, events::ProvEvent};
+use crate::{
+    error::{ProvenanceError, Result},
+    events::ProvEvent,
+    task_agent_binding::{TaskAgentBinding, TaskAgentBindingSource},
+};
 
 /// Outcome of resolving the agent that owns a task via graph traversal.
 ///
@@ -83,10 +85,24 @@ pub enum TaskAgentResolution {
 }
 
 impl TaskAgentResolution {
-    pub fn into_option(self) -> Option<AgentId> {
+    /// Write path only — agent-scoped normalization may proceed without a resolved head.
+    pub fn for_normalization(self) -> Option<AgentId> {
         match self {
             Self::Resolved(id) => Some(id),
             Self::NotLinked | Self::TimedOut => None,
+        }
+    }
+
+    /// Episode assembly gate — unbound tasks are not episodes.
+    pub fn require_for_episode(self, task_id: &TaskId) -> Result<AgentId> {
+        match self {
+            Self::Resolved(id) => Ok(id),
+            Self::NotLinked => Err(ProvenanceError::EpisodeUnbound {
+                task_id: task_id.clone(),
+            }),
+            Self::TimedOut => Err(ProvenanceError::EpisodeAgentResolutionTimedOut {
+                task_id: task_id.clone(),
+            }),
         }
     }
 }
@@ -106,6 +122,37 @@ pub trait ProvenanceWriter: ProvenanceContextReader + Send + Sync {
         if let Err(e) = self.add_event(event).await {
             tracing::warn!(error = ?e, context = context, "Failed to record provenance event");
         }
+    }
+
+    /// Idempotent: ensures `TaskExists` + `TaskExecutionStarted` → `WAS_LAST_EXECUTED_BY`.
+    async fn bind_task_executing_agent(&self, binding: TaskAgentBinding) -> Result<()> {
+        tracing::debug!(
+            task_id = binding.task_id.as_str(),
+            agent_id = binding.executing_agent_id.as_str(),
+            source = ?binding.source,
+            "bind_task_executing_agent"
+        );
+        for event in binding.into_events() {
+            self.add_event(event).await?;
+        }
+        Ok(())
+    }
+
+    /// Convenience wrapper for A2A chat bootstrap paths.
+    async fn bind_task_executing_agent_for(
+        &self,
+        context_id: ContextId,
+        task_id: TaskId,
+        executing_agent_id: AgentId,
+        source: TaskAgentBindingSource,
+    ) -> Result<()> {
+        self.bind_task_executing_agent(TaskAgentBinding::new(
+            context_id,
+            task_id,
+            executing_agent_id,
+            source,
+        )?)
+        .await
     }
 }
 
@@ -196,6 +243,7 @@ pub trait ProvenanceQueryApi: Send + Sync {
         context_id: &ContextId,
         limit: Option<usize>,
         task_id: Option<&TaskId>,
+        agent_package: Option<&str>,
     ) -> Result<Vec<ProvenanceConversationContextItem>>;
 
     /// Incremental conversation rows strictly after `after_event_order` in ascending order.
@@ -207,9 +255,10 @@ pub trait ProvenanceQueryApi: Send + Sync {
         after_event_order: u64,
         limit: Option<usize>,
         task_id: Option<&TaskId>,
+        agent_package: Option<&str>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
         let rows = self
-            .query_conversation_context(context_id, None, task_id)
+            .query_conversation_context(context_id, None, task_id, agent_package)
             .await?;
         let mut filtered = rows
             .into_iter()
@@ -329,12 +378,12 @@ pub struct ProvenanceOpsFilters {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<AgentId>,
     /// Filter rows by the owning agent's *package* identifier (the value
-    /// written to `AgentArchive.props.a2a_agent_type`). For Messages this is
-    /// resolved by traversing the two-hop edge chain
-    /// `Message ↔ A2AMessageProcessing -[:WAS_EXECUTED_BY]-> AgentRuntimeInstance -[:WAS_SPAWNED_BY]-> AgentBoot -[:WAS_BOOTSTRAPPED_BY]-> AgentArchive`,
-    /// matching `AgentArchive.props.a2a_agent_type = $package`. For
-    /// LlmCalls/ToolCalls the same chain is followed via the activity's
-    /// `WAS_EXECUTED_BY` edge to AgentRuntimeInstance.
+    /// written to `AgentArchive.props.a2a_agent_type`). When the
+    /// `agent_package_instance` registry is populated, ops queries resolve
+    /// package → instance node ids once and filter via `for_agent_instances`
+    /// instead of the nested archive/bootstrap subquery in
+    /// `for_agent_package`. Without registry rows, the same two-hop edge
+    /// chain is followed via graph traversal.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_package: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -377,6 +426,9 @@ pub struct ProvenanceOpsQueryRequest {
     pub response_profile: Option<ProvenanceResponseProfile>,
     #[serde(default = "default_true")]
     pub budget_mode: bool,
+    /// When true, row fetch uses SQL LIMIT/OFFSET even when `group_by` is set (hotspots still computed on fetched rows).
+    #[serde(default)]
+    pub paginate_rows_in_sql: bool,
 }
 
 fn default_true() -> bool {
@@ -397,6 +449,7 @@ impl Default for ProvenanceOpsQueryRequest {
             outcome: Some(ProvenanceOutcomeSegment::Both),
             response_profile: Some(ProvenanceResponseProfile::UiFull),
             budget_mode: true,
+            paginate_rows_in_sql: false,
         }
     }
 }
@@ -405,13 +458,13 @@ impl Default for ProvenanceOpsQueryRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ProvenanceOpsQueryResponse {
     pub resource: ProvenanceOpsResource,
-    pub rows: Vec<Value>,
-    pub summary: Value,
-    pub hotspot_groups: Vec<Value>,
+    pub rows: Vec<crate::ops_types::ProvenanceOpsRow>,
+    pub summary: crate::ops_types::ProvenanceOpsSummary,
+    pub hotspot_groups: Vec<crate::ops_types::ProvenanceOpsHotspotGroup>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
     pub truncated: bool,
-    pub applied_caps: Map<String, Value>,
+    pub applied_caps: crate::ops_types::ProvenanceOpsAppliedCaps,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

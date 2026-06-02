@@ -13,15 +13,24 @@
     "slack",
     "communication",
     "todo-extraction",
-    "threads"
+    "threads",
+    "ingress",
+    "event-driven"
   ],
   "discovery": {
-    "description": "Read-only Slack assistant that extracts source-backed todos from channels and threads",
+    "description": "Slack assistant for conversational todo extraction and host.source-records.v1 source-family ingress.",
     "capabilities": [
       "slack:history-read",
       "slack:thread-read",
       "slack:todo-extraction",
+      "slack:intake",
       "planning:action-item-extraction"
+    ],
+    "subscriptions": [
+      {
+        "schema_versions": ["host.source-records.v1"],
+        "source_kinds": ["slack"]
+      }
     ]
   }
 }

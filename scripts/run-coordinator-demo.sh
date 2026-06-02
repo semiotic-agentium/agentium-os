@@ -57,8 +57,8 @@ fi
 
 mkdir -p "$STATE_DIR" "$REPOSITORY_DIR"
 
-LOADED_AGENTS=("coordinator-agent" "workflow-intake-agent")
-PUBLISH_DIRS=(agents/coordinator-agent agents/workflow-intake-agent)
+LOADED_AGENTS=("coordinator-agent")
+PUBLISH_DIRS=(agents/coordinator-agent)
 if [ "$INCLUDE_NOTION" = "1" ]; then
   LOADED_AGENTS+=("notion-agent")
   PUBLISH_DIRS+=(agents/notion-agent)

@@ -10,9 +10,9 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"pass1\": snapshot_
   },
   "pass1": {
     "appliedCaps": {
-      "max_page_size": 50,
-      "page_size": 5,
-      "top_k": 10
+      "maxPageSize": 50,
+      "pageSize": 5,
+      "topK": 10
     },
     "hotspotGroups": [
       {
@@ -79,6 +79,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"pass1\": snapshot_
         "failure_evidence": "metadata",
         "message_id": "tool-msg-caller",
         "prov_endTime": 600,
+        "prov_time": 600,
         "prov_type": "a2a:ToolCall",
         "timestamp_ms": "[timestamp_ms]",
         "tool_call": {
@@ -120,6 +121,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"pass1\": snapshot_
         "failure_evidence": "metadata",
         "message_id": "tool-msg-linked",
         "prov_endTime": 800,
+        "prov_time": 800,
         "prov_type": "a2a:ToolCall",
         "timestamp_ms": "[timestamp_ms]",
         "tool_call": {
@@ -155,9 +157,9 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"pass1\": snapshot_
   },
   "pass2": {
     "appliedCaps": {
-      "max_page_size": 50,
-      "page_size": 3,
-      "top_k": 10
+      "maxPageSize": 50,
+      "pageSize": 3,
+      "topK": 10
     },
     "hotspotGroups": [
       {
@@ -206,6 +208,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"pass1\": snapshot_
         "failure_evidence": "metadata",
         "message_id": "tool-msg-caller",
         "prov_endTime": 600,
+        "prov_time": 600,
         "prov_type": "a2a:ToolCall",
         "timestamp_ms": "[timestamp_ms]",
         "tool_call": {

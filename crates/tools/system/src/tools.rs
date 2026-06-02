@@ -210,7 +210,7 @@ pub struct CallbackScheduleInput {
     pub after_ms: u64,
     #[serde(alias = "source_key")]
     #[baml(
-        description = "Stable event source key for subscription matching, for example `workflow-intake:follow-up`."
+        description = "Stable event source key for subscription matching, for example `coordinator-agent:follow-up`."
     )]
     pub source_key: String,
     #[baml(description = "Opaque JSON payload delivered back through onDispatch.")]

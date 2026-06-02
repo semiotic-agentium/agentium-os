@@ -65,9 +65,7 @@ pub async fn aggregate_task_drift(
     }
 
     for row in &report.rows {
-        let Some(row_obj) = row.as_object() else {
-            continue;
-        };
+        let row_obj = row.as_map();
         let Some(drift_obj) = row_obj.get("drift") else {
             continue;
         };

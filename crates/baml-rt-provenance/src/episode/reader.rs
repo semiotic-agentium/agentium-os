@@ -19,7 +19,7 @@ use baml_rt_conversation::{
 };
 use baml_rt_core::{
     clock_events,
-    ids::{AgentId, ContextId, TaskId, UuidId},
+    ids::{ContextId, TaskId},
 };
 use baml_rt_tools::{
     archive_read::{PageLimit, RenderedContent, format_session_read_body_from_rendered},
@@ -27,9 +27,7 @@ use baml_rt_tools::{
     prompt_projection::episode_session_history_projection_options,
     tools::ToolRegistry,
 };
-use futures_util::future::try_join_all;
 use serde_json::Value as JsonValue;
-use uuid::Uuid;
 
 use super::{
     ArtifactSummary, Episode, EpisodeContent, EpisodeEntry, EpisodeOutcome, EpisodeRefPrefix,
@@ -38,10 +36,12 @@ use super::{
     from_graph::episode_metadata_from_task_graph,
 };
 use crate::{
-    citation_queries::query_plan_citations,
+    citation_queries::query_plan_citations_for_plans,
     error::{ProvenanceError, Result},
     graph_export::export_graph_for_task,
-    store::{ProvenancePlanningQuery, ProvenanceQueryApi},
+    observation::{ObservationScope, TaskObservationScope, TemporalBound},
+    read::{TranscriptEngine, TranscriptPageRequest, TranscriptProjectionProfile},
+    store::ProvenancePlanningQuery,
     surreal_store::SurrealProvenanceStore,
 };
 
@@ -176,8 +176,24 @@ impl EpisodeReader {
                 )
             },
             self.store.get_task_agent_id(task_id),
-            self.store
-                .query_conversation_context(context_id, None, Some(task_id)),
+            async {
+                let scope = ObservationScope {
+                    context_id: context_id.clone(),
+                    task: TaskObservationScope::Task(task_id.clone()),
+                    agent_package: None,
+                    temporal: TemporalBound::All,
+                };
+                TranscriptEngine::page(
+                    self.store.as_ref(),
+                    TranscriptPageRequest {
+                        scope,
+                        limit: usize::MAX / 4,
+                        profile: TranscriptProjectionProfile::OperatorTimeline,
+                    },
+                )
+                .await
+                .map(|page| page.items)
+            },
             self.store.query_intent_history(task_id, None),
             self.store.query_plan_history(task_id, None),
             async {
@@ -216,9 +232,7 @@ impl EpisodeReader {
             .unwrap_or(terminal_ts);
 
         let ref_prefix = EpisodeRefPrefix::from_task_id(task_id);
-        let agent_id = agent_id_resolution
-            .into_option()
-            .unwrap_or_else(|| AgentId::from_uuid(UuidId::new(Uuid::nil())));
+        let agent_id = agent_id_resolution.require_for_episode(task_id)?;
 
         items.sort_by_key(|i| i.timestamp_ms);
 
@@ -255,20 +269,15 @@ impl EpisodeReader {
             })
             .collect();
 
-        // Fetch plan citations for all plans concurrently (one query per plan).
-        let citation_futures: Vec<_> = plans_db
-            .iter()
-            .map(|p| {
-                let store = Arc::clone(&self.store);
-                let tid_owned = tid.to_string();
-                let plan_id = p.plan_id.clone();
-                async move { query_plan_citations(&store, &tid_owned, &plan_id).await }
-            })
-            .collect();
-        let all_plan_citations = try_join_all(citation_futures).await?;
+        let plan_ids: Vec<String> = plans_db.iter().map(|p| p.plan_id.clone()).collect();
+        let citations_by_plan = query_plan_citations_for_plans(&self.store, tid, &plan_ids).await?;
 
         let mut plans: Vec<PlanRevision> = Vec::new();
-        for (p, all_cites) in plans_db.iter().zip(all_plan_citations) {
+        for p in &plans_db {
+            let all_cites = citations_by_plan
+                .get(&p.plan_id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
             let mut by_step: HashMap<String, Vec<String>> = HashMap::new();
             for e in all_cites {
                 let key = e
@@ -868,6 +877,21 @@ fn conv_item_to_entries(
                 )
             }
         },
+        ConversationItemContent::Operational(op) => {
+            *seq += 1;
+            return Ok(vec![EpisodeEntry {
+                seq: *seq,
+                step_type: StepType::OperationalEvent,
+                role: item.role.clone(),
+                elapsed_ms,
+                content: EpisodeContent::Operational(op.clone()),
+                activity_anchor: anchor,
+                citation_strings: Vec::new(),
+            }]);
+        }
+        ConversationItemContent::Planning(_) => {
+            return Ok(Vec::new());
+        }
     };
 
     *seq += 1;

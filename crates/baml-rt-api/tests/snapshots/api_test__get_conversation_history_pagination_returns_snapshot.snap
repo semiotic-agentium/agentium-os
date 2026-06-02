@@ -13,11 +13,26 @@ expression: snapshot
         {
           "timestampMs": "[timestamp_ms]",
           "activityAnchor": "[prov_activity_anchor]",
+          "role": "system",
+          "content": {
+            "type": "operational_event",
+            "kind": "llm_call_failed",
+            "severity": "error",
+            "summary": "LLM DraftPrompt failed",
+            "detail": "llm_call_failed",
+            "failure_class": "failed_graph_incomplete",
+            "failure_evidence": "llm_call_failed"
+          }
+        },
+        {
+          "timestampMs": "[timestamp_ms]",
+          "activityAnchor": "[prov_activity_anchor]",
           "role": "user",
           "content": {
             "type": "message",
             "text": "run analysis"
-          }
+          },
+          "userSpeakerKind": "human"
         },
         {
           "timestampMs": "[timestamp_ms]",
@@ -31,18 +46,7 @@ expression: snapshot
             },
             "fsm_phase": ""
           }
-        }
-      ],
-      "nextCursor": "v1.7b2276223a312c226f6666736574223a322c22636f6e746578745f6964223a226374782d3130302d31222c227461736b5f6964223a6e756c6c7d"
-    }
-  },
-  "page2": {
-    "status": 200,
-    "body": {
-      "contextId": "ctx-100-1",
-      "version": "[conversation_history_version]",
-      "maxEventOrder": "[a2a_event_order]",
-      "items": [
+        },
         {
           "timestampMs": "[timestamp_ms]",
           "activityAnchor": "[prov_activity_anchor]",
@@ -60,14 +64,65 @@ expression: snapshot
         {
           "timestampMs": "[timestamp_ms]",
           "activityAnchor": "[prov_activity_anchor]",
+          "role": "system",
+          "content": {
+            "type": "operational_event",
+            "kind": "prompt_rejected",
+            "severity": "error",
+            "summary": "Prompt rejected: BAML validation failed: invalid response schema",
+            "detail": "BAML validation failed: invalid response schema",
+            "failure_class": "prompt_rejected",
+            "failure_evidence": "BAML validation failed: invalid response schema"
+          }
+        }
+      ],
+      "nextCursor": "[conversation_history_cursor]"
+    }
+  },
+  "page2": {
+    "status": 200,
+    "body": {
+      "contextId": "ctx-100-1",
+      "version": "[conversation_history_version]",
+      "maxEventOrder": "[a2a_event_order]",
+      "items": [
+        {
+          "timestampMs": "[timestamp_ms]",
+          "activityAnchor": "[prov_activity_anchor]",
           "role": "assistant",
           "content": {
             "type": "message",
             "text": "BAML validation failed: invalid response schema"
           }
+        },
+        {
+          "timestampMs": "[timestamp_ms]",
+          "activityAnchor": "[prov_activity_anchor]",
+          "role": "tool",
+          "content": {
+            "type": "tool_call",
+            "tool_name": "support/delegate",
+            "args": {
+              "objective": "narrow evidence fixture"
+            },
+            "fsm_phase": ""
+          }
+        },
+        {
+          "timestampMs": "[timestamp_ms]",
+          "activityAnchor": "[prov_activity_anchor]",
+          "role": "tool",
+          "content": {
+            "type": "tool_result",
+            "tool_name": "support/delegate",
+            "fsm_phase": "",
+            "outcome": {
+              "kind": "status_only"
+            }
+          }
         }
       ],
-      "nextCursor": "v1.7b2276223a312c226f6666736574223a342c22636f6e746578745f6964223a226374782d3130302d31222c227461736b5f6964223a6e756c6c7d"
+      "nextCursor": "[conversation_history_cursor]"
     }
   }
 }

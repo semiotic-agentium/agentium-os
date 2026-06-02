@@ -10,7 +10,8 @@ use async_trait::async_trait;
 use baml_rt_conversation::view::{
     ConversationItemContent, ProvenanceContextMessage, ProvenanceConversationContextItem,
     SessionStepContent, SessionStepOp, ToolCallContent, ToolOutcome, ToolResultContent,
-    ToolSessionPhase, conversation_history_role_for_message,
+    ToolSessionPhase, UserSpeakerKind, classify_user_speaker_kind,
+    conversation_history_role_for_message,
 };
 use baml_rt_core::{
     Citation,
@@ -32,6 +33,7 @@ use super::{
 use crate::{
     error::Result,
     events::ToolSessionStepOpKind,
+    host_ingress_transcript::operational_from_host_message,
     id_semantics::{
         context_entity_id_string, task_entity_id_string_raw, task_execution_activity_id_string,
     },
@@ -41,6 +43,13 @@ use crate::{
     surreal_tables::{PAYLOAD_ROW_SELECT, TBL_EDGE, TBL_NODE, TBL_PAYLOAD},
     vocabulary::{a2a_relations, context_scope, semantic_labels},
 };
+
+fn stored_event_order(props: &Value) -> u64 {
+    props
+        .get("a2a_event_order")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
 
 fn is_session_bookkeeping_result(phase: &ToolSessionPhase, value: &Value) -> bool {
     if !phase.is_session_phase() {
@@ -53,6 +62,25 @@ fn is_session_bookkeeping_result(phase: &ToolSessionPhase, value: &Value) -> boo
         ),
         _ => false,
     }
+}
+
+fn resolve_user_speaker_kind_for_message(
+    context_id: &ContextId,
+    props: &Value,
+    activity_anchor: &str,
+    history_role: &str,
+    graph_role: &str,
+) -> Option<UserSpeakerKind> {
+    if history_role != "user" {
+        return None;
+    }
+    if let Some(raw) = props.get("a2a_user_speaker_kind").and_then(Value::as_str)
+        && let Some(kind) = UserSpeakerKind::from_wire_str(raw)
+    {
+        return Some(kind);
+    }
+    let anchor = ActivityAnchorId::from(activity_anchor);
+    classify_user_speaker_kind(context_id, &anchor, None, graph_role)
 }
 
 #[async_trait]
@@ -102,10 +130,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
             }
             messages.push(ProvenanceContextMessage {
                 message_id: MessageId::from(message_id),
-                timestamp_ms: props
-                    .get("a2a_event_order")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
+                timestamp_ms: stored_event_order(props),
                 role: role.to_string(),
                 content: vec![content],
             });
@@ -135,7 +160,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
         context_id: &ContextId,
         limit: Option<usize>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.conversation_context_filtered(context_id, limit, None, None, false)
+        self.conversation_context_filtered(context_id, limit, None, None, None, false, true, None)
             .await
     }
 
@@ -145,8 +170,10 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
         limit: Option<usize>,
         task_id: Option<&TaskId>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.conversation_context_filtered(context_id, limit, task_id, None, false)
-            .await
+        self.conversation_context_filtered(
+            context_id, limit, task_id, None, None, false, true, None,
+        )
+        .await
     }
 }
 
@@ -161,51 +188,78 @@ fn warn_conversation_context_row_skip(context_id: &ContextId, row: &Value, reaso
     );
 }
 
+fn task_message_filter_sql() -> String {
+    let tm = a2a_relations::TASK_MESSAGE;
+    format!(
+        "AND label = 'Message' AND node_id IN (\
+           SELECT VALUE to_id FROM {TBL_EDGE} \
+           WHERE from_id = $task_entity_id AND rel_type = '{tm}'\
+         )"
+    )
+}
+
+fn task_tool_call_filter_sql() -> String {
+    let tc = a2a_relations::TASK_CALL;
+    format!(
+        "AND label = 'ToolCall' AND node_id IN (\
+           SELECT VALUE to_id FROM {TBL_EDGE} \
+           WHERE from_id = $task_exec_id AND rel_type = '{tc}'\
+         )"
+    )
+}
+
+fn task_session_step_filter_sql() -> String {
+    let ts = a2a_relations::TASK_SESSION_STEP;
+    format!(
+        "AND label = 'SessionStep' AND node_id IN (\
+           SELECT VALUE to_id FROM {TBL_EDGE} \
+           WHERE from_id = $task_entity_id AND rel_type = '{ts}'\
+         )"
+    )
+}
+
+fn sort_conversation_rows(rows: &mut [Value]) {
+    rows.sort_by(|a, b| {
+        let order_key = |row: &Value| {
+            (
+                row.get("event_order").and_then(Value::as_u64).unwrap_or(0),
+                row.get("node_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            )
+        };
+        order_key(a).cmp(&order_key(b))
+    });
+}
+
+struct ScopedConversationQuery<'a> {
+    ctx_node_id: &'a str,
+    scoped_to: &'a str,
+    after_filter_sql: &'a str,
+    label_task_filter_sql: &'a str,
+    agent_filter_sql: &'a str,
+    task_id: Option<&'a TaskId>,
+    agent_instance_nodes: Option<&'a [String]>,
+    after_event_order: Option<u64>,
+}
+
 impl SurrealProvenanceStore {
-    pub(super) async fn conversation_context_filtered(
+    async fn fetch_scoped_conversation_nodes(
         &self,
-        context_id: &ContextId,
-        limit: Option<usize>,
-        task_id: Option<&TaskId>,
-        after_event_order: Option<u64>,
-        forward_limit: bool,
-    ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        let ctx_node_id = context_entity_id_string(context_id.as_str());
-        let scoped_to = context_scope::SCOPED_TO;
-
-        let task_filter_sql = match task_id {
-            None => String::new(),
-            Some(_) => {
-                let tm = a2a_relations::TASK_MESSAGE;
-                let tc = a2a_relations::TASK_CALL;
-                let ts = a2a_relations::TASK_SESSION_STEP;
-                format!(
-                    "AND (\
-                       (label = 'Message' AND node_id IN (\
-                         SELECT VALUE to_id FROM {TBL_EDGE} \
-                         WHERE from_id = $task_entity_id AND rel_type = '{tm}'\
-                       ))\
-                       OR (label = 'ToolCall' AND node_id IN (\
-                         SELECT VALUE to_id FROM {TBL_EDGE} \
-                         WHERE from_id = $task_exec_id AND rel_type = '{tc}'\
-                       ))\
-                       OR (label = 'SessionStep' AND node_id IN (\
-                         SELECT VALUE to_id FROM {TBL_EDGE} \
-                         WHERE from_id = $task_entity_id AND rel_type = '{ts}'\
-                       ))\
-                     )"
-                )
-            }
-        };
-
-        let after_filter_sql = match after_event_order {
-            Some(_) => "AND props.a2a_event_order > $after_event_order",
-            None => "",
-        };
-
-        // Single SCOPED_TO edge traversal: fetch all Message, ToolCall, SessionStep
-        // nodes scoped to this context in one query.
-        let main_query = format!(
+        query: ScopedConversationQuery<'_>,
+    ) -> Result<Vec<Value>> {
+        let ScopedConversationQuery {
+            ctx_node_id,
+            scoped_to,
+            after_filter_sql,
+            label_task_filter_sql,
+            agent_filter_sql,
+            task_id,
+            agent_instance_nodes,
+            after_event_order,
+        } = query;
+        let sql = format!(
             "SELECT node_id, label, props, props.a2a_event_order AS event_order FROM {TBL_NODE} \
              WHERE node_id IN (\
                SELECT VALUE from_id FROM {TBL_EDGE} \
@@ -214,12 +268,16 @@ impl SurrealProvenanceStore {
              ) \
              AND (label != 'ToolCall' OR props.a2a_activity_outcome IN ['Success', 'Failed']) \
              {after_filter_sql} \
-             {task_filter_sql} \
+             {label_task_filter_sql} \
+             {agent_filter_sql} \
              ORDER BY event_order ASC, node_id ASC"
         );
-
-        let mut q = self.db.query(&main_query);
-        q = q.bind(("ctx_node_id", ctx_node_id.clone()));
+        let mut q = self.db.query(&sql);
+        q = q.bind(("ctx_node_id", ctx_node_id.to_string()));
+        if let Some(instances) = agent_instance_nodes {
+            let value: Vec<Value> = instances.iter().cloned().map(Value::String).collect();
+            q = q.bind(("agent_instance_nodes", Value::Array(value)));
+        }
         if let Some(tid) = task_id {
             q = q.bind(("task_entity_id", task_entity_id_string_raw(tid.as_str())));
             q = q.bind((
@@ -231,7 +289,155 @@ impl SurrealProvenanceStore {
             q = q.bind(("after_event_order", after));
         }
         let response = q.await.map_err(map_surreal_error)?;
-        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
+        check_and_take_zero(response, map_surreal_error)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn conversation_context_filtered(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+        task_id: Option<&TaskId>,
+        agent_package: Option<&str>,
+        after_event_order: Option<u64>,
+        forward_limit: bool,
+        enrich_extensions: bool,
+        preloaded_rows: Option<Vec<Value>>,
+    ) -> Result<Vec<ProvenanceConversationContextItem>> {
+        let ctx_node_id = context_entity_id_string(context_id.as_str());
+        let scoped_to = context_scope::SCOPED_TO;
+
+        let after_filter_sql = match after_event_order {
+            Some(_) => crate::observation::after_event_order_filter_sql(),
+            None => "",
+        };
+
+        let agent_instance_nodes: Option<Vec<String>> = if let Some(pkg) = agent_package {
+            let index = self.load_agent_runtime_index().await?;
+            if let Some(task_id) = task_id {
+                let resolution = self.get_task_agent_id(task_id).await?;
+                match super::agent_runtime_index::task_agent_package_check(
+                    Some(task_id),
+                    Some(pkg),
+                    Some(&resolution),
+                    &index,
+                ) {
+                    super::agent_runtime_index::TaskAgentPackageCheck::OmitAgentFilter => None,
+                    super::agent_runtime_index::TaskAgentPackageCheck::MismatchEmpty => {
+                        return Ok(Vec::new());
+                    }
+                    super::agent_runtime_index::TaskAgentPackageCheck::ApplyPackageFilter => {
+                        let instances = index
+                            .instance_node_ids_by_package
+                            .get(pkg)
+                            .cloned()
+                            .unwrap_or_default();
+                        if instances.is_empty() {
+                            return Ok(Vec::new());
+                        }
+                        Some(instances)
+                    }
+                }
+            } else {
+                let instances = index
+                    .instance_node_ids_by_package
+                    .get(pkg)
+                    .cloned()
+                    .unwrap_or_default();
+                if instances.is_empty() {
+                    return Ok(Vec::new());
+                }
+                Some(instances)
+            }
+        } else {
+            None
+        };
+        let agent_instances_ref = agent_instance_nodes.as_deref();
+
+        let msg_agent_filter = if agent_instances_ref.is_some() {
+            crate::metamodel::query::conversation_message_agent_instances_clause(
+                "agent_instance_nodes",
+            )
+        } else {
+            String::new()
+        };
+        let call_agent_filter = if agent_instances_ref.is_some() {
+            crate::metamodel::query::conversation_call_agent_instances_clause(
+                "agent_instance_nodes",
+            )
+        } else {
+            String::new()
+        };
+
+        let task_message = task_message_filter_sql();
+        let task_tool = task_tool_call_filter_sql();
+        let task_session = task_session_step_filter_sql();
+
+        let rows_from_preload = preloaded_rows.is_some();
+        let mut rows: Vec<Value> = preloaded_rows.unwrap_or_default();
+        if !rows_from_preload && task_id.is_some() {
+            let agent_msg = if agent_instances_ref.is_some() {
+                msg_agent_filter.as_str()
+            } else {
+                ""
+            };
+            let agent_call = if agent_instances_ref.is_some() {
+                call_agent_filter.as_str()
+            } else {
+                ""
+            };
+            for (label_task_filter_sql, agent_filter_sql) in [
+                (task_message.as_str(), agent_msg),
+                (task_tool.as_str(), agent_call),
+                (task_session.as_str(), agent_call),
+            ] {
+                rows.extend(
+                    self.fetch_scoped_conversation_nodes(ScopedConversationQuery {
+                        ctx_node_id: &ctx_node_id,
+                        scoped_to,
+                        after_filter_sql,
+                        label_task_filter_sql,
+                        agent_filter_sql,
+                        task_id,
+                        agent_instance_nodes: agent_instances_ref,
+                        after_event_order,
+                    })
+                    .await?,
+                );
+            }
+        } else if !rows_from_preload && agent_instances_ref.is_some() {
+            for agent_filter_sql in [msg_agent_filter.as_str(), call_agent_filter.as_str()] {
+                rows.extend(
+                    self.fetch_scoped_conversation_nodes(ScopedConversationQuery {
+                        ctx_node_id: &ctx_node_id,
+                        scoped_to,
+                        after_filter_sql,
+                        label_task_filter_sql: "",
+                        agent_filter_sql,
+                        task_id,
+                        agent_instance_nodes: agent_instances_ref,
+                        after_event_order,
+                    })
+                    .await?,
+                );
+            }
+        } else if !rows_from_preload {
+            rows = self
+                .fetch_scoped_conversation_nodes(ScopedConversationQuery {
+                    ctx_node_id: &ctx_node_id,
+                    scoped_to,
+                    after_filter_sql,
+                    label_task_filter_sql: "",
+                    agent_filter_sql: "",
+                    task_id,
+                    agent_instance_nodes: agent_instances_ref,
+                    after_event_order,
+                })
+                .await?;
+        }
+        if rows_from_preload || !rows.is_empty() {
+            sort_conversation_rows(&mut rows);
+        }
 
         // Collect ToolCall node_ids, payload anchors, and Message node_ids for batch queries.
         let mut tool_call_node_ids: Vec<String> = Vec::new();
@@ -279,10 +485,13 @@ impl SurrealProvenanceStore {
                 "SELECT {PAYLOAD_ROW_SELECT} FROM {TBL_PAYLOAD} WHERE payload_id IN [{in_list}]"
             );
             let prows: Vec<Value> = self.query_sql_rows(&pq).await?;
+            let decoded: Vec<PayloadRecord> = prows
+                .into_iter()
+                .map(decode_payload_row)
+                .collect::<Result<Vec<_>>>()?;
+            let hydrated = self.hydrate_payload_records(decoded).await?;
             let mut map = HashMap::new();
-            for v in prows {
-                let rec = decode_payload_row(v)?;
-                let rec = self.hydrate_payload_record(rec).await?;
+            for rec in hydrated {
                 map.insert(rec.payload_id.clone(), rec);
             }
             map
@@ -366,6 +575,85 @@ impl SurrealProvenanceStore {
             map
         };
 
+        // Host dispatch outcome rows link to target AgentRuntimeInstance via graph edge.
+        let dispatch_target_by_message: HashMap<String, (String, String)> = if message_node_ids
+            .is_empty()
+        {
+            HashMap::new()
+        } else {
+            let node_id_list = message_node_ids
+                .iter()
+                .map(|id| format!("\'{id}\'"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let rel = a2a_relations::HOST_DISPATCH_TARGET;
+            let eq = format!(
+                "SELECT from_id, to_id FROM {TBL_EDGE} \
+                     WHERE rel_type = '{rel}' AND from_label = 'Message' AND to_label = 'AgentRuntimeInstance' \
+                       AND from_id IN [{node_id_list}]"
+            );
+            let erows: Vec<Value> = self.query_sql_rows(&eq).await?;
+            let mut target_ids: Vec<String> = Vec::new();
+            let mut edge_map: HashMap<String, String> = HashMap::new();
+            for edge in &erows {
+                let from_id = edge
+                    .get("from_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let to_id = edge
+                    .get("to_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if from_id.is_empty() || to_id.is_empty() {
+                    continue;
+                }
+                edge_map.insert(from_id.to_string(), to_id.to_string());
+                target_ids.push(to_id.to_string());
+            }
+            if target_ids.is_empty() {
+                HashMap::new()
+            } else {
+                target_ids.sort();
+                target_ids.dedup();
+                let target_list = target_ids
+                    .iter()
+                    .map(|id| format!("\'{id}\'"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let nq = format!(
+                    "SELECT node_id, props FROM {TBL_NODE} \
+                         WHERE label = 'AgentRuntimeInstance' AND node_id IN [{target_list}]"
+                );
+                let nrows: Vec<Value> = self.query_sql_rows(&nq).await?;
+                let mut agent_props: HashMap<String, (String, String)> = HashMap::new();
+                for row in &nrows {
+                    let node_id = row
+                        .get("node_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let props = row.get("props").cloned().unwrap_or(Value::Null);
+                    let package = props
+                        .get("a2a_agent_type")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    let instance = props
+                        .get("a2a_host_ingress_target_instance")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    if let (Some(package), Some(instance)) = (package, instance) {
+                        agent_props.insert(node_id.to_string(), (package, instance));
+                    }
+                }
+                let mut out = HashMap::new();
+                for (from_id, to_id) in edge_map {
+                    if let Some(target) = agent_props.get(&to_id) {
+                        out.insert(from_id, target.clone());
+                    }
+                }
+                out
+            }
+        };
+
         // Process the unified result set, discriminating by label.
         let mut items: Vec<ProvenanceConversationContextItem> = Vec::new();
 
@@ -403,6 +691,53 @@ impl SurrealProvenanceStore {
                     let content_raw = props.get("a2a_content").cloned().unwrap_or(Value::Null);
                     let content_value = json_value_from_embedded_string(&content_raw);
                     let text = normalize_message_content(&content_value);
+                    let props_map = props.as_object().cloned().unwrap_or_default();
+                    let is_host_ingress = role.eq_ignore_ascii_case("host")
+                        || props_map.contains_key("a2a_host_ingress_kind");
+                    if is_host_ingress {
+                        if text.trim().is_empty()
+                            && operational_from_host_message("", &props_map).is_none()
+                        {
+                            warn_conversation_context_row_skip(
+                                context_id,
+                                row,
+                                "host_ingress_empty",
+                            );
+                            continue;
+                        }
+                        let mut operational = operational_from_host_message(&text, &props_map)
+                            .or_else(|| operational_from_host_message("", &props_map))
+                            .unwrap_or_else(|| {
+                                use baml_rt_conversation::operational::{
+                                    OperationalEventContent, OperationalEventKind,
+                                    OperationalEventSeverity,
+                                };
+                                OperationalEventContent {
+                                    kind: OperationalEventKind::SourcePollRecorded,
+                                    severity: OperationalEventSeverity::Info,
+                                    summary: text.clone(),
+                                    detail: None,
+                                    agent_package: None,
+                                    agent_instance_id: None,
+                                    failure_class: None,
+                                    failure_evidence: None,
+                                    old_status: None,
+                                    new_status: None,
+                                }
+                            });
+                        if let Some((package, instance)) = dispatch_target_by_message.get(node_id) {
+                            operational.agent_package = Some(package.clone());
+                            operational.agent_instance_id = Some(instance.clone());
+                        }
+                        items.push(ProvenanceConversationContextItem {
+                            timestamp_ms: stored_event_order(props),
+                            activity_anchor: ActivityAnchorId::from(event_id),
+                            role: "host".to_string(),
+                            content: ConversationItemContent::Operational(operational),
+                            user_speaker_kind: None,
+                        });
+                        continue;
+                    }
                     if text.trim().is_empty() {
                         warn_conversation_context_row_skip(context_id, row, "message_empty_text");
                         continue;
@@ -412,14 +747,20 @@ impl SurrealProvenanceStore {
                         .get(node_id)
                         .cloned()
                         .unwrap_or_default();
+                    let history_role = conversation_history_role_for_message(role);
+                    let user_speaker_kind = resolve_user_speaker_kind_for_message(
+                        context_id,
+                        props,
+                        event_id,
+                        history_role.as_str(),
+                        role,
+                    );
                     items.push(ProvenanceConversationContextItem {
-                        timestamp_ms: props
-                            .get("a2a_event_order")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
+                        timestamp_ms: stored_event_order(props),
                         activity_anchor: ActivityAnchorId::from(event_id),
-                        role: conversation_history_role_for_message(role),
+                        role: history_role,
                         content: ConversationItemContent::Message { text, citations },
+                        user_speaker_kind,
                     });
                 }
                 "ToolCall" => {
@@ -521,21 +862,18 @@ impl SurrealProvenanceStore {
                         (result, error)
                     };
 
-                    let has_outcome = (has_meaningful_result(&result)
-                        && !is_session_bookkeeping_result(&phase, &result))
-                        || error.is_some();
                     // Non-session (execute/unknown) invocations always surface so the UI can render
-                    // tool cards even when args/results are empty. Session FSM phases are usually
-                    // narrated by SessionStep rows; still emit ToolCall pairs when the send carries
-                    // args or a terminal outcome so host tools (e.g. session Send with LLM payload)
-                    // remain visible if session-step projection is incomplete.
-                    let include_call =
-                        !phase.is_session_phase() || !is_empty_object(&args) || has_outcome;
+                    // tool cards even when args/results are empty. Session FSM phases are narrated
+                    // by `SessionStep` rows in the graph; only session **Send** with non-empty step
+                    // args is mirrored as ToolCall for `describe_invocation` (Open/Finish/etc. stay
+                    // out of the raw tool-call pair).
+                    let include_call = if phase.is_session_phase() {
+                        matches!(phase, ToolSessionPhase::Send) && !is_empty_object(&args)
+                    } else {
+                        true
+                    };
 
-                    let tool_event_order = props
-                        .get("a2a_event_order")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0);
+                    let tool_event_order = stored_event_order(props);
 
                     if include_call {
                         items.push(ProvenanceConversationContextItem {
@@ -547,6 +885,7 @@ impl SurrealProvenanceStore {
                                 args,
                                 fsm_phase: phase.clone(),
                             }),
+                            user_speaker_kind: None,
                         });
 
                         let outcome = if let Some(error) = error {
@@ -567,6 +906,7 @@ impl SurrealProvenanceStore {
                                 fsm_phase: phase,
                                 outcome,
                             }),
+                            user_speaker_kind: None,
                         });
                     }
                 }
@@ -728,10 +1068,7 @@ impl SurrealProvenanceStore {
                     };
 
                     items.push(ProvenanceConversationContextItem {
-                        timestamp_ms: props
-                            .get("a2a_event_order")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0),
+                        timestamp_ms: stored_event_order(props),
                         activity_anchor: ActivityAnchorId::from(event_id.as_str()),
                         role: "tool".to_string(),
                         content: ConversationItemContent::SessionStep(SessionStepContent {
@@ -740,6 +1077,7 @@ impl SurrealProvenanceStore {
                             send_done_replay_payload: None,
                             read_replay_lines: None,
                         }),
+                        user_speaker_kind: None,
                     });
                 }
                 _ => {
@@ -761,7 +1099,24 @@ impl SurrealProvenanceStore {
             .canonicalize_suppress_covered_tool_rows()
             .into_items();
 
-        items.sort_by_key(|i| i.timestamp_ms);
+        let existing_anchors: std::collections::HashSet<String> = items
+            .iter()
+            .map(|i| i.activity_anchor.as_str().to_string())
+            .collect();
+        if enrich_extensions {
+            let after_order = after_event_order.map(crate::observation::EventOrder);
+            let mut supplement = self
+                .load_transcript_extension_items(
+                    context_id,
+                    task_id,
+                    after_order,
+                    &existing_anchors,
+                )
+                .await?;
+            items.append(&mut supplement);
+        }
+
+        items.sort_by(crate::observation::cmp_transcript_items);
         if let Some(n) = limit {
             if n == 0 {
                 return Ok(Vec::new());
@@ -801,9 +1156,33 @@ impl ProvenanceQueryApi for SurrealProvenanceStore {
         context_id: &ContextId,
         limit: Option<usize>,
         task_id: Option<&TaskId>,
+        agent_package: Option<&str>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.conversation_context_filtered(context_id, limit, task_id, None, false)
-            .await
+        use crate::{
+            conversation_context_query::DEFAULT_LLM_CONTEXT_ITEM_CAP,
+            observation::{ObservationScope, TaskObservationScope, TemporalBound},
+            read::{TranscriptEngine, TranscriptPageRequest, TranscriptProjectionProfile},
+        };
+
+        let scope = ObservationScope {
+            context_id: context_id.clone(),
+            task: match task_id {
+                Some(id) => TaskObservationScope::Task(id.clone()),
+                None => TaskObservationScope::ContextWide,
+            },
+            agent_package: agent_package.map(str::to_string),
+            temporal: TemporalBound::All,
+        };
+        let page = TranscriptEngine::page(
+            self,
+            TranscriptPageRequest {
+                scope,
+                limit: limit.unwrap_or(DEFAULT_LLM_CONTEXT_ITEM_CAP),
+                profile: TranscriptProjectionProfile::AgentPromptIndex,
+            },
+        )
+        .await?;
+        Ok(page.items)
     }
 
     async fn query_conversation_context_after(
@@ -812,14 +1191,32 @@ impl ProvenanceQueryApi for SurrealProvenanceStore {
         after_event_order: u64,
         limit: Option<usize>,
         task_id: Option<&TaskId>,
+        agent_package: Option<&str>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.conversation_context_filtered(
-            context_id,
-            limit,
-            task_id,
-            Some(after_event_order),
-            true,
+        use crate::{
+            conversation_context_query::DEFAULT_LLM_CONTEXT_ITEM_CAP,
+            observation::{EventOrder, ObservationScope, TaskObservationScope, TemporalBound},
+            read::{TranscriptEngine, TranscriptPageRequest, TranscriptProjectionProfile},
+        };
+
+        let scope = ObservationScope {
+            context_id: context_id.clone(),
+            task: match task_id {
+                Some(id) => TaskObservationScope::Task(id.clone()),
+                None => TaskObservationScope::ContextWide,
+            },
+            agent_package: agent_package.map(str::to_string),
+            temporal: TemporalBound::After(EventOrder(after_event_order)),
+        };
+        let page = TranscriptEngine::page(
+            self,
+            TranscriptPageRequest {
+                scope,
+                limit: limit.unwrap_or(DEFAULT_LLM_CONTEXT_ITEM_CAP),
+                profile: TranscriptProjectionProfile::AgentPromptIndex,
+            },
         )
-        .await
+        .await?;
+        Ok(page.items)
     }
 }

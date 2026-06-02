@@ -1471,6 +1471,7 @@ dependencies = [
  "baml-rt-tools-claude",
  "baml-tools-calculator",
  "baml-tools-clickup",
+ "baml-tools-github",
  "baml-tools-grafana-alerts",
  "baml-tools-memory",
  "baml-tools-notion",
@@ -1711,6 +1712,12 @@ dependencies = [
  "baml-rt-repository",
  "baml-rt-router",
  "baml-rt-tools",
+ "baml-tools-clickup",
+ "baml-tools-github",
+ "baml-tools-notion",
+ "baml-tools-security-eval",
+ "baml-tools-slack",
+ "baml-tools-system",
  "bytes",
  "futures-util",
  "http 1.4.0",
@@ -1751,6 +1758,8 @@ dependencies = [
  "baml-runtime",
  "baml-tools-calculator",
  "baml-tools-clickup",
+ "baml-tools-github",
+ "baml-tools-grafana-alerts",
  "baml-tools-memory",
  "baml-tools-notion",
  "baml-tools-security-eval",
@@ -1809,6 +1818,7 @@ dependencies = [
  "baml-rt-core",
  "baml-rt-embedding",
  "baml-rt-tools",
+ "baml-rt-vocabulary",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2080,6 +2090,10 @@ dependencies = [
  "baml-sandbox-protocol",
  "baml-tool-derive",
  "baml-tools-calculator",
+ "baml-tools-clickup",
+ "baml-tools-github",
+ "baml-tools-slack",
+ "baml-tools-system",
  "blake3",
  "bytes",
  "dashmap 6.1.0",
@@ -2261,6 +2275,9 @@ dependencies = [
  "axum 0.8.8",
  "baml-rt-core",
  "baml-rt-observability",
+ "baml-tools-clickup",
+ "baml-tools-github",
+ "baml-tools-slack",
  "clap",
  "integrations-clickup-client",
  "integrations-github-client",
@@ -2275,6 +2292,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 
@@ -2294,6 +2312,7 @@ dependencies = [
  "baml-rt-tools-claude",
  "baml-tools-calculator",
  "baml-tools-clickup",
+ "baml-tools-github",
  "baml-tools-grafana-alerts",
  "baml-tools-internal-dev",
  "baml-tools-memory",
@@ -2322,6 +2341,7 @@ dependencies = [
 name = "baml-tools-clickup"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "baml-derive 0.1.0",
  "baml-derive-core",
@@ -2330,10 +2350,27 @@ dependencies = [
  "integrations-clickup-client",
  "inventory",
  "reqwest 0.12.26",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "baml-tools-github"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "baml-derive 0.1.0",
+ "baml-derive-core",
+ "baml-rt-core",
+ "baml-rt-tools",
+ "inventory",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2433,6 +2470,7 @@ dependencies = [
 name = "baml-tools-slack"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "axum 0.8.8",
  "baml-derive 0.1.0",
@@ -2443,6 +2481,7 @@ dependencies = [
  "integrations-slack-read",
  "inventory",
  "reqwest 0.12.26",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2489,6 +2528,7 @@ dependencies = [
  "futures-util",
  "insta",
  "inventory",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "tokio",
@@ -11347,8 +11387,21 @@ checksum = "a2b42f36aa1cd011945615b92222f6bf73c599a102a300334cd7f8dbeec726cc"
 dependencies = [
  "dyn-clone",
  "ref-cast",
+ "schemars_derive",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d115b50f4aaeea07e79c1912f645c7513d81715d0420f8bc77a18c6260b307f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -11703,6 +11756,17 @@ name = "serde_derive"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "serde_derive_internals"
+version = "0.29.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18d26a20a969b9e3fdf2fc2d9f21eda6c40e2de84c9408bb5d3b05d499aae711"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -13037,6 +13101,7 @@ name = "test-support"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum 0.8.8",
  "baml-derive 0.1.0",
  "baml-derive-core",
  "baml-rt",

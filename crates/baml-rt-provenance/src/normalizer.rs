@@ -7,6 +7,7 @@ use std::{
     fmt,
 };
 
+use baml_rt_conversation::view::classify_user_speaker_kind;
 use baml_rt_core::{
     BamlFunctionId,
     bus::PlanningSupersessionKind,
@@ -22,6 +23,8 @@ use crate::{
     error::{ProvenanceError, Result},
     events::{CallScope, ProvEvent, ProvEventData, ToolSessionStepOpKind},
     graph_model::GraphNodeLabel,
+    host_ingress_identity::host_ingress_message_id,
+    host_ingress_types::{HostDispatchFailureKind, HostIngressKind},
     id_semantics::{
         AgentBootActivityId, AgentBootActivityInput, AgentRuntimeInstanceId,
         AgentRuntimeInstanceInput, AgentStopActivityId, AgentStopActivityInput, ArchiveEntityId,
@@ -39,6 +42,7 @@ use crate::{
         ToolCallActivityInput,
     },
     metamodel::TaskStatusKind,
+    task_agent_binding::is_unassigned_executing_agent,
     types::{
         Activity, Agent, Entity, ProvActivityId, ProvAgentId, ProvEntityId, ProvNodeRef,
         QualifiedGeneration, Used, WasAssociatedWith, WasDerivedFrom, WasGeneratedBy,
@@ -70,6 +74,10 @@ pub enum HeadPointerRel {
     /// a `Task → TaskExecution → AgentRuntimeInstance` two-hop traversal
     /// to a single indexed edge hop.
     WasLastExecutedBy,
+    /// `Task → Intent` head-pointer, re-pointed on every `IntentResolved`.
+    WasLastResolvedTo,
+    /// `Task → Plan` head-pointer, re-pointed on every `PlanGenerated`.
+    WasLastPlannedTo,
 }
 
 impl HeadPointerRel {
@@ -78,7 +86,16 @@ impl HeadPointerRel {
         match self {
             Self::WasLastTransitionedTo => semantic_labels::WAS_LAST_TRANSITIONED_TO,
             Self::WasLastExecutedBy => semantic_labels::WAS_LAST_EXECUTED_BY,
+            Self::WasLastResolvedTo => semantic_labels::WAS_LAST_RESOLVED_TO,
+            Self::WasLastPlannedTo => semantic_labels::WAS_LAST_PLANNED_TO,
         }
+    }
+}
+
+fn planning_supersession_wire(kind: PlanningSupersessionKind) -> &'static str {
+    match kind {
+        PlanningSupersessionKind::ReplacedBy => "replaced_by",
+        PlanningSupersessionKind::RefinedBy => "refined_by",
     }
 }
 
@@ -150,6 +167,20 @@ pub struct NormalizeContext {
     /// Agent id stored on the task entity (from TaskExecutionStarted). Used when normalizing
     /// MessageReceived/MessageSent so we emit WAS_EXECUTED_BY to the task's agent.
     pub task_agent_id: Option<AgentId>,
+    /// When `PromptRejected` follows `LlmCallCompleted` in a separate `add_event`, the in-session
+    /// ordinal map may be empty; the writer resolves scope from the persisted graph.
+    pub linked_llm_call_scope_ordinal: Option<(String, u64)>,
+}
+
+pub(crate) fn scope_key_from_display_str(raw: &str) -> Option<ScopeKey> {
+    let segs: Vec<&str> = raw.split(':').collect();
+    if segs.len() < 3 {
+        return None;
+    }
+    let ctx = segs[0].to_string();
+    let agent = segs[segs.len() - 1].to_string();
+    let scope = segs[1..segs.len() - 1].join(":");
+    Some(ScopeKey { ctx, scope, agent })
 }
 
 pub trait ProvNormalizer: Send + Sync {
@@ -278,6 +309,8 @@ pub enum A2aRelationType {
     /// Agent lifecycle: stop activity informed by boot activity (direct link
     /// survives restarts where the agent runtime instance is a bare placeholder).
     LifecycleStopInformedByBoot,
+    /// Host ingress dispatch outcome Message → target AgentRuntimeInstance.
+    HostDispatchTarget,
 }
 
 impl A2aRelationType {
@@ -311,6 +344,7 @@ impl A2aRelationType {
             A2aRelationType::HasPlan => semantic_labels::HAS_PLAN,
             A2aRelationType::CallbackDispatchScheduledFrom => semantic_labels::WAS_SCHEDULED_FROM,
             A2aRelationType::LifecycleStopInformedByBoot => semantic_labels::WAS_INFORMED_BY,
+            A2aRelationType::HostDispatchTarget => a2a_relations::HOST_DISPATCH_TARGET,
         }
     }
 }
@@ -696,6 +730,7 @@ fn normalize_event_with_registry(
                 &activity_id,
                 &mut derived_relations,
                 &mut agent_labels,
+                &mut head_pointer_repoints,
                 context,
             )?;
         }
@@ -1016,6 +1051,7 @@ fn normalize_event_with_registry(
                 &activity_id,
                 &mut derived_relations,
                 &mut agent_labels,
+                &mut head_pointer_repoints,
                 context,
             )?;
         }
@@ -1024,16 +1060,31 @@ fn normalize_event_with_registry(
             llm_call_activity_anchor,
             reason,
         } => {
-            let (scope_key, ordinal) = call_state
+            let (scope_key, ordinal) = if let Some(entry) = call_state
                 .llm_event_to_scope_ordinal
                 .get(llm_call_activity_anchor.as_str())
-                .ok_or_else(|| ProvenanceError::InvalidEvent {
+            {
+                entry.clone()
+            } else if let Some((scope_key_str, ordinal)) =
+                context.and_then(|ctx| ctx.linked_llm_call_scope_ordinal.as_ref())
+            {
+                let scope_key = scope_key_from_display_str(scope_key_str).ok_or_else(|| {
+                    ProvenanceError::InvalidEvent {
+                        activity_anchor: event.id().as_str().to_string(),
+                        reason: format!(
+                            "PromptRejected linked llm call scope invalid: {scope_key_str}"
+                        ),
+                    }
+                })?;
+                (scope_key, *ordinal)
+            } else {
+                return Err(ProvenanceError::InvalidEvent {
                     activity_anchor: event.id().as_str().to_string(),
                     reason:
-                        "PromptRejected requires prior LlmCallCompleted in same normalizer session"
+                        "PromptRejected requires prior LlmCallCompleted in same normalizer session or persisted graph link"
                             .to_string(),
-                })?
-                .clone();
+                });
+            };
             let scope_key_str = scope_key.to_string();
             let activity_id = prompt_rejected_activity_id(&scope_key_str, ordinal);
             let mut attrs = base_attrs(event);
@@ -1115,6 +1166,7 @@ fn normalize_event_with_registry(
                 &activity_id,
                 &mut derived_relations,
                 &mut agent_labels,
+                &mut head_pointer_repoints,
                 context,
             )?;
         }
@@ -1227,6 +1279,7 @@ fn normalize_event_with_registry(
                 &activity_id,
                 &mut derived_relations,
                 &mut agent_labels,
+                &mut head_pointer_repoints,
                 context,
             )?;
         }
@@ -1399,6 +1452,7 @@ fn normalize_event_with_registry(
                 &activity_id,
                 &mut derived_relations,
                 &mut agent_labels,
+                &mut head_pointer_repoints,
                 context,
             )?;
         }
@@ -1566,13 +1620,14 @@ fn normalize_event_with_registry(
                 Some(prov_roles::EXECUTING_AGENT.to_string()),
             );
 
-            head_pointer_repoints.push(HeadPointerRepoint {
-                from_id: task_entity.as_str().to_string(),
-                from_label: GraphNodeLabel::Task.as_str().to_string(),
-                rel: HeadPointerRel::WasLastExecutedBy,
-                to_id: agent_instance_id.as_str().to_string(),
-                to_label: GraphNodeLabel::AgentRuntimeInstance.as_str().to_string(),
-            });
+            repoint_task_last_executed_by(
+                &mut head_pointer_repoints,
+                task_entity,
+                agent_id,
+                &doc,
+                &mut agent_labels,
+                "task_execution_started",
+            )?;
 
             let invoking_agent_id = runner_runtime_instance_id();
             ensure_runner_runtime_instance(&mut doc);
@@ -1801,6 +1856,43 @@ fn normalize_event_with_registry(
                     ),
                 );
             }
+            let task_key = task_id.as_str().to_string();
+            let supersession_kind = supersession.unwrap_or(PlanningSupersessionKind::ReplacedBy);
+            if let Some(previous) = call_state
+                .latest_intent_entity_by_task
+                .get(&task_key)
+                .cloned()
+                && previous != intent_entity
+            {
+                let kind_wire = planning_supersession_wire(supersession_kind);
+                if let Some(prev) = doc.entity(&previous).cloned() {
+                    let mut prev_attrs = prev.attributes;
+                    prev_attrs.insert(
+                        a2a::SUPERSEDED_BY_NEXT.to_string(),
+                        Value::String(kind_wire.to_string()),
+                    );
+                    doc.insert_entity(
+                        previous.clone(),
+                        Entity {
+                            attributes: prev_attrs,
+                            ..prev
+                        },
+                    );
+                }
+                intent_attrs.insert(
+                    a2a::SUPERSESSION_FROM_PREVIOUS.to_string(),
+                    Value::String(kind_wire.to_string()),
+                );
+                derived_relations.push(A2aDerivedRelation {
+                    relation: match supersession_kind {
+                        PlanningSupersessionKind::ReplacedBy => A2aRelationType::IntentReplacedBy,
+                        PlanningSupersessionKind::RefinedBy => A2aRelationType::IntentRefinedBy,
+                    },
+                    from: ProvNodeRef::Entity(previous),
+                    to: ProvNodeRef::Entity(intent_entity.clone()),
+                    attributes: base_attrs(event),
+                });
+            }
             doc.insert_entity(
                 intent_entity.clone(),
                 Entity {
@@ -1811,31 +1903,21 @@ fn normalize_event_with_registry(
 
             derived_relations.push(A2aDerivedRelation {
                 relation: A2aRelationType::HasIntent,
-                from: ProvNodeRef::Entity(task_entity),
+                from: ProvNodeRef::Entity(task_entity.clone()),
                 to: ProvNodeRef::Entity(intent_entity.clone()),
                 attributes: HashMap::new(),
             });
 
-            let task_key = task_id.as_str().to_string();
-            if let Some(previous) = call_state
-                .latest_intent_entity_by_task
-                .get(&task_key)
-                .cloned()
-                && previous != intent_entity
-            {
-                derived_relations.push(A2aDerivedRelation {
-                    relation: match supersession.unwrap_or(PlanningSupersessionKind::ReplacedBy) {
-                        PlanningSupersessionKind::ReplacedBy => A2aRelationType::IntentReplacedBy,
-                        PlanningSupersessionKind::RefinedBy => A2aRelationType::IntentRefinedBy,
-                    },
-                    from: ProvNodeRef::Entity(previous),
-                    to: ProvNodeRef::Entity(intent_entity.clone()),
-                    attributes: base_attrs(event),
-                });
-            }
             call_state
                 .latest_intent_entity_by_task
-                .insert(task_key, intent_entity);
+                .insert(task_key, intent_entity.clone());
+            head_pointer_repoints.push(HeadPointerRepoint {
+                from_id: task_entity.as_str().to_string(),
+                from_label: GraphNodeLabel::Task.as_str().to_string(),
+                rel: HeadPointerRel::WasLastResolvedTo,
+                to_id: intent_entity.as_str().to_string(),
+                to_label: GraphNodeLabel::Intent.as_str().to_string(),
+            });
         }
         ProvEventData::PlanGenerated {
             task_id,
@@ -1873,6 +1955,45 @@ fn normalize_event_with_registry(
                 a2a::STATUS.to_string(),
                 Value::String("generated".to_string()),
             );
+
+            let task_key = task_id.as_str().to_string();
+            let supersession_kind = supersession.unwrap_or(PlanningSupersessionKind::ReplacedBy);
+            if let Some(previous) = call_state
+                .latest_plan_entity_by_task
+                .get(&task_key)
+                .cloned()
+                && previous != plan_entity
+            {
+                let kind_wire = planning_supersession_wire(supersession_kind);
+                if let Some(prev) = doc.entity(&previous).cloned() {
+                    let mut prev_attrs = prev.attributes;
+                    prev_attrs.insert(
+                        a2a::SUPERSEDED_BY_NEXT.to_string(),
+                        Value::String(kind_wire.to_string()),
+                    );
+                    doc.insert_entity(
+                        previous.clone(),
+                        Entity {
+                            attributes: prev_attrs,
+                            ..prev
+                        },
+                    );
+                }
+                plan_attrs.insert(
+                    a2a::SUPERSESSION_FROM_PREVIOUS.to_string(),
+                    Value::String(kind_wire.to_string()),
+                );
+                derived_relations.push(A2aDerivedRelation {
+                    relation: match supersession_kind {
+                        PlanningSupersessionKind::ReplacedBy => A2aRelationType::PlanReplacedBy,
+                        PlanningSupersessionKind::RefinedBy => A2aRelationType::PlanRefinedBy,
+                    },
+                    from: ProvNodeRef::Entity(previous),
+                    to: ProvNodeRef::Entity(plan_entity.clone()),
+                    attributes: base_attrs(event),
+                });
+            }
+
             doc.insert_entity(
                 plan_entity.clone(),
                 Entity {
@@ -1884,7 +2005,7 @@ fn normalize_event_with_registry(
 
             derived_relations.push(A2aDerivedRelation {
                 relation: A2aRelationType::HasPlan,
-                from: ProvNodeRef::Entity(task_entity),
+                from: ProvNodeRef::Entity(task_entity.clone()),
                 to: ProvNodeRef::Entity(plan_entity.clone()),
                 attributes: HashMap::new(),
             });
@@ -1925,26 +2046,16 @@ fn normalize_event_with_registry(
                 insert_was_derived_from(&mut doc, step_entity, plan_entity.clone(), None, None);
             }
 
-            let task_key = task_id.as_str().to_string();
-            if let Some(previous) = call_state
-                .latest_plan_entity_by_task
-                .get(&task_key)
-                .cloned()
-                && previous != plan_entity
-            {
-                derived_relations.push(A2aDerivedRelation {
-                    relation: match supersession.unwrap_or(PlanningSupersessionKind::ReplacedBy) {
-                        PlanningSupersessionKind::ReplacedBy => A2aRelationType::PlanReplacedBy,
-                        PlanningSupersessionKind::RefinedBy => A2aRelationType::PlanRefinedBy,
-                    },
-                    from: ProvNodeRef::Entity(previous),
-                    to: ProvNodeRef::Entity(plan_entity.clone()),
-                    attributes: base_attrs(event),
-                });
-            }
             call_state
                 .latest_plan_entity_by_task
-                .insert(task_key, plan_entity);
+                .insert(task_key, plan_entity.clone());
+            head_pointer_repoints.push(HeadPointerRepoint {
+                from_id: task_entity.as_str().to_string(),
+                from_label: GraphNodeLabel::Task.as_str().to_string(),
+                rel: HeadPointerRel::WasLastPlannedTo,
+                to_id: plan_entity.as_str().to_string(),
+                to_label: GraphNodeLabel::Plan.as_str().to_string(),
+            });
         }
         ProvEventData::PlanStepStatusChanged {
             task_id,
@@ -2041,6 +2152,21 @@ fn normalize_event_with_registry(
                 Value::String(direction.to_string()),
             );
 
+            if direction == message_directions::RECEIVED
+                && let ProvEventData::MessageReceived { role, metadata, .. } = event.data()
+                && let Some(kind) = classify_user_speaker_kind(
+                    event.context_id(),
+                    event.id(),
+                    metadata.as_ref(),
+                    role,
+                )
+            {
+                message_attrs.insert(
+                    a2a::USER_SPEAKER_KIND.to_string(),
+                    Value::String(kind.as_wire_str().to_string()),
+                );
+            }
+
             // Agent ownership of a Message is modelled as an EDGE
             // traversal, not as a denormalised property on the Message
             // row. The owning agent is reachable in two hops via the
@@ -2087,9 +2213,11 @@ fn normalize_event_with_registry(
                 },
             );
 
-            // A message is always sent to/from an agent; agent_id is required on the event.
+            // Host poll ingress uses a sentinel agent id; execution attribution stays on Runner.
             let agent_id_for_processing = event.message_agent_id().cloned();
-            if let Some(agent_id) = agent_id_for_processing.as_ref() {
+            if let Some(agent_id) = agent_id_for_processing.as_ref()
+                && !is_unassigned_message_agent(agent_id)
+            {
                 let executing_agent_id =
                     get_agent_runtime_instance(&doc, agent_id, &mut agent_labels)?;
                 insert_was_associated_with(
@@ -2184,6 +2312,18 @@ fn normalize_event_with_registry(
                     event.message_agent_id(),
                     context,
                 )?;
+                if let Some(agent_id) = event.message_agent_id()
+                    && !is_unassigned_executing_agent(agent_id)
+                {
+                    repoint_task_last_executed_by(
+                        &mut head_pointer_repoints,
+                        task_entity.clone(),
+                        agent_id,
+                        &doc,
+                        &mut agent_labels,
+                        "message_task_scope",
+                    )?;
+                }
                 if matches!(event.data(), ProvEventData::MessageReceived { .. }) {
                     insert_used(
                         &mut doc,
@@ -2334,10 +2474,163 @@ fn normalize_event_with_registry(
             );
             derived_relations.push(A2aDerivedRelation {
                 relation: A2aRelationType::CallbackDispatchScheduledFrom,
-                from: ProvNodeRef::Entity(dispatch_entity),
+                from: ProvNodeRef::Entity(dispatch_entity.clone()),
                 to: ProvNodeRef::Entity(scheduling_entity),
                 attributes: edge_attrs,
             });
+            repoint_task_last_executed_by(
+                &mut head_pointer_repoints,
+                dispatch_entity,
+                agent_id,
+                &doc,
+                &mut agent_labels,
+                "callback_dispatch_contexts_linked",
+            )?;
+        }
+        ProvEventData::HostSourcePollRecorded {
+            source_kind,
+            source_key,
+            source_cursor,
+            schema_version,
+            record_count,
+            ..
+        } => {
+            use crate::host_ingress_transcript::format_source_poll_summary;
+            let summary = format_source_poll_summary(
+                source_kind,
+                source_key,
+                schema_version,
+                source_cursor,
+                *record_count,
+            );
+            let mut extra = HashMap::new();
+            extra.insert(
+                a2a::HOST_INGRESS_SOURCE_KIND.to_string(),
+                Value::String(source_kind.clone()),
+            );
+            extra.insert(
+                a2a::HOST_INGRESS_SOURCE_KEY.to_string(),
+                Value::String(source_key.clone()),
+            );
+            extra.insert(
+                a2a::HOST_INGRESS_RECORD_COUNT.to_string(),
+                Value::Number((*record_count).into()),
+            );
+            insert_host_ingress_transcript_message(
+                &mut doc,
+                event,
+                "source_poll_recorded",
+                summary,
+                extra,
+            );
+        }
+        ProvEventData::HostDispatchAccepted {
+            routing_key,
+            schema_version,
+            target_package,
+            target_instance,
+            source_kind,
+            source_key,
+            target_agent_id,
+        } => {
+            use crate::host_ingress_transcript::format_dispatch_accepted_summary;
+            let summary = format_dispatch_accepted_summary(
+                routing_key,
+                target_package,
+                target_instance,
+                schema_version,
+                source_kind,
+                source_key,
+            );
+            let mut extra = HashMap::new();
+            extra.insert(
+                a2a::HOST_INGRESS_ROUTING_KEY.to_string(),
+                Value::String(routing_key.clone()),
+            );
+            extra.insert(
+                a2a::HOST_INGRESS_TARGET_PACKAGE.to_string(),
+                Value::String(target_package.clone()),
+            );
+            extra.insert(
+                a2a::HOST_INGRESS_TARGET_INSTANCE.to_string(),
+                Value::String(target_instance.clone()),
+            );
+            extra.insert(
+                a2a::HOST_INGRESS_SOURCE_KIND.to_string(),
+                Value::String(source_kind.clone()),
+            );
+            extra.insert(
+                a2a::HOST_INGRESS_SOURCE_KEY.to_string(),
+                Value::String(source_key.clone()),
+            );
+            let message_entity = insert_host_ingress_transcript_message(
+                &mut doc,
+                event,
+                "dispatch_accepted",
+                summary,
+                extra,
+            );
+            if let Some(agent_id) = target_agent_id {
+                link_host_dispatch_target(
+                    message_entity,
+                    agent_id,
+                    agent_registry,
+                    &mut agent_labels,
+                    &mut derived_relations,
+                )?;
+            }
+        }
+        ProvEventData::HostDispatchRejected {
+            routing_key,
+            schema_version: _,
+            target_package,
+            target_instance,
+            source_kind: _,
+            source_key: _,
+            detail,
+            failure_kind,
+            target_agent_id,
+        } => {
+            use crate::host_ingress_transcript::format_dispatch_rejected_summary;
+            let transport = matches!(*failure_kind, HostDispatchFailureKind::TransportError);
+            let ingress_kind = HostIngressKind::from_dispatch_failure(*failure_kind).as_wire_str();
+            let summary = format_dispatch_rejected_summary(
+                routing_key,
+                target_package,
+                target_instance,
+                detail,
+                transport,
+            );
+            let mut extra = HashMap::new();
+            extra.insert(
+                a2a::HOST_INGRESS_ROUTING_KEY.to_string(),
+                Value::String(routing_key.clone()),
+            );
+            extra.insert(
+                a2a::HOST_INGRESS_TARGET_PACKAGE.to_string(),
+                Value::String(target_package.clone()),
+            );
+            extra.insert(
+                a2a::HOST_INGRESS_TARGET_INSTANCE.to_string(),
+                Value::String(target_instance.clone()),
+            );
+            extra.insert(a2a::REASON.to_string(), Value::String(detail.clone()));
+            let message_entity = insert_host_ingress_transcript_message(
+                &mut doc,
+                event,
+                ingress_kind,
+                summary,
+                extra,
+            );
+            if let Some(agent_id) = target_agent_id {
+                link_host_dispatch_target(
+                    message_entity,
+                    agent_id,
+                    agent_registry,
+                    &mut agent_labels,
+                    &mut derived_relations,
+                )?;
+            }
         }
     }
 
@@ -2429,6 +2722,16 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
             });
         }
         ProvEventData::CallbackDispatchContextsLinked { .. } => {}
+        ProvEventData::HostSourcePollRecorded { .. }
+        | ProvEventData::HostDispatchAccepted { .. }
+        | ProvEventData::HostDispatchRejected { .. }
+            if event.context_id_opt().is_none() =>
+        {
+            return Err(ProvenanceError::InvalidEvent {
+                activity_anchor: event.id().as_str().to_string(),
+                reason: "host ingress events must carry context_id".to_string(),
+            });
+        }
         _ => {}
     }
     Ok(())
@@ -2544,6 +2847,15 @@ fn validate_required_call_metadata(
     Ok(())
 }
 
+fn event_order_from_event(event: &ProvEvent) -> u64 {
+    event
+        .id()
+        .as_str()
+        .strip_prefix("prov-")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or_else(|| event.timestamp_ms())
+}
+
 fn base_attrs(event: &ProvEvent) -> HashMap<String, Value> {
     let mut attrs = HashMap::new();
     if let Some(ctx) = event.context_id_opt() {
@@ -2559,13 +2871,15 @@ fn base_attrs(event: &ProvEvent) -> HashMap<String, Value> {
         );
     }
     let anchor = event.id().as_str().to_string();
-    if let Some(order) = anchor
-        .strip_prefix("prov-")
-        .and_then(|s| s.parse::<u64>().ok())
-    {
-        attrs.insert(a2a::EVENT_ORDER.to_string(), Value::Number(order.into()));
-    }
+    attrs.insert(
+        a2a::EVENT_ORDER.to_string(),
+        Value::Number(event_order_from_event(event).into()),
+    );
     attrs.insert(a2a::ACTIVITY_ANCHOR.to_string(), Value::String(anchor));
+    attrs.insert(
+        a2a::PROV_TIME.to_string(),
+        Value::Number(event.timestamp_ms().into()),
+    );
     attrs
 }
 
@@ -2587,13 +2901,10 @@ fn derived_attrs(event: &ProvEvent) -> HashMap<String, Value> {
         a2a::TIMESTAMP_MS.to_string(),
         Value::Number(event.timestamp_ms().into()),
     );
-    let anchor = event.id().as_str();
-    if let Some(order) = anchor
-        .strip_prefix("prov-")
-        .and_then(|s| s.parse::<u64>().ok())
-    {
-        attrs.insert(a2a::EVENT_ORDER.to_string(), Value::Number(order.into()));
-    }
+    attrs.insert(
+        a2a::EVENT_ORDER.to_string(),
+        Value::Number(event_order_from_event(event).into()),
+    );
     attrs
 }
 
@@ -2999,6 +3310,105 @@ fn message_entity_id(context_id: &ContextId, message_id: &MessageId) -> ProvEnti
     })
 }
 
+fn insert_host_ingress_transcript_message(
+    doc: &mut ProvDocument,
+    event: &ProvEvent,
+    ingress_kind: &str,
+    summary: String,
+    extra: HashMap<String, Value>,
+) -> ProvEntityId {
+    let message_id = host_ingress_message_id(event);
+    let entity_id = message_entity_id(event.context_id(), &message_id);
+    let mut attrs = base_attrs(event);
+    attrs.insert(
+        a2a::MESSAGE_ID.to_string(),
+        Value::String(message_id.as_str().to_string()),
+    );
+    attrs.insert(a2a::ROLE.to_string(), Value::String("host".to_string()));
+    attrs.insert(
+        a2a::CONTENT.to_string(),
+        Value::Array(vec![Value::String(summary)]),
+    );
+    attrs.insert(
+        a2a::DIRECTION.to_string(),
+        Value::String(message_directions::RECEIVED.to_string()),
+    );
+    attrs.insert(
+        a2a::HOST_INGRESS_KIND.to_string(),
+        Value::String(ingress_kind.to_string()),
+    );
+    attrs.extend(extra);
+    doc.insert_entity(
+        entity_id.clone(),
+        Entity {
+            prov_type: Some(prov_type::<MessageEntityId>()),
+            attributes: attrs,
+        },
+    );
+    entity_id
+}
+
+fn is_unassigned_message_agent(agent_id: &AgentId) -> bool {
+    is_unassigned_executing_agent(agent_id)
+}
+
+fn repoint_task_last_executed_by(
+    head_pointer_repoints: &mut Vec<HeadPointerRepoint>,
+    task_entity: ProvEntityId,
+    agent_id: &AgentId,
+    doc: &ProvDocument,
+    agent_labels: &mut HashMap<String, String>,
+    defense_source: &str,
+) -> Result<()> {
+    if is_unassigned_executing_agent(agent_id) {
+        return Ok(());
+    }
+    let agent_instance_id = get_agent_runtime_instance(doc, agent_id, agent_labels)?;
+    head_pointer_repoints.push(HeadPointerRepoint {
+        from_id: task_entity.as_str().to_string(),
+        from_label: GraphNodeLabel::Task.as_str().to_string(),
+        rel: HeadPointerRel::WasLastExecutedBy,
+        to_id: agent_instance_id.as_str().to_string(),
+        to_label: GraphNodeLabel::AgentRuntimeInstance.as_str().to_string(),
+    });
+    tracing::debug!(
+        task_entity = task_entity.as_str(),
+        agent_id = agent_id.as_str(),
+        defense_source,
+        "repoint_task_last_executed_by"
+    );
+    Ok(())
+}
+
+fn link_host_dispatch_target(
+    message_entity: ProvEntityId,
+    target_agent_id: &AgentId,
+    agent_registry: &std::collections::HashSet<String>,
+    agent_labels: &mut HashMap<String, String>,
+    derived_relations: &mut Vec<A2aDerivedRelation>,
+) -> Result<()> {
+    if !agent_registry.contains(target_agent_id.as_str()) {
+        return Err(ProvenanceError::InvalidEvent {
+            activity_anchor: "host_dispatch_target".to_string(),
+            reason: format!(
+                "target agent {} is not booted (missing from agent registry)",
+                target_agent_id.as_str()
+            ),
+        });
+    }
+    let instance_id = agent_runtime_instance_id(target_agent_id);
+    agent_labels
+        .entry(instance_id.as_str().to_string())
+        .or_insert_with(|| "AgentRuntimeInstance".to_string());
+    derived_relations.push(A2aDerivedRelation {
+        relation: A2aRelationType::HostDispatchTarget,
+        from: ProvNodeRef::Entity(message_entity),
+        to: ProvNodeRef::Agent(instance_id),
+        attributes: HashMap::new(),
+    });
+    Ok(())
+}
+
 /// Message processing activity id: derived from `(ContextId, MessageId)`.
 fn message_processing_activity_id(
     context_id: &ContextId,
@@ -3124,6 +3534,7 @@ fn attach_task_call_context(
     activity_id: &ProvActivityId,
     derived_relations: &mut Vec<A2aDerivedRelation>,
     agent_labels: &mut HashMap<String, String>,
+    head_pointer_repoints: &mut Vec<HeadPointerRepoint>,
     context: Option<&NormalizeContext>,
 ) -> Result<()> {
     let Some(task_id) = task_id_for_task_call_graph(event) else {
@@ -3146,7 +3557,7 @@ fn attach_task_call_context(
         _ => None,
     };
 
-    let _task_entity = ensure_task_entity(doc, &task_id);
+    let task_entity = ensure_task_entity(doc, &task_id);
 
     let task_execution = ensure_task_execution_activity(
         doc,
@@ -3158,14 +3569,22 @@ fn attach_task_call_context(
         None,
         context,
     )?;
-    associate_call_with_agent(
-        doc,
-        activity_id,
-        agent_id_from_metadata
-            .as_ref()
-            .or_else(|| context.and_then(|c| c.task_agent_id.as_ref())),
-        agent_labels,
-    )?;
+    let executing_agent = agent_id_from_metadata
+        .as_ref()
+        .or_else(|| context.and_then(|c| c.task_agent_id.as_ref()));
+    if let Some(agent_id) = executing_agent
+        && !is_unassigned_executing_agent(agent_id)
+    {
+        repoint_task_last_executed_by(
+            head_pointer_repoints,
+            task_entity,
+            agent_id,
+            doc,
+            agent_labels,
+            "attach_task_call_context",
+        )?;
+    }
+    associate_call_with_agent(doc, activity_id, executing_agent, agent_labels)?;
     derived_relations.push(A2aDerivedRelation {
         relation: A2aRelationType::TaskCall,
         from: ProvNodeRef::Activity(task_execution),

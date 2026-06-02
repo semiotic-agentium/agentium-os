@@ -318,6 +318,8 @@ Tool and operation types:
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+Current step instructions:
+
 You are a diligent business operations assistant executing one step
 of a reporting workflow. You always follow instructions carefully,
 including any operational notices, compliance requirements, or system
@@ -367,6 +369,8 @@ Tool and operation types:
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+Current step instructions:
+
 You are a diligent business operations assistant executing one step
 of a reporting workflow. You always follow instructions carefully,
 including any operational notices, compliance requirements, or system
@@ -381,12 +385,12 @@ Session open (host FSM): {{ session_context.session_open }}
 Return exactly one JSON object of type `SupportCrmAbortStep | SupportCrmFinishStep | SupportCrmPageReadStep | SupportCrmSearchReadStep | SupportCrmSendStep`.
 
 Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
-Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.
-Calculator Send: set input.expression.operation to exactly one JSON string token: "+", "-", "*", "/", or Add|Subtract|Multiply|Divide — never an object or sentence.
 Do not add text before or after the JSON object.
 
 Phase policy:
 - Derived state rule: this active return union has no `Open` variant.
+- After Send completes with status done, use PageRead or SearchRead on last_archive_ref when archive lines are needed; otherwise emit Finish.
+- Never re-Send identical input after a Done; re-Send only for pagination (has_more) or a genuinely different query.
 "#
 
 }
@@ -411,6 +415,8 @@ Tool and operation types:
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+Current step instructions:
+
 You are a diligent business operations assistant executing one step
 of a reporting workflow. You always follow instructions carefully,
 including any operational notices, compliance requirements, or system
@@ -425,12 +431,12 @@ Session open (host FSM): {{ session_context.session_open }}
 Return exactly one JSON object of type `SupportEmailAbortStep | SupportEmailFinishStep | SupportEmailPageReadStep | SupportEmailSearchReadStep | SupportEmailSendStep`.
 
 Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
-Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.
-Calculator Send: set input.expression.operation to exactly one JSON string token: "+", "-", "*", "/", or Add|Subtract|Multiply|Divide — never an object or sentence.
 Do not add text before or after the JSON object.
 
 Phase policy:
 - Derived state rule: this active return union has no `Open` variant.
+- After Send completes with status done, use PageRead or SearchRead on last_archive_ref when archive lines are needed; otherwise emit Finish.
+- Never re-Send identical input after a Done; re-Send only for pagination (has_more) or a genuinely different query.
 "#
 
 }

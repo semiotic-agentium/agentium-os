@@ -8,9 +8,12 @@ use std::fmt::Write as _;
 
 use baml_rt_tools::{archive_read::DEFAULT_TOOL_RESULT_INLINE_LINES, citations::ParsedCitation};
 
-use crate::episode::{
-    ArtifactSummary, Episode, EpisodeContent, EpisodeEntry, EpisodeRefPrefix, StepType,
-    TerminalStatus,
+use crate::{
+    episode::{
+        ArtifactSummary, Episode, EpisodeContent, EpisodeEntry, EpisodeRefPrefix, StepType,
+        TerminalStatus,
+    },
+    operational::{OperationalEventKind, OperationalEventSeverity},
 };
 
 /// Render a full episode document (seven headed sections, namespaced refs).
@@ -335,6 +338,49 @@ fn render_entry_line(ep: &Episode, e: &EpisodeEntry, out: &mut String) {
                 let _ = writeln!(out, "artifact: {name}");
             }
         },
+        EpisodeContent::Operational(op) => {
+            let _ = write!(
+                out,
+                "operational kind={} severity={}",
+                operational_kind_label(&op.kind),
+                operational_severity_label(&op.severity),
+            );
+            if let Some(pkg) = op.agent_package.as_deref().filter(|s| !s.is_empty()) {
+                let inst = op
+                    .agent_instance_id
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("default");
+                let _ = write!(out, " agent={pkg}/{inst}");
+            }
+            let _ = writeln!(out, ": {}", op.summary);
+            if let Some(detail) = op.detail.as_deref().filter(|d| {
+                let t = d.trim();
+                !t.is_empty() && !op.summary.contains(t)
+            }) {
+                let _ = writeln!(out, "  detail: {detail}");
+            }
+        }
+    }
+}
+
+fn operational_kind_label(kind: &OperationalEventKind) -> &'static str {
+    match kind {
+        OperationalEventKind::DispatchRejected => "dispatch_rejected",
+        OperationalEventKind::DispatchTransportError => "dispatch_transport_error",
+        OperationalEventKind::DispatchAccepted => "dispatch_accepted",
+        OperationalEventKind::SourcePollRecorded => "source_poll_recorded",
+        OperationalEventKind::LlmCallFailed => "llm_call_failed",
+        OperationalEventKind::PromptRejected => "prompt_rejected",
+        OperationalEventKind::TaskStatusChanged => "task_status_changed",
+    }
+}
+
+fn operational_severity_label(severity: &OperationalEventSeverity) -> &'static str {
+    match severity {
+        OperationalEventSeverity::Info => "info",
+        OperationalEventSeverity::Warning => "warning",
+        OperationalEventSeverity::Error => "error",
     }
 }
 
@@ -351,7 +397,8 @@ fn entry_ref_token(e: &EpisodeEntry, prefix: &str) -> String {
         | StepType::ToolCall
         | StepType::PlanRevision
         | StepType::StatusTransition
-        | StepType::ArtifactEmitted => format!("{prefix}#{}", e.seq),
+        | StepType::ArtifactEmitted
+        | StepType::OperationalEvent => format!("{prefix}#{}", e.seq),
     }
 }
 
@@ -490,6 +537,10 @@ mod tests {
     use baml_rt_core::ids::{AgentId, ContextId, ExternalId, TaskId, UuidId};
     use uuid::Uuid;
 
+    fn smoke_agent_id() -> AgentId {
+        AgentId::from_uuid(UuidId::new(Uuid::new_v4()))
+    }
+
     use super::{prefix_wire_citation, prefix_wire_citations_in_text, render_episode};
     use crate::episode::{
         Episode, EpisodeContent, EpisodeDuration, EpisodeEntry, EpisodeOutcome, EpisodeRefPrefix,
@@ -529,7 +580,7 @@ mod tests {
         let ep = Episode {
             task_id: task_id.clone(),
             context_id: ContextId::new(1, 1),
-            agent_id: AgentId::from_uuid(UuidId::new(Uuid::nil())),
+            agent_id: smoke_agent_id(),
             ref_prefix: EpisodeRefPrefix::from_task_id(&task_id),
             status: TerminalStatus::Completed,
             started_timestamp_ms: 100,
@@ -573,6 +624,7 @@ mod tests {
         };
         let txt = render_episode(&ep);
         assert!(txt.contains("## episode"));
+        assert!(txt.contains("agent_id:"));
         assert!(txt.contains("## transcript"));
         assert!(txt.contains("## outcome"));
         assert!(txt.contains("do the thing"));
@@ -589,7 +641,7 @@ mod tests {
         let ep = Episode {
             task_id: task_id.clone(),
             context_id: ContextId::new(1, 1),
-            agent_id: AgentId::from_uuid(UuidId::new(Uuid::nil())),
+            agent_id: smoke_agent_id(),
             ref_prefix: EpisodeRefPrefix::from_task_id(&task_id),
             status: TerminalStatus::Completed,
             started_timestamp_ms: 100,

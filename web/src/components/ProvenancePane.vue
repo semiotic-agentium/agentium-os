@@ -7,12 +7,19 @@ SPDX-License-Identifier: Apache-2.0
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useTheme } from "../composables/useTheme";
+import { useToast } from "../composables/useToast";
 import { useMermaidRenderer } from "../composables/useMermaidRenderer";
 import { useProvenanceOps } from "../composables/useProvenanceOps";
+import { useContextObserve } from "../composables/useContextObserve";
+import {
+  provenanceQueryFromScope,
+  useObservationScope,
+} from "../composables/useObservationScope";
 import type {
   ContextPlanningResponse,
   ContextPlanningTaskSnapshot,
   ProvenanceQueryParams,
+  ProvenanceQueryResponse,
 } from "../types/provenance";
 import ProvenanceLiveTab from "./provenance/ProvenanceLiveTab.vue";
 import type { HotspotDrilldownParams } from "./provenance/ProvenanceLiveTab.vue";
@@ -24,24 +31,78 @@ import ProvenanceDriftTab from "./provenance/ProvenanceDriftTab.vue";
 import ExploreTab from "./provenance/ExploreTab.vue";
 import type { DrilldownParams } from "./provenance/ExploreTab.vue";
 import type { LlmPromptOperation } from "../types/a2a";
+import RunStatusIndicator from "./RunStatusIndicator.vue";
+import { IDLE_RUN_STATUS, type OperatorRunStatus } from "../operator/runStatus";
+
+const TRACES_STORAGE_KEY = "agentium:showTraces";
+
+function readTracesPreference(): boolean | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const stored = localStorage.getItem(TRACES_STORAGE_KEY);
+    if (stored === "0") return false;
+    if (stored === "1") return true;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function defaultPaneOpen(preferOpen?: boolean): boolean {
+  if (preferOpen === true) return true;
+  const stored = readTracesPreference();
+  if (stored !== null) return stored;
+  return typeof window !== "undefined" ? window.innerWidth >= 1280 : true;
+}
 
 const props = defineProps<{
   contextId?: string;
   taskId?: string;
   selectedAgentId?: string;
-  isStreaming: boolean;
+  /** Filter ops queries by agent package (Event Console compose agent). */
+  selectedAgentPackage?: string;
+  runStatus?: OperatorRunStatus;
+  /** @deprecated Use runStatus.active */
+  isStreaming?: boolean;
   diagrams?: string[];
   /** Bumps when evented provenance signals new rows; edge-triggers Live refresh */
   traceRefreshTick?: number;
   llmPromptOperations?: LlmPromptOperation[];
   /** Dashboard / deep-link: bump `nonce` to switch tabs and expand the pane */
   externalTabFocus?: { nonce: number; tab: "live" | "failures" | "anomalies" | "drift" | "explore" };
+  /** Initial open state; Event Console passes false until a context is observed. */
+  defaultOpen?: boolean;
+  /** When true, expand the pane (e.g. after publish). */
+  preferOpen?: boolean;
+  /** Chat vs Event Console empty-state copy. */
+  surface?: "chat" | "event";
 }>();
 
-const isOpen = ref(typeof window !== "undefined" ? window.innerWidth >= 1280 : true);
+function initialPaneOpen(): boolean {
+  if (props.defaultOpen === true) return true;
+  if (props.defaultOpen === false) return false;
+  return defaultPaneOpen(props.preferOpen);
+}
+
+const isOpen = ref(initialPaneOpen());
+
+const resolvedRunStatus = computed(() => props.runStatus ?? IDLE_RUN_STATUS);
+
+const traceActive = computed(
+  () => props.runStatus?.active ?? props.isStreaming ?? false,
+);
+
+const emptyStateCopy = computed(() => {
+  if (props.surface === "event") {
+    return "Publish an event or select an event run to load context-scoped traces.";
+  }
+  return "Start a chat turn to attach context-scoped provenance.";
+});
+
 const activeTab = ref<"live" | "failures" | "anomalies" | "drift" | "explore">("live");
 
 const { theme } = useTheme();
+const toast = useToast();
 const sources = computed(() => props.diagrams ?? []);
 const { rendered } = useMermaidRenderer(sources, theme);
 const expandedIdx = ref<number | null>(null);
@@ -81,10 +142,6 @@ const failedToolQuery = createQuery("tool_calls", {
 
 const exploreTabRef = ref<InstanceType<typeof ExploreTab> | null>(null);
 
-// ── Polling & planning ─────────────────────────────────────────────────────
-
-const isExploreTab = computed(() => activeTab.value === "explore");
-const pollInFlight = ref(false);
 const planningState = ref<{
   loading: boolean;
   error: string | null;
@@ -95,22 +152,88 @@ const planningState = ref<{
   response: null,
 });
 
-function baseScope(): Pick<ProvenanceQueryParams, "contextId" | "agentId"> {
-  return {
-    contextId: props.contextId,
-    agentId: props.selectedAgentId,
-  };
+// ── Unified observe bundle (Live + Drift planning) ─────────────────────────
+
+const observationScope = useObservationScope(
+  () => props.contextId,
+  () => props.taskId,
+  () => props.selectedAgentPackage,
+);
+
+const includeDriftInObserve = computed(() => activeTab.value === "drift");
+
+const {
+  bundle: observeBundle,
+  loading: observeLoading,
+  error: observeError,
+  refresh: refreshObserve,
+} = useContextObserve({
+  contextId: computed(() => props.contextId),
+  taskId: computed(() => props.taskId),
+  agentPackage: computed(() => props.selectedAgentPackage),
+  agentId: computed(() => props.selectedAgentId),
+  includeDrift: includeDriftInObserve,
+  active: traceActive,
+});
+
+function syncObserveToLiveState() {
+  const bundle = observeBundle.value;
+  planningState.value.loading = observeLoading.value;
+  planningState.value.error = observeError.value;
+  if (!bundle) {
+    liveLlm.state.value.response = null;
+    liveTool.state.value.response = null;
+    planningState.value.response = null;
+    return;
+  }
+  liveLlm.state.value.response = (bundle.llmOps as ProvenanceQueryResponse | null) ?? null;
+  liveTool.state.value.response = (bundle.toolOps as ProvenanceQueryResponse | null) ?? null;
+  planningState.value.response = bundle.planning;
+  liveLlm.state.value.lastUpdatedAt = Date.now();
+  liveTool.state.value.lastUpdatedAt = Date.now();
+}
+
+watch([observeBundle, observeLoading, observeError], syncObserveToLiveState, {
+  immediate: true,
+  deep: true,
+});
+
+// ── Polling (Failures / Anomalies only) ────────────────────────────────────
+
+const isExploreTab = computed(() => activeTab.value === "explore");
+const pollInFlight = ref(false);
+let pollPending = false;
+let observeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleObserveRefresh(): void {
+  if (observeRefreshTimer !== null) {
+    clearTimeout(observeRefreshTimer);
+  }
+  observeRefreshTimer = setTimeout(() => {
+    observeRefreshTimer = null;
+    refreshObserve();
+  }, 200);
+}
+
+function baseScope(): Pick<
+  ProvenanceQueryParams,
+  "contextId" | "taskId" | "agentId" | "agentPackage"
+> {
+  return provenanceQueryFromScope(observationScope.value, props.selectedAgentId);
 }
 
 async function refreshForActiveTab() {
-  if (!props.contextId || pollInFlight.value) return;
+  if (!props.contextId) return;
+  if (activeTab.value === "live" || activeTab.value === "drift") {
+    return;
+  }
+  if (pollInFlight.value) {
+    pollPending = true;
+    return;
+  }
   pollInFlight.value = true;
   try {
     const scope = baseScope();
-    if (activeTab.value === "live") {
-      await Promise.all([liveLlm.run(scope), liveTool.run(scope), refreshPlanning()]);
-      return;
-    }
     if (activeTab.value === "failures") {
       await Promise.all([
         failedLlmQuery.run({ ...scope, outcome: "failed_only" }),
@@ -123,34 +246,13 @@ async function refreshForActiveTab() {
         ...scope,
         outcome: "both",
       });
-      return;
-    }
-    if (activeTab.value === "drift") {
-      await refreshPlanning();
     }
   } finally {
     pollInFlight.value = false;
-  }
-}
-
-async function refreshPlanning() {
-  if (!props.contextId) return;
-  planningState.value.loading = true;
-  planningState.value.error = null;
-  try {
-    const response = await fetch(`/contexts/${props.contextId}/planning`);
-    if (!response.ok) {
-      if (response.status === 404) {
-        planningState.value.response = null;
-        return;
-      }
-      throw new Error(`Planning request failed: ${response.status}`);
+    if (pollPending) {
+      pollPending = false;
+      void refreshForActiveTab();
     }
-    planningState.value.response = (await response.json()) as ContextPlanningResponse;
-  } catch (error) {
-    planningState.value.error = (error as Error).message;
-  } finally {
-    planningState.value.loading = false;
   }
 }
 
@@ -222,9 +324,31 @@ function onDrillToDriftCalls(taskId: string) {
 // ── Episode download ───────────────────────────────────────────────────────
 
 async function downloadEpisodeText(taskId: string) {
-  const response = await fetch(`/tasks/${taskId}/episode/text`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  let response: Response;
+  try {
+    response = await fetch(`/tasks/${encodeURIComponent(taskId)}/episode/text`, {
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if ((error as Error).name === "AbortError") {
+      toast.error("Episode download timed out — the task graph may still be populating.");
+    } else {
+      toast.error("Episode download failed — check the runner and try again.");
+    }
+    return;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!response.ok) {
-    console.error("episode/text fetch failed:", response.status);
+    if (response.status === 404) {
+      toast.error(
+        "No episode transcript yet for this task — wait for dispatch to finish, then retry.",
+      );
+    } else {
+      toast.error(`Episode download failed (${response.status}).`);
+    }
     return;
   }
   const blob = await response.blob();
@@ -272,6 +396,13 @@ function downloadSvg(svg: string, index: number) {
 // ── Watchers & lifecycle ───────────────────────────────────────────────────
 
 watch(
+  () => props.preferOpen,
+  (open) => {
+    if (open) isOpen.value = true;
+  },
+);
+
+watch(
   () => props.externalTabFocus?.nonce,
   (nonce) => {
     if (nonce == null) return;
@@ -283,9 +414,10 @@ watch(
 );
 
 watch(
-  () => [props.contextId, props.selectedAgentId],
+  () => [props.contextId, props.taskId, props.selectedAgentId, props.selectedAgentPackage],
   () => {
     if (!props.contextId || isExploreTab.value) return;
+    if (activeTab.value === "live" || activeTab.value === "drift") return;
     void refreshForActiveTab();
   },
   { immediate: true },
@@ -295,7 +427,14 @@ watch(
   () => props.traceRefreshTick ?? 0,
   (tick, prev) => {
     if (tick === prev) return;
-    if (!props.contextId || isExploreTab.value) return;
+    if (activeTab.value === "live" || activeTab.value === "drift") {
+      // Live observe SSE already receives bundle pushes from observation_events.
+      // Reconnecting here cancels streams and fights the transcript SSE.
+      if (!traceActive.value) {
+        scheduleObserveRefresh();
+      }
+      return;
+    }
     void refreshForActiveTab();
   },
 );
@@ -304,9 +443,9 @@ watch(
   () => [activeTab.value] as const,
   ([tab]) => {
     if (!props.contextId || tab === "explore") return;
+    if (tab === "live" || tab === "drift") return;
     void refreshForActiveTab();
   },
-  { immediate: true },
 );
 </script>
 
@@ -326,10 +465,7 @@ watch(
     <div v-show="isOpen" class="provenance-pane-inner">
       <header class="provenance-header">
         <div class="provenance-header-title">Traces</div>
-        <div class="provenance-header-status">
-          <span class="status-dot" />
-          {{ props.isStreaming ? "Live" : "Idle" }}
-        </div>
+        <RunStatusIndicator variant="compact" :status="resolvedRunStatus" />
       </header>
 
       <div class="provenance-tabs">
@@ -348,7 +484,7 @@ watch(
 
       <div class="provenance-body">
         <div v-if="!props.contextId" class="provenance-empty">
-          Start a chat turn to attach context-scoped provenance.
+          {{ emptyStateCopy }}
         </div>
 
         <template v-else-if="activeTab === 'live'">
@@ -360,7 +496,7 @@ watch(
             :planning-error="planningState.error"
             :rendered="rendered"
             :task-id="props.taskId"
-            :is-streaming="props.isStreaming"
+            :is-streaming="traceActive"
             :all-task-ids="planningState.response?.allTaskIds ?? []"
             :llm-prompt-operations="props.llmPromptOperations"
             @hotspot-drilldown="onHotspotDrilldown"

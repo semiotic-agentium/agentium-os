@@ -52,7 +52,7 @@ fn make_dispatch_request(
 ) -> AgentDispatchRequest {
     AgentDispatchRequest {
         routing_key: AgentDispatchRoutingKey::parse(routing_key).expect("valid routing key"),
-        message_type: EventSchemaVersion::parse("task-daemon.interpretation.v1")
+        message_type: EventSchemaVersion::parse("host.source-records.v1")
             .expect("valid schema version"),
         messages,
         context_id: None,
@@ -68,13 +68,11 @@ async fn dispatch_echo_accepts_matching_event() {
     let _cleanup = TempDirCleanup::new(built_dir);
 
     let request = make_dispatch_request(
-        "slack:intake",
+        "event:intake",
         vec![json!({
-            "schema_version": "task-daemon.interpretation.v1",
-            "event_id": "td-test-dispatch-1",
-            "source": { "source_key": "slack:#test", "source": "slack", "source_label": "#test" },
-            "messages_scanned": 1,
-            "derived_tasks": []
+            "schema_version": "host.source-records.v1",
+            "source": { "source_kind": "slack", "source_key": "slack:C123", "source_label": "#test" },
+            "records": []
         })],
     );
 
@@ -82,7 +80,7 @@ async fn dispatch_echo_accepts_matching_event() {
     assert!(ack.accepted, "expected accepted=true, got: {ack:?}");
     assert_eq!(
         ack.detail.as_deref(),
-        Some("routing_key=slack:intake messages=1"),
+        Some("routing_key=event:intake messages=1"),
         "unexpected detail: {ack:?}"
     );
 }

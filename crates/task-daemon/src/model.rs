@@ -2,11 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Core data model shared across polling, interpretation, and delivery.
+//! Core data model shared across polling and source-record publish.
 
 use std::fmt;
 
-use baml_rt_core::{AgentDispatchRoutingKey, EventSourceKind};
+use baml_rt_core::EventSourceKind;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -29,16 +29,6 @@ impl TaskSourceKind {
             TaskSourceKind::Clickup => "clickup",
             TaskSourceKind::GithubIssues => "github_issues",
         }
-    }
-
-    pub fn intake_routing_key(self) -> AgentDispatchRoutingKey {
-        let routing_key = match self {
-            TaskSourceKind::Slack => "slack:intake",
-            TaskSourceKind::Clickup => "clickup:intake",
-            TaskSourceKind::GithubIssues => "github_issues:intake",
-        };
-        AgentDispatchRoutingKey::parse(routing_key)
-            .expect("hard-coded task-daemon intake routing keys must be valid")
     }
 }
 
@@ -94,24 +84,6 @@ impl fmt::Display for TaskConfidence {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-/// Follow-up action category for non-code next steps.
-pub enum FollowUpKind {
-    StakeholderQuestion,
-    DecisionRequest,
-    Clarification,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-/// Condition for when an investigation should be executed.
-pub enum InvestigationRunCondition {
-    Always,
-    RepoAvailable,
-    RepoUnavailable,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 /// Evidence pointer back to source material.
 pub struct SourceReference {
@@ -127,7 +99,7 @@ pub struct SourceReference {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// Normalized Slack message used by interpretation backends.
+/// Normalized Slack message from a poll window.
 pub struct SlackMessage {
     pub channel_name: String,
     pub channel_id: String,
@@ -164,116 +136,6 @@ impl Default for ProjectContext {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// Recorded project decision with rationale and evidence.
-pub struct DecisionItem {
-    pub decision: String,
-    pub rationale: String,
-    pub confidence: TaskConfidence,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sources: Vec<SourceReference>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// Open question extracted from discussion context.
-pub struct QuestionItem {
-    pub question: String,
-    #[serde(default)]
-    pub blocking: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suggested_owner: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sources: Vec<SourceReference>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// Risk statement with impact and mitigation detail.
-pub struct RiskItem {
-    pub risk: String,
-    pub impact: String,
-    pub mitigation: String,
-    pub confidence: TaskConfidence,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sources: Vec<SourceReference>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// Follow-up action for stakeholders/decision-making.
-pub struct FollowUpItem {
-    pub kind: FollowUpKind,
-    pub prompt: String,
-    pub urgency: TaskConfidence,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sources: Vec<SourceReference>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// Investigation node that can be handed to an agent workflow.
-pub struct InvestigationPrompt {
-    pub key: String,
-    pub title: String,
-    pub goal: String,
-    /// Prompt text that can be handed directly to another agent.
-    pub prompt: String,
-    pub when_to_run: InvestigationRunCondition,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub depends_on: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub suggested_steps: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub search_queries: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub expected_artifacts: Vec<String>,
-    pub confidence: TaskConfidence,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sources: Vec<SourceReference>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// Clarification node describing information needed before execution.
-pub struct ClarificationPrompt {
-    pub key: String,
-    pub question: String,
-    #[serde(default)]
-    pub blocking: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suggested_owner: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub depends_on: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sources: Vec<SourceReference>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-/// Workflow handoff artifact derived from project interpretation.
-pub struct WorkflowSeed {
-    pub goal: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub investigation_nodes: Vec<InvestigationPrompt>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub clarification_nodes: Vec<ClarificationPrompt>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub follow_up_nodes: Vec<FollowUpItem>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-/// Structured interpretation of a discussion window.
-pub struct ProjectInterpretation {
-    pub executive_summary: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub current_objectives: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub decisions_made: Vec<DecisionItem>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub open_questions: Vec<QuestionItem>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub risks: Vec<RiskItem>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub follow_ups: Vec<FollowUpItem>,
-    #[serde(default)]
-    pub workflow_seed: WorkflowSeed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 /// Task emitted to downstream systems (for example ClickUp).
 pub struct InvestigationTask {
     /// Stable key for deduplication/idempotency.
@@ -285,40 +147,11 @@ pub struct InvestigationTask {
     pub sources: Vec<SourceReference>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-/// Full payload produced by one daemon poll cycle.
-pub struct TaskBatch {
-    pub source: TaskSourceKind,
-    pub source_label: String,
-    pub generated_at_unix: u64,
-    pub messages_scanned: usize,
-    pub project: ProjectContext,
-    pub interpretation: ProjectInterpretation,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub derived_tasks: Vec<InvestigationTask>,
-}
-
 #[cfg(test)]
 mod tests {
     use baml_rt_core::EventSourceKind;
 
     use super::{TaskSourceKind, TaskSourceKindParseError};
-
-    #[test]
-    fn task_source_kind_maps_to_dispatch_routing_keys() {
-        assert_eq!(
-            TaskSourceKind::Slack.intake_routing_key().as_str(),
-            "slack:intake"
-        );
-        assert_eq!(
-            TaskSourceKind::Clickup.intake_routing_key().as_str(),
-            "clickup:intake"
-        );
-        assert_eq!(
-            TaskSourceKind::GithubIssues.intake_routing_key().as_str(),
-            "github_issues:intake"
-        );
-    }
 
     #[test]
     fn task_source_kind_parses_from_event_source_kind() {

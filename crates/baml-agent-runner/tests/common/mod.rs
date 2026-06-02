@@ -778,6 +778,22 @@ pub async fn start_http_server(
     ))
 }
 
+/// QuickJS config with host ingress recorder for dispatch `withTask` natives in integration tests.
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+#[allow(dead_code)] // Shared optional test helper; not every integration binary uses it.
+pub fn quickjs_config_with_host_ingress(
+    store: Arc<SurrealProvenanceStore>,
+) -> baml_rt::QuickJSConfig {
+    baml_rt::QuickJSConfig::new().with_host_ingress_recorder(Some(Arc::new(
+        baml_rt_provenance::HostIngressRecorderImpl::new(store),
+    )))
+}
+
 #[cfg(any(
     feature = "clickup",
     feature = "notion",
@@ -816,15 +832,6 @@ pub async fn build_clickup_agent_to_temp_async() -> PathBuf {
         .join("agents")
         .join("clickup-agent");
     build_agent_dir_to_temp_async(clickup_agent_dir, "clickup-agent").await
-}
-
-#[cfg(feature = "notion")]
-#[allow(dead_code)] // Helper is consumed by notion integration tests when compiled as their own test target.
-pub async fn build_notion_agent_to_temp_async() -> PathBuf {
-    let notion_agent_dir = test_support::common::workspace_root()
-        .join("agents")
-        .join("notion-agent");
-    build_agent_dir_to_temp_async(notion_agent_dir, "notion-agent").await
 }
 
 #[cfg(feature = "slack")]

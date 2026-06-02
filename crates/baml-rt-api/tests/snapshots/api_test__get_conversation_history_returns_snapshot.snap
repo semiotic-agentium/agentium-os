@@ -12,11 +12,26 @@ expression: snapshot
       {
         "timestampMs": "[timestamp_ms]",
         "activityAnchor": "[prov_activity_anchor]",
+        "role": "system",
+        "content": {
+          "type": "operational_event",
+          "kind": "llm_call_failed",
+          "severity": "error",
+          "summary": "LLM DraftPrompt failed",
+          "detail": "llm_call_failed",
+          "failure_class": "failed_graph_incomplete",
+          "failure_evidence": "llm_call_failed"
+        }
+      },
+      {
+        "timestampMs": "[timestamp_ms]",
+        "activityAnchor": "[prov_activity_anchor]",
         "role": "user",
         "content": {
           "type": "message",
           "text": "run analysis"
-        }
+        },
+        "userSpeakerKind": "human"
       },
       {
         "timestampMs": "[timestamp_ms]",
@@ -44,8 +59,31 @@ expression: snapshot
             "value": "timeout while calling tool"
           }
         }
+      },
+      {
+        "timestampMs": "[timestamp_ms]",
+        "activityAnchor": "[prov_activity_anchor]",
+        "role": "system",
+        "content": {
+          "type": "operational_event",
+          "kind": "prompt_rejected",
+          "severity": "error",
+          "summary": "Prompt rejected: BAML validation failed: invalid response schema",
+          "detail": "BAML validation failed: invalid response schema",
+          "failure_class": "prompt_rejected",
+          "failure_evidence": "BAML validation failed: invalid response schema"
+        }
+      },
+      {
+        "timestampMs": "[timestamp_ms]",
+        "activityAnchor": "[prov_activity_anchor]",
+        "role": "assistant",
+        "content": {
+          "type": "message",
+          "text": "BAML validation failed: invalid response schema"
+        }
       }
     ],
-    "nextCursor": "v1.7b2276223a312c226f6666736574223a332c22636f6e746578745f6964223a226374782d3130302d31222c227461736b5f6964223a6e756c6c7d"
+    "nextCursor": "[conversation_history_cursor]"
   }
 }

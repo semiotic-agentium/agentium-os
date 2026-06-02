@@ -48,6 +48,13 @@ pub mod error;
 pub mod events;
 pub mod graph_export;
 pub mod graph_model;
+pub mod host_ingress_identity;
+pub mod host_ingress_recorder_impl;
+pub mod host_ingress_transcript;
+pub mod host_ingress_types;
+pub use host_ingress_types::{
+    HostDispatchFailureKind, HostDispatchRejectedSpec, HostIngressKind, HostIngressSourceRef,
+};
 pub mod id_semantics;
 pub mod interceptors;
 pub mod mermaid_cache;
@@ -60,10 +67,13 @@ pub mod mermaid_cache;
 /// per-submodule responsibilities.
 pub mod metamodel;
 pub mod normalizer;
+pub mod observation;
+pub mod ops_types;
 pub(crate) mod payload_id;
 pub(crate) mod payload_record;
 pub(crate) mod payload_storage;
 pub(crate) mod prov_write_semantics;
+pub mod read;
 pub mod spans;
 pub mod store;
 pub mod surreal_config;
@@ -71,6 +81,7 @@ pub(crate) mod surreal_sql;
 pub mod surreal_store;
 pub(crate) mod surreal_tables;
 pub(crate) mod surreal_write_batch;
+pub mod task_agent_binding;
 pub mod task_graph_reader;
 pub mod tool_index;
 pub mod types;
@@ -103,11 +114,26 @@ pub use graph_model::{
     EventGraphKind, EventGraphMapping, GraphNodeLabel, TOOL_CALL_ARGS_EDGE, event_kind_from_data,
     mapping_for_event_data, mapping_for_event_kind,
 };
+pub use host_ingress_recorder_impl::HostIngressRecorderImpl;
 pub use interceptors::ProvenanceInterceptor;
 pub use mermaid_cache::MermaidCache;
 pub use normalizer::{
     A2aDerivedRelation, A2aRelationType, DefaultProvNormalizer, NormalizeContext, NormalizedProv,
     ProvNormalizer, normalize_event, plan_entity_id_string, task_entity_id_string, validate_event,
+};
+pub use observation::{
+    EventOrder, LoadedObservation, LoadedObservationBundle, LoadedPlanningSlice,
+    ObservationBundleRequest, ObservationLoader, ObservationScope, ObservationVersion,
+    OpsQueryMode, PageVersionEnvelope, PromptOpsVersionRow, ResumeVersionHints,
+    TaskObservationMetrics, TaskObservationScope, TemporalBound, cmp_transcript_items,
+    hash_page_envelope, observation_scope_from_history, observation_scope_from_ops_filters,
+    observation_version_from_bundle, observation_version_from_hasher,
+    observation_version_from_loaded, observation_version_page, observation_version_transcript,
+    sort_transcript_items, task_ids_for_context, task_ids_for_scope, transcript_delta_rows,
+};
+pub use read::{
+    OpsPageSpec, OpsReader, PlanningReader, TranscriptEngine, TranscriptPage,
+    TranscriptPageRequest, TranscriptProjectionProfile, TranscriptScopeWidening,
 };
 pub use store::{
     ActivityRef, ArchiveRef, PayloadRef, PlanningIntentRecord, PlanningPlanRecord,
@@ -115,11 +141,16 @@ pub use store::{
     ProvenanceContextReader, ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest,
     ProvenanceOpsQueryResponse, ProvenanceOpsResource, ProvenanceOutcomeSegment,
     ProvenancePlanningQuery, ProvenanceQueryApi, ProvenanceReadIntent, ProvenanceResponseProfile,
-    ProvenanceWriter,
+    ProvenanceWriter, TaskAgentResolution,
 };
 pub use surreal_config::SurrealStoreConfig;
 pub use surreal_store::{
-    RemoteConfig, RemoteCredentials, SurrealBackend, SurrealProvenanceStore, SurrealStoreBuilder,
+    ContextPickerIndexRow, RemoteConfig, RemoteCredentials, SurrealBackend, SurrealProvenanceStore,
+    SurrealStoreBuilder, hydrate_ref_table, prepare_ref_table_for_projection,
+};
+pub use task_agent_binding::{
+    TaskAgentBinding, TaskAgentBindingSource, event_local_executing_agent_id,
+    is_unassigned_executing_agent,
 };
 pub use task_graph_reader::{
     ArtifactRef, HydratedTask, MessageRef, ReplayError, TaskGraphReader, TaskReplayCursor,
@@ -127,3 +158,8 @@ pub use task_graph_reader::{
 };
 pub use tool_index::{ToolIndexConfig, index_tools};
 pub use types::{ProvActivityId, ProvAgentId, ProvEntityId, ProvNodeRef};
+
+pub use crate::ops_types::{
+    OpsPercentileHotspots, ProvenanceOpsAppliedCaps, ProvenanceOpsHotspotGroup, ProvenanceOpsRow,
+    ProvenanceOpsSummary,
+};

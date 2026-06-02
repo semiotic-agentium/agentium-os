@@ -22,6 +22,17 @@ intent: string;
 operation_kind: "read" | "write" | "delete";
  }
 
+export interface ClickUpPlanStep { agent_package: string;
+agent_instance_id: string;
+sub_message: string;
+ }
+
+export interface ClickUpStructuredPlan { intent_description: string;
+objective: string;
+plan_steps: ClickUpPlanStep[];
+citations: string[] | null;
+ }
+
 export interface CreateTaskInput { list_id: string;
 name: string;
 description: string | null;
@@ -69,17 +80,6 @@ last_output_header: string | null;
 last_completion: string | null;
  }
 
-export interface StandardAgentPlanStep { agent_package: string;
-agent_instance_id: string;
-sub_message: string;
- }
-
-export interface StandardStructuredPlan { intent_description: string;
-objective: string;
-plan_steps: StandardAgentPlanStep[];
-citations: string[] | null;
- }
-
 export interface SupportClickupAbortStep { op: "Abort";
  }
 
@@ -119,9 +119,9 @@ declare global {
 
 declare function ChooseClickUpAction(args: { goal: string; step_description: string; operation_kind: string; prior_results: string | null; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<FinalResponse | SupportClickupSessionPlan>;
 
-declare function InferClickUpIntent(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<NeedClarification | NotRelevant | ClickUpIntent>;
+declare function InferClickUpIntent(args: Record<string, never> & { __baml_invocation_token?: string }): Promise<NeedClarification | NotRelevant | ClickUpIntent>;
 
-declare function PlanClickUpWork(args: { intent: string; operation_kind: string } & { __baml_invocation_token?: string }): Promise<StandardStructuredPlan>;
+declare function PlanClickUpWork(args: { intent: string; operation_kind: string } & { __baml_invocation_token?: string }): Promise<ClickUpStructuredPlan>;
 
 }
 
@@ -387,14 +387,47 @@ export interface HostDispatchAck {
   /** Optional operator-facing detail string. */
   detail?: string | null;
 }
+/** Parsed `host.source-records.v1` batch from `dispatch.messages[0]`. */
+export interface HostSourceRecordsBatch {
+  schema_version: string;
+  records: JsonObject[];
+  source?: JsonObject;
+  emitted_at_unix?: number;
+  project?: JsonObject;
+}
+export interface DispatchScopeIds {
+  readonly contextId?: string;
+  readonly taskId?: string;
+  readonly messageId?: string;
+}
+export interface DispatchWorkUnit {
+  readonly unitKey: string;
+  readonly records: JsonObject[];
+}
+export interface DispatchUnitContext extends DispatchScopeIds {
+  readonly unitKey: string;
+  readonly unitHistoryRef: '#1';
+}
+export interface DispatchRunContext extends DispatchScopeIds {
+  readonly request: HostDispatchRequest;
+  readonly batch: HostSourceRecordsBatch;
+  readonly pollHistoryRef: '#1';
+  withTask<R>(
+    unit: DispatchWorkUnit,
+    fn: (unit: DispatchUnitContext) => Promise<R>,
+  ): Promise<R>;
+}
+export interface DispatchSession {
+  run(fn: (ctx: DispatchRunContext) => Promise<HostDispatchAck>): Promise<HostDispatchAck>;
+}
 /** Agent contract: register this; host invokes onChatMessage per message. */
 export interface BamlAgent {
   /** Optional: run(ctx) is the entrypoint; runtime wraps it into onChatMessage. Prefer this over onChatMessage. */
   run?(ctx: RunContext): Promise<SessionResult>;
   /** Optional: raw handler when run is not used. */
   onChatMessage?(message: ChatMessage): Promise<void>;
-  /** Optional: handler for deterministic host dispatch (non-conversational). */
-  onDispatch?(request: HostDispatchRequest): Promise<HostDispatchAck>;
+  /** Optional: dispatch ingress handler (`ctx` from `dispatch(request).run`). */
+  onDispatch?(ctx: DispatchRunContext): Promise<HostDispatchAck>;
   tools?: Record<string, (args: JsonObject) => Promise<JsonValue>>;
 }
 declare global {
@@ -431,6 +464,14 @@ declare global {
    * Returns the messages array cast to T[]; each element's schema matches message_type.
    */
   function extractDispatchMessages<T = JsonObject>(request: HostDispatchRequest): T[];
+  /** Parse `host.source-records.v1` batch from dispatch `messages[0]`, or null. */
+  function parseHostSourceRecordsBatch(request: HostDispatchRequest): HostSourceRecordsBatch | null;
+  /** Host dispatch DSL: `dispatch(request).run(ctx => …)`. */
+  function dispatch(request: HostDispatchRequest): DispatchSession;
+  /** Enter a forked unit task scope (host prelude); used by `withTask`. */
+  function __dispatch_enter_unit_task(unitKey: string, recordsJson: string): Promise<DispatchUnitContext>;
+  /** Exit the innermost unit task scope; used by `withTask`. */
+  function __dispatch_exit_unit_task(): Promise<null>;
 }
 export type ToolFailureKind =
     | "InvalidInput"

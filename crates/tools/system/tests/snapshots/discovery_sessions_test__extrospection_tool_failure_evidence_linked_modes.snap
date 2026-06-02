@@ -5,9 +5,9 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"llm_linked_prompt_
 {
   "llm_linked_prompt_rejected": {
     "appliedCaps": {
-      "max_page_size": 50,
-      "page_size": 5,
-      "top_k": 10
+      "maxPageSize": 50,
+      "pageSize": 5,
+      "topK": 10
     },
     "hotspotGroups": [
       {
@@ -66,6 +66,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"llm_linked_prompt_
         "model": "gpt-4o-mini",
         "prompt_tokens": 7,
         "prov_endTime": 300,
+        "prov_time": 300,
         "prov_type": "a2a:LlmCall",
         "provider": "openai",
         "timestamp_ms": "[timestamp_ms]",
@@ -93,9 +94,9 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"llm_linked_prompt_
   },
   "tool_linked_emitted_message": {
     "appliedCaps": {
-      "max_page_size": 50,
-      "page_size": 5,
-      "top_k": 10
+      "maxPageSize": 50,
+      "pageSize": 5,
+      "topK": 10
     },
     "hotspotGroups": [
       {
@@ -140,6 +141,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"llm_linked_prompt_
         "failure_evidence": "metadata",
         "message_id": "tool-msg-linked",
         "prov_endTime": 800,
+        "prov_time": 800,
         "prov_type": "a2a:ToolCall",
         "timestamp_ms": "[timestamp_ms]",
         "tool_call": {

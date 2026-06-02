@@ -7,6 +7,9 @@
 //! Provides a [`BamlTool`] implementation that calls the ClickUp v2 REST API.
 //! Supports listing, getting, creating, and updating tasks.
 
+mod event_source_type;
+pub mod poll;
+mod source_records;
 mod spans;
 
 use std::sync::Arc;
@@ -22,7 +25,17 @@ use baml_rt_tools::{
 /// ClickUp v2 REST API base URL.
 pub use integrations_clickup_client::BASE_URL;
 use integrations_clickup_client::{ClickUpClient, ClickUpClientError};
+pub use poll::{
+    ClickupInferredPriority, ClickupLifecycleRevisionSlot, ClickupPollOutcome, ClickupPollState,
+    ClickupSourceConfig, ClickupSourceConfigError, ClickupTaskSnapshot, poll_clickup_lists,
+};
 use serde::{Deserialize, Serialize};
+pub use source_records::{
+    CLICKUP_LIFECYCLE_EVENT_KIND, ClickupLifecycleEventRecord, ClickupProjectContext,
+    ClickupSourceRecordsBatch, batch_from_lifecycle_events, clickup_previous_snapshot_value,
+    clickup_source_records_json_schema, clickup_source_records_sample_payload,
+    clickup_task_snapshot_value,
+};
 use tracing::Instrument;
 
 fn option_is_empty(opt: &Option<String>) -> bool {
@@ -657,6 +670,7 @@ fn build_clickup_tool() -> Result<Arc<dyn ToolHandler>> {
     name = "support/clickup",
     description = "Interact with ClickUp: navigate workspaces (teams, spaces, lists) and manage tasks.",
     tags = ["support", "clickup"],
+    event_sources = ["clickup"],
     access = Write,
     secrets = [
         { name = "CLICKUP_API_KEY", description = "ClickUp personal API token (pk_...)", reason = "Required to authenticate with the ClickUp v2 API" }

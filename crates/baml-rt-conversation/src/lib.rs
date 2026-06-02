@@ -34,6 +34,8 @@
 //! rows here — fix the emitter or the graph.
 
 pub mod episode;
+pub mod operational;
+pub mod planning;
 pub mod projection;
 pub mod render;
 pub mod session_history;

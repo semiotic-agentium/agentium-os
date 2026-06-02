@@ -5,7 +5,7 @@ expression: mermaid
 sequenceDiagram
     autonumber
     actor User
-    participant clickup_1_0_0 as "Clickup@1.0.0"
+    participant clickup_1_0_0 as "Clickup Agent"
     participant notion as "Notion"
 
     User->>+clickup_1_0_0: Draft a weekly status update

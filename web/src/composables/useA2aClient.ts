@@ -28,6 +28,14 @@ import {
   withSessionStepDetailEvents,
 } from "../chat/toolNotificationEvents";
 import { isSyntheticInputRequiredPrompt } from "../chat/inputRequiredUi";
+import {
+  fetchContextMermaidDiagram,
+  scheduleContextMermaidDiagram,
+} from "../utils/mermaidDiagram";
+import {
+  bumpTraceRefreshOnHistoryIngress,
+  useTraceRefreshGeneration,
+} from "./useTraceRefreshGeneration";
 import { shouldSuppressAgentTranscriptText } from "../chat/workflowUiFilters";
 import type {
   AgentDiscoveryEntry,
@@ -138,12 +146,22 @@ export function useA2aClient() {
   let _abortController: AbortController | null = null;
   let _historyStream: EventSource | null = null;
   let _historyStreamKey = "";
-  let _historyVersion = "";
 
   // Provenance diagram source (raw mermaid text fetched after each response)
   const provenanceDiagram = ref<string>("");
   /** Monotonic id so slower diagram HTTP responses cannot overwrite newer ones */
   let diagramFetchSeq = 0;
+
+  const traceRefresh = useTraceRefreshGeneration({
+    when: () => !!_contextId.value,
+    onBump: () => {
+      void fetchProvenanceDiagram();
+    },
+  });
+
+  function bumpTraceRefresh(force = false): void {
+    traceRefresh.bumpTraceRefresh(force);
+  }
 
   function replaceLlmPromptStateFromPage(page: ConversationHistoryPage): void {
     llmPromptOperations.value = [...(page.llmPromptOperations ?? [])].sort(sortLlmPromptOperations);
@@ -159,10 +177,8 @@ export function useA2aClient() {
 
   const sseConversationHistoryIngressDeps = {
     messages,
-    getHistoryVersion: () => _historyVersion,
-    setHistoryVersion: (v: string) => {
-      _historyVersion = v;
-    },
+    getHistoryVersion: traceRefresh.getHistoryVersion,
+    setHistoryVersion: traceRefresh.setHistoryVersion,
     setHydrateState: (s: HistoryHydrateState) => {
       historyHydrateState.value = s;
     },
@@ -177,12 +193,7 @@ export function useA2aClient() {
     deferFullSnapshotWhileA2aInFlight: () => isLoading.value,
   };
 
-  /** Incremented (debounced) when SSE implies new provenance rows; ProvenancePane watches this */
-  const traceRefreshGeneration = ref(0);
-  let traceRefreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Dedupe task state bumps within a single stream */
   let lastSeenTaskState: string | undefined;
-  const TRACE_REFRESH_DEBOUNCE_MS = 300;
 
   /** One-shot retry when hydration is skipped because provenance lags behind the live stream. */
   let pendingHydrateRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -202,17 +213,6 @@ export function useA2aClient() {
       );
     }
   };
-
-  function scheduleTraceRefreshBump(): void {
-    if (!_contextId.value) return;
-    if (traceRefreshDebounceTimer !== null) clearTimeout(traceRefreshDebounceTimer);
-    traceRefreshDebounceTimer = setTimeout(() => {
-      traceRefreshDebounceTimer = null;
-      traceRefreshGeneration.value += 1;
-      // Edge-trigger Mermaid refresh from evented provenance updates (no periodic UI polling).
-      void fetchProvenanceDiagram();
-    }, TRACE_REFRESH_DEBOUNCE_MS);
-  }
 
   function closeConversationHistoryStream(): void {
     if (_historyStream) {
@@ -236,11 +236,12 @@ export function useA2aClient() {
     stream.addEventListener("snapshot", (ev) => {
       try {
         const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
-        applyConversationHistoryIngress(sseConversationHistoryIngressDeps, {
+        const effect = applyConversationHistoryIngress(sseConversationHistoryIngressDeps, {
           kind: "full",
           mode: "evented",
           page,
         });
+        bumpTraceRefreshOnHistoryIngress(traceRefresh, effect);
       } catch {
         // Ignore malformed stream event payloads.
       }
@@ -248,11 +249,12 @@ export function useA2aClient() {
     stream.addEventListener("delta", (ev) => {
       try {
         const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
-        applyConversationHistoryIngress(sseConversationHistoryIngressDeps, {
+        const effect = applyConversationHistoryIngress(sseConversationHistoryIngressDeps, {
           kind: "delta",
           mode: "evented",
           page,
         });
+        bumpTraceRefreshOnHistoryIngress(traceRefresh, effect);
       } catch {
         // Ignore malformed stream event payloads.
       }
@@ -260,10 +262,11 @@ export function useA2aClient() {
     stream.addEventListener("done", (ev) => {
       try {
         const page = JSON.parse((ev as MessageEvent<string>).data) as ConversationHistoryPage;
-        _historyVersion = page.version;
+        traceRefresh.setHistoryVersion(page.version);
       } catch {
         // Ignore malformed stream event payloads.
       } finally {
+        bumpTraceRefresh();
         stream.close();
         if (_historyStream === stream) {
           _historyStream = null;
@@ -322,6 +325,8 @@ export function useA2aClient() {
     try {
       const params = new URLSearchParams();
       params.set("limit", "100");
+      params.set("chatOnly", "true");
+      params.set("agentPackage", selectedAgent.value.agent_package);
       const response = await fetch(`/contexts?${params.toString()}`);
       if (!response.ok) {
         conversationHistoryOptions.value = [];
@@ -358,12 +363,8 @@ export function useA2aClient() {
     contextMetrics.value = null;
     workflowProgress.value = { phase: "idle", nodes: [], completedNodes: [] };
     lastSeenTaskState = undefined;
-    if (traceRefreshDebounceTimer !== null) {
-      clearTimeout(traceRefreshDebounceTimer);
-      traceRefreshDebounceTimer = null;
-    }
     closeConversationHistoryStream();
-    _historyVersion = "";
+    traceRefresh.resetHistoryVersion();
     llmPromptOperations.value = [];
     promptMessageCharsSessionCurrent.value = null;
     conversationHistoryOptions.value = [];
@@ -535,7 +536,7 @@ export function useA2aClient() {
         awaitingResume
           ? Promise.resolve()
           : hydrateMessagesFromConversationHistory(undefined, { quiet: true }),
-        fetchProvenanceDiagram(),
+        fetchProvenanceDiagram({ force: true }),
         fetchContextMetrics(),
         fetchConversationHistoryOptions(),
       ]);
@@ -641,7 +642,7 @@ export function useA2aClient() {
       });
       if (completion === "DONE" && baseName) {
         markWorkflowNodeCompleted(baseName);
-        scheduleTraceRefreshBump();
+        bumpTraceRefresh();
       }
       let appliedAssistantFromWire = false;
       updateMessage(messages, agentMsgId, (msg) => {
@@ -776,7 +777,7 @@ export function useA2aClient() {
 
     if (state && state !== lastSeenTaskState) {
       lastSeenTaskState = state;
-      scheduleTraceRefreshBump();
+      bumpTraceRefresh();
       sawProvenanceMutation = true;
     }
 
@@ -793,13 +794,13 @@ export function useA2aClient() {
     }
 
     if (result.final) {
-      scheduleTraceRefreshBump();
+      bumpTraceRefresh();
       sawProvenanceMutation = true;
     }
 
     // Keep planning/provenance panes live while tool chunks are flowing, not only on restore.
     if (_contextId.value && (sawProvenanceMutation || result.toolStreamChunk)) {
-      scheduleTraceRefreshBump();
+      bumpTraceRefresh();
     }
 
     if (
@@ -872,24 +873,14 @@ export function useA2aClient() {
     return extractWireMessageText(message as A2aMessage | undefined);
   }
 
-  async function fetchProvenanceDiagram(): Promise<void> {
+  async function fetchProvenanceDiagram(options?: { force?: boolean }): Promise<void> {
     if (!_contextId.value) return;
     const seq = ++diagramFetchSeq;
-    try {
-      // Canonical API route is /contexts/{context_id}/mermaid.
-      // Keep a legacy fallback while old backends/links still exist.
-      let res = await fetch(`/contexts/${_contextId.value}/mermaid`);
-      if (!res.ok && res.status === 404) {
-        res = await fetch(`/mermaid/context/${_contextId.value}`);
-      }
-      if (res.ok) {
-        const text = await res.text();
-        if (seq !== diagramFetchSeq) return;
-        provenanceDiagram.value = text;
-      }
-    } catch {
-      // provenance endpoint not available; leave existing diagram
-    }
+    const text = options?.force
+      ? await fetchContextMermaidDiagram(_contextId.value, { force: true })
+      : await scheduleContextMermaidDiagram(_contextId.value);
+    if (seq !== diagramFetchSeq) return;
+    provenanceDiagram.value = text;
   }
 
   async function fetchContextMetrics(): Promise<void> {
@@ -980,10 +971,8 @@ export function useA2aClient() {
 
       const hydrateIngressDeps = {
         messages,
-        getHistoryVersion: () => _historyVersion,
-        setHistoryVersion: (v: string) => {
-          _historyVersion = v;
-        },
+        getHistoryVersion: traceRefresh.getHistoryVersion,
+        setHistoryVersion: traceRefresh.setHistoryVersion,
         setHydrateState: (s: HistoryHydrateState) => {
           historyHydrateState.value = s;
         },
@@ -1030,7 +1019,7 @@ export function useA2aClient() {
       pendingHydrateRetryTimer = null;
     }
     closeConversationHistoryStream();
-    _historyVersion = "";
+    traceRefresh.resetHistoryVersion();
     llmPromptOperations.value = [];
     promptMessageCharsSessionCurrent.value = null;
     _contextId.value = contextId;
@@ -1050,7 +1039,7 @@ export function useA2aClient() {
     historyHydrateState.value = "loading";
     await Promise.all([
       hydrateMessagesFromConversationHistory(contextId),
-      fetchProvenanceDiagram(),
+      fetchProvenanceDiagram({ force: true }),
       fetchContextMetrics(),
     ]);
     ensureConversationHistoryStream();
@@ -1101,7 +1090,7 @@ export function useA2aClient() {
     messages,
     isLoading,
     provenanceDiagram,
-    traceRefreshGeneration,
+    traceRefreshGeneration: traceRefresh.traceRefreshGeneration,
     contextMetrics,
     llmPromptOperations,
     promptMessageCharsSessionCurrent,

@@ -10,8 +10,10 @@ use super::helpers::map_surreal_error;
 use crate::{
     error::Result,
     surreal_tables::{
-        TBL_ARCHIVE_BODY, TBL_ARCHIVE_LOCAL_COUNTER, TBL_ARCHIVE_PREFIX_REGISTRY, TBL_EDGE,
-        TBL_NODE, TBL_PAYLOAD, TBL_PAYLOAD_BLOB,
+        TBL_AGENT_PACKAGE_INSTANCE, TBL_ARCHIVE_BODY, TBL_ARCHIVE_LOCAL_COUNTER,
+        TBL_ARCHIVE_PREFIX_REGISTRY, TBL_CONTEXT_PICKER_INDEX, TBL_CONTEXT_PLANNING_INDEX,
+        TBL_CONTEXT_TRANSCRIPT_INDEX, TBL_EDGE, TBL_HISTORY_REF_REGISTRY, TBL_NODE, TBL_PAYLOAD,
+        TBL_PAYLOAD_BLOB, TBL_SESSION_REF_COUNTER,
     },
 };
 
@@ -27,6 +29,18 @@ pub(super) async fn init_schema(db: &Surreal<Any>) -> Result<()> {
         format!("DEFINE INDEX IF NOT EXISTS idx_node_label ON {TBL_NODE} FIELDS label"),
         // Activity anchor index (used by payload joins)
         format!("DEFINE INDEX IF NOT EXISTS idx_node_activity_anchor ON {TBL_NODE} FIELDS props.a2a_activity_anchor"),
+        // Paginated metamodel reads: label filter + chronological sort keys.
+        format!("DEFINE INDEX IF NOT EXISTS idx_node_label_event_order ON {TBL_NODE} FIELDS label, props.a2a_event_order"),
+        format!("DEFINE INDEX IF NOT EXISTS idx_node_label_prov_time ON {TBL_NODE} FIELDS label, props.prov_time"),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_node_label_activity_anchor ON {TBL_NODE} FIELDS label, props.a2a_activity_anchor"
+        ),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_node_label_agent_type ON {TBL_NODE} FIELDS label, props.a2a_agent_type"
+        ),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_node_label_plan_step ON {TBL_NODE} FIELDS label, props.a2a_plan_id, props.a2a_step_id"
+        ),
         // Edge table: composite + selective compound indexes (avoid redundant single-column idx).
         format!("REMOVE INDEX IF EXISTS idx_edge_from ON {TBL_EDGE}"),
         format!("REMOVE INDEX IF EXISTS idx_edge_to ON {TBL_EDGE}"),
@@ -35,6 +49,12 @@ pub(super) async fn init_schema(db: &Surreal<Any>) -> Result<()> {
         format!("DEFINE INDEX IF NOT EXISTS idx_edge_to_rel ON {TBL_EDGE} FIELDS to_id, rel_type"),
         format!("DEFINE INDEX IF NOT EXISTS idx_edge_to_rel_from_label ON {TBL_EDGE} FIELDS to_id, rel_type, from_label"),
         format!("DEFINE INDEX IF NOT EXISTS idx_edge_from_label_rel ON {TBL_EDGE} FIELDS from_label, rel_type"),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_edge_from_rel_to_label ON {TBL_EDGE} FIELDS from_id, rel_type, to_label"
+        ),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_edge_rel_from_to_label ON {TBL_EDGE} FIELDS rel_type, from_label, to_label"
+        ),
         // Head-pointer edges (`WAS_LAST_TRANSITIONED_TO`,
         // `WAS_LAST_EXECUTED_BY`) carry a cardinality-one invariant per
         // `(rel_type, from_id)`: a Task has exactly one current TaskState
@@ -65,6 +85,45 @@ pub(super) async fn init_schema(db: &Surreal<Any>) -> Result<()> {
         format!("DEFINE TABLE IF NOT EXISTS {TBL_ARCHIVE_BODY}"),
         format!("DEFINE INDEX IF NOT EXISTS idx_archive_body_lookup ON {TBL_ARCHIVE_BODY} FIELDS context_id, archive_prefix, archive_local UNIQUE"),
         format!("DEFINE INDEX IF NOT EXISTS idx_archive_body_anchor ON {TBL_ARCHIVE_BODY} FIELDS context_id, activity_anchor UNIQUE"),
+        format!("DEFINE TABLE IF NOT EXISTS {TBL_HISTORY_REF_REGISTRY}"),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_history_ref_ctx_anchor_source ON {TBL_HISTORY_REF_REGISTRY} FIELDS context_id, activity_anchor, source UNIQUE"
+        ),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_history_ref_ctx_n ON {TBL_HISTORY_REF_REGISTRY} FIELDS context_id, history_n"
+        ),
+        format!("DEFINE TABLE IF NOT EXISTS {TBL_SESSION_REF_COUNTER}"),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_session_ref_counter_ctx ON {TBL_SESSION_REF_COUNTER} FIELDS context_id UNIQUE"
+        ),
+        format!("DEFINE TABLE IF NOT EXISTS {TBL_AGENT_PACKAGE_INSTANCE}"),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_agent_pkg_instance_node ON {TBL_AGENT_PACKAGE_INSTANCE} FIELDS instance_node_id UNIQUE"
+        ),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_agent_pkg_instance_package ON {TBL_AGENT_PACKAGE_INSTANCE} FIELDS agent_package"
+        ),
+        format!("DEFINE TABLE IF NOT EXISTS {TBL_CONTEXT_PICKER_INDEX}"),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_context_picker_ctx ON {TBL_CONTEXT_PICKER_INDEX} FIELDS context_id UNIQUE"
+        ),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_context_picker_latest ON {TBL_CONTEXT_PICKER_INDEX} FIELDS latest_timestamp_ms"
+        ),
+        format!("DEFINE TABLE IF NOT EXISTS {TBL_CONTEXT_TRANSCRIPT_INDEX}"),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_transcript_ctx_order ON {TBL_CONTEXT_TRANSCRIPT_INDEX} FIELDS context_id, event_order"
+        ),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_transcript_ctx_node ON {TBL_CONTEXT_TRANSCRIPT_INDEX} FIELDS context_id, node_id UNIQUE"
+        ),
+        format!("DEFINE TABLE IF NOT EXISTS {TBL_CONTEXT_PLANNING_INDEX}"),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_context_planning_ctx_task ON {TBL_CONTEXT_PLANNING_INDEX} FIELDS context_id, task_id UNIQUE"
+        ),
+        format!(
+            "DEFINE INDEX IF NOT EXISTS idx_context_planning_ctx_order ON {TBL_CONTEXT_PLANNING_INDEX} FIELDS context_id, latest_planning_event_order"
+        ),
         // Full-text search on denormalized search_text (blob-backed bodies are not indexed in-table)
         "DEFINE ANALYZER IF NOT EXISTS payload_analyzer TOKENIZERS blank, class FILTERS snowball(english)".to_string(),
         format!("DEFINE INDEX IF NOT EXISTS idx_payload_search_fts ON {TBL_PAYLOAD} FIELDS search_text FULLTEXT ANALYZER payload_analyzer BM25"),

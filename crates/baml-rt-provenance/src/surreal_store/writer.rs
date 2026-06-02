@@ -10,11 +10,13 @@ use serde_json::Value;
 use super::{SurrealProvenanceStore, payload::payload_records_from_event};
 use crate::{
     error::{ProvenanceError, Result},
+    events::ProvEventData,
     normalizer::{NormalizeContext, validate_event},
     payload_record::StorageKind,
     payload_storage,
-    store::ProvenanceWriter,
+    store::{ProvenanceWriter, TaskAgentResolution},
     surreal_write_batch::call_activity_id_from_normalized,
+    task_agent_binding::event_local_executing_agent_id,
 };
 
 #[async_trait]
@@ -25,22 +27,37 @@ impl ProvenanceWriter for SurrealProvenanceStore {
             .await?;
         self.enforce_step_completion_gate(&event).await?;
         let mut payload_records = payload_records_from_event(&event)?;
-        let context = match event.task_id() {
+        let mut context = match event.task_id() {
             Some(tid) => {
                 let resolution = self.get_task_agent_id(tid).await?;
-                if matches!(resolution, crate::store::TaskAgentResolution::TimedOut) {
+                if matches!(resolution, TaskAgentResolution::TimedOut) {
                     tracing::warn!(
                         task_id = tid.as_str(),
                         event_id = event.id().as_str(),
                         "agent-scoped normalization skipped: get_task_agent_id timed out"
                     );
                 }
+                let mut task_agent_id = resolution.for_normalization();
+                if task_agent_id.is_none() {
+                    task_agent_id = event_local_executing_agent_id(&event);
+                }
                 NormalizeContext {
-                    task_agent_id: resolution.into_option(),
+                    task_agent_id,
+                    linked_llm_call_scope_ordinal: None,
                 }
             }
             None => NormalizeContext::default(),
         };
+        if let crate::events::ProvEventData::PromptRejected {
+            llm_call_activity_anchor,
+            ..
+        } = event.data()
+            && let Some(linked) = self
+                .resolve_llm_call_scope_ordinal_by_event_anchor(llm_call_activity_anchor.as_str())
+                .await?
+        {
+            context.linked_llm_call_scope_ordinal = Some(linked);
+        }
         let normalized = self
             .normalizer
             .normalize_with_context(&event, Some(&context))?;
@@ -103,8 +120,31 @@ impl ProvenanceWriter for SurrealProvenanceStore {
             self.run_event_write_plan(plan).await?;
         }
 
+        if let ProvEventData::AgentBooted {
+            agent_id,
+            agent_type,
+            agent_version,
+            ..
+        } = event.data()
+        {
+            self.upsert_agent_package_registry_on_boot(
+                agent_id,
+                agent_type.as_str(),
+                agent_version,
+            )
+            .await?;
+        }
+        self.update_context_picker_index(&event).await?;
+        self.update_context_planning_index(&event).await?;
+
         if let (Some(cache), Some(ctx)) = (&self.mermaid_cache, context_id_opt.as_deref()) {
             cache.invalidate(ctx);
+        }
+        if let Some(ctx) = context_id_opt.as_deref()
+            && let Ok(guard) = self.ref_table_cache.read()
+            && let Some(tables) = guard.as_ref()
+        {
+            baml_rt_tools::archive_refs::invalidate_ref_table(tables, ctx);
         }
         Ok(())
     }

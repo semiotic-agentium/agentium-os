@@ -51,7 +51,7 @@ use crate::{
     },
     store::ProvenanceOutcomeSegment,
     surreal_tables::{TBL_EDGE, TBL_NODE},
-    vocabulary::{a2a, context_scope},
+    vocabulary::{a2a, a2a_relations, context_scope},
 };
 
 // ---------------------------------------------------------------------------
@@ -354,6 +354,8 @@ enum AgentTarget<'a> {
     ScalarBind(&'a str),
     /// `to_id IN (<subquery>)`
     Subquery(&'a str),
+    /// `to_id IN $bind` (bind is a JSON array of AgentRuntimeInstance node ids)
+    InstanceIdArray(&'a str),
 }
 
 impl<'a> AgentTarget<'a> {
@@ -361,6 +363,7 @@ impl<'a> AgentTarget<'a> {
         match self {
             Self::ScalarBind(bind) => format!("to_id = ${bind}"),
             Self::Subquery(sq) => format!("to_id IN ({sq})"),
+            Self::InstanceIdArray(bind) => format!("to_id IN ${bind}"),
         }
     }
 }
@@ -368,6 +371,48 @@ impl<'a> AgentTarget<'a> {
 /// Two-hop OR pattern: Message ↔ MessageProcessing ↔ AgentRuntimeInstance.
 /// Returns a `(received OR emitted)` predicate that matches messages
 /// processed by the agent target.
+/// Message-only clause for [`conversation_context_filtered`] agent-package queries.
+/// Kept for admin/global queries; hot paths use [`conversation_message_agent_instances_clause`].
+#[allow(dead_code)]
+pub(crate) fn conversation_message_agent_package_clause(pkg_bind: &str) -> String {
+    let subq = agent_instances_in_package_subquery(pkg_bind);
+    let msg = message_to_agent_traversal(AgentTarget::Subquery(&subq));
+    let host_dispatch = host_dispatch_message_to_agent_traversal(AgentTarget::Subquery(&subq));
+    format!("AND label = 'Message' AND ({msg} OR {host_dispatch})")
+}
+
+/// ToolCall / SessionStep clause for [`conversation_context_filtered`] agent-package queries.
+#[allow(dead_code)]
+pub(crate) fn conversation_call_agent_package_clause(pkg_bind: &str) -> String {
+    let subq = agent_instances_in_package_subquery(pkg_bind);
+    let call = call_activity_to_agent_traversal(AgentTarget::Subquery(&subq));
+    format!("AND label IN ['ToolCall', 'SessionStep'] AND {call}")
+}
+
+/// Message-only clause using pre-resolved AgentRuntimeInstance node ids.
+pub(crate) fn conversation_message_agent_instances_clause(instances_bind: &str) -> String {
+    let msg = message_to_agent_traversal(AgentTarget::InstanceIdArray(instances_bind));
+    let host_dispatch =
+        host_dispatch_message_to_agent_traversal(AgentTarget::InstanceIdArray(instances_bind));
+    format!("AND label = 'Message' AND ({msg} OR {host_dispatch})")
+}
+
+/// ToolCall / SessionStep clause using pre-resolved AgentRuntimeInstance node ids.
+pub(crate) fn conversation_call_agent_instances_clause(instances_bind: &str) -> String {
+    let call = call_activity_to_agent_traversal(AgentTarget::InstanceIdArray(instances_bind));
+    format!("AND label IN ['ToolCall', 'SessionStep'] AND {call}")
+}
+
+/// Combined OR filter (ops-query paths only; conversation context uses split clauses above).
+#[cfg(test)]
+pub(crate) fn conversation_node_matches_agent_package_sql(pkg_bind: &str) -> String {
+    format!(
+        "AND (({}) OR ({}))",
+        conversation_message_agent_package_clause(pkg_bind).trim_start_matches("AND "),
+        conversation_call_agent_package_clause(pkg_bind).trim_start_matches("AND "),
+    )
+}
+
 fn message_to_agent_traversal(target: AgentTarget<'_>) -> String {
     let received = SemanticEdge::WasReceivedBy.as_rel_str();
     let emitted = SemanticEdge::WasEmittedBy.as_rel_str();
@@ -392,6 +437,36 @@ fn message_to_agent_traversal(target: AgentTarget<'_>) -> String {
     )
 }
 
+fn host_dispatch_message_to_agent_traversal(target: AgentTarget<'_>) -> String {
+    let rel = a2a_relations::HOST_DISPATCH_TARGET;
+    let agent_pred = target.as_predicate();
+    format!(
+        "node_id IN (SELECT VALUE from_id FROM {TBL_EDGE} \
+         WHERE rel_type = '{rel}' AND {agent_pred})"
+    )
+}
+
+/// Forward two-hop semi-join for LlmCall / ToolCall agent ownership.
+///
+/// Starts from bound `AgentRuntimeInstance` node ids, walks
+/// `WAS_EXECUTED_BY` to parent activities, then `A2A_*_CALL` to call nodes.
+fn call_activity_from_agent_instances(target: AgentTarget<'_>) -> String {
+    let message_call = SemanticEdge::A2aMessageCall.as_rel_str();
+    let task_call = SemanticEdge::A2aTaskCall.as_rel_str();
+    let executed = SemanticEdge::WasExecutedBy.as_rel_str();
+    let agent_pred = target.as_predicate();
+    format!(
+        "node_id IN (\
+            SELECT VALUE to_id FROM {TBL_EDGE} \
+            WHERE (rel_type = '{message_call}' OR rel_type = '{task_call}') \
+            AND from_id IN (\
+                SELECT VALUE from_id FROM {TBL_EDGE} \
+                WHERE rel_type = '{executed}' AND {agent_pred}\
+            )\
+         )"
+    )
+}
+
 /// Two-hop pattern for LlmCall / ToolCall: the call activity is reachable
 /// from `AgentRuntimeInstance` via either the message-scoped
 /// (`A2A_MESSAGE_CALL`) or task-scoped (`A2A_TASK_CALL`) parent activity,
@@ -400,35 +475,8 @@ fn message_to_agent_traversal(target: AgentTarget<'_>) -> String {
 ///
 /// On-disk shape:
 /// `(c:LlmCall|ToolCall) <-[:A2A_MESSAGE_CALL|:A2A_TASK_CALL]- (p:A2AMessageProcessing|A2ATaskExecution) -[:WAS_EXECUTED_BY]-> (a:AgentRuntimeInstance)`
-///
-/// Conceptually equivalent to the W3C-PROV
-/// `LLM_CALL_TO_AGENT` documented on
-/// [`crate::ConversationGraphTraversal::LLM_CALL_TO_AGENT`]; the
-/// `A2A_*_CALL` relation labels are the persisted form of `WAS_INVOKED_BY`
-/// (LlmCall) / `WAS_EXECUTED_BY` (ToolCall) per
-/// `crates/baml-rt-provenance/PROV_MAPPING.md`.
 fn call_activity_to_agent_traversal(target: AgentTarget<'_>) -> String {
-    let message_call = SemanticEdge::A2aMessageCall.as_rel_str();
-    let task_call = SemanticEdge::A2aTaskCall.as_rel_str();
-    let executed = SemanticEdge::WasExecutedBy.as_rel_str();
-    let agent_pred = target.as_predicate();
-    format!(
-        "(node_id IN (\
-            SELECT VALUE to_id FROM {TBL_EDGE} \
-            WHERE rel_type = '{message_call}' \
-            AND from_id IN (\
-                SELECT VALUE from_id FROM {TBL_EDGE} \
-                WHERE rel_type = '{executed}' AND {agent_pred}\
-            )\
-         ) OR node_id IN (\
-            SELECT VALUE to_id FROM {TBL_EDGE} \
-            WHERE rel_type = '{task_call}' \
-            AND from_id IN (\
-                SELECT VALUE from_id FROM {TBL_EDGE} \
-                WHERE rel_type = '{executed}' AND {agent_pred}\
-            )\
-         ))"
-    )
+    call_activity_from_agent_instances(target)
 }
 
 /// Single-hop pattern for AgentStop: the stop activity is directly
@@ -497,6 +545,26 @@ impl<S: ScopeState> GraphQuery<labels::Message, S> {
         self
     }
 
+    /// Restrict to messages for agent runtime instances whose on-disk node ids
+    /// are listed in `$bind` (pre-resolved package membership).
+    pub fn for_agent_instances(mut self, instance_node_ids: &[String]) -> Self {
+        if instance_node_ids.is_empty() {
+            self.push_opaque("node_id = ''".to_string(), vec![]);
+            return self;
+        }
+        let bind = self.next_bind("agent_instance_nodes");
+        let value = Value::Array(
+            instance_node_ids
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect(),
+        );
+        let sql = message_to_agent_traversal(AgentTarget::InstanceIdArray(&bind));
+        self.push_opaque(sql, vec![(bind, value)]);
+        self
+    }
+
     /// Restrict to messages owned by a specific Task (entity). Encodes
     /// the `A2A_TASK_MESSAGE` edge traversal `Task → Message`.
     pub fn for_task(mut self, task: TaskNodeId) -> Self {
@@ -554,6 +622,24 @@ impl<S: ScopeState> GraphQuery<labels::ToolCall, S> {
         self
     }
 
+    pub fn for_agent_instances(mut self, instance_node_ids: &[String]) -> Self {
+        if instance_node_ids.is_empty() {
+            self.push_opaque("node_id = ''".to_string(), vec![]);
+            return self;
+        }
+        let bind = self.next_bind("agent_instance_nodes");
+        let value = Value::Array(
+            instance_node_ids
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect(),
+        );
+        let sql = call_activity_to_agent_traversal(AgentTarget::InstanceIdArray(&bind));
+        self.push_opaque(sql, vec![(bind, value)]);
+        self
+    }
+
     /// Restrict to tool-calls owned by a specific Task. The
     /// `A2A_TASK_CALL` edge originates at the [`TaskExecution`]
     /// activity (not the Task entity), so callers must pass a
@@ -605,6 +691,24 @@ impl<S: ScopeState> GraphQuery<labels::LlmCall, S> {
         self
     }
 
+    pub fn for_agent_instances(mut self, instance_node_ids: &[String]) -> Self {
+        if instance_node_ids.is_empty() {
+            self.push_opaque("node_id = ''".to_string(), vec![]);
+            return self;
+        }
+        let bind = self.next_bind("agent_instance_nodes");
+        let value = Value::Array(
+            instance_node_ids
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect(),
+        );
+        let sql = call_activity_to_agent_traversal(AgentTarget::InstanceIdArray(&bind));
+        self.push_opaque(sql, vec![(bind, value)]);
+        self
+    }
+
     pub fn for_task_execution(mut self, exec: TaskExecutionNodeId) -> Self {
         let bind = self.next_bind("task_exec_node");
         let value = Value::String(exec.into_string());
@@ -634,6 +738,24 @@ impl<S: ScopeState> GraphQuery<labels::AgentStop, S> {
         let value = Value::String(package.into_string());
         let subq = agent_instances_in_package_subquery(&bind);
         let sql = agent_stop_to_agent_traversal(AgentTarget::Subquery(&subq));
+        self.push_opaque(sql, vec![(bind, value)]);
+        self
+    }
+
+    pub fn for_agent_instances(mut self, instance_node_ids: &[String]) -> Self {
+        if instance_node_ids.is_empty() {
+            self.push_opaque("node_id = ''".to_string(), vec![]);
+            return self;
+        }
+        let bind = self.next_bind("agent_instance_nodes");
+        let value = Value::Array(
+            instance_node_ids
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect(),
+        );
+        let sql = agent_stop_to_agent_traversal(AgentTarget::InstanceIdArray(&bind));
         self.push_opaque(sql, vec![(bind, value)]);
         self
     }
@@ -1022,6 +1144,19 @@ mod tests {
     }
 
     #[test]
+    fn conversation_node_matches_agent_package_uses_surreal_array_in() {
+        let sql = super::conversation_node_matches_agent_package_sql("agent_pkg");
+        assert!(
+            sql.contains("label IN ['ToolCall', 'SessionStep']"),
+            "expected Surreal array IN syntax: {sql}"
+        );
+        assert!(
+            !sql.contains("label IN ('"),
+            "SQL-style IN list is invalid in Surreal: {sql}"
+        );
+    }
+
+    #[test]
     fn for_agent_package_emits_two_hop_traversal() {
         let (sql, binds) = GraphQuery::<labels::Message, _>::new()
             .scoped_to_ctx(ctx())
@@ -1045,6 +1180,42 @@ mod tests {
         );
         let obj = binds.as_object().expect("binds object");
         assert!(obj.values().any(|v| v == "task-lifecycle-demo"));
+    }
+
+    #[test]
+    fn conversation_message_agent_instances_clause_uses_bind_array() {
+        let sql = super::conversation_message_agent_instances_clause("agent_instance_nodes");
+        assert!(
+            sql.contains("to_id IN $agent_instance_nodes"),
+            "expected bound instance id array: {sql}"
+        );
+        assert!(
+            !sql.contains("WAS_BOOTSTRAPPED_BY"),
+            "pre-resolved instances must not re-walk archive graph: {sql}"
+        );
+    }
+
+    #[test]
+    fn llm_call_for_agent_instances_uses_bind_array_not_nested_subquery() {
+        let (sql, binds) = GraphQuery::<labels::LlmCall, _>::new()
+            .scoped_to_ctx(ctx())
+            .for_agent_instances(&["agent_instance:abc".to_string()])
+            .into_surreal();
+        assert!(
+            sql.contains("to_id IN $agent_instance_nodes"),
+            "expected bound instance id array: {sql}"
+        );
+        assert!(
+            !sql.contains("WAS_BOOTSTRAPPED_BY"),
+            "pre-resolved instances must not re-walk archive graph: {sql}"
+        );
+        let obj = binds.as_object().expect("binds");
+        let instances = obj
+            .get("agent_instance_nodes_1")
+            .or_else(|| obj.get("agent_instance_nodes"))
+            .and_then(Value::as_array)
+            .expect("instance bind array");
+        assert!(instances.iter().any(|v| v == "agent_instance:abc"));
     }
 
     #[test]

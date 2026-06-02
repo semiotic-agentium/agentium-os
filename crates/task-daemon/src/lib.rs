@@ -2,46 +2,30 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Task-daemon turns source activity such as Slack discussion and ClickUp task
-//! changes into structured work for people and agents.
-//!
-//! The main pieces are:
-//! - polling work sources
-//! - interpreting what changed
-//! - sending the result to the selected output
-//!
-//! The primary structured output is [`InterpretationResultEvent`]. [`TaskDispatch`]
-//! carries that result together with the additional context some outputs still use.
+//! Task-daemon polls external sources and publishes `host.source-records.v1` to the runner.
 
 pub mod clickup_source;
-pub mod contract;
 pub mod daemon;
-pub mod extract;
-mod llm_extract;
 pub mod model;
+pub mod poll_lineage;
+pub mod publish;
 pub mod sink;
 pub mod slack_source;
+pub mod source_records;
 pub mod state;
 
 pub use clickup_source::{ClickupSourceConfig, ClickupSourceConfigError, ClickupTaskSource};
-pub use contract::{
-    ContractProvenance, ContractSource, INTERPRETATION_EVENT_SCHEMA_VERSION,
-    InterpretationRequestEvent, InterpretationResultEvent, TaskDispatch,
-};
 pub use daemon::{
     RoundRobinTaskSource, RoundRobinTaskSourceError, SourcePoll, TaskDaemon, TaskSource,
 };
-pub use extract::{ExtractionMode, TaskExtractor};
 pub use model::{
-    ClarificationPrompt, DecisionItem, FollowUpItem, FollowUpKind, InvestigationPrompt,
-    InvestigationRunCondition, InvestigationTask, ProjectContext, ProjectInterpretation,
-    QuestionItem, RiskItem, SlackMessage, SourceReference, TaskBatch, TaskConfidence,
-    TaskSourceKind, WorkflowSeed,
+    InvestigationTask, ProjectContext, SlackMessage, SourceReference, TaskConfidence,
+    TaskSourceKind,
 };
+pub use publish::PublishSink;
 pub use sink::{
-    ClickUpSink, DispatchSink, GithubIssueSink, JsonlFileSink, SinkConstructorError,
-    SinkDeliveryError, SinkDeliveryMode, SourceFilteredSink, StdoutSink, TaskSink,
-    format_event_delivery_prompt,
+    ClickUpSink, GithubIssueSink, JsonlFileSink, SinkConstructorError, SinkDeliveryError,
+    SinkDeliveryMode, SourceFilteredSink, StdoutSink, TaskSink,
 };
 pub use slack_source::{SlackChannelSelector, SlackSourceConfig, SlackTaskSource};
 pub use state::{SourceState, StateStore, TaskDaemonState};

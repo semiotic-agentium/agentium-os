@@ -295,6 +295,9 @@ graph_event!(MessageSent => MessageSent, primary: Message, required: MessageSent
 graph_event!(ToolSessionStep => ToolSessionStep, primary: SessionStep, required: LegacyRequiredProps);
 graph_event!(ExternalToolLifecycle => ExternalToolLifecycle, primary: ToolCall, required: LegacyRequiredProps);
 graph_event!(CallbackDispatchContextsLinked => CallbackDispatchContextsLinked, primary: Task, required: LegacyRequiredProps);
+graph_event!(HostSourcePollRecorded => HostSourcePollRecorded, primary: Message, required: LegacyRequiredProps);
+graph_event!(HostDispatchAccepted => HostDispatchAccepted, primary: Message, required: LegacyRequiredProps);
+graph_event!(HostDispatchRejected => HostDispatchRejected, primary: Message, required: LegacyRequiredProps);
 
 #[cfg(test)]
 mod tests {
@@ -326,11 +329,13 @@ mod tests {
             ToolSessionStep::RUNTIME_KIND,
             ExternalToolLifecycle::RUNTIME_KIND,
             CallbackDispatchContextsLinked::RUNTIME_KIND,
+            HostSourcePollRecorded::RUNTIME_KIND,
+            HostDispatchAccepted::RUNTIME_KIND,
+            HostDispatchRejected::RUNTIME_KIND,
         );
 
-        // Reflective check: 20 typed markers must equal the runtime list of
-        // 20 EventGraphKind variants.
-        assert_eq!(ALL_EVENT_KINDS.len(), 20);
+        // Reflective check: typed markers must equal the runtime list of EventGraphKind variants.
+        assert_eq!(ALL_EVENT_KINDS.len(), 23);
     }
 
     #[test]

@@ -747,13 +747,13 @@ async fn discover_agents_natural_language_query_miss_falls_back_to_first_page() 
 #[tokio::test]
 async fn discover_agents_subscription_filter_is_not_overridden_by_query_fallback() {
     let entries = vec![entry_with_subscriptions(
-        "workflow-intake-agent",
-        "Workflow Intake",
+        "slack-agent",
+        "Semantic Ingress",
         "1.0.0",
-        Some("Consumes task-daemon Slack events"),
+        Some("Consumes host source-record events"),
         vec![EventSubscription {
             schema_versions: vec![
-                baml_rt_core::EventSchemaVersion::parse("task-daemon.interpretation.v1").unwrap(),
+                baml_rt_core::EventSchemaVersion::parse("host.source-records.v1").unwrap(),
             ],
             source_kinds: vec![baml_rt_core::EventSourceKind::parse("slack").unwrap()],
             ..EventSubscription::default()
@@ -950,13 +950,13 @@ async fn discover_agents_capability_filter_is_case_insensitive() {
 #[tokio::test]
 async fn discover_agents_session_returns_declared_subscriptions() {
     let entries = vec![entry_with_subscriptions(
-        "workflow-intake-agent",
-        "Workflow Intake",
+        "coordinator-agent",
+        "Coordinator",
         "1.0.0",
-        Some("Consumes task-daemon events"),
+        Some("Consumes host source-record events"),
         vec![EventSubscription {
             schema_versions: vec![
-                baml_rt_core::EventSchemaVersion::parse("task-daemon.interpretation.v1").unwrap(),
+                baml_rt_core::EventSchemaVersion::parse("host.source-records.v1").unwrap(),
             ],
             source_kinds: vec![
                 baml_rt_core::EventSourceKind::parse("slack").unwrap(),
@@ -1019,14 +1019,13 @@ async fn discover_agents_session_returns_declared_subscriptions() {
 async fn discover_agents_session_filters_by_event_subscription() {
     let entries = vec![
         entry_with_subscriptions(
-            "workflow-intake-agent",
-            "Workflow Intake",
+            "slack-agent",
+            "Semantic Ingress",
             "1.0.0",
-            Some("Consumes task-daemon Slack events"),
+            Some("Consumes host source-record events"),
             vec![EventSubscription {
                 schema_versions: vec![
-                    baml_rt_core::EventSchemaVersion::parse("task-daemon.interpretation.v1")
-                        .unwrap(),
+                    baml_rt_core::EventSchemaVersion::parse("host.source-records.v1").unwrap(),
                 ],
                 source_kinds: vec![baml_rt_core::EventSourceKind::parse("slack").unwrap()],
                 ..EventSubscription::default()
@@ -1039,8 +1038,7 @@ async fn discover_agents_session_filters_by_event_subscription() {
             Some("Consumes task-daemon ClickUp events"),
             vec![EventSubscription {
                 schema_versions: vec![
-                    baml_rt_core::EventSchemaVersion::parse("task-daemon.interpretation.v1")
-                        .unwrap(),
+                    baml_rt_core::EventSchemaVersion::parse("host.source-records.v1").unwrap(),
                 ],
                 source_kinds: vec![baml_rt_core::EventSourceKind::parse("clickup").unwrap()],
                 ..EventSubscription::default()
@@ -1070,7 +1068,7 @@ async fn discover_agents_session_filters_by_event_subscription() {
         .session_send(
             &session_id,
             json!({
-                "requiredSchemaVersions": ["task-daemon.interpretation.v1"],
+                "requiredSchemaVersions": ["host.source-records.v1"],
                 "requiredSourceKinds": ["clickup"],
                 "limit": 10
             }),

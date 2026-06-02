@@ -6,6 +6,9 @@
 //! `ctx.tags['conversation_transcript']`) seen at each `intercept_llm_call` in a
 //! `run_step_executor_loop` (graph provider + loop-local supplement, mirrored for the interceptor).
 //!
+//! Merged lines must follow BAML transcript rules: no session FSM bookkeeping (`Open` /
+//! `SendDone`), session Open tool-call `describe_open` duplicates, or opcode-only assistant text.
+//!
 //! To update: `INSTA_UPDATE=1 cargo test -p baml-rt-quickjs --test step_executor_intra_turn_conversation_history_snapshot`
 #![recursion_limit = "256"]
 
@@ -60,6 +63,49 @@ fn redact_stochastic_strings(v: &Value) -> Value {
         }
     }
     visit(v, uuid, hash_ref, at_ref)
+}
+
+const FSM_OPCODE_LABELS: &[&str] = &["Open", "Send", "Finish", "Abort", "SearchRead", "PageRead"];
+
+/// Strip `#N` / redacted ref prefix so opcode guards match projected content.
+fn content_after_history_ref(content: &str) -> &str {
+    let trimmed = content.trim();
+    if let Some(rest) = trimmed.strip_prefix("<redacted-#ref>") {
+        return rest.trim();
+    }
+    if let Some(rest) = trimmed.strip_prefix('#') {
+        let digit_len = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+        if digit_len > 0 {
+            return rest[digit_len..].trim_start();
+        }
+    }
+    trimmed
+}
+
+fn assert_transcript_rows_spec_clean(rows: &[Value]) {
+    let mut tool_contents: Vec<String> = Vec::new();
+    for row in rows {
+        let content = row
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let core = content_after_history_ref(content);
+        assert!(
+            !FSM_OPCODE_LABELS.contains(&core),
+            "FSM opcode must not appear in merged transcript row: {row:?}"
+        );
+        if row.get("role").and_then(Value::as_str) == Some("tool") {
+            tool_contents.push(core.to_string());
+        }
+    }
+    for (i, a) in tool_contents.iter().enumerate() {
+        for b in tool_contents.iter().skip(i + 1) {
+            assert!(
+                a != b,
+                "duplicate identical tool transcript rows are forbidden: {a:?}"
+            );
+        }
+    }
 }
 
 struct HistorySnapshotInterceptor {
@@ -245,6 +291,13 @@ async fn step_executor_intra_turn_merged_conversation_grows_per_llm_hop() {
         .iter()
         .map(|v| v.as_array().cloned().unwrap_or_default().to_vec())
         .collect();
+    for (hop, rows) in as_arrays.iter().enumerate() {
+        assert_transcript_rows_spec_clean(rows);
+        assert!(
+            !rows.is_empty(),
+            "hop {hop} merged transcript must not be empty"
+        );
+    }
     let lengths: Vec<usize> = as_arrays.iter().map(|a| a.len()).collect();
     for w in lengths.windows(2) {
         assert!(

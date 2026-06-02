@@ -24,6 +24,7 @@ baml-rt-mcp = { path = "../baml-rt-mcp" }
 baml-tools-system = { path = "../tools/system" }
 baml-tools-calculator = { path = "../tools/calculator" }
 baml-tools-clickup = { path = "../tools/clickup", optional = true }
+baml-tools-github = { path = "../tools/github", optional = true }
 baml-tools-memory = { path = "../tools/memory", optional = true }
 baml-tools-notion = { path = "../tools/notion", optional = true }
 baml-tools-slack = { path = "../tools/slack", optional = true }
@@ -70,13 +71,14 @@ testcontainers-modules = { workspace = true }
 [features]
 default = []
 clickup = ["dep:baml-tools-clickup"]
+github = ["dep:baml-tools-github"]
 memory = ["dep:baml-tools-memory"]
 notion = ["dep:baml-tools-notion"]
 slack = ["dep:baml-tools-slack"]
 slack-notify = ["dep:baml-tools-slack-notify"]
 grafana-alerts = ["dep:baml-tools-grafana-alerts"]
 security-eval = ["dep:baml-tools-security-eval"]
-http-tools = ["clickup", "notion", "slack", "slack-notify", "security-eval", "grafana-alerts"]
+http-tools = ["clickup", "github", "notion", "slack", "slack-notify", "security-eval", "grafana-alerts"]
 # Compile-time sandbox provider selection (three states):
 #   feature ON              → MicrosandboxProvider (production)
 #   feature OFF + cfg(test) → MockSandboxProvider::echo() (tests)

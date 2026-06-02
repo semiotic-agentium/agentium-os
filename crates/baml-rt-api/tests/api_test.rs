@@ -105,15 +105,18 @@ fn redact_variant_parts(v: Value) -> Value {
                     },
                     "maxEventOrder" => V::String("[a2a_event_order]".to_string()),
                     "version" => match &val {
-                        V::String(s) if s.starts_with("v1:") => {
+                        V::String(s) if s.starts_with("v1:") || s.starts_with("obs-v1:") => {
                             V::String("[conversation_history_version]".to_string())
                         }
                         _ => redact_variant_parts(val),
                     },
+                    "nextCursor" => V::String("[conversation_history_cursor]".to_string()),
                     // Monotonic / wall-clock ordering from store; varies every run.
                     "a2a_event_order" => V::String("[a2a_event_order]".to_string()),
                     // Wall-clock ms from Surreal / store; varies every run.
-                    "prov_endTime" | "prov_startTime" => V::String("[timestamp_ms]".to_string()),
+                    "prov_endTime" | "prov_startTime" | "prov_time" => {
+                        V::String("[timestamp_ms]".to_string())
+                    }
                     "type" => match &val {
                         V::String(s) if s.starts_with("http://") || s.starts_with("https://") => {
                             V::String("[type_url]".to_string())
@@ -355,6 +358,14 @@ impl OtelTestFixture {
         let _ = self.provider.force_flush();
         self.exporter.get_finished_spans().unwrap_or_default()
     }
+
+    fn span_count(&self) -> usize {
+        self.spans().len()
+    }
+
+    fn spans_after(&self, baseline: usize) -> Vec<opentelemetry_sdk::export::trace::SpanData> {
+        self.spans().into_iter().skip(baseline).collect()
+    }
 }
 
 /// Helper to find a span by name.
@@ -425,13 +436,33 @@ impl ConversationHistoryService for RealConversationHistory {
         &self,
         request: &ConversationHistoryRequest,
     ) -> std::result::Result<ConversationHistoryPageDto, ConversationHistoryError> {
-        use baml_rt_provenance::ProvenanceQueryApi;
-        let rows = self
+        use baml_rt_provenance::{
+            TranscriptEngine, TranscriptPageRequest, TranscriptProjectionProfile,
+        };
+        let after = request
+            .after_event_order_from_cursor()
+            .map_err(|e| ConversationHistoryError::Other(Box::new(e)))?;
+        let scope = baml_rt_provenance::observation_scope_from_history(
+            request.context_id.clone(),
+            request.task_id.clone(),
+            request.agent_package.clone(),
+            if after > 0 { Some(after) } else { None },
+        );
+        let transcript_page = self
             .store
-            .query_conversation_context(&request.context_id, None, request.task_id.as_ref())
+            .page(TranscriptPageRequest {
+                scope,
+                limit: request.page.limit(),
+                profile: TranscriptProjectionProfile::OperatorTimeline,
+            })
             .await
             .map_err(|e| ConversationHistoryError::Other(Box::new(e)))?;
-        let mut page = baml_rt_api::paginate_items(rows, request)?;
+        let mut page = baml_rt_api::page_from_transcript_slice(
+            transcript_page.items,
+            request,
+            0,
+            transcript_page.next_after_event_order,
+        );
         if matches!(request.profile, ConversationHistoryProfile::Compact) {
             page.items = page
                 .items
@@ -454,6 +485,7 @@ impl ConversationHistoryService for RealConversationHistory {
                 request.after_event_order,
                 Some(request.limit),
                 request.task_id.as_ref(),
+                request.agent_package.as_deref(),
             )
             .await
             .map_err(|e| ConversationHistoryError::Other(Box::new(e)))?;
@@ -472,7 +504,7 @@ impl ConversationHistoryService for RealConversationHistory {
             .map(|item| item.timestamp_ms)
             .max()
             .unwrap_or(0);
-        let version = baml_rt_api::page_version(&items, &[], None, None, false, None);
+        let version = baml_rt_api::page_version(&items, &[], None, None, false, None, 0);
         Ok(ConversationHistoryPageDto {
             context_id: request.context_id.as_str().to_string(),
             task_id: request.task_id.as_ref().map(|id| id.as_str().to_string()),
@@ -485,6 +517,7 @@ impl ConversationHistoryService for RealConversationHistory {
             llm_prompt_operations: Vec::new(),
             awaiting_input: false,
             input_required_prompt: None,
+            llm_call_count: 0,
         })
     }
 }
@@ -534,6 +567,7 @@ async fn conversation_history_retains_user_message_when_session_steps_follow() {
         context_id.as_str(),
         ConversationHistoryQueryParams {
             task_id: None,
+            agent_package: None,
             limit: Some(100),
             cursor: None,
             profile: None,
@@ -679,6 +713,7 @@ async fn conversation_history_retains_resume_user_turn_after_input_required() {
         context_id.as_str(),
         ConversationHistoryQueryParams {
             task_id: None,
+            agent_package: None,
             limit: Some(500),
             cursor: None,
             profile: None,
@@ -742,6 +777,7 @@ impl ContextIndexService for MockContextIndex {
                 baml_rt_api::ContextIndexCursorToken::encode_v1(
                     end,
                     request.agent_package.as_deref(),
+                    request.ingress_filter,
                 )
                 .0,
             )
@@ -1288,7 +1324,7 @@ async fn get_agents_returns_declared_subscriptions_when_present() {
         "Workflow Subscriber",
         "0.1.0",
         vec![EventSubscription {
-            schema_versions: vec![schema_version("task-daemon.interpretation.v1")],
+            schema_versions: vec![schema_version("host.source-records.v1")],
             source_kinds: vec![source_kind("slack"), source_kind("clickup")],
             source_keys: vec![source_key("slack:C123")],
             source_key_prefixes: vec![source_key_prefix("clickup:list:")],
@@ -1619,6 +1655,9 @@ async fn post_dispatch_returns_buffered_ack() {
             .with_dispatch_ok(AgentDispatchAck {
                 accepted: true,
                 detail: Some("workflow intake accepted delivery".to_string()),
+                context_id: None,
+                task_id: None,
+                message_id: None,
             }),
     );
     let app = api_router(registry, None, None).await;
@@ -1631,9 +1670,9 @@ async fn post_dispatch_returns_buffered_ack() {
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     r#"{
-                        "routing_key":"slack:intake",
-                        "message_type":"task-daemon.interpretation.v1",
-                        "messages":[{"schema_version":"task-daemon.interpretation.v1"}]
+                        "routing_key":"event:intake",
+                        "message_type":"host.source-records.v1",
+                        "messages":[{"schema_version":"host.source-records.v1"}]
                     }"#,
                 ))
                 .unwrap(),
@@ -1714,6 +1753,9 @@ async fn post_dispatch_span_records_agent_identity_and_service_instance_fields()
             .with_dispatch_ok(AgentDispatchAck {
                 accepted: true,
                 detail: Some("workflow intake accepted delivery".to_string()),
+                context_id: None,
+                task_id: None,
+                message_id: None,
             }),
     );
     let app = api_router(registry, None, None).await;
@@ -1726,9 +1768,9 @@ async fn post_dispatch_span_records_agent_identity_and_service_instance_fields()
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     r#"{
-                        "routing_key":"slack:intake",
-                        "message_type":"task-daemon.interpretation.v1",
-                        "messages":[{"schema_version":"task-daemon.interpretation.v1"}]
+                        "routing_key":"event:intake",
+                        "message_type":"host.source-records.v1",
+                        "messages":[{"schema_version":"host.source-records.v1"}]
                     }"#,
                 ))
                 .unwrap(),
@@ -1761,6 +1803,7 @@ async fn post_a2a_bad_package_does_not_leak_raw_into_identity_span() {
             "pkg", "default", "pkg", "1.0.0",
         )]));
     let app = api_router(registry, None, None).await;
+    let span_baseline = fixture.span_count();
 
     let response = app
         .oneshot(
@@ -1777,7 +1820,7 @@ async fn post_a2a_bad_package_does_not_leak_raw_into_identity_span() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let spans = fixture.spans();
+    let spans = fixture.spans_after(span_baseline);
     for span in &spans {
         assert_ne!(
             span.name.as_ref(),
@@ -1801,6 +1844,7 @@ async fn post_a2a_bad_instance_does_not_leak_raw_into_identity_span() {
             "pkg", "default", "pkg", "1.0.0",
         )]));
     let app = api_router(registry, None, None).await;
+    let span_baseline = fixture.span_count();
 
     let response = app
         .oneshot(
@@ -1817,7 +1861,7 @@ async fn post_a2a_bad_instance_does_not_leak_raw_into_identity_span() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let spans = fixture.spans();
+    let spans = fixture.spans_after(span_baseline);
     for span in &spans {
         assert_ne!(
             span.name.as_ref(),
@@ -1841,6 +1885,7 @@ async fn post_dispatch_bad_package_does_not_leak_raw_into_identity_span() {
             "pkg", "default", "pkg", "1.0.0",
         )]));
     let app = api_router(registry, None, None).await;
+    let span_baseline = fixture.span_count();
 
     let response = app
         .oneshot(
@@ -1850,9 +1895,9 @@ async fn post_dispatch_bad_package_does_not_leak_raw_into_identity_span() {
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     r#"{
-                        "routing_key":"slack:intake",
-                        "message_type":"task-daemon.interpretation.v1",
-                        "messages":[{"schema_version":"task-daemon.interpretation.v1"}]
+                        "routing_key":"event:intake",
+                        "message_type":"host.source-records.v1",
+                        "messages":[{"schema_version":"host.source-records.v1"}]
                     }"#,
                 ))
                 .unwrap(),
@@ -1861,7 +1906,7 @@ async fn post_dispatch_bad_package_does_not_leak_raw_into_identity_span() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let spans = fixture.spans();
+    let spans = fixture.spans_after(span_baseline);
     for span in &spans {
         assert_ne!(
             span.name.as_ref(),
@@ -1885,6 +1930,7 @@ async fn post_dispatch_bad_instance_does_not_leak_raw_into_identity_span() {
             "pkg", "default", "pkg", "1.0.0",
         )]));
     let app = api_router(registry, None, None).await;
+    let span_baseline = fixture.span_count();
 
     let response = app
         .oneshot(
@@ -1894,9 +1940,9 @@ async fn post_dispatch_bad_instance_does_not_leak_raw_into_identity_span() {
                 .header("Content-Type", "application/json")
                 .body(Body::from(
                     r#"{
-                        "routing_key":"slack:intake",
-                        "message_type":"task-daemon.interpretation.v1",
-                        "messages":[{"schema_version":"task-daemon.interpretation.v1"}]
+                        "routing_key":"event:intake",
+                        "message_type":"host.source-records.v1",
+                        "messages":[{"schema_version":"host.source-records.v1"}]
                     }"#,
                 ))
                 .unwrap(),
@@ -1905,7 +1951,7 @@ async fn post_dispatch_bad_instance_does_not_leak_raw_into_identity_span() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let spans = fixture.spans();
+    let spans = fixture.spans_after(span_baseline);
     for span in &spans {
         assert_ne!(
             span.name.as_ref(),
@@ -1939,7 +1985,7 @@ async fn post_dispatch_rejects_empty_message_type() {
                     r#"{
                         "routing_key":"slack:intake",
                         "message_type":"   ",
-                        "messages":[{"schema_version":"task-daemon.interpretation.v1"}]
+                        "messages":[{"schema_version":"host.source-records.v1"}]
                     }"#,
                 ))
                 .unwrap(),
@@ -2326,7 +2372,12 @@ async fn get_context_index_cursor_scope_mismatch_returns_400() {
     )
     .await;
 
-    let cursor = baml_rt_api::ContextIndexCursorToken::encode_v1(1, Some("pkg-a")).0;
+    let cursor = baml_rt_api::ContextIndexCursorToken::encode_v1(
+        1,
+        Some("pkg-a"),
+        baml_rt_api::ContextPickerIngressFilter::All,
+    )
+    .0;
     let response = app
         .oneshot(
             Request::builder()
@@ -2998,6 +3049,176 @@ async fn deploy_in_flight_does_not_block_readyz() {
 
     let deploy_status = deploy_handle.await.expect("deploy task panicked");
     assert_eq!(deploy_status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn get_message_shapes_returns_registry() {
+    let registry: Arc<dyn AgentRegistry> =
+        Arc::new(MockRegistry::with_entries(vec![discovery_entry(
+            "pkg", "default", "pkg", "1.0.0",
+        )]));
+    let app = api_router(registry, None, None).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/message-shapes")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let parsed: Value = serde_json::from_slice(&body).expect("json");
+    let items = parsed
+        .get("items")
+        .and_then(Value::as_array)
+        .expect("items array");
+    assert_eq!(items.len(), 4);
+    let shape_ids: Vec<&str> = items
+        .iter()
+        .filter_map(|i| i.get("message_shape_id").and_then(Value::as_str))
+        .collect();
+    assert!(shape_ids.contains(&"slack-source-records"));
+    assert!(shape_ids.contains(&"clickup-source-records"));
+    assert!(shape_ids.contains(&"github-issues-source-records"));
+    assert!(
+        !shape_ids
+            .iter()
+            .any(|id| id.contains("derived-task-candidates"))
+    );
+    assert!(shape_ids.contains(&"system-callback-token"));
+    for item in items {
+        assert!(
+            item.get("origin")
+                .and_then(Value::as_str)
+                .is_some_and(|o| !o.is_empty()),
+            "each shape must declare origin: {item}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn post_event_dispatch_validate_rejects_unknown_agent() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let app = api_router(registry, None, None).await;
+
+    let body = serde_json::json!({
+        "agent_package": "missing",
+        "agent_instance_id": "default",
+        "routing_key": "clickup:intake",
+        "message_type": "host.source-records.v1",
+        "messages": [{ "event_id": "e1" }],
+        "scope": { "kind": "new_context" }
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/event-dispatch/validate")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let report: Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(report.get("valid").and_then(Value::as_bool), Some(false));
+}
+
+#[tokio::test]
+async fn conversation_history_includes_ingress_poll_user_message_rows() {
+    let store = Arc::new(
+        SurrealStoreBuilder::in_memory_isolated()
+            .build()
+            .await
+            .expect("store"),
+    );
+    let context_id = ContextId::new(88, 99);
+    let message_id = MessageId::from("batch-msg-1");
+    use baml_rt_core::host_source_records_body::format_source_records_wire_body;
+    let wire_body = format_source_records_wire_body(&[serde_json::json!({
+        "record_kind": "clickup.lifecycle_event",
+        "key": "clickup-created:task-1:1",
+        "event": "created",
+        "task_id": "task-1",
+        "list_id": "list-1",
+        "revision": 1,
+        "snapshot": { "name": "Investigate publish ingress", "status": "normal" }
+    })]);
+    use baml_rt_provenance::host_ingress_identity::activity_anchor_for_ingress_poll_user;
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("user_speaker_kind".to_string(), "ingress".to_string());
+    store
+        .add_event(ProvEvent::Global(baml_rt_provenance::events::GlobalEvent {
+            id: activity_anchor_for_ingress_poll_user(&context_id, message_id.as_str()),
+            context_id: context_id.clone(),
+            timestamp_ms: 1,
+            data: baml_rt_provenance::events::ProvEventData::MessageReceived {
+                id: message_id.clone(),
+                role: "user".to_string(),
+                content: vec![wire_body.0],
+                metadata: Some(metadata),
+                agent_id: AgentId::from_uuid(
+                    UuidId::parse_str("00000000-0000-0000-0000-000000000000").expect("nil uuid"),
+                ),
+                citations: Vec::new(),
+            },
+        }))
+        .await
+        .expect("poll user message");
+
+    let svc = RealConversationHistory {
+        store: Arc::clone(&store),
+    };
+    let request = ConversationHistoryRequest::from_parts(
+        context_id.as_str(),
+        ConversationHistoryQueryParams {
+            task_id: None,
+            agent_package: None,
+            limit: Some(50),
+            cursor: None,
+            profile: None,
+            format: None,
+        },
+    )
+    .expect("history request");
+    let page = svc.page(&request).await.expect("page");
+    let user_lines: Vec<&str> = page
+        .items
+        .iter()
+        .filter(|i| i.role == "user")
+        .filter_map(|i| match &i.content {
+            ConversationHistoryContentDto::Message { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(user_lines.len(), 1, "items={:?}", page.items);
+    assert!(user_lines[0].contains("clickup.lifecycle_event"));
+    assert!(user_lines[0].contains("Investigate publish ingress"));
+    assert!(
+        page.items.iter().all(|i| i.role != "host"),
+        "lineage-only ingress must not surface host-role rows"
+    );
+    let user_item = page
+        .items
+        .iter()
+        .find(|i| i.role == "user")
+        .expect("user row");
+    assert_eq!(
+        user_item.user_speaker_kind.as_deref(),
+        Some("ingress"),
+        "user_item={user_item:?}"
+    );
 }
 
 /// Static guard: any deployment handler that reverts to `block_in_place`

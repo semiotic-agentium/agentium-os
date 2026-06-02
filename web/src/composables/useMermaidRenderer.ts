@@ -4,6 +4,7 @@
 
 import { onUnmounted, ref, watch, type Ref } from "vue";
 import mermaid from "mermaid";
+import { looksLikeMermaidDiagram } from "../utils/mermaidDiagram";
 
 export interface RenderedDiagram {
   svg: string;
@@ -37,6 +38,9 @@ export function useMermaidRenderer(sources: Ref<string[]>, theme: Ref<string>) {
   }
 
   async function renderOne(src: string): Promise<RenderedDiagram> {
+    if (!looksLikeMermaidDiagram(src)) {
+      return { svg: "", error: null };
+    }
     try {
       const id = `mermaid-${++seq}`;
       const { svg } = await mermaid.render(id, src);

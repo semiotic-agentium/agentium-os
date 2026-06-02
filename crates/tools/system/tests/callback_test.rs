@@ -229,7 +229,7 @@ impl LLMInterceptor for StubCallbackPlanInterceptor {
                     "input": {
                         "op": "schedule",
                         "after_ms": 0,
-                        "source_key": "workflow-intake:follow-up",
+                        "source_key": "coordinator-agent:follow-up",
                         "payload": {
                             "__baml_opaque_json": "{\"kind\":\"wrapped\",\"count\":2}"
                         }
@@ -480,7 +480,7 @@ async fn callback_tool_schedules_and_dedupes_against_pending_rows() {
             json!({
                 "op": "schedule",
                 "afterMs": 250,
-                "sourceKey": "workflow-intake:follow-up",
+                "sourceKey": "coordinator-agent:follow-up",
                 "dedupeKey": "same-follow-up",
                 "payload": { "kind": "reminder" }
             }),
@@ -500,7 +500,7 @@ async fn callback_tool_schedules_and_dedupes_against_pending_rows() {
             json!({
                 "op": "schedule",
                 "afterMs": 250,
-                "sourceKey": "workflow-intake:follow-up",
+                "sourceKey": "coordinator-agent:follow-up",
                 "dedupeKey": "same-follow-up",
                 "payload": { "kind": "reminder" }
             }),
@@ -569,7 +569,7 @@ async fn callback_tool_resume_current_task_preserves_task_continuity() {
             json!({
                 "op": "schedule",
                 "afterMs": 250,
-                "sourceKey": "workflow-intake:follow-up",
+                "sourceKey": "coordinator-agent:follow-up",
                 "dedupeKey": "resume-current-task",
                 "payload": { "kind": "resume" },
                 "continuation": "resume_current_task"
@@ -613,7 +613,7 @@ async fn callback_tool_accepts_opaque_json_wrapper_payloads() {
             json!({
                 "op": "schedule",
                 "afterMs": 250,
-                "sourceKey": "workflow-intake:follow-up",
+                "sourceKey": "coordinator-agent:follow-up",
                 "payload": {
                     "__baml_opaque_json": "{\"kind\":\"wrapped\",\"count\":2}"
                 }
@@ -716,7 +716,7 @@ async fn callback_tool_dedupe_is_scoped_per_source_key() {
             json!({
                 "op": "schedule",
                 "afterMs": 250,
-                "sourceKey": "workflow-intake:channel-a",
+                "sourceKey": "coordinator-agent:channel-a",
                 "dedupeKey": "shared-key",
                 "payload": { "from": "a" }
             }),
@@ -734,7 +734,7 @@ async fn callback_tool_dedupe_is_scoped_per_source_key() {
             json!({
                 "op": "schedule",
                 "afterMs": 250,
-                "sourceKey": "workflow-intake:channel-b",
+                "sourceKey": "coordinator-agent:channel-b",
                 "dedupeKey": "shared-key",
                 "payload": { "from": "b" }
             }),
@@ -774,7 +774,7 @@ async fn callback_tool_schedules_without_dedupe_and_waits_until_due() {
             json!({
                 "op": "schedule",
                 "afterMs": 60_000,
-                "sourceKey": "workflow-intake:later",
+                "sourceKey": "coordinator-agent:later",
                 "payload": { "kind": "later" }
             }),
         )
@@ -787,6 +787,7 @@ async fn callback_tool_schedules_without_dedupe_and_waits_until_due() {
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();
@@ -832,7 +833,7 @@ async fn callback_tool_cancels_by_callback_id() {
             json!({
                 "op": "schedule",
                 "afterMs": 60_000,
-                "sourceKey": "workflow-intake:follow-up",
+                "sourceKey": "coordinator-agent:follow-up",
                 "payload": { "kind": "reminder" }
             }),
         )
@@ -857,7 +858,7 @@ async fn callback_tool_cancels_by_callback_id() {
     assert_eq!(cancelled["cancelled"], true);
     assert_eq!(
         cancelled["sourceKey"].as_str(),
-        Some("workflow-intake:follow-up")
+        Some("coordinator-agent:follow-up")
     );
 
     let rows = store.snapshot().await;
@@ -888,7 +889,7 @@ async fn callback_tool_cancels_by_source_key_and_dedupe_key() {
             json!({
                 "op": "schedule",
                 "afterMs": 60_000,
-                "sourceKey": "workflow-intake:follow-up",
+                "sourceKey": "coordinator-agent:follow-up",
                 "dedupeKey": "same-follow-up",
                 "payload": { "kind": "reminder" }
             }),
@@ -904,7 +905,7 @@ async fn callback_tool_cancels_by_source_key_and_dedupe_key() {
             Some(&task_id),
             json!({
                 "op": "cancel",
-                "sourceKey": "workflow-intake:follow-up",
+                "sourceKey": "coordinator-agent:follow-up",
                 "dedupeKey": "same-follow-up"
             }),
         )
@@ -940,7 +941,7 @@ async fn callback_tool_cancel_validates_selector_combinations() {
         (
             json!({
                 "op": "cancel",
-                "sourceKey": "workflow-intake:follow-up"
+                "sourceKey": "coordinator-agent:follow-up"
             }),
             "system/callback cancel requires dedupeKey when sourceKey is provided",
         ),
@@ -955,7 +956,7 @@ async fn callback_tool_cancel_validates_selector_combinations() {
             json!({
                 "op": "cancel",
                 "callbackId": "cb-1",
-                "sourceKey": "workflow-intake:follow-up"
+                "sourceKey": "coordinator-agent:follow-up"
             }),
             "system/callback cancel accepts either callbackId or sourceKey + dedupeKey, not both",
         ),
@@ -963,7 +964,7 @@ async fn callback_tool_cancel_validates_selector_combinations() {
             json!({
                 "op": "schedule",
                 "afterMs": 250,
-                "sourceKey": "workflow-intake:follow-up",
+                "sourceKey": "coordinator-agent:follow-up",
                 "continuation": "resume_current_task",
                 "payload": { "kind": "resume" }
             }),
@@ -1007,7 +1008,7 @@ async fn callback_tool_schedule_requires_active_task_scope() {
         json!({
             "op": "schedule",
             "afterMs": 250,
-            "sourceKey": "workflow-intake:follow-up",
+            "sourceKey": "coordinator-agent:follow-up",
             "dedupeKey": "resume-current-task",
             "continuation": "resume_current_task",
             "payload": { "kind": "resume" }
@@ -1074,7 +1075,7 @@ async fn callback_tool_cancel_returns_false_for_already_delivered() {
             json!({
                 "op": "schedule",
                 "afterMs": 0,
-                "sourceKey": "workflow-intake:follow-up",
+                "sourceKey": "coordinator-agent:follow-up",
                 "payload": { "kind": "reminder" }
             }),
         )
@@ -1127,7 +1128,7 @@ async fn callback_tool_reschedule_ignores_emitted_pending_rows() {
             json!({
                 "op": "schedule",
                 "afterMs": 0,
-                "sourceKey": "workflow-intake:follow-up",
+                "sourceKey": "coordinator-agent:follow-up",
                 "dedupeKey": "follow-up-once",
                 "payload": { "kind": "reminder" }
             }),
@@ -1140,6 +1141,7 @@ async fn callback_tool_reschedule_ignores_emitted_pending_rows() {
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();
@@ -1158,7 +1160,7 @@ async fn callback_tool_reschedule_ignores_emitted_pending_rows() {
             json!({
                 "op": "schedule",
                 "afterMs": 0,
-                "sourceKey": "workflow-intake:follow-up",
+                "sourceKey": "coordinator-agent:follow-up",
                 "dedupeKey": "follow-up-once",
                 "payload": { "kind": "reminder-again" }
             }),
@@ -1232,6 +1234,7 @@ async fn callback_producer_returns_empty_when_store_is_not_installed() {
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();
@@ -1268,6 +1271,7 @@ async fn callback_producer_errors_on_invalid_stored_source_key() {
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();
@@ -1303,7 +1307,7 @@ async fn callback_producer_defers_until_delivery_gate_opens() {
 
     let scheduled = store
         .schedule_callback(ScheduleCallbackRequest {
-            source_key: "workflow-intake:resume".to_string(),
+            source_key: "coordinator-agent:resume".to_string(),
             dedupe_key: Some("resume-now".to_string()),
             payload: json!({"goal": "resume"}),
             scheduled_for_unix_ms: 0,
@@ -1322,6 +1326,7 @@ async fn callback_producer_defers_until_delivery_gate_opens() {
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();
@@ -1368,7 +1373,7 @@ async fn callback_producer_polls_and_reconciles_delivery() {
 
     let scheduled = store
         .schedule_callback(ScheduleCallbackRequest {
-            source_key: "workflow-intake:resume".to_string(),
+            source_key: "coordinator-agent:resume".to_string(),
             dedupe_key: Some("resume-1".to_string()),
             payload: json!({"goal": "resume"}),
             scheduled_for_unix_ms: 0,
@@ -1387,6 +1392,7 @@ async fn callback_producer_polls_and_reconciles_delivery() {
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();
@@ -1407,7 +1413,7 @@ async fn callback_producer_polls_and_reconciles_delivery() {
     );
     assert_eq!(
         first_poll.events[0].source_key.as_str(),
-        "workflow-intake:resume"
+        "coordinator-agent:resume"
     );
     // Routing fields the event dispatcher needs to deliver to the right agent/task.
     assert_eq!(
@@ -1506,7 +1512,7 @@ async fn callback_producer_reconciles_after_simulated_restart() {
 
     let scheduled = store
         .schedule_callback(ScheduleCallbackRequest {
-            source_key: "workflow-intake:resume".to_string(),
+            source_key: "coordinator-agent:resume".to_string(),
             dedupe_key: None,
             payload: json!({"goal": "resume"}),
             scheduled_for_unix_ms: 0,
@@ -1526,6 +1532,7 @@ async fn callback_producer_reconciles_after_simulated_restart() {
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();
@@ -1558,6 +1565,7 @@ async fn callback_producer_reconciles_after_simulated_restart() {
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();
@@ -1595,7 +1603,7 @@ async fn callback_producer_redelivers_pending_rows_when_checkpoint_is_missing() 
 
     let scheduled = store
         .schedule_callback(ScheduleCallbackRequest {
-            source_key: "workflow-intake:resume".to_string(),
+            source_key: "coordinator-agent:resume".to_string(),
             dedupe_key: Some("resume-1".to_string()),
             payload: json!({"goal": "resume"}),
             scheduled_for_unix_ms: 0,
@@ -1614,6 +1622,7 @@ async fn callback_producer_redelivers_pending_rows_when_checkpoint_is_missing() 
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();
@@ -1653,7 +1662,7 @@ async fn callback_producer_respects_max_poll_limit() {
     for i in 0..105 {
         store
             .schedule_callback(ScheduleCallbackRequest {
-                source_key: "workflow-intake:bulk".to_string(),
+                source_key: "coordinator-agent:bulk".to_string(),
                 dedupe_key: None,
                 payload: json!({ "index": i }),
                 scheduled_for_unix_ms: 0,
@@ -1675,6 +1684,7 @@ async fn callback_producer_respects_max_poll_limit() {
         metadata: system_callback_metadata(),
         config: None,
         persisted_checkpoints: Arc::new(HashMap::new()),
+        ingress_store: None,
     })
     .await
     .unwrap();

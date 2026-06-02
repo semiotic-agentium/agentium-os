@@ -19,9 +19,10 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
     },
 };
+use baml_rt_a2a::RegistryDispatchPort;
 use baml_rt_core::{
     A2aWireRequest, AgentDispatchRequest, AgentInstanceId, AgentPackageName, AgentRouteKey,
-    BamlRtError, DeploymentContentHash, DeploymentStatus,
+    BamlRtError, DeploymentContentHash, DeploymentStatus, ProducedEvent,
     ids::{AgentId, ContextId, TaskId},
     join_error_message,
 };
@@ -43,17 +44,21 @@ use crate::{
     conversation_history::{
         ConversationHistoryDeltaRequest, ConversationHistoryPageDto,
         ConversationHistoryQueryParams, ConversationHistoryRequest,
-        ConversationHistoryRequestParseError, merge_conversation_history_pages,
+        ConversationHistoryRequestParseError,
     },
     episode::EpisodeSnapshotDto,
     mermaid::MermaidError,
     metrics,
+    observation::{
+        ObservationBundleDto, ObservationQueryParams, ObservationRequest,
+        ObservationRequestParseError, update_affects_include, update_matches_request,
+    },
     openapi::{
         AgentDiscoveryEntryDto, DeployRequestDto, DeployResponseDto, DeploymentRecordDto,
         MigrateRequestDto, MigrateResponseDto, UndeployRequestDto, UndeployResponseDto,
     },
     otel_middleware::IngressServiceInstanceId,
-    planning::{ContextPlanningResponse, PlanningError},
+    planning::{ContextPlanningResponse, PlanningError, PlanningScopeRequest},
     provenance_ops::ProvenanceOpsError,
     service_error::service_result_to_http,
     spans,
@@ -917,7 +922,11 @@ pub async fn get_context_metrics(
     path = "/contexts/{context_id}/planning",
     tag = "provenance",
     params(
-        ("context_id" = String, Path, description = "A2A context id")
+        ("context_id" = String, Path, description = "A2A context id"),
+        ("taskId" = Option<String>, Query, description = "Optional task scope"),
+        ("agentPackage" = Option<String>, Query, description = "Optional agent package filter"),
+        ("agentId" = Option<String>, Query, description = "Optional agent id filter"),
+        ("includeDrift" = Option<bool>, Query, description = "Include drift aggregation (default false)")
     ),
     responses(
         (status = 200, description = "Context planning snapshot (`tasks` empty when no provenance messages exist for this context)", body = Value),
@@ -929,6 +938,7 @@ pub async fn get_context_metrics(
 pub async fn get_context_planning(
     State(state): State<Arc<ApiState>>,
     axum::extract::Path(context_id): axum::extract::Path<String>,
+    Query(query): Query<ObservationQueryParams>,
 ) -> HttpResult<Json<ContextPlanningResponse>> {
     let span = spans::get_context_planning(&context_id);
     let _guard = span.enter();
@@ -941,7 +951,16 @@ pub async fn get_context_planning(
             "Planning service not configured",
         ));
     };
-    match svc.planning_for_context(&context_id).await {
+    let scope = parse_observation_request(&context_id, query)
+        .map_err(|e| bad_request_problem(e.to_string()))?;
+    match svc
+        .planning_for_scope({
+            let mut planning = PlanningScopeRequest::from_observation(&scope);
+            planning.include_drift = scope.include.drift;
+            planning
+        })
+        .await
+    {
         Ok(resp) => {
             metrics::record_request("get_context_planning", "success", start.elapsed());
             Ok(Json(resp))
@@ -969,12 +988,160 @@ pub async fn get_context_planning(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/contexts/{context_id}/observe",
+    tag = "provenance",
+    params(
+        ("context_id" = String, Path, description = "Provenance context id"),
+        ("taskId" = Option<String>, Query, description = "Optional task scope"),
+        ("agentPackage" = Option<String>, Query, description = "Optional agent package filter"),
+        ("agentId" = Option<String>, Query, description = "Optional agent id filter"),
+        ("include" = Option<String>, Query, description = "Comma-separated: planning, llmOps, toolOps, drift, all"),
+        ("includeDrift" = Option<bool>, Query, description = "Include drift in planning slice"),
+        ("opsPageSize" = Option<u32>, Query, description = "Ops page size in range [1, 50], default 20")
+    ),
+    responses(
+        (status = 200, description = "Unified observation bundle", body = Value),
+        (status = 400, description = "Invalid scope"),
+        (status = 501, description = "Observation service not configured"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn get_context_observe(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(context_id): axum::extract::Path<String>,
+    Query(query): Query<ObservationQueryParams>,
+) -> HttpResult<Json<ObservationBundleDto>> {
+    let start = Instant::now();
+    let Some(svc) = &state.observation else {
+        metrics::record_request("get_context_observe", "unavailable", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Observation service not configured",
+        ));
+    };
+    let request = parse_observation_request(&context_id, query)
+        .map_err(|e| bad_request_problem(e.to_string()))?;
+    match svc.bundle(request).await {
+        Ok(bundle) => {
+            metrics::record_request("get_context_observe", "success", start.elapsed());
+            Ok(Json(bundle))
+        }
+        Err(e) => {
+            metrics::record_request("get_context_observe", "internal", start.elapsed());
+            Err(problem(500, "Internal Server Error", e.to_string()))
+        }
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/contexts/{context_id}/observe/stream",
+    tag = "provenance",
+    params(
+        ("context_id" = String, Path, description = "Provenance context id"),
+        ("taskId" = Option<String>, Query, description = "Optional task scope"),
+        ("agentPackage" = Option<String>, Query, description = "Optional agent package filter"),
+        ("agentId" = Option<String>, Query, description = "Optional agent id filter"),
+        ("include" = Option<String>, Query, description = "Comma-separated resource slices"),
+        ("includeDrift" = Option<bool>, Query, description = "Include drift in planning slice"),
+        ("opsPageSize" = Option<u32>, Query, description = "Ops page size in range [1, 50], default 20")
+    ),
+    responses(
+        (status = 200, description = "SSE stream of observation bundles", content_type = "text/event-stream"),
+        (status = 400, description = "Invalid scope"),
+        (status = 501, description = "Observation service not configured"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn get_context_observe_stream(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(context_id): axum::extract::Path<String>,
+    Query(query): Query<ObservationQueryParams>,
+) -> HttpResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+    let start = Instant::now();
+    let request = parse_observation_request(&context_id, query)
+        .map_err(|e| bad_request_problem(e.to_string()))?;
+    let Some(svc) = &state.observation else {
+        metrics::record_request("get_context_observe_stream", "unavailable", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Observation service not configured",
+        ));
+    };
+    let Some(event_svc) = &state.observation_events else {
+        metrics::record_request("get_context_observe_stream", "unavailable", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Observation event service not configured",
+        ));
+    };
+    let initial = svc
+        .bundle(request.clone())
+        .await
+        .map_err(|e| problem(500, "Internal Server Error", e.to_string()))?;
+    let svc = Arc::clone(svc);
+    let include = request.include;
+    let mut updates = event_svc.subscribe_updates();
+    let stream = async_stream::stream! {
+        let mut last_version = initial.version.clone();
+        let data = serde_json::to_string(&initial).unwrap_or_else(|_| "{}".into());
+        yield Ok::<_, Infallible>(Event::default().event("snapshot").data(data));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(600);
+        loop {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                yield Ok::<_, Infallible>(Event::default().event("done").data("{}"));
+                break;
+            }
+            let wait_budget = deadline.saturating_duration_since(now);
+            let should_refresh = match tokio::time::timeout(wait_budget, updates.recv()).await {
+                Ok(Ok(update)) => {
+                    update_matches_request(&update, &request)
+                        && update_affects_include(&update, include)
+                }
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => true,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                    yield Ok::<_, Infallible>(Event::default().event("done").data("{}"));
+                    break;
+                }
+                Err(_) => {
+                    yield Ok::<_, Infallible>(Event::default().event("done").data("{}"));
+                    break;
+                }
+            };
+            if !should_refresh {
+                continue;
+            }
+            match svc.bundle(request.clone()).await {
+                Ok(bundle) if bundle.version != last_version => {
+                    last_version = bundle.version.clone();
+                    let data = serde_json::to_string(&bundle).unwrap_or_else(|_| "{}".into());
+                    yield Ok::<_, Infallible>(Event::default().event("bundle").data(data));
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "observe stream bundle refresh failed");
+                }
+            }
+        }
+    };
+    metrics::record_request("get_context_observe_stream", "success", start.elapsed());
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvenanceQueryParams {
     pub context_id: Option<ContextId>,
     pub task_id: Option<TaskId>,
     pub agent_id: Option<AgentId>,
+    pub agent_package: Option<String>,
     pub provider: Option<String>,
     pub model: Option<String>,
     pub tool_name: Option<String>,
@@ -1028,7 +1195,7 @@ fn to_ops_request(
             context_id: q.context_id,
             task_id: q.task_id,
             agent_id: q.agent_id,
-            agent_package: None,
+            agent_package: q.agent_package,
             provider: q.provider,
             model: q.model,
             tool_name: q.tool_name,
@@ -1046,6 +1213,7 @@ fn to_ops_request(
         outcome: Some(parse_outcome(q.outcome.as_deref())),
         response_profile: Some(parse_profile(q.response_profile.as_deref())),
         budget_mode: true,
+        paginate_rows_in_sql: false,
     }
 }
 
@@ -1357,6 +1525,56 @@ pub async fn post_dispatch(
     }
 }
 
+/// Publish one host event to all subscription-matched agents.
+#[utoipa::path(
+    post,
+    path = "/events/publish",
+    tag = "events",
+    summary = "Publish event to subscribed agents",
+    request_body = crate::openapi::ProducedEventDto,
+    responses(
+        (status = 200, description = "Delivery outcome", body = crate::openapi::EventPublishResponseDto),
+        (status = 400, description = "Bad request"),
+    )
+)]
+pub async fn post_events_publish(
+    State(state): State<Arc<ApiState>>,
+    Json(body): Json<crate::openapi::ProducedEventDto>,
+) -> impl IntoResponse {
+    let start = Instant::now();
+    let event: ProducedEvent = match body.try_into() {
+        Ok(event) => event,
+        Err(err) => {
+            metrics::record_request("post_events_publish", "bad_request", start.elapsed());
+            return (AxumStatus::BAD_REQUEST, err).into_response();
+        }
+    };
+    let context_id = event.context_id.as_ref().map(|c| c.to_string());
+    let Some(publish_service) = state.host_publish.as_ref() else {
+        metrics::record_request("post_events_publish", "error", start.elapsed());
+        return (
+            AxumStatus::INTERNAL_SERVER_ERROR,
+            "host publish service not configured",
+        )
+            .into_response();
+    };
+    let entries = state.registry.list_agents();
+    let port = RegistryDispatchPort::new(state.registry.as_ref());
+    match publish_service.publish(&entries, event, &port).await {
+        Ok(outcome) => {
+            metrics::record_request("post_events_publish", "success", start.elapsed());
+            Json(crate::openapi::EventPublishResponseDto::from_outcome(
+                outcome, context_id,
+            ))
+            .into_response()
+        }
+        Err(err) => {
+            metrics::record_request("post_events_publish", "error", start.elapsed());
+            (AxumStatus::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+        }
+    }
+}
+
 /// Get a one-shot episode snapshot for a completed or in-progress task.
 #[utoipa::path(
     get,
@@ -1532,6 +1750,18 @@ fn parse_conversation_history_request(
     clippy::result_large_err,
     reason = "HttpApiProblem is the HttpResult error type; boxing it would ripple through every handler signature"
 )]
+fn parse_observation_request(
+    context_id: &str,
+    query: ObservationQueryParams,
+) -> Result<ObservationRequest, HttpApiProblem> {
+    ObservationRequest::from_parts(context_id, query)
+        .map_err(|e: ObservationRequestParseError| bad_request_problem(e.to_string()))
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "HttpApiProblem is the HttpResult error type; boxing it would ripple through every handler signature"
+)]
 fn parse_context_index_request(
     query: ContextIndexQueryParams,
 ) -> Result<ContextIndexRequest, HttpApiProblem> {
@@ -1549,7 +1779,9 @@ fn parse_context_index_request(
     params(
         ("agentPackage" = Option<String>, Query, description = "Optional agent package filter"),
         ("limit" = Option<u32>, Query, description = "Page size in range [1, 200], default 50"),
-        ("cursor" = Option<String>, Query, description = "Opaque pagination cursor")
+        ("cursor" = Option<String>, Query, description = "Opaque pagination cursor"),
+        ("eventOnly" = Option<bool>, Query, description = "When true, only host ingress / event dispatch contexts"),
+        ("chatOnly" = Option<bool>, Query, description = "When true, only conversational contexts without host ingress (Chat picker)")
     ),
     responses(
         (status = 200, description = "Context picker page", body = ContextPickerPageDto),
@@ -1586,6 +1818,7 @@ pub async fn get_context_index(
     params(
         ("context_id" = String, Path, description = "Provenance context ID"),
         ("taskId" = Option<String>, Query, description = "Optional task scope"),
+        ("agentPackage" = Option<String>, Query, description = "Optional agent package filter for transcript rows"),
         ("limit" = Option<u32>, Query, description = "Page size in range [1, 500], default 50"),
         ("cursor" = Option<String>, Query, description = "Opaque pagination cursor"),
         ("profile" = Option<String>, Query, description = "Payload profile: full or compact"),
@@ -1629,6 +1862,7 @@ pub async fn get_conversation_history(
     params(
         ("context_id" = String, Path, description = "Provenance context ID"),
         ("taskId" = Option<String>, Query, description = "Optional task scope"),
+        ("agentPackage" = Option<String>, Query, description = "Optional agent package filter for transcript rows"),
         ("limit" = Option<u32>, Query, description = "Page size in range [1, 500], default 50"),
         ("cursor" = Option<String>, Query, description = "Opaque pagination cursor"),
         ("profile" = Option<String>, Query, description = "Payload profile: full or compact"),
@@ -1662,7 +1896,7 @@ pub async fn get_conversation_history_stream(
             "Conversation history service not configured",
         ));
     };
-    let Some(event_svc) = &state.conversation_history_events else {
+    let Some(event_svc) = &state.observation_events else {
         metrics::record_request(
             "get_conversation_history_stream",
             "unavailable",
@@ -1671,18 +1905,16 @@ pub async fn get_conversation_history_stream(
         return Err(problem(
             501,
             "Not Implemented",
-            "Conversation history event service not configured",
+            "Observation event service not configured",
         ));
     };
     let initial_query_start = Instant::now();
-    let initial = match service_result_to_http(
-        "get_conversation_history_stream",
-        start,
-        merge_conversation_history_pages(svc.as_ref(), &req).await,
-    ) {
-        Ok(axum::Json(s)) => s,
-        Err(e) => return Err(e),
-    };
+    let initial_result = svc.page(&req).await;
+    let initial =
+        match service_result_to_http("get_conversation_history_stream", start, initial_result) {
+            Ok(axum::Json(s)) => s,
+            Err(e) => return Err(e),
+        };
     metrics::record_conversation_history_phase_duration(
         "initial_query",
         initial_query_start.elapsed(),
@@ -1713,7 +1945,9 @@ pub async fn get_conversation_history_stream(
             let wait_budget = deadline.saturating_duration_since(now);
             let should_refresh = match tokio::time::timeout(wait_budget, updates.recv()).await {
                 Ok(Ok(update)) => {
-                    if update.context_id != request.context_id.as_str() {
+                    if !update.affects_transcript()
+                        || update.context_id != request.context_id.as_str()
+                    {
                         false
                     } else if let Some(req_task_id) = request.task_id.as_ref().map(TaskId::as_str) {
                         update.task_id.as_deref() == Some(req_task_id)
@@ -1739,6 +1973,7 @@ pub async fn get_conversation_history_stream(
             let delta_req = ConversationHistoryDeltaRequest {
                 context_id: request.context_id.clone(),
                 task_id: request.task_id.clone(),
+                agent_package: request.agent_package.clone(),
                 after_event_order: last_event_order,
                 limit,
                 profile: request.profile,
@@ -1768,6 +2003,7 @@ pub async fn get_conversation_history_stream(
                     latest.max_event_order = page.max_event_order.max(latest.max_event_order);
                     latest.awaiting_input = page.awaiting_input;
                     latest.input_required_prompt = page.input_required_prompt.clone();
+                    latest.llm_call_count = page.llm_call_count;
                     latest.version = page.version.clone();
                     last_event_order = latest.max_event_order;
                     let serialize_start = Instant::now();

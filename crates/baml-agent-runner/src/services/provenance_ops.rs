@@ -2,11 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Provenance ops service (delegating query to SurrealDB store).
+//! Provenance ops query service with explicit global vs context-scoped modes.
 
 use std::sync::Arc;
 
-use baml_rt_provenance::ProvenanceOpsQuery as _;
+use baml_rt_provenance::{
+    ObservationLoader as _, OpsQueryMode, observation_scope_from_ops_filters,
+};
 
 pub(crate) struct ProvenanceOpsServiceImpl {
     store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
@@ -27,8 +29,12 @@ impl baml_rt_api::ProvenanceOpsService for ProvenanceOpsServiceImpl {
         baml_rt_provenance::ProvenanceOpsQueryResponse,
         baml_rt_api::ProvenanceOpsError,
     > {
+        let mode = match observation_scope_from_ops_filters(&request.filters) {
+            Some(scope) => OpsQueryMode::ContextScoped { scope, request },
+            None => OpsQueryMode::Global(request),
+        };
         self.store
-            .query_ops(request)
+            .query_ops(mode)
             .await
             .map_err(|e| baml_rt_api::ProvenanceOpsError::Other(Box::new(std::io::Error::other(e))))
     }

@@ -47,7 +47,7 @@ fn entry_to_json(entry: &ArchiveEntry) -> Value {
     })
 }
 
-fn entry_from_json(v: &Value) -> Result<ArchiveEntry> {
+pub(super) fn entry_from_json(v: &Value) -> Result<ArchiveEntry> {
     let tool_name = v
         .get("tool_name")
         .and_then(|x| x.as_str())

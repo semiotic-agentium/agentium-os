@@ -59,29 +59,26 @@ impl baml_rt_api::MermaidService for MermaidServiceImpl {
             tracing::debug!(context_id = %context_id, "mermaid: cache HIT");
             return Ok(cached);
         }
-        tracing::info!(context_id = %context_id, "mermaid: START export_by_context");
         let t0 = std::time::Instant::now();
         let graph = self.export_by_context(context_id).await?;
-        tracing::info!(
-            context_id = %context_id, export_ms = t0.elapsed().as_millis(),
-            nodes = graph.nodes.len(), edges = graph.edges.len(),
-            "mermaid: DONE export_by_context"
-        );
         if graph.nodes.is_empty() {
             return Err(baml_rt_api::MermaidError::NotFound);
         }
         let t1 = std::time::Instant::now();
         let simplified = simplify_graph(&graph);
-        tracing::info!(
-            context_id = %context_id, simplify_ms = t1.elapsed().as_millis(),
-            nodes = simplified.nodes.len(), edges = simplified.edges.len(),
-            "mermaid: DONE simplify_graph"
-        );
         let t2 = std::time::Instant::now();
         let mermaid = render_sequence_diagram(&simplified);
-        tracing::info!(
-            context_id = %context_id, render_ms = t2.elapsed().as_millis(),
-            bytes = mermaid.len(), "mermaid: DONE render_sequence_diagram"
+        tracing::debug!(
+            context_id = %context_id,
+            export_ms = t0.elapsed().as_millis(),
+            simplify_ms = t1.elapsed().as_millis(),
+            render_ms = t2.elapsed().as_millis(),
+            graph_nodes = graph.nodes.len(),
+            graph_edges = graph.edges.len(),
+            simplified_nodes = simplified.nodes.len(),
+            simplified_edges = simplified.edges.len(),
+            bytes = mermaid.len(),
+            "mermaid context export"
         );
         if let Some(ref cache) = self.cache {
             cache.insert(context_id, mermaid.clone());
@@ -95,26 +92,24 @@ impl baml_rt_api::MermaidService for MermaidServiceImpl {
     ) -> std::result::Result<String, baml_rt_api::MermaidError> {
         let t0 = std::time::Instant::now();
         let graph = self.export_by_task(task_id).await?;
-        tracing::info!(
-            task_id = %task_id, export_ms = t0.elapsed().as_millis(),
-            nodes = graph.nodes.len(), edges = graph.edges.len(),
-            "mermaid: DONE export_by_task"
-        );
         if graph.nodes.is_empty() {
             return Err(baml_rt_api::MermaidError::NotFound);
         }
         let t1 = std::time::Instant::now();
         let simplified = simplify_graph(&graph);
-        tracing::info!(
-            task_id = %task_id, simplify_ms = t1.elapsed().as_millis(),
-            nodes = simplified.nodes.len(), edges = simplified.edges.len(),
-            "mermaid: DONE simplify_graph"
-        );
         let t2 = std::time::Instant::now();
         let mermaid = render_sequence_diagram(&simplified);
-        tracing::info!(
-            task_id = %task_id, render_ms = t2.elapsed().as_millis(),
-            bytes = mermaid.len(), "mermaid: DONE render_sequence_diagram"
+        tracing::debug!(
+            task_id = %task_id,
+            export_ms = t0.elapsed().as_millis(),
+            simplify_ms = t1.elapsed().as_millis(),
+            render_ms = t2.elapsed().as_millis(),
+            graph_nodes = graph.nodes.len(),
+            graph_edges = graph.edges.len(),
+            simplified_nodes = simplified.nodes.len(),
+            simplified_edges = simplified.edges.len(),
+            bytes = mermaid.len(),
+            "mermaid task export"
         );
         Ok(mermaid)
     }

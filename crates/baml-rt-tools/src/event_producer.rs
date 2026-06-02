@@ -12,7 +12,7 @@
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
-use baml_rt_core::{BamlRtError, EventSourceKind, ProducedEvent, Result};
+use baml_rt_core::{BamlRtError, EventSourceKind, IngressStore, ProducedEvent, Result};
 use serde_json::Value;
 use tracing::warn;
 
@@ -81,7 +81,7 @@ pub trait EventProducer: Send + Sync {
 }
 
 /// Inputs provided when constructing configured event producers from inventory.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EventProducerBuildContext {
     /// Tool metadata this producer operationalizes.
     pub metadata: ToolFunctionMetadata,
@@ -94,6 +94,8 @@ pub struct EventProducerBuildContext {
     /// identity recovery out of the runner and leaves a clean seam for future
     /// host-native producers like `system/callback` or declarative providers.
     pub persisted_checkpoints: Arc<HashMap<String, ProducerCheckpoint>>,
+    /// Durable ingress queue for push→poll bridge producers.
+    pub ingress_store: Option<Arc<dyn IngressStore>>,
 }
 
 pub type EventProducerBuildFuture =
@@ -119,14 +121,22 @@ inventory::collect!(EventProducerProvider);
 pub async fn load_configured_event_producers<C: ToolCatalog>(
     catalog: &C,
     config_resolver: Option<Arc<dyn ConfigResolver>>,
+    ingress_store: Option<Arc<dyn IngressStore>>,
 ) -> Result<Vec<Arc<dyn EventProducer>>> {
-    load_configured_event_producers_with_checkpoints(catalog, config_resolver, HashMap::new()).await
+    load_configured_event_producers_with_checkpoints(
+        catalog,
+        config_resolver,
+        HashMap::new(),
+        ingress_store,
+    )
+    .await
 }
 
 pub async fn load_configured_event_producers_with_checkpoints<C: ToolCatalog>(
     catalog: &C,
     config_resolver: Option<Arc<dyn ConfigResolver>>,
     persisted_checkpoints: HashMap<String, ProducerCheckpoint>,
+    ingress_store: Option<Arc<dyn IngressStore>>,
 ) -> Result<Vec<Arc<dyn EventProducer>>> {
     let mut producers = Vec::new();
     let persisted_checkpoints = Arc::new(persisted_checkpoints);
@@ -153,6 +163,7 @@ pub async fn load_configured_event_producers_with_checkpoints<C: ToolCatalog>(
             metadata: metadata.clone(),
             config,
             persisted_checkpoints: Arc::clone(&persisted_checkpoints),
+            ingress_store: ingress_store.clone(),
         })
         .await?;
 
@@ -505,10 +516,14 @@ mod tests {
 
     #[tokio::test]
     async fn load_configured_event_producers_skips_missing_catalog_entries() {
-        let producers =
-            load_configured_event_producers_with_checkpoints(&EmptyCatalog, None, HashMap::new())
-                .await
-                .expect("missing metadata should be skipped");
+        let producers = load_configured_event_producers_with_checkpoints(
+            &EmptyCatalog,
+            None,
+            HashMap::new(),
+            None,
+        )
+        .await
+        .expect("missing metadata should be skipped");
 
         assert!(producers.is_empty());
     }

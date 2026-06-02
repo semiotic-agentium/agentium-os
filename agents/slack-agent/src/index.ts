@@ -8,6 +8,7 @@ import type {
   SlackStructuredPlan,
   StructuredReply,
 } from "./baml-runtime";
+import { onSlackSourceDispatch } from "./slackSourceIngress";
 
 const MAX_REACT_STEPS = 10;
 const PKG_RETRIEVE = "slack-retrieve";
@@ -218,7 +219,7 @@ __chat_register({
     // NeedClarification must always use awaitInput so the host emits TASK_STATE_INPUT_REQUIRED — never
     // substitute a fake intent after N rounds (that completed the stream without suspending).
     while (true) {
-      const intentResult = await InferSlackIntent({ user_message: text });
+      const intentResult = await InferSlackIntent({});
 
       if (isSlackIntent(intentResult)) {
         validatedIntent = intentResult.intent;
@@ -259,4 +260,6 @@ __chat_register({
 
     return runSlackStructuredPlan(ctx, text, structured, validatedIntent, stepsOrErr);
   },
+
+  onDispatch: onSlackSourceDispatch,
 });

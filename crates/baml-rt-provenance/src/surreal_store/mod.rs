@@ -65,30 +65,45 @@
 //! relational-crutch properties in query WHERE clauses. These properties exist as
 //! informational attributes for display/audit only; relationships are expressed as edges.
 
+mod agent_runtime_index;
 mod archive_ref;
 mod builder;
+mod context_picker_index;
+mod context_planning_batch;
+mod context_planning_index;
 mod context_reader;
 mod conversation_context_pipeline;
 mod helpers;
+mod history_ref;
+mod llm_call_scope;
 mod ops_query;
+mod ops_reader;
 mod payload;
 mod planning_query;
+mod planning_record_parse;
+mod ref_table_hydrator;
 mod schema;
 mod task_graph_reader_impl;
+mod transcript_engine;
+mod transcript_extension;
 mod writer;
 
 use std::{
-    sync::Arc,
+    sync::{Arc, RwLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use baml_rt_core::{backoff::backoff_delay, ids::ContextId};
 pub use builder::{RemoteConfig, RemoteCredentials, SurrealBackend, SurrealStoreBuilder};
+pub use context_picker_index::ContextPickerIndexRow;
+pub use context_planning_batch::{PlanningScopeQuery, TaskPlanningBatchRow};
 use dashmap::DashMap;
 pub(crate) use helpers::{check_and_take_zero, map_surreal_error};
+pub use ref_table_hydrator::{hydrate_ref_table, prepare_ref_table_for_projection};
 use serde_json::Value;
 use surrealdb::{Surreal, engine::any::Any};
 
+pub use crate::read::{OpsReader, PlanningReader, TranscriptEngine};
 use crate::{
     error::{ProvenanceError, Result},
     id_semantics::{MessageEntityId, MessageEntityInput},
@@ -172,9 +187,23 @@ pub struct SurrealProvenanceStore {
     archive_local_serializers: DashMap<String, Arc<tokio::sync::Mutex<()>>>,
     /// One in-flight allocate per `(context_id, activity_anchor)`; pairs with unique DB index.
     archive_anchor_serializers: DashMap<String, Arc<tokio::sync::Mutex<()>>>,
+    /// Optional in-process ref-table cache (invalidated after each context-scoped write).
+    ref_table_cache: RwLock<Option<Arc<baml_rt_tools::archive_refs::ContextRefTables>>>,
+    /// Cached agent runtime package → instance index (invalidated on agent boot).
+    agent_runtime_index_cache: RwLock<Option<agent_runtime_index::AgentRuntimeIndex>>,
 }
 
 impl SurrealProvenanceStore {
+    /// Attach the shared in-process ref-table cache (same map as QuickJS / A2A).
+    pub fn attach_ref_table_cache(
+        &self,
+        tables: Arc<baml_rt_tools::archive_refs::ContextRefTables>,
+    ) {
+        if let Ok(mut g) = self.ref_table_cache.write() {
+            *g = Some(tables);
+        }
+    }
+
     /// Access the underlying SurrealDB connection for direct queries (graph export, tool index).
     pub fn db(&self) -> &Surreal<Any> {
         &self.db
@@ -229,20 +258,24 @@ impl SurrealProvenanceStore {
         &self,
         event: &crate::events::ProvEvent,
     ) -> Result<()> {
-        let (ctx, msg_id) = match event.data() {
-            crate::events::ProvEventData::MessageReceived { id, .. }
-            | crate::events::ProvEventData::MessageSent { id, .. } => {
-                let Some(ctx) = event.context_id_opt() else {
-                    return Ok(());
-                };
-                (ctx, id)
-            }
-            _ => return Ok(()),
+        use crate::{events::ProvEventData, host_ingress_identity::host_ingress_message_id};
+
+        let Some(ctx) = event.context_id_opt() else {
+            return Ok(());
         };
         let anchor = event.id().as_str();
+        let msg_id = match event.data() {
+            ProvEventData::MessageReceived { id, .. } | ProvEventData::MessageSent { id, .. } => {
+                id.clone()
+            }
+            ProvEventData::HostSourcePollRecorded { .. }
+            | ProvEventData::HostDispatchAccepted { .. }
+            | ProvEventData::HostDispatchRejected { .. } => host_ingress_message_id(event),
+            _ => return Ok(()),
+        };
         let expected = ProvEntityId::derived::<MessageEntityId>(MessageEntityInput {
             context_id: ctx,
-            message_id: msg_id,
+            message_id: &msg_id,
         });
         let Some(existing) = self
             .existing_message_node_id_for_activity_anchor(ctx, anchor)

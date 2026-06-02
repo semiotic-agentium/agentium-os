@@ -75,6 +75,12 @@ pub struct AgentDispatchAckDto {
     pub accepted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
@@ -240,11 +246,119 @@ impl TryFrom<AgentDispatchRequestDto> for baml_rt_core::AgentDispatchRequest {
     }
 }
 
+/// Host publish ingress body (`POST /events/publish`).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProducedEventDto {
+    pub routing_key: String,
+    pub schema_version: String,
+    pub source_kind: String,
+    pub source_key: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schema(value_type = Vec<Object>)]
+    pub messages: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Object)]
+    pub metadata: Option<Value>,
+}
+
+impl TryFrom<ProducedEventDto> for baml_rt_core::ProducedEvent {
+    type Error = String;
+
+    fn try_from(value: ProducedEventDto) -> Result<Self, Self::Error> {
+        use baml_rt_core::{
+            AgentDispatchRoutingKey, ContextId, EventSchemaVersion, EventSourceKind, TaskId,
+            event_subscription::EventSourceKey,
+        };
+        Ok(Self {
+            routing_key: AgentDispatchRoutingKey::parse(&value.routing_key)
+                .ok_or_else(|| "invalid routing_key".to_string())?,
+            schema_version: EventSchemaVersion::parse(&value.schema_version)
+                .ok_or_else(|| "invalid schema_version".to_string())?,
+            source_kind: EventSourceKind::parse(&value.source_kind)
+                .ok_or_else(|| "invalid source_kind".to_string())?,
+            source_key: EventSourceKey::parse(&value.source_key)
+                .ok_or_else(|| format!("invalid source_key {:?}", value.source_key))?,
+            messages: value.messages,
+            context_id: value.context_id.as_deref().map(ContextId::from),
+            task_id: value
+                .task_id
+                .map(|id| TaskId::from_external(baml_rt_core::ids::ExternalId::new(id))),
+            message_id: value.message_id,
+            metadata: value.metadata,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct EventDeliveryFailureDto {
+    pub agent_package: String,
+    pub agent_instance_id: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct EventPublishAcceptanceDto {
+    pub agent_package: String,
+    pub agent_instance_id: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct EventPublishResponseDto {
+    pub subscribers_matched: usize,
+    pub subscribers_accepted: usize,
+    #[serde(default)]
+    pub acceptances: Vec<EventPublishAcceptanceDto>,
+    pub failures: Vec<EventDeliveryFailureDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+}
+
+impl EventPublishResponseDto {
+    pub fn from_outcome(
+        value: baml_rt_core::EventDeliveryOutcome,
+        context_id: Option<String>,
+    ) -> Self {
+        Self {
+            subscribers_matched: value.subscribers_matched,
+            subscribers_accepted: value.subscribers_accepted,
+            acceptances: value
+                .acceptances
+                .into_iter()
+                .map(|a| EventPublishAcceptanceDto {
+                    agent_package: a.agent_package,
+                    agent_instance_id: a.agent_instance_id,
+                    detail: a.detail,
+                })
+                .collect(),
+            failures: value
+                .failures
+                .into_iter()
+                .map(|(route, failure)| EventDeliveryFailureDto {
+                    agent_package: route.agent_package.to_string(),
+                    agent_instance_id: route.agent_instance_id.to_string(),
+                    detail: failure.detail(),
+                })
+                .collect(),
+            context_id,
+        }
+    }
+}
+
 impl From<baml_rt_core::AgentDispatchAck> for AgentDispatchAckDto {
     fn from(value: baml_rt_core::AgentDispatchAck) -> Self {
         Self {
             accepted: value.accepted,
             detail: value.detail,
+            context_id: value.context_id,
+            task_id: value.task_id,
+            message_id: value.message_id,
         }
     }
 }
@@ -256,8 +370,8 @@ mod tests {
     #[test]
     fn dispatch_request_dto_trims_message_id() {
         let request = AgentDispatchRequestDto {
-            routing_key: "slack:intake".to_string(),
-            message_type: "task-daemon.interpretation.v1".to_string(),
+            routing_key: "event:intake".to_string(),
+            message_type: "host.source-records.v1".to_string(),
             messages: Vec::new(),
             context_id: None,
             task_id: None,

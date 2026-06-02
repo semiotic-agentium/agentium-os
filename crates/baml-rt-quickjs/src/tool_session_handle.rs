@@ -87,9 +87,9 @@ impl ToolSessionExecutionHandle {
             tool_name: tool_name.to_string(),
             function_name: None,
             args: open_input.clone(),
-            metadata,
+            metadata: metadata.clone(),
             runtime_scope: scope.clone(),
-            delegation_target,
+            delegation_target: delegation_target.clone(),
         };
 
         tracing::info!(
@@ -98,6 +98,13 @@ impl ToolSessionExecutionHandle {
             task_in_scope = ?scope.task_id_opt(),
             "Tool session open: start"
         );
+
+        let (tool_backend, tool_digest) = self
+            .ctx
+            .tool_registry
+            .get_metadata(tool_name)
+            .map(|m| (Some(format!("{:?}", m.backend)), m.digest))
+            .unwrap_or((None, None));
 
         // Record tool call start for "open" (session-based: open + execute = 2 invocations per request)
         let interceptor_registry = self.ctx.interceptor_registry.lock().await;
@@ -120,6 +127,33 @@ impl ToolSessionExecutionHandle {
             Ok(_) => Ok(Value::Null),
             Err(e) => Err(BamlRtError::InvalidArgument(e.to_string())),
         };
+        if result.is_err()
+            && let Some(emitter) = self.ctx.effect_emitter.as_ref()
+        {
+            let effect_metadata = ToolEffectMetadata {
+                tool_name: tool_name.to_string(),
+                function_name: None,
+                args: open_input.clone(),
+                metadata: metadata.clone(),
+                delegation_target: delegation_target.clone(),
+                tool_backend: tool_backend.clone(),
+                tool_digest: tool_digest.clone(),
+            };
+            if let Ok(token) = emitter
+                .start_tool(context_id.clone(), effect_metadata)
+                .await
+                && let Err(e) = token
+                    .complete(emitter.as_ref(), duration_ms, Outcome::Failure, None)
+                    .await
+            {
+                tracing::warn!(
+                    error = ?e,
+                    tool_name,
+                    context_id = %context_id,
+                    "Failed to complete tool effect after session open error"
+                );
+            }
+        }
         let interceptor_registry = self.ctx.interceptor_registry.lock().await;
         interceptor_registry
             .notify_tool_call_complete(&context, &completion_result, duration_ms)

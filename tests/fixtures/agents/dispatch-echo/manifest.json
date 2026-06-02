@@ -15,20 +15,12 @@
     "subscriptions": [
       {
         "schema_versions": [
-          "task-daemon.interpretation.v1"
+          "host.source-records.v1"
         ],
         "source_kinds": [
           "slack",
           "clickup",
           "github_issues"
-        ]
-      },
-      {
-        "schema_versions": [
-          "host.source-records.v1"
-        ],
-        "source_kinds": [
-          "slack"
         ]
       },
       {

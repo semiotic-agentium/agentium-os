@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use baml_rt_core::{ConversationHistoryUpdate, Result};
+use baml_rt_core::{ObservationUpdate, Result};
 use serde_json::Value;
 use tokio::sync::broadcast;
 
@@ -29,7 +29,7 @@ pub struct Ready;
 pub struct RunnerBuilder<S> {
     pub(crate) runner: Arc<AgentRunner>,
     pub(crate) registry: Arc<RunnerRegistry>,
-    conversation_history_tx: broadcast::Sender<ConversationHistoryUpdate>,
+    observation_tx: broadcast::Sender<ObservationUpdate>,
     _state: std::marker::PhantomData<S>,
 }
 
@@ -37,8 +37,8 @@ impl RunnerBuilder<Loading> {
     /// Start building: parse config and create empty runner + registry.
     /// Registry is wired to the runner so discovery/A2A see agents as they are deployed.
     pub fn new(mut config: AgentRunnerConfig) -> Result<Self> {
-        let (conversation_history_tx, _) = broadcast::channel(1024);
-        config.conversation_history_notify = Some(conversation_history_tx.clone());
+        let (observation_tx, _) = broadcast::channel(1024);
+        config.observation_notify = Some(observation_tx.clone());
         let runner = Arc::new(AgentRunner::new(config)?);
         // Wire the internal A2A router to the runner for cross-agent dispatch.
         runner.internal_a2a_router().set_runner(Arc::clone(&runner));
@@ -46,7 +46,7 @@ impl RunnerBuilder<Loading> {
         Ok(Self {
             runner,
             registry,
-            conversation_history_tx,
+            observation_tx,
             _state: std::marker::PhantomData,
         })
     }
@@ -56,7 +56,7 @@ impl RunnerBuilder<Loading> {
         RunnerBuilder {
             runner: self.runner,
             registry: self.registry,
-            conversation_history_tx: self.conversation_history_tx,
+            observation_tx: self.observation_tx,
             _state: std::marker::PhantomData,
         }
     }
@@ -94,8 +94,8 @@ impl RunnerBuilder<Ready> {
         Arc::clone(&self.runner)
     }
 
-    /// Broadcast sender wired to provenance commits and task lifecycle (conversation-history SSE).
-    pub fn conversation_history_tx(&self) -> broadcast::Sender<ConversationHistoryUpdate> {
-        self.conversation_history_tx.clone()
+    /// Broadcast sender wired to provenance commits and task lifecycle (observation SSE).
+    pub fn observation_tx(&self) -> broadcast::Sender<ObservationUpdate> {
+        self.observation_tx.clone()
     }
 }

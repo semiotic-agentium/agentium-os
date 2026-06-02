@@ -106,14 +106,6 @@ impl StandaloneRunner {
         Self::start_with_options(&[], &[], None).await
     }
 
-    /// Start a runner subprocess with additional environment variables. The
-    /// `extra_env` slice supplements the baseline cleanups (which strip CI/dev
-    /// secrets and credentials so the test process inherits a deterministic
-    /// environment).
-    async fn start_with_env(extra_env: &[(&str, &str)]) -> Self {
-        Self::start_with_options(extra_env, &[], None).await
-    }
-
     /// Start a runner subprocess with optional extra env, extra CLI args, and
     /// an explicit readiness deadline override.
     ///
@@ -476,10 +468,17 @@ async fn t4_listener_task_death_exits_nonzero() {
     // Give the harness enough time to observe at least one successful HTTP response
     // before the injected listener shutdown fires, especially on slower CI boots.
     let listener_lifetime_secs = e2e_secs_ci_or_local(10, 5);
-    let mut runner = StandaloneRunner::start_with_env(&[(
-        baml_rt_api::LISTENER_EXIT_AFTER_SECS_ENV,
-        &listener_lifetime_secs.to_string(),
-    )])
+    let mut runner = StandaloneRunner::start_with_options(
+        &[(
+            baml_rt_api::LISTENER_EXIT_AFTER_SECS_ENV,
+            &listener_lifetime_secs.to_string(),
+        )],
+        &[],
+        // T4 only needs the HTTP listener up — not a full deploy boot. The
+        // default standalone readiness budget (240s on CI) can consume the
+        // entire nextest slow-timeout before the fault-injection timer fires.
+        Some(e2e_secs_ci_or_local(60, 30)),
+    )
     .await;
 
     let exit_deadline = Duration::from_secs(e2e_secs_ci_or_local(60, 30));

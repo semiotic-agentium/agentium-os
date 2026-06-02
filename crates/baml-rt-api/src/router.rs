@@ -104,8 +104,9 @@ pub struct ApiState {
     pub provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
     pub planning: Option<Arc<dyn PlanningService>>,
     pub episode: Option<Arc<dyn EpisodeService>>,
+    pub observation: Option<Arc<dyn crate::ObservationService>>,
+    pub observation_events: Option<Arc<dyn crate::ObservationEventService>>,
     pub conversation_history: Option<Arc<dyn ConversationHistoryService>>,
-    pub conversation_history_events: Option<Arc<dyn crate::ConversationHistoryEventService>>,
     pub context_index: Option<Arc<dyn ContextIndexService>>,
     pub deployment_manager: Option<Arc<dyn DeploymentManager>>,
     pub repository_url: Option<String>,
@@ -128,6 +129,8 @@ pub struct ApiState {
     /// Continuously observable signal of tokio-runtime progress; surfaced by `GET /diagnose`.
     /// Distinct from [`ApiState::ready`], which is a one-shot boot latch.
     pub runtime_progress: Arc<RuntimeProgressMeter>,
+    /// Canonical host publish spine (poll lineage + fan-out + transport failures).
+    pub host_publish: Option<Arc<baml_rt_core::HostPublishService>>,
 }
 
 async fn serve_openapi_json(
@@ -290,8 +293,9 @@ pub struct ApiServerConfig {
     pub provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
     pub planning: Option<Arc<dyn PlanningService>>,
     pub episode: Option<Arc<dyn EpisodeService>>,
+    pub observation: Option<Arc<dyn crate::ObservationService>>,
+    pub observation_events: Option<Arc<dyn crate::ObservationEventService>>,
     pub conversation_history: Option<Arc<dyn ConversationHistoryService>>,
-    pub conversation_history_events: Option<Arc<dyn crate::ConversationHistoryEventService>>,
     pub context_index: Option<Arc<dyn ContextIndexService>>,
     pub deployment_manager: Option<Arc<dyn DeploymentManager>>,
     pub repository_url: Option<String>,
@@ -310,6 +314,7 @@ pub struct ApiServerConfig {
     /// each at its declared `mount_path`; operator-tier intakes inherit the
     /// runner-token auth layer applied to the operator route group.
     pub webhook_intakes: Vec<Arc<dyn baml_rt_tools::WebhookIntake>>,
+    pub host_publish: Option<Arc<baml_rt_core::HostPublishService>>,
 }
 
 impl ApiServerConfig {
@@ -328,8 +333,9 @@ impl ApiServerConfig {
             provenance_ops: None,
             planning: None,
             episode: None,
+            observation: None,
+            observation_events: None,
             conversation_history: None,
-            conversation_history_events: None,
             context_index: None,
             deployment_manager: None,
             repository_url: None,
@@ -344,6 +350,7 @@ impl ApiServerConfig {
             runtime_progress,
             web_dir: None,
             webhook_intakes: Vec::new(),
+            host_publish: None,
         }
     }
 }
@@ -391,9 +398,10 @@ pub fn api_router_with_services_and_deploy(
         context_metrics,
         provenance_ops,
         planning,
+        observation,
         episode,
         conversation_history,
-        conversation_history_events,
+        observation_events,
         context_index,
         deployment_manager,
         repository_url,
@@ -408,6 +416,7 @@ pub fn api_router_with_services_and_deploy(
         runtime_progress,
         web_dir,
         webhook_intakes,
+        host_publish,
     } = config;
 
     let http_trace_layer =
@@ -427,12 +436,15 @@ pub fn api_router_with_services_and_deploy(
     // conversation history, provenance. These handlers do not consume the
     // OTEL parent-context extension so they skip the middleware.
     let (other_public_router, other_openapi) = OpenApiRouter::new()
+        .routes(utoipa_axum::routes!(handlers::post_events_publish))
         .routes(utoipa_axum::routes!(handlers::list_agents))
         .routes(utoipa_axum::routes!(handlers::get_context_index))
         .routes(utoipa_axum::routes!(handlers::get_mermaid_context))
         .routes(utoipa_axum::routes!(handlers::get_mermaid_task))
         .routes(utoipa_axum::routes!(handlers::get_context_metrics))
         .routes(utoipa_axum::routes!(handlers::get_context_planning))
+        .routes(utoipa_axum::routes!(handlers::get_context_observe))
+        .routes(utoipa_axum::routes!(handlers::get_context_observe_stream))
         .routes(utoipa_axum::routes!(handlers::get_provenance_llm_calls))
         .routes(utoipa_axum::routes!(handlers::get_provenance_tool_calls))
         .routes(utoipa_axum::routes!(handlers::get_provenance_messages))
@@ -446,6 +458,12 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(handlers::get_conversation_history))
         .routes(utoipa_axum::routes!(
             handlers::get_conversation_history_stream
+        ))
+        .routes(utoipa_axum::routes!(
+            crate::event_console::handlers::get_message_shapes
+        ))
+        .routes(utoipa_axum::routes!(
+            crate::event_console::handlers::post_event_dispatch_validate
         ))
         .split_for_parts();
 
@@ -588,9 +606,10 @@ pub fn api_router_with_services_and_deploy(
         context_metrics,
         provenance_ops,
         planning,
+        observation,
         episode,
         conversation_history,
-        conversation_history_events,
+        observation_events,
         context_index,
         deployment_manager,
         repository_url,
@@ -602,6 +621,7 @@ pub fn api_router_with_services_and_deploy(
         runner_token,
         cluster,
         runtime_progress,
+        host_publish,
     });
 
     let mut router = api_router

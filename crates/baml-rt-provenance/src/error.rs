@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use baml_rt_core::ids::TaskId;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -49,6 +50,12 @@ pub enum ProvenanceError {
         existing_node_id: String,
         expected_entity_id: String,
     },
+    /// Task exists but has no executing-agent head pointer — not an episode scope (e.g. poll ingress).
+    #[error("task {task_id} is not bound to an executing agent; episode assembly refused")]
+    EpisodeUnbound { task_id: TaskId },
+    /// Head-pointer lookup timed out during episode assembly.
+    #[error("task {task_id} executing-agent resolution timed out during episode assembly")]
+    EpisodeAgentResolutionTimedOut { task_id: TaskId },
 }
 
 pub type Result<T> = std::result::Result<T, ProvenanceError>;

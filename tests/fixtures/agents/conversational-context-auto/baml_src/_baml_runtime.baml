@@ -211,6 +211,8 @@ Tool and operation types:
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+Current step instructions:
+
 The user says: {{ user_message }}
 Extract the mathematical calculation. If they mention numbers, use those; otherwise use 2 + 3.
 {{ _.role('user') }}
@@ -219,7 +221,6 @@ Extract the mathematical calculation. If they mention numbers, use those; otherw
 Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateOpenStep`.
 
 Use `op` as the discriminator: "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
-Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.
 Do not add text before or after the JSON object.
 
 Phase policy:
@@ -247,6 +248,8 @@ Tool and operation types:
 Session history:
 {{ ctx.tags['conversation_transcript'] }}
 {% endif %}
+Current step instructions:
+
 The user says: {{ user_message }}
 Extract the mathematical calculation. If they mention numbers, use those; otherwise use 2 + 3.
 {{ _.role('user') }}
@@ -255,12 +258,13 @@ Extract the mathematical calculation. If they mention numbers, use those; otherw
 Return exactly one JSON object of type `SupportCalculateAbortStep | SupportCalculateFinishStep | SupportCalculatePageReadStep | SupportCalculateSearchReadStep | SupportCalculateSendStep`.
 
 Use `op` as the discriminator: "Abort" | "Finish" | "PageRead" | "SearchRead" | "Send".
-Scalar leaves: use JSON primitives only where the schema names a string, number, enum, or boolean — never substitute an object or array for a scalar.
-Calculator Send: set input.expression.operation to exactly one JSON string token: "+", "-", "*", "/", or Add|Subtract|Multiply|Divide — never an object or sentence.
+SupportCalculateSendStep Send: set `input.expression.operation` to exactly one JSON string token: "Add" | "Divide" | "Multiply" | "Subtract" — never an object or sentence.
 Do not add text before or after the JSON object.
 
 Phase policy:
 - Derived state rule: this active return union has no `Open` variant.
+- After Send completes with status done, use PageRead or SearchRead on last_archive_ref when archive lines are needed; otherwise emit Finish.
+- Never re-Send identical input after a Done; re-Send only for pagination (has_more) or a genuinely different query.
 "#
 
 }

@@ -100,6 +100,7 @@ fn strip_standalone_directive_lines(template: &str) -> String {
             !is_standalone_output_format_line(t)
                 && !is_standalone_conversation_transcript_line(t)
                 && !is_standalone_role_directive_line(t)
+                && !is_standalone_session_context_line(t)
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -128,6 +129,12 @@ fn is_standalone_conversation_transcript_line(s: &str) -> bool {
 fn is_standalone_role_directive_line(s: &str) -> bool {
     let compact = s.replace(' ', "");
     compact.starts_with("{_.role(") && compact.ends_with(")}")
+}
+
+/// Step-executor FSM wire is injected as a BAML arg; phase prompts must not render it.
+fn is_standalone_session_context_line(s: &str) -> bool {
+    let compact = s.replace(' ', "");
+    compact == "session_context:{{session_context}}"
 }
 
 fn strip_conversation_transcript_jinja_blocks(template: &str) -> String {
@@ -308,6 +315,16 @@ mod tests {
     fn for_phase_ir_strips_standalone_output_format() {
         let s = AuthorBodySanitizer::for_phase_ir("Task.\n{{ ctx.output_format }}\nMore.\n");
         assert!(!s.contains("{{ ctx.output_format }}"));
+        assert!(s.contains("Task."));
+        assert!(s.contains("More."));
+    }
+
+    #[test]
+    fn for_phase_ir_strips_standalone_session_context_line() {
+        let s = AuthorBodySanitizer::for_phase_ir(
+            "Task.\n\nsession_context: {{ session_context }}\n\nMore.\n",
+        );
+        assert!(!s.contains("session_context:"));
         assert!(s.contains("Task."));
         assert!(s.contains("More."));
     }

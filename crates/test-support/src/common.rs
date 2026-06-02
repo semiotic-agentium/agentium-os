@@ -13,7 +13,7 @@ pub use a2a_test_helpers::{
     send_stream_request, send_stream_request_with_task, user_message, user_message_with_task,
 };
 mod net;
-pub use net::{bind_ephemeral_tokio, reserve_ephemeral_addr};
+pub use net::{bind_ephemeral_tokio, reserve_ephemeral_addr, serve_ephemeral_axum};
 mod test_tools;
 // Fixture helpers
 use std::{

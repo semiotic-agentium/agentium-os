@@ -169,10 +169,7 @@ fn render_report(source_kinds: &ToolDeclaredSourceKinds) -> String {
     writeln!(
         &mut out,
         "{}",
-        style(
-            "      Task-daemon compatibility source kinds remain valid when subscribing to task-daemon.interpretation.v1."
-        )
-        .dim()
+        style("      Task-daemon publishes host.source-records.v1 via POST /events/publish.").dim()
     )
     .expect("write");
     writeln!(
@@ -232,10 +229,8 @@ mod tests {
         assert!(report.contains("Compatibility Source Kinds (task-daemon bridge):"));
         assert!(report.contains("clickup"));
         assert!(report.contains("github_issues"));
-        assert!(report.contains("task-daemon.interpretation.v1"));
-        assert!(report.contains(
-            "Task-daemon compatibility source kinds remain valid when subscribing to task-daemon.interpretation.v1."
-        ));
+        assert!(report.contains("host.source-records.v1"));
+        assert!(report.contains("POST /events/publish"));
     }
 
     #[test]

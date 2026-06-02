@@ -439,6 +439,7 @@ impl ToolSession for ProvenanceQuerySession {
             outcome: Some(parse_outcome(send.outcome.as_deref())),
             response_profile: Some(ProvenanceResponseProfile::ToolCompact),
             budget_mode: true,
+            paginate_rows_in_sql: false,
         };
         let response = self.query.query_ops(request).await.map_err(|e| {
             ToolSessionError::Tool(ToolFailure::from_error(&BamlRtError::InvalidArgument(
