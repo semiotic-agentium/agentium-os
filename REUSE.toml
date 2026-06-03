@@ -10,6 +10,17 @@ version = 1
 # Covered below: configuration, documentation, generated trees, content-hashed
 # agent/fixture bundles, snapshots, and vendored binary assets.
 
+# --- Doc/test tooling shell scripts (inline SPDX + override for reuse lint) ---
+[[annotations]]
+path = [
+  "scripts/check-doc-claims.sh",
+  "scripts/check-doc-links.sh",
+  "scripts/test-inventory.sh",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "2026 Semiotic AI, Inc."
+SPDX-License-Identifier = "Apache-2.0"
+
 # --- Configuration, docs, data, and other non-headered first-party files ---
 [[annotations]]
 path = [
