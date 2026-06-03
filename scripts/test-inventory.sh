@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Per-file #[test] / #[tokio::test] counts for matrix-consolidation triage.
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
