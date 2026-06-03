@@ -4,7 +4,7 @@
 
 This crate defines **contracts** between BAML/LLM session plans and host integrations. Runtimes (`baml-rt-quickjs`, runners, API) **execute** those contracts; vendor tools **implement** `ToolHandler` / `BamlTool`.
 
-**Agent authors** (calling tools from BAML/JS, citations, UX) should start at [`docs/how-to-write-agents.md`](../../docs/how-to-write-agents.md). **Rust tool implementers** should use [`docs/host-tool-guide.md`](../../docs/host-tool-guide.md).
+**Agent authors** (calling tools from BAML/JS, citations, UX) should start at [`docs/assertions/how-to-write-agents.md`](../../docs/assertions/how-to-write-agents.md). **Rust tool implementers** should use [`docs/reference/host-tool-guide.md`](../../docs/reference/host-tool-guide.md).
 
 ## Responsibilities (quick map)
 

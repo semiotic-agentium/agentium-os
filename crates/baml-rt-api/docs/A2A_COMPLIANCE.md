@@ -1,3 +1,5 @@
+<!-- doc-type: reference -->
+
 # A2A compliance (baml-rt-api)
 
 Reference: [Agent2Agent Protocol (A2A) Specification](https://google.github.io/A2A/specification/) (v0.2.1).

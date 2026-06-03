@@ -1,3 +1,5 @@
+<!-- doc-type: assertion -->
+
 # LLM → host tool input JSON (design note)
 
 ## Problem

@@ -62,7 +62,7 @@ pub struct PlanDriftConfig {
 
 /// Defaults derived from empirical evaluation on BIPIA-style injection attack
 /// dataset (7 categories) and synthetic CRM-vs-poetry contrast pairs in embedding tests.
-/// See `docs/drift-catalogue.md` "Threshold Calibration Guide" for the data.
+/// See `docs/assertions/drift-catalogue.md` "Threshold Calibration Guide" for the data.
 impl Default for PlanDriftConfig {
     fn default() -> Self {
         Self {
@@ -298,7 +298,7 @@ pub fn score_plan_drift(
             // For PlanCommitted: the step IS the operative anchor. Intent contributes
             // only via plan_adherence_score (0.1 weight) — it must not independently
             // trigger warn/block. A tool action semantically matching its assigned step
-            // is correct even when distant from the broad user goal. See docs/drift-catalogue.md
+            // is correct even when distant from the broad user goal. See docs/assertions/drift-catalogue.md
             // §PlanCommitted-Composite for the calibration rationale.
             let plan_adherence_score =
                 (0.1 * intent_alignment + 0.9 * step_alignment * step_weight).clamp(0.0, 1.0);

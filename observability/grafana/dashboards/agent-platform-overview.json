@@ -1,13 +1,13 @@
 {
   "annotations": {"list": []},
-  "description": "Agent Platform overview. Template variables filter the agent-scoped panels; defaults are All. See observability/README.md (pilot observability contract) and docs/otel-trace-instrumentation-guide.md (cross-runner A2A forwarding) for label semantics and TraceQL recipes.",
+  "description": "Agent Platform overview. Template variables filter the agent-scoped panels; defaults are All. See observability/README.md (pilot observability contract) and docs/reference/otel-trace-instrumentation-guide.md (cross-runner A2A forwarding) for label semantics and TraceQL recipes.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
   "id": null,
   "links": [
     {
-      "title": "Open Tempo Explore (TraceQL recipes in docs/otel-trace-instrumentation-guide.md)",
+      "title": "Open Tempo Explore (TraceQL recipes in docs/reference/otel-trace-instrumentation-guide.md)",
       "type": "link",
       "url": "/explore?left=%7B%22datasource%22:%22Tempo%22%7D",
       "targetBlank": true,

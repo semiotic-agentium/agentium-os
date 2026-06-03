@@ -285,8 +285,6 @@ pub trait TaskGraphReader: Send + Sync {
 
 fn parse_event_order(anchor: &ActivityAnchorId) -> Result<u64, TaskReplayCursorError> {
     anchor
-        .as_str()
-        .strip_prefix("prov-")
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .ok_or_else(|| TaskReplayCursorError::InvalidAnchor(anchor.as_str().to_string()))
+        .monotonic_counter()
+        .map_err(|e| TaskReplayCursorError::InvalidAnchor(e.anchor))
 }

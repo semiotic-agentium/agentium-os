@@ -2850,10 +2850,8 @@ fn validate_required_call_metadata(
 fn event_order_from_event(event: &ProvEvent) -> u64 {
     event
         .id()
-        .as_str()
-        .strip_prefix("prov-")
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or_else(|| event.timestamp_ms())
+        .monotonic_counter()
+        .unwrap_or_else(|_| event.timestamp_ms())
 }
 
 fn base_attrs(event: &ProvEvent) -> HashMap<String, Value> {

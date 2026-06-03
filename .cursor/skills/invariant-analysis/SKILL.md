@@ -374,6 +374,6 @@ When analyzing a new subsystem:
 
 ## References
 
-- See `docs/testing-handbook.md` for invariant discovery methodology
+- See `docs/assertions/testing-handbook.md` for invariant discovery methodology
 - See `lib/credit-accounting/src/tests/property.rs` for property test examples (accounting domain)
 - See `lib/credit-accounting/README.md` for invariant documentation examples (accounting domain)

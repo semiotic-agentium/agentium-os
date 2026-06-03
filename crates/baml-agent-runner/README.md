@@ -2,7 +2,7 @@
 
 CLI for the A2A host: embedded repository, deploy-by-hash, QuickJS + BAML execution.
 
-**Authoring agents:** [`docs/how-to-write-agents.md`](../../docs/how-to-write-agents.md) — manifests, BAML, and how turns surface to operators (`StructuredReply`, citations).
+**Authoring agents:** [`docs/assertions/how-to-write-agents.md`](../../docs/assertions/how-to-write-agents.md) — manifests, BAML, and how turns surface to operators (`StructuredReply`, citations).
 
 **Deploy path:** `baml-agent-builder publish` (to `/repository`) then `POST /deploy` with the content hash, or restore from `--state-dir`. The CLI does not accept positional package paths.
 

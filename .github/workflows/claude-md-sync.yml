@@ -1,4 +1,4 @@
-name: CLAUDE.md Sync
+name: Doc Sync
 
 on:
   push:
@@ -9,12 +9,12 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: claude-md-sync
+  group: doc-sync
   cancel-in-progress: true
 
 jobs:
-  sync-claude-md:
-    name: Sync CLAUDE.md
+  sync-docs:
+    name: Sync reference docs
     runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v4
@@ -40,16 +40,24 @@ jobs:
             exit 0
           fi
 
-          NON_CLAUDE_FILES=$(echo "$CHANGED_FILES" | grep -v '^CLAUDE\.md$' || true)
-          if [ -z "$NON_CLAUDE_FILES" ]; then
+          NON_DOC_ONLY=0
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              CLAUDE.md|docs/README.md|docs/reference/*|docs/runbooks/*) ;;
+              *) NON_DOC_ONLY=1; break ;;
+            esac
+          done <<< "$CHANGED_FILES"
+
+          if [ "$NON_DOC_ONLY" -eq 0 ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Only CLAUDE.md changed, skipping to avoid loop"
+            echo "::notice::Only bot-maintained doc files changed, skipping loop"
             exit 0
           fi
 
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
-      - name: Propose CLAUDE.md updates
+      - name: Propose doc updates
         if: steps.skip-check.outputs.skip != 'true'
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -61,7 +69,6 @@ jobs:
           COMMIT_SHA=$(git rev-parse HEAD)
           MERGE_SUBJECT=$(git log -1 --format="%s" | head -c 50)
 
-          # --- Gather context ---
           MERGE_COMMIT=$(git log -1 --format="%s%n%n%b")
           DIFFSTAT=$(git diff --stat HEAD^1..HEAD)
 
@@ -71,67 +78,74 @@ jobs:
           INFRA_DIFF=$(git diff HEAD^1..HEAD -- justfile '.github/workflows/' 'deploy/' 'scripts/' 2>/dev/null) || true
           [ -z "$INFRA_DIFF" ] && INFRA_DIFF="No changes"
 
+          API_DIFF=$(git diff HEAD^1..HEAD -- \
+            crates/baml-rt-api/src/router.rs \
+            crates/baml-rt-api/src/handlers.rs \
+            crates/baml-rt-api/src/openapi.rs \
+            crates/baml-agent-runner/src/main.rs \
+            crates/baml-agent-runner/src/deployment_state.rs \
+            crates/cargo-agent-platform/src/main.rs \
+            2>/dev/null) || true
+          [ -z "$API_DIFF" ] && API_DIFF="No changes"
+
+          METRICS_DIFF=$(git diff HEAD^1..HEAD -- \
+            '**/metrics.rs' \
+            crates/baml-rt-core/src/effect_metrics.rs \
+            2>/dev/null) || true
+          [ -z "$METRICS_DIFF" ] && METRICS_DIFF="No changes"
+
+          HELM_DIFF=$(git diff HEAD^1..HEAD -- deploy/helm/agentium-os/ 2>/dev/null) || true
+          [ -z "$HELM_DIFF" ] && HELM_DIFF="No changes"
+
           CLAUDE_DIFF=$(git diff HEAD^1..HEAD -- CLAUDE.md 2>/dev/null) || true
           [ -z "$CLAUDE_DIFF" ] && CLAUDE_DIFF="None"
 
           CURRENT_CLAUDE=$(cat CLAUDE.md)
 
-          # --- System prompt (static, no variable interpolation) ---
           cat > /tmp/system_prompt.txt << 'SYSPROMPT'
-          You maintain the CLAUDE.md file for a Rust workspace called Agentium OS. CLAUDE.md is read by Claude Code to understand how to work with this codebase. It contains:
-          - Build & development commands (cargo, just recipes, test commands)
-          - Architecture overview (crate map, runtime flow, key abstractions)
-          - CI structure
-          - Testing conventions
-          - Rust coding conventions
-          - External dependencies
+          You maintain Agentium OS documentation after merges to main.
 
-          You will receive:
-          1. A diffstat showing which files changed and by how much
-          2. The merge commit message (usually the PR title + body)
-          3. Targeted diffs for infrastructure files (Cargo.toml, justfile, workflows, deploy scripts)
-          4. Any direct edits to CLAUDE.md itself from this merge
-          5. The current CLAUDE.md content
+          Responsibilities (ONLY these paths):
+          - CLAUDE.md — slim pointer hub (~100 lines max): build commands, doc map entry, crate one-liners. Never restore long architecture prose (defer to README.md and docs/README.md).
+          - docs/reference/** — factual system-as-is reference
+          - docs/runbooks/** — install, demo, ops steps
 
-          From the diffstat, identify architecturally significant changes:
-          - New directories under crates/ → likely a new crate (check Cargo.toml diffs to confirm)
-          - Renamed or removed crate directories
-          - Changes to justfile, scripts/, .github/workflows/ → build/test/CI commands
-          - Changes to deploy/ → deployment targets
-          - Changes to Cargo.toml feature sections → feature flags
-          - Large-scale file moves → possible restructuring
+          Do NOT edit docs/assertions/** (normative invariants; human-reviewed only).
 
-          Changes that do NOT warrant CLAUDE.md updates:
-          - Bug fixes within existing crates (internal changes, no API/architecture shift)
-          - Test additions following existing conventions
-          - Dependency version bumps without new external deps
-          - Documentation changes (unless establishing new conventions)
-          - Internal refactors that don't change the crate map or public shape
+          Path → doc routing when code changes:
+          - crates/baml-rt-api/src/router.rs, handlers.rs → docs/reference/agent-runner.md
+          - crates/baml-agent-runner/** deploy/restore → docs/reference/deployment-lifecycle-contract.md
+          - crates/cargo-agent-platform/** → docs/reference/sdk-cli.md
+          - crates/baml-rt-mcp/**, repository MCP routes → docs/reference/agentium-mcp-support.md
+          - **/metrics.rs, effect_metrics.rs → docs/reference/metrics-inventory.md
+          - deploy/helm/agentium-os/** → docs/runbooks/k8s-pilot-operator-guide.md
+          - New top-level crate dir → CLAUDE.md crate table (+ docs/README.md if needed)
 
-          If updates are needed, output ONLY the complete updated CLAUDE.md content. Do not wrap it in markdown code fences. Do not add commentary before or after.
+          Canonical facts to preserve:
+          - A2A SSE on POST .../a2a only (no /a2a/sse route)
+          - Cluster mode = --surreal-endpoint (not RUNNER_TOKEN alone)
+          - Tool FSM ops: Open, Send, SearchRead, PageRead, Finish, Abort
+          - Graph-first reads: traverse edges; never parse node ID prefixes for relationships
 
-          If no updates are needed, output exactly: NO_CHANGES_NEEDED
-
-          Rules for writing CLAUDE.md:
-          - Describe current behavior in present tense — no version history or changelog entries
-          - User-focused, not implementation-focused
-          - Keep the same section structure unless a new top-level concern emerges
-          - Crate descriptions: one line each, format crate-name — what it does
-          - Be precise about command flags and feature gate names
-          - Do not remove or alter sections unrelated to the changes in this merge
+          Output format:
+          - JSON object mapping relative file paths to full file contents for ONLY changed files, e.g.
+            {"CLAUDE.md":"...", "docs/reference/agent-runner.md":"..."}
+          - If no updates needed, output exactly: NO_CHANGES_NEEDED
+          - Do not wrap JSON in markdown fences.
           SYSPROMPT
 
-          # --- User message ---
           {
             printf 'Merge commit\n\n%s\n\n' "$MERGE_COMMIT"
             printf 'Diffstat\n\n%s\n\n' "$DIFFSTAT"
             printf 'Cargo.toml changes\n\n%s\n\n' "$CARGO_DIFF"
-            printf 'Infrastructure file changes (justfile, workflows, deploy, scripts)\n\n%s\n\n' "$INFRA_DIFF"
+            printf 'Infrastructure changes\n\n%s\n\n' "$INFRA_DIFF"
+            printf 'API/runner/CLI changes\n\n%s\n\n' "$API_DIFF"
+            printf 'Metrics changes\n\n%s\n\n' "$METRICS_DIFF"
+            printf 'Helm changes\n\n%s\n\n' "$HELM_DIFF"
             printf 'Direct CLAUDE.md edits in this merge\n\n%s\n\n' "$CLAUDE_DIFF"
             printf 'Current CLAUDE.md\n\n%s\n' "$CURRENT_CLAUDE"
           } > /tmp/user_message.txt
 
-          # --- Build API payload with jq (safe JSON construction) ---
           jq -n \
             --arg model "anthropic/claude-sonnet-4" \
             --rawfile system /tmp/system_prompt.txt \
@@ -139,21 +153,20 @@ jobs:
             '{
               model: $model,
               temperature: 0,
-              max_tokens: 16000,
+              max_tokens: 32000,
               messages: [
                 { role: "system", content: $system },
                 { role: "user", content: $user }
               ]
             }' > /tmp/api_payload.json
 
-          # --- Call OpenRouter API ---
           HTTP_CODE=$(curl -s -w "%{http_code}" -o /tmp/api_response.json \
-            --max-time 120 \
+            --max-time 180 \
             -X POST "https://openrouter.ai/api/v1/chat/completions" \
             -H "Authorization: Bearer $OPENROUTER_API_KEY" \
             -H "Content-Type: application/json" \
             -H "HTTP-Referer: https://github.com/agentium-os/agent-platform" \
-            -H "X-Title: Agentium OS CLAUDE.md Sync" \
+            -H "X-Title: Agentium OS Doc Sync" \
             -d @/tmp/api_payload.json)
 
           if [ "$HTTP_CODE" -ne 200 ]; then
@@ -162,7 +175,6 @@ jobs:
             exit 1
           fi
 
-          # --- Parse response ---
           RESPONSE=$(jq -r '.choices[0].message.content // empty' /tmp/api_response.json)
 
           if [ -z "$RESPONSE" ]; then
@@ -172,80 +184,90 @@ jobs:
           fi
 
           if [ "$RESPONSE" = "NO_CHANGES_NEEDED" ]; then
-            echo "::notice::No CLAUDE.md changes needed for this merge"
+            echo "::notice::No doc changes needed for this merge"
             exit 0
           fi
 
-          # Compare against current content (trim trailing whitespace)
-          CURRENT_TRIMMED=$(printf '%s' "$CURRENT_CLAUDE" | sed 's/[[:space:]]*$//')
-          RESPONSE_TRIMMED=$(printf '%s' "$RESPONSE" | sed 's/[[:space:]]*$//')
+          if ! printf '%s' "$RESPONSE" | jq -e 'type == "object"' >/dev/null 2>&1; then
+            echo "::error::Expected JSON object or NO_CHANGES_NEEDED"
+            printf '%s\n' "$RESPONSE" | head -c 2000
+            exit 1
+          fi
 
-          if [ "$CURRENT_TRIMMED" = "$RESPONSE_TRIMMED" ]; then
-            echo "::notice::Proposed content identical to current CLAUDE.md"
+          CHANGED=0
+          while IFS= read -r path; do
+            [ -z "$path" ] && continue
+            case "$path" in
+              CLAUDE.md|docs/reference/*|docs/runbooks/*) ;;
+              *)
+                echo "::error::Refusing to write disallowed path: $path"
+                exit 1
+                ;;
+            esac
+            content=$(printf '%s' "$RESPONSE" | jq -r --arg p "$path" '.[$p]')
+            if [ "$content" = "null" ] || [ -z "$content" ]; then
+              continue
+            fi
+            mkdir -p "$(dirname "$path")"
+            printf '%s\n' "$content" > "$path"
+            CHANGED=1
+          done < <(printf '%s' "$RESPONSE" | jq -r 'keys[]')
+
+          if [ "$CHANGED" -eq 0 ]; then
+            echo "::notice::JSON contained no writable file entries"
             exit 0
           fi
 
-          # --- Prepare git ---
+          bash scripts/check-doc-links.sh
+          bash scripts/check-doc-claims.sh
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # --- Check for existing open auto/claude-md-sync-* PR ---
           EXISTING_PR_JSON=$(gh pr list --state open --json number,headRefName \
-            --jq '[.[] | select(.headRefName | startswith("auto/claude-md-sync-"))][0] // empty' \
+            --jq '[.[] | select(.headRefName | startswith("auto/doc-sync-"))][0] // empty' \
             2>/dev/null || true)
 
           if [ -n "$EXISTING_PR_JSON" ]; then
             EXISTING_PR=$(echo "$EXISTING_PR_JSON" | jq -r '.number')
             EXISTING_BRANCH=$(echo "$EXISTING_PR_JSON" | jq -r '.headRefName')
-
             echo "::notice::Updating existing PR #${EXISTING_PR} on branch ${EXISTING_BRANCH}"
             git fetch origin "$EXISTING_BRANCH" 2>/dev/null || true
             git checkout -B "$EXISTING_BRANCH" HEAD
-            printf '%s\n' "$RESPONSE" > CLAUDE.md
-            git add CLAUDE.md
-            git commit -m "docs: sync CLAUDE.md with ${COMMIT_SHA:0:7}"
+            git add CLAUDE.md docs/reference docs/runbooks
+            git commit -m "docs: sync reference docs with ${COMMIT_SHA:0:7}"
             git push origin "$EXISTING_BRANCH" --force-with-lease
           else
-            BRANCH_NAME="auto/claude-md-sync-${SHA_SHORT}"
-
+            BRANCH_NAME="auto/doc-sync-${SHA_SHORT}"
             echo "::notice::Creating branch ${BRANCH_NAME}"
             git checkout -b "$BRANCH_NAME"
-            printf '%s\n' "$RESPONSE" > CLAUDE.md
-            git add CLAUDE.md
-            git commit -m "docs: sync CLAUDE.md with ${COMMIT_SHA:0:7}"
+            git add CLAUDE.md docs/reference docs/runbooks
+            git commit -m "docs: sync reference docs with ${COMMIT_SHA:0:7}"
             git push origin "$BRANCH_NAME"
 
-            # Create label (ignore failure if it already exists or permissions insufficient)
-            gh label create claude-md-sync \
-              --description "Automated CLAUDE.md updates" \
+            gh label create doc-sync \
+              --description "Automated reference/runbook doc updates" \
               --color "0075ca" 2>/dev/null || true
 
-            # Build PR body
             {
-              printf 'Proposed CLAUDE.md updates based on %s.\n\n' "$COMMIT_SHA"
+              printf 'Proposed reference/runbook doc updates based on %s.\n\n' "$COMMIT_SHA"
               printf '<details>\n<summary>Diffstat</summary>\n\n'
               printf '```\n%s\n```\n\n' "$DIFFSTAT"
               printf '</details>\n'
             } > /tmp/pr_body.txt
 
-            # Create PR — if GITHUB_TOKEN lacks PR-creation permission, log the
-            # branch URL so a human can open the PR manually.
-            if gh pr create \
-              --title "docs: sync CLAUDE.md with ${MERGE_SUBJECT}" \
+            gh pr create \
+              --title "docs: sync reference docs with ${MERGE_SUBJECT}" \
               --body-file /tmp/pr_body.txt \
-              --label "claude-md-sync" \
+              --label "doc-sync" \
               --base main \
-              --head "$BRANCH_NAME" 2>/tmp/gh_pr_err; then
-              echo "::notice::PR created successfully"
-            elif gh pr create \
-              --title "docs: sync CLAUDE.md with ${MERGE_SUBJECT}" \
+              --head "$BRANCH_NAME" 2>/tmp/gh_pr_err || \
+            gh pr create \
+              --title "docs: sync reference docs with ${MERGE_SUBJECT}" \
               --body-file /tmp/pr_body.txt \
               --base main \
-              --head "$BRANCH_NAME" 2>/tmp/gh_pr_err; then
-              echo "::notice::PR created successfully (without label)"
-            else
-              REPO_URL=$(gh repo view --json url -q '.url')
-              GH_ERR=$(cat /tmp/gh_pr_err)
-              echo "::warning::Could not create PR: ${GH_ERR}. Branch pushed — open manually: ${REPO_URL}/compare/main...${BRANCH_NAME}?expand=1"
-            fi
+              --head "$BRANCH_NAME" || {
+                REPO_URL=$(gh repo view --json url -q '.url')
+                echo "::warning::Could not create PR. Branch: ${REPO_URL}/compare/main...${BRANCH_NAME}"
+              }
           fi

@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Kubernetes pilot first-run smoke flow. See `--help` for usage.
-# Packages steps 6–8 of docs/k8s-pilot-operator-guide.md.
+# Packages steps 6–8 of docs/runbooks/k8s-pilot-operator-guide.md.
 
 set -euo pipefail
 

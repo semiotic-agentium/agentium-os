@@ -13,7 +13,7 @@
 # documented operator smoke flow (scripts/k8s-pilot-smoke.sh) plus one
 # package-wiring verify against SurrealDB.
 #
-# This script is the in-repo mirror of docs/k8s-pilot-operator-guide.md.
+# This script is the in-repo mirror of docs/runbooks/k8s-pilot-operator-guide.md.
 # Its job is to catch regressions that would otherwise only surface when a
 # design partner runs `helm upgrade --install` themselves. There is no
 # post-install kubectl patching here — if the chart doesn't wire a piece of

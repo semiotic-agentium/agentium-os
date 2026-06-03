@@ -63,19 +63,19 @@ Panel groups:
 - **Cluster & Ingress** — ingress HTTP rate/latency by agent route, serving A2A rate and errors by agent + runner, forwarded-vs-local ingress split, cluster A2A forward rate and duration (split by `ingress_service_instance_id` and `target_service_instance_id`).
 - **A2A / LLM / Tools / ONNX** — A2A request latency (split by `serving_service_instance_id`), LLM calls/sec, duration, prompt bytes, tokens in/out; tool call rate + latency; ONNX wait/run/ratio and wait-dominant events.
 
-The dashboard links out to Grafana Explore for trace correlation against the provisioned Tempo datasource. See [docs/otel-trace-instrumentation-guide.md § Cross-runner A2A forwarding](../docs/otel-trace-instrumentation-guide.md#cross-runner-a2a-forwarding) for TraceQL recipes.
+The dashboard links out to Grafana Explore for trace correlation against the provisioned Tempo datasource. See [otel-trace-instrumentation-guide.md § Cross-runner A2A forwarding](../docs/reference/otel-trace-instrumentation-guide.md#cross-runner-a2a-forwarding) for TraceQL recipes.
 
 ## Pilot observability contract
 
-The shipped runner emits these OpenTelemetry **resource attributes** on every signal: `service.name=agentium-runner`, `service.namespace=agentium`, `service.instance.id=<runner identity>`, `deployment.environment=<Helm value>`, `k8s.namespace.name=<pod namespace>`. Full derivation details live in [docs/metrics-inventory.md § Runner identity labels](../docs/metrics-inventory.md#runner-identity-labels).
+The shipped runner emits these OpenTelemetry **resource attributes** on every signal: `service.name=agentium-runner`, `service.namespace=agentium`, `service.instance.id=<runner identity>`, `deployment.environment=<Helm value>`, `k8s.namespace.name=<pod namespace>`. Full derivation details live in [docs/reference/metrics-inventory.md § Runner identity labels](../docs/reference/metrics-inventory.md#runner-identity-labels).
 
 - **Resource attributes are not automatically Prometheus labels.** The collector config shipped in this directory ([`otel-collector-config.yaml`](./otel-collector-config.yaml)) runs a `transform/runner_identity` processor that promotes `service.instance.id` → datapoint attr `service_instance_id` and `k8s.namespace.name` → `k8s_namespace_name`. Operators running their own collector must replicate that transform or rely on the explicit per-metric identity labels below.
 - **Explicit identity labels** on metrics — available regardless of collector transforms:
   - `ingress_service_instance_id` on `baml_rt_api_http_request_*` (agent routes) and `baml_rt_cluster_a2a_forward_*`
   - `serving_service_instance_id` on `baml_rt_a2a_request_*`, `baml_rt_a2a_error_total`
   - `target_service_instance_id` on `baml_rt_cluster_a2a_forward_*` (may be the literal `unknown` when the cluster resolver fallback fires)
-- **`forwarded` is advisory.** On public `/agents/...` routes the `forwarded=true` label / span attribute is derived from the W3C baggage key `ingress_service_instance_id`. Any HTTP client can set the same baggage header; treat `forwarded` as a telemetry slice, not an authorization boundary. See the trace guide's [Cross-runner A2A forwarding](../docs/otel-trace-instrumentation-guide.md#cross-runner-a2a-forwarding) section.
-- **Authoritative label contract** for each metric family lives in [docs/metrics-inventory.md](../docs/metrics-inventory.md).
+- **`forwarded` is advisory.** On public `/agents/...` routes the `forwarded=true` label / span attribute is derived from the W3C baggage key `ingress_service_instance_id`. Any HTTP client can set the same baggage header; treat `forwarded` as a telemetry slice, not an authorization boundary. See the trace guide's [Cross-runner A2A forwarding](../docs/reference/otel-trace-instrumentation-guide.md#cross-runner-a2a-forwarding) section.
+- **Authoritative label contract** for each metric family lives in [docs/reference/metrics-inventory.md](../docs/reference/metrics-inventory.md).
 
 ## Notes
 

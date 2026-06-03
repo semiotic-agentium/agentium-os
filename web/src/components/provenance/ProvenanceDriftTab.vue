@@ -143,7 +143,7 @@ const emit = defineEmits<{
               <span class="drift-help drift-inline-help" :data-tooltip="driftHelp.grounding">&#9432;</span>
             </div>
             <p class="drift-cite-explainer">
-              Similarity measures how much the response resembles each cited entry (not whether facts are true). Calibrated bands: &ge;0.65 strong, 0.40&ndash;0.65 moderate, &lt;0.40 weak. Full reference: <code>docs/drift-catalogue.md</code> in the repo.
+              Similarity measures how much the response resembles each cited entry (not whether facts are true). Calibrated bands: &ge;0.65 strong, 0.40&ndash;0.65 moderate, &lt;0.40 weak. Full reference: <code>docs/assertions/drift-catalogue.md</code> in the repo.
             </p>
             <details class="cite-threshold-legend">
               <summary>Threshold legend</summary>

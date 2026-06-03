@@ -866,7 +866,7 @@ ensure_runner_image_available() {
 # create_pilot_objects — create the three objects the chart requires:
 # `surrealdb-credentials` secret, `runner-token` secret, `fnox-config`
 # ConfigMap. The runner does not read LLM credentials from env vars (see
-# docs/k8s-pilot-operator-guide.md "Create secrets and config"), so
+# docs/runbooks/k8s-pilot-operator-guide.md "Create secrets and config"), so
 # .env / fnox-secrets shortcuts stay in the demo script, not here.
 create_pilot_objects() {
   log_step "Creating namespace and package objects"

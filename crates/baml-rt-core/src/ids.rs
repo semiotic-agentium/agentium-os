@@ -202,6 +202,40 @@ impl ActivityAnchorId {
     pub fn from_counter(counter: u64) -> Self {
         Self(MonotonicId::new("prov", counter).into_string())
     }
+
+    /// Decode the monotonic counter embedded in a `prov-{n}` activity anchor.
+    ///
+    /// This is typed ID decoding at the ID boundary — not a graph relationship read.
+    pub fn monotonic_counter(&self) -> Result<u64, ActivityAnchorParseError> {
+        monotonic_counter_from_str(self.as_str())
+    }
+}
+
+/// Failed to decode a monotonic `prov-{n}` activity anchor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivityAnchorParseError {
+    pub anchor: String,
+}
+
+impl std::fmt::Display for ActivityAnchorParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "activity anchor `{}` is not a monotonic prov-* anchor",
+            self.anchor
+        )
+    }
+}
+
+impl std::error::Error for ActivityAnchorParseError {}
+
+pub fn monotonic_counter_from_str(raw: &str) -> Result<u64, ActivityAnchorParseError> {
+    let rest = raw.strip_prefix("prov-").ok_or(ActivityAnchorParseError {
+        anchor: raw.to_string(),
+    })?;
+    rest.parse::<u64>().map_err(|_| ActivityAnchorParseError {
+        anchor: raw.to_string(),
+    })
 }
 
 impl From<String> for ActivityAnchorId {
@@ -439,5 +473,18 @@ mod tests {
             context_id.as_str(),
             "a2a:ctx-88-1:responder-agent/default:a2a-child-fixed"
         );
+    }
+
+    #[test]
+    fn activity_anchor_monotonic_counter_roundtrip() {
+        let anchor = ActivityAnchorId::from_counter(42);
+        assert_eq!(anchor.monotonic_counter().expect("decode"), 42);
+        assert_eq!(anchor.as_str(), "prov-42");
+    }
+
+    #[test]
+    fn activity_anchor_monotonic_counter_rejects_non_prov() {
+        let anchor = ActivityAnchorId::from("not-an-anchor".to_string());
+        assert!(anchor.monotonic_counter().is_err());
     }
 }

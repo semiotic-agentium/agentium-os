@@ -1,0 +1,707 @@
+# OpenTelemetry Metrics Instrumentation Guide
+
+**Patterns for instrumenting Rust crates with production-grade OTel metrics.**
+
+Based on Agentium OS crates (`baml-rt-core`, `baml-rt-a2a`, `baml-rt-api`): orthogonal metrics module, OpenTelemetry native API, structured attributes, and testability.
+
+---
+
+## Agent Platform Local OTEL Wiring (this repo)
+
+This repository includes a ready-to-run local telemetry stack in `observability/` (Collector + Prometheus + Tempo + Grafana).
+
+### Day-1 commands
+
+```bash
+just otel-up
+just runner            # or: just runner-provenance
+just otel-summary 15m
+```
+
+- `just otel-up/down/ps/logs` delegates to `scripts/otel-stack.sh`.
+- `just otel-summary <window>` prints a plain-text Prometheus summary (LLM vs tool time split, top functions/tools).
+- `just runner` and `just runner-provenance` set OTEL env defaults (otlp/grpc to `localhost:4317`) and auto-start the OTEL stack unless `OTEL_AUTO_UP=0`.
+
+### Current exported runtime metrics
+
+**Workspace inventory (names, meters, purpose):** [metrics-inventory.md](./metrics-inventory.md). Keep that document updated when adding or removing instruments.
+
+High-signal families:
+
+- **A2A host:** `baml_rt.a2a.request_*`, `baml_rt.a2a.error_total`, stream chunk counters/histograms, live-stream and SSE TTFB histograms; event producer sweep `baml_rt.a2a.event_poll.*` and per-event dispatch `baml_rt.a2a.event_dispatch.*` ([`baml-rt-a2a`](../crates/baml-rt-a2a/src/event_dispatcher.rs)).
+- **Cluster A2A forward:** `baml_rt.cluster.a2a_forward_*` when an ingress runner routes to a peer ([`baml-rt-router`](../crates/baml-rt-router/src/forward.rs)). Ingress, serving, and target runner identity are explicit per-metric labels — no `target_info` join needed; see [metrics-inventory.md § Runner identity labels](./metrics-inventory.md#runner-identity-labels). The `forwarded` label on `baml_rt_api.http.request_*` (agent routes) is advisory; see the trace guide's [cross-runner A2A forwarding](./otel-trace-instrumentation-guide.md#cross-runner-a2a-forwarding) section.
+- **Tools:** `baml_rt.tool.invocation_*` — **single canonical** completion signal for host tools (emitted from the QuickJS bridge when a tool run finishes). Registry FSM timings use `baml_rt_tools.tool.session.*` (opens and per-op durations); do **not** duplicate full tool completion in a second `baml_rt_tools` execution counter.
+- **LLM / ONNX:** `baml_rt.llm.*`, `baml_rt.onnx.*` (provenance subscriber + embedding paths).
+- **HTTP API:** `baml_rt_api.http.*` and conversation-history histograms ([`baml-rt-api` metrics module](../crates/baml-rt-api/src/metrics.rs)); config and static routes are listed in [metrics-inventory.md](./metrics-inventory.md).
+- **Repository:** `repository.*` ([`baml-rt-repository`](../crates/baml-rt-repository/src/metrics.rs)).
+- **Provenance reads:** `baml_rt_provenance.read.*` for heavy Surreal paths (graph export, ops query).
+- **task-daemon:** `baml_rt_task_daemon.run_once.*` ([`baml-rt-observability`](../crates/baml-rt-observability/src/metrics.rs)).
+
+A starter Grafana dashboard is provisioned at:
+`observability/grafana/dashboards/agent-platform-overview.json`.
+
+## Design Goals
+
+1. **Separation of Concerns**: Metrics instrumentation lives in a separate module, not mixed with business logic
+2. **Machine-Parseable**: All attributes are structured fields (no string interpolation in metric names)
+3. **OpenTelemetry Native**: Use OTEL's Meter API directly, not third-party bridges
+4. **Testable**: Metric structure and attributes are verified in tests
+5. **Low Cardinality**: Metric names and attribute keys are static; dynamic data goes in attribute _values_
+6. **Production-Ready**: Appropriate but not excessive metrics that surface operational insights
+
+---
+
+## Architecture Pattern
+
+### Module Structure
+
+```
+my_crate/
+├── src/
+│   ├── lib.rs         # Business logic (DB queries, conversions, etc.)
+│   ├── metrics.rs     # OTel metrics helpers (orthogonal to business logic)
+│   └── tests/
+│       └── integration.rs
+```
+
+**Why separate?**
+
+- Business logic functions stay clean and focused
+- Metric naming and attribute schemas are centralized
+- Easy to audit and maintain instrumentation
+- Can disable/swap metrics without touching core logic
+
+### The `metrics.rs` Module
+
+Create a dedicated module with metric recording helpers:
+
+```rust
+// src/metrics.rs — pattern from crates/baml-rt-core/src/effect_metrics.rs
+use opentelemetry::{global, KeyValue};
+use std::sync::OnceLock;
+use std::time::Duration;
+
+const METER_NAME: &str = "baml_rt_core";
+
+static EFFECT_PROCESS_MS: OnceLock<Histogram<f64>> = OnceLock::new();
+
+fn effect_process_ms() -> &'static Histogram<f64> {
+    EFFECT_PROCESS_MS.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt_core.effect_emit.process_duration_ms")
+            .init()
+    })
+}
+
+/// End-to-end `process_effect` (liveness map + subscribers).
+pub fn record_effect_process(event_variant: &'static str, duration: Duration) {
+    let attrs = &[KeyValue::new("event.variant", event_variant)];
+    effect_process_ms().record(duration.as_millis() as f64, attrs);
+}
+```
+
+**Key principles:**
+
+- Static metric names (`"accounting.advisory_lock.wait_ms"`)
+- Namespace prefix prevents collisions (`accounting.` vs `onramp.`)
+- All dynamic data goes in **attributes**, not metric names
+- Use appropriate metric types (counter, histogram, gauge)
+- Document what each metric measures
+
+---
+
+## Metric Naming Convention
+
+**Format**: `{service_name}.{domain}.{metric_type}`
+
+### Examples
+
+✅ **Good:**
+
+```rust
+// Service-specific namespacing
+"baml_rt_core.operation.duration_ms"
+"baml_rt_core.advisory_lock.acquired_total"
+"baml_rt_core.operation.total"
+"database_support.pool.connections.idle"
+```
+
+❌ **Bad:**
+
+```rust
+// Missing namespace
+"operation_duration"  // Collision risk!
+
+// Too vague
+"accounting"  // What about accounting?
+
+// Dynamic name (high cardinality!)
+format!("operation_{}", op_name)  // Creates millions of metrics!
+```
+
+### Metric Types
+
+- **Counter**: Always-increasing values (operation counts, errors)
+- **Histogram**: Duration, size, latency distributions
+- **Gauge**: Current state values (connection pool size, memory usage)
+
+---
+
+## Structured Attributes
+
+**CRITICAL**: Use typed attributes, NEVER string interpolation in metric names.
+
+### ✅ Correct Patterns
+
+```rust
+// Operation-specific attributes
+let attributes = &[
+    KeyValue::new("operation", "process_payment"),
+    KeyValue::new("result", "success"),
+];
+
+// Resource-specific attributes
+let attributes = &[
+    KeyValue::new("pool_name", "main"),
+    KeyValue::new("state", "idle"),
+];
+
+// Error-specific attributes
+let attributes = &[
+    KeyValue::new("error_type", "insufficient_balance"),
+    KeyValue::new("operation", "transfer"),
+];
+```
+
+### ❌ Anti-Patterns
+
+```rust
+// NEVER: String interpolation in metric names
+let metric_name = format!("operation_{}", op);  // ❌ High cardinality!
+
+// NEVER: Runtime formatting in metric names
+meter.f64_counter(&format!("{}_count", operation));  // ❌ Not machine-parseable!
+
+// NEVER: Positional arguments
+counter.add(1, &[KeyValue::new("op", operation)]);  // ❌ Use descriptive names!
+```
+
+### Correct Metric Recording
+
+```rust
+// ✅ Structured attributes, static metric name
+pub fn record_payment_processed(amount: i128, duration: Duration) {
+    let meter = global::meter("baml_rt_core");
+    let histogram = meter
+        .f64_histogram("accounting.payment.duration_ms")
+        .build();
+
+    histogram.record(
+        duration.as_millis() as f64,
+        &[KeyValue::new("amount_bucket", bucket_amount(amount))],
+    );
+}
+```
+
+---
+
+## Instrumenting Business Logic
+
+### The Orthogonal Pattern (RECOMMENDED)
+
+**Always use the metrics module + direct calls.** Never embed metric recording in business logic.
+
+```rust
+pub async fn process_payment(&self, from: &str, to: &str, amount: i128) -> Result<()> {
+    let start = std::time::Instant::now();
+
+    // Business logic here
+    let result = self.transfer_impl(from, to, amount).await;
+
+    // Record metrics after operation
+    let duration = start.elapsed();
+    match &result {
+        Ok(_) => metrics::record_operation_complete("process_payment", "success", duration),
+        Err(AccountingError::InsufficientBalance) => {
+            metrics::record_operation_complete("process_payment", "insufficient_balance", duration)
+        }
+        Err(_) => metrics::record_operation_complete("process_payment", "error", duration),
+    }
+
+    result
+}
+```
+
+**Why this pattern?**
+
+✅ **Separation**: Instrumentation lives in `metrics.rs`, not scattered across business logic
+✅ **Centralized**: All metric names and attribute schemas in one place
+✅ **Clean**: Business logic stays focused on business concerns
+
+### ❌ Anti-Pattern: Inline Metrics
+
+**Don't do this:**
+
+```rust
+// ❌ BAD: Mixes metrics into business logic!
+pub async fn process_payment(&self, from: &str, to: &str, amount: i128) -> Result<()> {
+    let meter = global::meter("baml_rt_core");
+    let counter = meter.u64_counter("payment_count").build();
+
+    // Business logic mixed with instrumentation
+    counter.add(1, &[KeyValue::new("from", from.to_string())]);
+
+    // ... business logic ...
+}
+```
+
+**Why avoid it:**
+
+❌ Hard to audit all instrumentation (scattered across files)
+❌ Violates separation of concerns
+
+---
+
+## Performance: Instrument Caching with `OnceLock`
+
+### The Problem: Repeated Instrument Creation
+
+Creating metric instruments on every call is **expensive and wasteful**:
+
+```rust
+// ❌ BAD: Creates new instruments every time function is called!
+pub fn record_operation(operation: &str, duration: Duration) {
+    let meter = global::meter("my_service");
+    let histogram = meter.f64_histogram("operation.duration_ms").build(); // ❌ Allocates!
+    let counter = meter.u64_counter("operation.total").build();           // ❌ Allocates!
+
+    histogram.record(duration.as_millis() as f64, &[...]);
+    counter.add(1, &[...]);
+}
+```
+
+**Why this is bad:**
+
+- Creates new `Meter` instance every call
+- Builds new `Histogram` and `Counter` instances every call
+- Allocates memory on hot path
+- Unnecessary synchronization overhead
+
+---
+
+### The Solution: Static Instrument Caching
+
+Use `std::sync::OnceLock` to cache instruments once and reuse forever:
+
+```rust
+use opentelemetry::{global, KeyValue};
+use opentelemetry::metrics::{Counter, Histogram};
+use std::sync::OnceLock;
+use std::time::Duration;
+
+// Static caches - initialized once, reused forever
+static OPERATION_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static OPERATION_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+
+// Getter functions - initialize on first call, return cached reference after
+fn operation_histogram() -> &'static Histogram<f64> {
+    OPERATION_HISTOGRAM.get_or_init(|| {
+        global::meter("my_service")
+            .f64_histogram("operation.duration_ms")
+            .build()
+    })
+}
+
+fn operation_counter() -> &'static Counter<u64> {
+    OPERATION_COUNTER.get_or_init(|| {
+        global::meter("my_service")
+            .u64_counter("operation.total")
+            .build()
+    })
+}
+
+// ✅ GOOD: Reuses cached instruments!
+pub fn record_operation(operation: &str, duration: Duration) {
+    let attrs = &[KeyValue::new("operation", operation.to_string())];
+    operation_histogram().record(duration.as_millis() as f64, attrs);
+    operation_counter().add(1, attrs);
+}
+```
+
+---
+
+### Performance Benefits
+
+✅ **Initialized once**: First call creates instrument, all subsequent calls reuse it
+✅ **Thread-safe**: `OnceLock` handles concurrent initialization safely
+✅ **Zero allocation**: No memory allocations on hot path after first call
+✅ **Zero overhead**: After initialization, it's just a pointer dereference
+✅ **Simple**: No manual locking or synchronization needed
+
+---
+
+### Implementation Pattern
+
+**For every metrics module, follow this pattern:**
+
+1. **Declare static `OnceLock` for each instrument:**
+
+   ```rust
+   static MY_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+   static MY_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+   static MY_GAUGE: OnceLock<Gauge<f64>> = OnceLock::new();
+   ```
+
+2. **Create private getter functions:**
+
+   ```rust
+   fn my_histogram() -> &'static Histogram<f64> {
+       MY_HISTOGRAM.get_or_init(|| {
+           global::meter("service_name")
+               .f64_histogram("metric.name")
+               .build()
+       })
+   }
+   ```
+
+3. **Use getters in public recording functions:**
+   ```rust
+   pub fn record_something(value: f64) {
+       my_histogram().record(value, &[]);
+   }
+   ```
+
+---
+
+### Real-World Example: Connection Pool Metrics
+
+```rust
+use opentelemetry::metrics::Gauge;
+use std::sync::OnceLock;
+use sqlx::PgPool;
+
+static POOL_IDLE_GAUGE: OnceLock<Gauge<f64>> = OnceLock::new();
+static POOL_ACTIVE_GAUGE: OnceLock<Gauge<f64>> = OnceLock::new();
+
+fn pool_idle_gauge() -> &'static Gauge<f64> {
+    POOL_IDLE_GAUGE.get_or_init(|| {
+        global::meter("database_support")
+            .f64_gauge("db.pool.connections.idle")
+            .build()
+    })
+}
+
+fn pool_active_gauge() -> &'static Gauge<f64> {
+    POOL_ACTIVE_GAUGE.get_or_init(|| {
+        global::meter("database_support")
+            .f64_gauge("db.pool.connections.active")
+            .build()
+    })
+}
+
+// Called every 15 seconds - zero allocation overhead!
+pub fn record_pool_state(pool: &PgPool) {
+    let num_idle = pool.num_idle() as f64;
+    let num_active = (pool.size() - pool.num_idle()) as f64;
+
+    pool_idle_gauge().record(num_idle, &[]);
+    pool_active_gauge().record(num_active, &[]);
+}
+```
+
+**Why this matters for pool metrics:**
+
+- Pool state is recorded every 15-30 seconds
+- Without caching: 2 allocations every 15 seconds = memory churn
+- With caching: Zero allocations after first call = perfect for background tasks
+
+---
+
+## Setup Requirements
+
+### Cargo.toml Dependencies
+
+```toml
+[dependencies]
+opentelemetry = { workspace = true }  # Use OTEL native API
+# Don't use metrics crate - use OTEL directly!
+```
+
+**Why OTEL native over `metrics` crate?**
+
+✅ **No bridge needed**: Direct export via OTLP
+✅ **Semantic conventions**: Built-in support for standard attributes
+✅ **Future-proof**: OTEL is the industry standard
+✅ **Better integration**: Works seamlessly with traces
+✅ **Cacheable instruments**: Can use `OnceLock` for zero-allocation metrics (not possible with `metrics` crate macros)
+
+### Server Telemetry Setup
+
+```rust
+// apps/server/src/telemetry.rs
+pub fn setup_metrics() -> SdkMeterProvider {
+    // ... OTLP setup ...
+
+    let provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
+        .with_reader(reader)
+        .with_resource(resource_from_env_or_default("server"))
+        .build();
+
+    global::set_meter_provider(provider.clone());
+
+    // No bridge needed - metrics flow directly via OTLP!
+    provider
+}
+```
+
+---
+
+## Common Metric Patterns
+
+### Infrastructure Metrics Pattern
+
+For infrastructure components (pools, locks, queues), record current state:
+
+```rust
+// src/metrics.rs
+pub fn record_resource_state(resource_name: &str, current: u32, max: u32) {
+    let meter = global::meter("my_service");
+
+    let current_gauge = meter.f64_gauge("resource.current").build();
+    let utilization_gauge = meter.f64_gauge("resource.utilization_ratio").build();
+
+    current_gauge.record(current as f64, &[KeyValue::new("resource", resource_name.to_string())]);
+    utilization_gauge.record(
+        current as f64 / max as f64,
+        &[KeyValue::new("resource", resource_name.to_string())],
+    );
+}
+```
+
+### Operation Metrics Pattern
+
+For business operations, record both counts and timing:
+
+```rust
+// src/metrics.rs
+pub fn record_operation(operation: &str, result: &str, duration: Duration) {
+    let meter = global::meter("my_service");
+
+    let histogram = meter.f64_histogram("operation.duration_ms").build();
+    let counter = meter.u64_counter("operation.total").build();
+
+    let attributes = &[
+        KeyValue::new("operation", operation.to_string()),
+        KeyValue::new("result", result.to_string()),
+    ];
+
+    histogram.record(duration.as_millis() as f64, attributes);
+    counter.add(1, attributes);
+}
+```
+
+### Periodic Recording Pattern
+
+For infrastructure metrics, record periodically in background:
+
+```rust
+// In your server startup
+let metrics_task = tokio::spawn(async move {
+    let mut interval = tokio::time::interval(Duration::from_secs(15));
+    loop {
+        interval.tick().await;
+        metrics::record_resource_state("connection_pool", idle_count, max_connections);
+    }
+});
+```
+
+---
+
+## Common Pitfalls & Solutions
+
+### 1. High Cardinality Attributes
+
+**Problem**: Too many unique attribute values break Prometheus storage.
+
+```rust
+// ❌ BAD: High cardinality
+KeyValue::new("user_id", user_id.to_string())  // Millions of users!
+KeyValue::new("account_id", account_id.to_string())  // Millions of accounts!
+```
+
+**Solution**: Use bucketing or filtering:
+
+```rust
+// ✅ GOOD: Low cardinality
+KeyValue::new("amount_bucket", bucket_amount(amount))  // 0-1k, 1k-10k, 10k+
+KeyValue::new("operation", "process_payment")  // Fixed set of operations
+```
+
+### 2. Missing Duration Recording
+
+**Problem**: Recording counts but not timing information.
+
+```rust
+// ❌ BAD: Only counts
+counter.add(1, &[KeyValue::new("operation", "transfer")]);
+```
+
+**Solution**: Record both counts and durations:
+
+```rust
+// ✅ GOOD: Counts + timing
+let start = std::time::Instant::now();
+// ... operation ...
+let duration = start.elapsed();
+
+counter.add(1, &[KeyValue::new("operation", "transfer")]);
+histogram.record(duration.as_millis() as f64, &[KeyValue::new("operation", "transfer")]);
+```
+
+### 3. Inconsistent Attribute Names
+
+**Problem**: Same attribute with different names across metrics.
+
+```rust
+// ❌ BAD: Inconsistent naming
+KeyValue::new("op", "transfer")      // Some metrics
+KeyValue::new("operation", "transfer")  // Other metrics
+```
+
+**Solution**: Standardize attribute names:
+
+```rust
+// ✅ GOOD: Consistent naming
+KeyValue::new("operation", "transfer")  // All metrics use same attribute name
+```
+
+### 4. Missing Error Metrics
+
+**Problem**: Only recording success cases.
+
+```rust
+// ❌ BAD: Only success
+metrics::record_operation_complete("transfer", "success", duration);
+```
+
+**Solution**: Record all outcomes:
+
+```rust
+// ✅ GOOD: All outcomes
+match result {
+    Ok(_) => metrics::record_operation_complete("transfer", "success", duration),
+    Err(AccountingError::InsufficientBalance) => {
+        metrics::record_operation_complete("transfer", "insufficient_balance", duration)
+    }
+    Err(_) => metrics::record_operation_complete("transfer", "error", duration),
+}
+```
+
+---
+
+## Observability Checklist
+
+Before shipping instrumented code, verify:
+
+- [ ] **Metric names are static** (no runtime formatting like `format!("operation_{}", name)`)
+- [ ] **All dynamic data in attributes**, not metric names
+- [ ] **Low cardinality attributes** (avoid unique identifiers like user IDs, use bucketing instead)
+- [ ] **Both counts and durations recorded** for operations (counters + histograms)
+- [ ] **All error cases instrumented** (success, failure, specific error types)
+- [ ] **Infrastructure metrics recorded periodically** (connection pools, queues, etc.)
+- [ ] **Timing metrics include acquisition time** (locks, resources, etc.)
+- [ ] **Metric names follow consistent convention** (e.g., `service.domain.metric_type`)
+- [ ] **Attributes use consistent names** across all metrics (e.g., always `operation`, not `op`)
+- [ ] **Instruments cached with `OnceLock`** (no repeated creation on hot path)
+- [ ] **Metrics flow to observability backend** (verify in dashboards)
+
+---
+
+## Example: Complete Flow
+
+### Business Logic (`lib.rs`)
+
+```rust
+pub async fn process_request(&self, input: &Request) -> Result<Response> {
+    let start = std::time::Instant::now();
+
+    // Business logic here
+    let result = self.process_impl(input).await;
+
+    // Record metrics
+    let duration = start.elapsed();
+    match &result {
+        Ok(_) => metrics::record_operation("process_request", "success", duration),
+        Err(Error::ValidationFailed) => {
+            metrics::record_operation("process_request", "validation_failed", duration)
+        }
+        Err(_) => metrics::record_operation("process_request", "error", duration),
+    }
+
+    result
+}
+```
+
+### Metrics Module (`metrics.rs`)
+
+```rust
+use opentelemetry::{global, KeyValue};
+use std::time::Duration;
+
+pub fn record_operation(operation: &str, result: &str, duration: Duration) {
+    let meter = global::meter("my_service");
+
+    let histogram = meter.f64_histogram("operation.duration_ms").build();
+    let counter = meter.u64_counter("operation.total").build();
+
+    let attributes = &[
+        KeyValue::new("operation", operation.to_string()),
+        KeyValue::new("result", result.to_string()),
+    ];
+
+    histogram.record(duration.as_millis() as f64, attributes);
+    counter.add(1, attributes);
+}
+```
+
+### Testing Pattern
+
+```bash
+# 1. Generate traffic to create metrics
+# 2. Check Prometheus endpoint for metric values
+# 3. Verify metrics display correctly in dashboards
+```
+
+---
+
+## References
+
+- **OpenTelemetry Metrics API**: https://opentelemetry.io/docs/specs/otel/metrics/api/
+- **Semantic Conventions**: https://opentelemetry.io/docs/specs/semconv/
+- **Prometheus Query Language**: https://prometheus.io/docs/prometheus/latest/querying/basics/
+- **Grafana Dashboard JSON**: https://grafana.com/docs/grafana/latest/dashboards/json-model/
+
+---
+
+## Summary
+
+**Golden Rules:**
+
+1. **Maintain the workspace inventory** — [metrics-inventory.md](./metrics-inventory.md) lists every exported metric name and its operational role; update it when instruments change.
+2. **Separate metrics module** - keep instrumentation orthogonal
+3. **Static metric names** - service.domain.metric_type format
+4. **Structured attributes** - NEVER string interpolation in names
+5. **Low cardinality attributes** - avoid user IDs, use bucketing
+6. **Record both counts and durations** for operations
+7. **Instrument all outcomes** (success, failure, specific errors)
+8. **Use OTEL native API** - no bridges needed
+
+**This pattern gives you:**
+
+- Production-grade operational metrics
+- Low-cardinality, queryable metrics
+- Clean separation of concerns
+- Future-proof for Prometheus/Grafana
+- Rich operational insights (pools, locks, business operations)
+
+**Note**: Metrics are simpler than spans - no hierarchy to preserve, just record counts/timings at operation boundaries.

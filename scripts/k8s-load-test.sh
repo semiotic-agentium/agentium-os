@@ -10,7 +10,7 @@
 # bringup, then runs the three canonical #226 scenarios (local_a2a,
 # forwarded_a2a, split_dual_runner) against the Helm-installed pilot.
 #
-# See docs/k8s-pilot-load-testing.md for operator-facing usage.
+# See docs/runbooks/k8s-pilot-load-testing.md for operator-facing usage.
 
 set -euo pipefail
 

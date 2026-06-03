@@ -92,7 +92,7 @@ curl http://localhost:18080/readyz
 curl http://localhost:18080/agents
 ```
 
-For a scripted, end-to-end local validation of this same install path (cluster → three required objects → `helm upgrade --install` → smoke → cluster_runners verify), run `just verify-k8s-pilot-package` (see [`docs/testing/e2e-k8s.md`](../../../docs/testing/e2e-k8s.md)).
+For a scripted, end-to-end local validation of this same install path (cluster → three required objects → `helm upgrade --install` → smoke → cluster_runners verify), run `just verify-k8s-pilot-package` (see [`docs/runbooks/e2e-k8s.md`](../../../docs/runbooks/e2e-k8s.md)).
 
 ## Runner image
 
@@ -113,7 +113,7 @@ If you pin to immutable tags (or content digests) and want to avoid the per-rest
 
 ## Next step
 
-For the full first-run operator flow (including building the runner image, creating the required objects, authenticated publish/deploy, and the packaged smoke script), see [`docs/k8s-pilot-operator-guide.md`](../../../docs/k8s-pilot-operator-guide.md).
+For the full first-run operator flow (including building the runner image, creating the required objects, authenticated publish/deploy, and the packaged smoke script), see [`docs/runbooks/k8s-pilot-operator-guide.md`](../../../docs/runbooks/k8s-pilot-operator-guide.md).
 
 ## Runner probes
 
