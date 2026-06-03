@@ -146,137 +146,112 @@ mod tests {
         PlanStepId::from("step-test-1".to_string())
     }
 
+    /// Wire-format documentation snapshot for all command variants (single review surface).
     #[test]
-    fn snapshot_open() {
-        let cmd = ExecutionSessionCommand::Open;
-        insta::assert_json_snapshot!(
-            "execution_session_command_open",
-            serde_json::to_value(&cmd).unwrap()
-        );
-    }
+    fn execution_session_commands_wire_snapshot() {
+        use serde_json::Map;
 
-    #[test]
-    fn snapshot_submit_intent() {
-        let cmd = ExecutionSessionCommand::SubmitIntent {
-            session_id: session_id(),
-            intent: IntentSubmissionWire {
-                intent_id: intent_id(),
-                description: "Investigate the anomaly".to_string(),
+        let mut commands = Map::new();
+        commands.insert(
+            "open".into(),
+            serde_json::to_value(ExecutionSessionCommand::Open).unwrap(),
+        );
+        commands.insert(
+            "submit_intent".into(),
+            serde_json::to_value(ExecutionSessionCommand::SubmitIntent {
+                session_id: session_id(),
+                intent: IntentSubmissionWire {
+                    intent_id: intent_id(),
+                    description: "Investigate the anomaly".to_string(),
+                    citations: vec![
+                        Citation::from_str("#1").unwrap(),
+                        Citation::from_str("#2").unwrap(),
+                    ],
+                    supersession: None,
+                },
+            })
+            .unwrap(),
+        );
+        commands.insert(
+            "submit_intent_supersession".into(),
+            serde_json::to_value(ExecutionSessionCommand::SubmitIntent {
+                session_id: session_id(),
+                intent: IntentSubmissionWire {
+                    intent_id: intent_id(),
+                    description: "Refined intent".to_string(),
+                    citations: vec![Citation::from_str("#3").unwrap()],
+                    supersession: Some("replaced_by".to_string()),
+                },
+            })
+            .unwrap(),
+        );
+        commands.insert(
+            "submit_plan".into(),
+            serde_json::to_value(ExecutionSessionCommand::SubmitPlan {
+                session_id: session_id(),
+                plan: PlanSubmissionWire {
+                    intent_id: intent_id(),
+                    plan_id: plan_id(),
+                    steps: vec![
+                        PlanStepSubmission {
+                            step_id: step_id(),
+                            description: "Run diagnostics".to_string(),
+                            order: 0,
+                            depends_on: vec![],
+                        },
+                        PlanStepSubmission {
+                            step_id: PlanStepId::from("step-test-2".to_string()),
+                            description: "Apply fix".to_string(),
+                            order: 1,
+                            depends_on: vec!["step-test-1".to_string()],
+                        },
+                    ],
+                    supersession: None,
+                },
+            })
+            .unwrap(),
+        );
+        commands.insert(
+            "start_step".into(),
+            serde_json::to_value(ExecutionSessionCommand::StartStep {
+                session_id: session_id(),
+                step_id: step_id(),
+                citations: vec![Citation::from_str("#1").unwrap()],
+            })
+            .unwrap(),
+        );
+        commands.insert(
+            "complete_step".into(),
+            serde_json::to_value(ExecutionSessionCommand::CompleteStep {
+                session_id: session_id(),
+                step_id: step_id(),
                 citations: vec![
                     Citation::from_str("#1").unwrap(),
-                    Citation::from_str("#2").unwrap(),
+                    Citation::from_str("@4:L2").unwrap(),
                 ],
-                supersession: None,
-            },
-        };
-        insta::assert_json_snapshot!(
-            "execution_session_command_submit_intent",
-            serde_json::to_value(&cmd).unwrap()
+            })
+            .unwrap(),
         );
+        commands.insert(
+            "finish".into(),
+            serde_json::to_value(ExecutionSessionCommand::Finish {
+                session_id: session_id(),
+            })
+            .unwrap(),
+        );
+        commands.insert(
+            "abort".into(),
+            serde_json::to_value(ExecutionSessionCommand::Abort {
+                session_id: session_id(),
+                reason: "Run function threw an error".to_string(),
+            })
+            .unwrap(),
+        );
+        insta::assert_json_snapshot!("execution_session_commands@wire", commands);
     }
 
     #[test]
-    fn snapshot_submit_intent_with_supersession() {
-        let cmd = ExecutionSessionCommand::SubmitIntent {
-            session_id: session_id(),
-            intent: IntentSubmissionWire {
-                intent_id: intent_id(),
-                description: "Refined intent".to_string(),
-                citations: vec![Citation::from_str("#3").unwrap()],
-                supersession: Some("replaced_by".to_string()),
-            },
-        };
-        insta::assert_json_snapshot!(
-            "execution_session_command_submit_intent_supersession",
-            serde_json::to_value(&cmd).unwrap()
-        );
-    }
-
-    #[test]
-    fn snapshot_submit_plan() {
-        let cmd = ExecutionSessionCommand::SubmitPlan {
-            session_id: session_id(),
-            plan: PlanSubmissionWire {
-                intent_id: intent_id(),
-                plan_id: plan_id(),
-                steps: vec![
-                    PlanStepSubmission {
-                        step_id: step_id(),
-                        description: "Run diagnostics".to_string(),
-                        order: 0,
-                        depends_on: vec![],
-                    },
-                    PlanStepSubmission {
-                        step_id: PlanStepId::from("step-test-2".to_string()),
-                        description: "Apply fix".to_string(),
-                        order: 1,
-                        depends_on: vec!["step-test-1".to_string()],
-                    },
-                ],
-                supersession: None,
-            },
-        };
-        insta::assert_json_snapshot!(
-            "execution_session_command_submit_plan",
-            serde_json::to_value(&cmd).unwrap()
-        );
-    }
-
-    #[test]
-    fn snapshot_start_step() {
-        let cmd = ExecutionSessionCommand::StartStep {
-            session_id: session_id(),
-            step_id: step_id(),
-            citations: vec![Citation::from_str("#1").unwrap()],
-        };
-        insta::assert_json_snapshot!(
-            "execution_session_command_start_step",
-            serde_json::to_value(&cmd).unwrap()
-        );
-    }
-
-    #[test]
-    fn snapshot_complete_step() {
-        let cmd = ExecutionSessionCommand::CompleteStep {
-            session_id: session_id(),
-            step_id: step_id(),
-            citations: vec![
-                Citation::from_str("#1").unwrap(),
-                Citation::from_str("@4:L2").unwrap(),
-            ],
-        };
-        insta::assert_json_snapshot!(
-            "execution_session_command_complete_step",
-            serde_json::to_value(&cmd).unwrap()
-        );
-    }
-
-    #[test]
-    fn snapshot_finish() {
-        let cmd = ExecutionSessionCommand::Finish {
-            session_id: session_id(),
-        };
-        insta::assert_json_snapshot!(
-            "execution_session_command_finish",
-            serde_json::to_value(&cmd).unwrap()
-        );
-    }
-
-    #[test]
-    fn snapshot_abort() {
-        let cmd = ExecutionSessionCommand::Abort {
-            session_id: session_id(),
-            reason: "Run function threw an error".to_string(),
-        };
-        insta::assert_json_snapshot!(
-            "execution_session_command_abort",
-            serde_json::to_value(&cmd).unwrap()
-        );
-    }
-
-    /// Deserialise each snapshot back and assert the action tag round-trips correctly.
-    #[test]
-    fn round_trip_all_variants() {
+    fn execution_session_command_round_trip_matrix() {
         let cases: &[(&str, &str)] = &[
             ("open", r#"{"action":"open"}"#),
             (
@@ -303,16 +278,15 @@ mod tests {
         ];
         for (name, json_str) in cases {
             let cmd: ExecutionSessionCommand = serde_json::from_str(json_str)
-                .unwrap_or_else(|e| panic!("round-trip failed for {name}: {e}\ninput: {json_str}"));
+                .unwrap_or_else(|e| panic!("case {name}: parse failed: {e}\ninput: {json_str}"));
             let re_serialised = serde_json::to_string(&cmd)
-                .unwrap_or_else(|e| panic!("re-serialise failed for {name}: {e}"));
+                .unwrap_or_else(|e| panic!("case {name}: re-serialise failed: {e}"));
             let reparsed: ExecutionSessionCommand = serde_json::from_str(&re_serialised)
-                .unwrap_or_else(|e| panic!("second parse failed for {name}: {e}"));
-            // Verify the action tag is preserved (compare serialised forms)
+                .unwrap_or_else(|e| panic!("case {name}: second parse failed: {e}"));
             assert_eq!(
                 serde_json::to_value(&cmd).unwrap().get("action"),
                 serde_json::to_value(&reparsed).unwrap().get("action"),
-                "action tag mismatch for {name}"
+                "case {name}: action tag mismatch"
             );
         }
     }

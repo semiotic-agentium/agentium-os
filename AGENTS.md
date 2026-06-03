@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-This repository is a Rust workspace centered on `crates/`, which holds the runtime, runner, builder, tool, integration, and support crates. Product agents live in `agents/<agent-name>/`; reusable and test-only agents live in `tests/fixtures/agents/`. The Vue UI is isolated in `web/`. Operational assets live in `observability/` and `deploy/`, while longer design and workflow notes live in `docs/`.
+This repository is a Rust workspace centered on `crates/`, which holds the runtime, runner, builder, tool, integration, and support crates. Product agents live in `agents/<agent-name>/`; reusable and test-only agents live in `tests/fixtures/agents/`. The Vue UI is isolated in `web/`. Operational assets live in `observability/` and `deploy/`. Documentation lives in `docs/` — see [`docs/README.md`](docs/README.md) for the assertion / reference / runbook map.
 
 Use `baml_src/` for shared example schemas, and `crates/test-support` for common test helpers instead of copying setup code.
 
@@ -21,7 +21,7 @@ Rust uses edition 2024 and nightly `rustfmt`; keep formatting tool-driven, with 
 Do not hand-edit generated runtime files without immediately regenerating them.
 
 ## Testing Guidelines
-Prefer vertical and adversarial tests over narrow unit shards. Put crate-specific tests in `crates/*/tests/*.rs`; share helpers through `crates/test-support`; keep agent fixtures in `tests/fixtures/agents/`. Use `#[tokio::test]` for async surfaces, `insta` for stable JSON snapshots, and add only one authoritative E2E per behavior as described in `docs/testing-handbook.md`.
+Prefer authority E2E and vertical slices, then boundary `insta` snapshots and `*_matrix` tables—not TDD-style per-variant unit shards. Put crate-specific tests in `crates/*/tests/*.rs`; share helpers through `crates/test-support`; keep agent fixtures in `tests/fixtures/agents/`. Use `#[tokio::test]` for async surfaces. One authoritative E2E per behavior; see `docs/assertions/testing-handbook.md`.
 
 ## Commit & Pull Request Guidelines
 Recent history follows Conventional Commit prefixes such as `feat:`, `fix:`, `test:`, and `docs:`. Keep subjects imperative and scoped to one change. PRs should describe affected crates or agents, list the commands you ran (`just test-unit`, `just clippy`, etc.), call out regenerated fixtures, and include screenshots only for `web/` UI changes. Link the issue when relevant.

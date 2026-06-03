@@ -5,7 +5,7 @@
 //! OpenTelemetry-oriented tracing spans for the effect bus (`baml_rt_core.*` namespace).
 //!
 //! Keeps span names static and low-cardinality; dynamic data is fields only. See
-//! `docs/otel-trace-instrumentation-guide.md`.
+//! `docs/reference/otel-trace-instrumentation-guide.md`.
 
 use tracing::Span;
 

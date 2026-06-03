@@ -13,7 +13,7 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{
     AgentType, EpisodeReader, HostIngressRecorderImpl, ProvEvent, ProvenanceError,
-    ProvenanceWriter, SurrealStoreBuilder,
+    ProvenanceWriter,
     metamodel::{EdgeProjection, SemanticEdge},
     store::{
         ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest, ProvenanceOpsResource,
@@ -21,6 +21,7 @@ use baml_rt_provenance::{
     task_agent_binding::is_unassigned_executing_agent,
 };
 use serde_json::json;
+use test_support::testing::provenance_fixtures::build_isolated_store;
 use uuid::Uuid;
 
 fn test_agent_id() -> AgentId {
@@ -63,12 +64,7 @@ async fn head_executed_by_rows(
 
 #[tokio::test]
 async fn with_task_prelude_binds_executing_agent_head_pointer() {
-    let store = Arc::new(
-        SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("store"),
-    );
+    let store = Arc::new(build_isolated_store().await);
     let agent_id = test_agent_id();
     boot_agent(&store, agent_id.clone(), "clickup-agent").await;
 
@@ -105,12 +101,7 @@ async fn with_task_prelude_binds_executing_agent_head_pointer() {
 
 #[tokio::test]
 async fn poll_task_scoped_nil_agent_does_not_bind_head_pointer() {
-    let store = Arc::new(
-        SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("store"),
-    );
+    let store = Arc::new(build_isolated_store().await);
     let ctx = ContextId::new(1, 2);
     let task_id = TaskId::from_external(ExternalId::new("poll-task".to_string()));
     let nil_agent = AgentId::from_uuid(UuidId::new(Uuid::nil()));
@@ -158,12 +149,7 @@ async fn poll_task_scoped_nil_agent_does_not_bind_head_pointer() {
 
 #[tokio::test]
 async fn minted_tool_call_repoints_head_without_bootstrap_event() {
-    let store = Arc::new(
-        SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("store"),
-    );
+    let store = Arc::new(build_isolated_store().await);
     let agent_id = test_agent_id();
     boot_agent(&store, agent_id.clone(), "dispatch-echo").await;
 
@@ -222,12 +208,7 @@ async fn minted_tool_call_repoints_head_without_bootstrap_event() {
 
 #[tokio::test]
 async fn episode_unbound_task_returns_error() {
-    let store = Arc::new(
-        SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("store"),
-    );
+    let store = Arc::new(build_isolated_store().await);
     let ctx = ContextId::new(9, 9);
     let task_id = TaskId::from_external(ExternalId::new("unbound-task".to_string()));
     store

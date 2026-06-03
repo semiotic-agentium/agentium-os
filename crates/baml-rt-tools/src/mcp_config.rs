@@ -689,48 +689,61 @@ mod tests {
     }
 
     #[test]
-    fn rejects_secret_looking_env_key() {
-        let json = r#"{
-          "mcpServers": {
-            "x": {
-              "command": "foo",
-              "env": { "FOO_API_KEY": "abc" }
-            }
-          }
-        }"#;
-        let err = McpServersFile::parse(json).expect_err("should reject");
-        assert!(matches!(err, McpConfigError::SecretInEnv { .. }));
-    }
-
-    #[test]
-    fn rejects_empty_command() {
-        let json = r#"{ "mcpServers": { "x": { "command": "" } } }"#;
-        let err = McpServersFile::parse(json).expect_err("reject");
-        assert!(matches!(err, McpConfigError::EmptyCommand { .. }));
-    }
-
-    #[test]
-    fn rejects_invalid_server_id() {
-        let json = r#"{ "mcpServers": { "bad id!": { "command": "x" } } }"#;
-        let err = McpServersFile::parse(json).expect_err("reject");
-        assert!(matches!(err, McpConfigError::InvalidServerId(_)));
-    }
-
-    #[test]
-    fn rejects_duplicate_secret_name() {
-        let json = r#"{
-          "mcpServers": {
-            "x": {
-              "command": "foo",
-              "secrets": [
-                { "name": "A" },
-                { "name": "A" }
-              ]
-            }
-          }
-        }"#;
-        let err = McpServersFile::parse(json).expect_err("reject");
-        assert!(matches!(err, McpConfigError::DuplicateSecret { .. }));
+    fn mcp_config_parse_rejection_matrix() {
+        struct Case {
+            label: &'static str,
+            json: &'static str,
+            check: fn(&McpConfigError) -> bool,
+        }
+        let cases = [
+            Case {
+                label: "secret_in_env",
+                json: r#"{"mcpServers":{"x":{"command":"foo","env":{"FOO_API_KEY":"abc"}}}}"#,
+                check: |e| matches!(e, McpConfigError::SecretInEnv { .. }),
+            },
+            Case {
+                label: "empty_command",
+                json: r#"{"mcpServers":{"x":{"command":""}}}"#,
+                check: |e| matches!(e, McpConfigError::EmptyCommand { .. }),
+            },
+            Case {
+                label: "invalid_server_id",
+                json: r#"{"mcpServers":{"bad id!":{"command":"x"}}}"#,
+                check: |e| matches!(e, McpConfigError::InvalidServerId(_)),
+            },
+            Case {
+                label: "duplicate_secret",
+                json: r#"{"mcpServers":{"x":{"command":"foo","secrets":[{"name":"A"},{"name":"A"}]}}}"#,
+                check: |e| matches!(e, McpConfigError::DuplicateSecret { .. }),
+            },
+            Case {
+                label: "http_url_credentials",
+                json: r#"{"mcpServers":{"x":{"transport":{"kind":"streamable_http","url":"https://user:pass@example.com/mcp"}}}}"#,
+                check: |e| matches!(e, McpConfigError::InvalidHttpUrl { .. }),
+            },
+            Case {
+                label: "reserved_auth_header",
+                json: r#"{"mcpServers":{"x":{"transport":{"kind":"streamable_http","url":"https://example.com/mcp","auth":{"kind":"header","header":"mcp-session-id","value_ref":{"source":{"kind":"env","name":"T"}}}}}}}"#,
+                check: |e| matches!(e, McpConfigError::ReservedHttpAuthHeader { name, .. } if *name == "mcp-session-id"),
+            },
+            Case {
+                label: "secrets_on_http",
+                json: r#"{"mcpServers":{"x":{"transport":{"kind":"streamable_http","url":"https://example.com/mcp"},"secrets":[{"name":"LEGACY_TOKEN"}]}}}"#,
+                check: |e| matches!(e, McpConfigError::SecretsForbiddenOnHttpTransport { server } if *server == "x"),
+            },
+            Case {
+                label: "http_url_query",
+                json: r#"{"mcpServers":{"x":{"transport":{"kind":"streamable_http","url":"https://example.com/mcp?token=abc"}}}}"#,
+                check: |e| {
+                    matches!(e, McpConfigError::InvalidHttpUrl { .. })
+                        && !e.to_string().contains("abc")
+                },
+            },
+        ];
+        for case in cases {
+            let err = McpServersFile::parse(case.json).expect_err(case.label);
+            assert!((case.check)(&err), "{}", case.label);
+        }
     }
 
     #[test]
@@ -784,85 +797,6 @@ mod tests {
         let json = serde_json::to_string(server).expect("serialize");
         assert!(json.contains("streamable_http"));
         assert!(!json.contains("GRAFANA_TOKEN_VALUE_CANARY"));
-    }
-
-    #[test]
-    fn rejects_streamable_http_url_credentials() {
-        let json = r#"{
-          "mcpServers": {
-            "x": {
-              "transport": {
-                "kind": "streamable_http",
-                "url": "https://user:pass@example.com/mcp"
-              }
-            }
-          }
-        }"#;
-        let err = McpServersFile::parse(json).expect_err("reject");
-        assert!(matches!(err, McpConfigError::InvalidHttpUrl { .. }));
-    }
-
-    #[test]
-    fn rejects_reserved_auth_header_name() {
-        let json = r#"{
-          "mcpServers": {
-            "x": {
-              "transport": {
-                "kind": "streamable_http",
-                "url": "https://example.com/mcp",
-                "auth": {
-                  "kind": "header",
-                  "header": "mcp-session-id",
-                  "value_ref": { "source": { "kind": "env", "name": "T" } }
-                }
-              }
-            }
-          }
-        }"#;
-        let err = McpServersFile::parse(json).expect_err("reject");
-        assert!(
-            matches!(err, McpConfigError::ReservedHttpAuthHeader { ref name, .. } if name == "mcp-session-id")
-        );
-    }
-
-    #[test]
-    fn rejects_secrets_block_on_streamable_http_transport() {
-        // stdio `secrets` compile to env-inject and silently no-op on HTTP;
-        // worse, they leave `has_auth` reading false so plaintext http://
-        // becomes permissible. Fail at config-load.
-        let json = r#"{
-          "mcpServers": {
-            "x": {
-              "transport": {
-                "kind": "streamable_http",
-                "url": "https://example.com/mcp"
-              },
-              "secrets": [{ "name": "LEGACY_TOKEN" }]
-            }
-          }
-        }"#;
-        let err = McpServersFile::parse(json).expect_err("reject");
-        assert!(matches!(
-            err,
-            McpConfigError::SecretsForbiddenOnHttpTransport { ref server } if server == "x"
-        ));
-    }
-
-    #[test]
-    fn rejects_streamable_http_url_query_params() {
-        let json = r#"{
-          "mcpServers": {
-            "x": {
-              "transport": {
-                "kind": "streamable_http",
-                "url": "https://example.com/mcp?token=abc"
-              }
-            }
-          }
-        }"#;
-        let err = McpServersFile::parse(json).expect_err("reject");
-        assert!(matches!(err, McpConfigError::InvalidHttpUrl { .. }));
-        assert!(!err.to_string().contains("abc"));
     }
 
     #[test]

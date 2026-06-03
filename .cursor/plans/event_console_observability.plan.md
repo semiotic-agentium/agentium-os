@@ -2,7 +2,7 @@
 
 ## Design constraints (non-negotiable)
 
-From [`conversation_context_pipeline.rs`](crates/baml-rt-provenance/src/surreal_store/conversation_context_pipeline.rs), [`baml-rt-conversation-spec.md`](docs/baml-rt-conversation-spec.md), and metamodel edge docs:
+From [`conversation_context_pipeline.rs`](crates/baml-rt-provenance/src/surreal_store/conversation_context_pipeline.rs), [`baml-rt-conversation-spec.md`](docs/assertions/baml-rt-conversation-spec.md), and metamodel edge docs:
 
 | Constraint | Implication for this work |
 |------------|---------------------------|
@@ -128,8 +128,8 @@ Sort: `a2a_event_order` ASC, `activity_anchor` tie-break everywhere ([`paginate_
 
 ### Phase 4 — Docs (P1)
 
-1. [`docs/host-to-agent-event-delivery.md`](docs/host-to-agent-event-delivery.md): single read traversal; poll vs unit edge topology.
-2. [`docs/baml-rt-conversation-spec.md`](docs/baml-rt-conversation-spec.md): operator vs agent projection; no read-time suppression.
+1. [`docs/assertions/host-to-agent-event-delivery.md`](docs/assertions/host-to-agent-event-delivery.md): single read traversal; poll vs unit edge topology.
+2. [`docs/assertions/baml-rt-conversation-spec.md`](docs/assertions/baml-rt-conversation-spec.md): operator vs agent projection; no read-time suppression.
 
 ---
 

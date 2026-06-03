@@ -1393,6 +1393,7 @@ fn domain_to_problem(
             "Not Found",
             format!("Agent {agent_package}/{agent_instance_id} not found"),
         ),
+        BamlRtError::AgentDraining(msg) => (503u16, "Service Unavailable", msg.clone()),
         BamlRtError::Conflict(msg) => (409u16, "Conflict", msg.clone()),
         BamlRtError::InvalidArgument(msg) => (400u16, "Bad Request", msg.clone()),
         BamlRtError::SessionLifecycle(

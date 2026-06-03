@@ -13,10 +13,11 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{
     CallScope, LlmUsage, ObservationLoader as _, ObservationScope, OpsQueryMode, PlanStepSpec,
-    ProvEvent, ProvenanceOpsQueryRequest, ProvenanceOpsResource, ProvenanceWriter,
-    SurrealStoreBuilder, TemporalBound, episode::EpisodeReader, events::TaskScopedEvent,
-    observation_version_from_loaded, store::ProvenanceOpsFilters,
+    ProvEvent, ProvenanceOpsQueryRequest, ProvenanceOpsResource, ProvenanceWriter, TemporalBound,
+    episode::EpisodeReader, events::TaskScopedEvent, observation_version_from_loaded,
+    store::ProvenanceOpsFilters,
 };
+use test_support::testing::provenance_fixtures::build_isolated_store;
 
 async fn bootstrap_task(
     store: &baml_rt_provenance::SurrealProvenanceStore,
@@ -92,12 +93,7 @@ fn task_llm_event(
 
 #[tokio::test]
 async fn observation_slice_symmetry() {
-    let store = Arc::new(
-        SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("store"),
-    );
+    let store = Arc::new(build_isolated_store().await);
     let ctx = ContextId::new(1_900_000_000_100, 1);
     let task_id = TaskId::from_external(ExternalId::new("dispatch-unit-symmetry"));
     let agent_id =

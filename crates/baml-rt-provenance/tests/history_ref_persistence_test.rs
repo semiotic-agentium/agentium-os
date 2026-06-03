@@ -5,20 +5,16 @@
 //! Durable `#N` history refs survive store rebuild (graph-backed ref cutover).
 
 use baml_rt_core::ids::{ContextId, ExternalId, MessageId};
-use baml_rt_provenance::{
-    ProvEvent, ProvenanceContextReader, ProvenanceWriter, SurrealStoreBuilder, hydrate_ref_table,
-};
+use baml_rt_provenance::{ProvEvent, ProvenanceContextReader, ProvenanceWriter, hydrate_ref_table};
 use baml_rt_tools::{
     archive_read::HistoryRef,
     citations::{CitationKind, ParsedCitation, ResolvedCitation},
 };
+use test_support::testing::provenance_fixtures::build_isolated_store;
 
 #[tokio::test]
 async fn history_ref_registry_survives_hydrate_after_drop_cache() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let context_id = ContextId::new(99, 1);
     let msg_id = MessageId::from_external(ExternalId::new("hist-msg-1"));
 

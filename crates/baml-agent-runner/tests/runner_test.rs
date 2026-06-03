@@ -1397,7 +1397,7 @@ async fn run_argument_sketch_two_agents_body() {
                 || lower.contains("i'm not")
                 || lower.contains("you are"))
     };
-    // Prefer two chunks (Cleese then Chapman); stream-yield/task-local can sometimes deliver only one (see docs/argument-sketch-stream-trace.md).
+    // Prefer two chunks (Cleese then Chapman); stream-yield/task-local can sometimes deliver only one (see docs/assertions/testing-handbook.md).
     assert!(
         !first_texts.is_empty(),
         "Expected at least one message chunk. Texts: {:?}. Raw: {}",

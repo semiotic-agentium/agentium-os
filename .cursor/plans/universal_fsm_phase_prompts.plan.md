@@ -15,7 +15,7 @@ todos:
   - id: agent-prompt-hygiene
     content: Update agent prompts to rely on unified host prefix; remove duplicated policy/prelude prose where it fragments cache.
   - id: tests-docs-regen
-    content: Add parity tests, regen fixtures/agents, and update docs/how-to-write-agents.md with the full-cutover authoring rule.
+    content: Add parity tests, regen fixtures/agents, and update docs/assertions/how-to-write-agents.md with the full-cutover authoring rule.
 ---
 
 # Unified `execute_function` full cutover
@@ -216,7 +216,7 @@ After implementation:
 
 ### 10. Documentation
 
-Update [`docs/how-to-write-agents.md`](docs/how-to-write-agents.md):
+Update [`docs/assertions/how-to-write-agents.md`](docs/assertions/how-to-write-agents.md):
 
 - Direct BAML calls and FSM phase calls share the same host context substrate.
 - Authors should not duplicate archive/tool/cache policy prose inside prompts.
@@ -267,7 +267,7 @@ Moderate to high, because the change touches the execution substrate, builder co
 
 ### 4) Docs + tests
 
-- [`docs/how-to-write-agents.md`](docs/how-to-write-agents.md): agent authoring rule — **no** long-lived plain planning/classify functions unless they opt into unified prelude; prefer step executor for cache parity.
+- [`docs/assertions/how-to-write-agents.md`](docs/assertions/how-to-write-agents.md): agent authoring rule — **no** long-lived plain planning/classify functions unless they opt into unified prelude; prefer step executor for cache parity.
 - Tests: parity tests for tag maps / prompt ordering between plain invoke and intra invoke once unified.
 
 ## Risks

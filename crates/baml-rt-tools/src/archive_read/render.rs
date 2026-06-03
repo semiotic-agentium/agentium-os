@@ -225,118 +225,112 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scalar_string() {
-        let rc = render_to_lines(&json!("hello world"));
-        assert_eq!(rc.line_count(), 1);
-        assert_eq!(rc.get_line(0), Some("hello world"));
-    }
+    fn render_to_lines_matrix() {
+        struct Case {
+            label: &'static str,
+            value: serde_json::Value,
+            check: fn(&RenderedContent),
+        }
 
-    #[test]
-    fn scalar_number() {
-        let rc = render_to_lines(&json!(42));
-        assert_eq!(rc.get_line(0), Some("42"));
-    }
+        let cases: &[Case] = &[
+            Case {
+                label: "scalar_string",
+                value: json!("hello world"),
+                check: |rc| {
+                    assert_eq!(rc.line_count(), 1);
+                    assert_eq!(rc.get_line(0), Some("hello world"));
+                },
+            },
+            Case {
+                label: "scalar_number",
+                value: json!(42),
+                check: |rc| assert_eq!(rc.get_line(0), Some("42")),
+            },
+            Case {
+                label: "null_value",
+                value: json!(null),
+                check: |rc| assert_eq!(rc.get_line(0), Some("null")),
+            },
+            Case {
+                label: "empty_array",
+                value: json!([]),
+                check: |rc| assert_eq!(rc.get_line(0), Some("(empty)")),
+            },
+            Case {
+                label: "array_of_scalars",
+                value: json!(["a", "b", "c"]),
+                check: |rc| {
+                    assert_eq!(rc.lines().collect::<Vec<_>>(), vec!["a", "b", "c"]);
+                },
+            },
+            Case {
+                label: "simple_object",
+                value: json!({"name": "alice", "age": 30}),
+                check: |rc| {
+                    let lines: Vec<&str> = rc.lines().collect();
+                    assert!(lines.contains(&"name: alice"));
+                    assert!(lines.contains(&"age: 30"));
+                },
+            },
+            Case {
+                label: "array_of_objects",
+                value: json!([
+                    {"user": "alice", "role": "admin"},
+                    {"user": "bob", "role": "viewer"}
+                ]),
+                check: |rc| {
+                    let lines: Vec<&str> = rc.lines().collect();
+                    assert!(lines.contains(&"- user: alice"));
+                    assert!(lines.contains(&"  role: admin"));
+                    assert!(lines.contains(&"- user: bob"));
+                },
+            },
+            Case {
+                label: "yaml_keyword_quoted",
+                value: json!({"val": "null"}),
+                check: |rc| assert!(rc.lines().any(|l| l.contains("\"null\""))),
+            },
+            Case {
+                label: "colon_space_quoted",
+                value: json!({"channel": "#general: main"}),
+                check: |rc| assert!(rc.lines().any(|l| l.contains("\"#general: main\""))),
+            },
+            Case {
+                label: "hash_prefix_quoted",
+                value: json!({"channel": "#general"}),
+                check: |rc| assert!(rc.lines().any(|l| l.contains("\"#general\""))),
+            },
+            Case {
+                label: "empty_string_quoted",
+                value: json!({"val": ""}),
+                check: |rc| assert!(rc.lines().any(|l| l.contains("\"\""))),
+            },
+        ];
 
-    #[test]
-    fn null_value() {
-        let rc = render_to_lines(&json!(null));
-        assert_eq!(rc.get_line(0), Some("null"));
-    }
+        for case in cases {
+            let rc = render_to_lines(&case.value);
+            (case.check)(&rc);
+            assert!(!case.label.is_empty(), "matrix case label");
+        }
 
-    #[test]
-    fn empty_array() {
-        let rc = render_to_lines(&json!([]));
-        assert_eq!(rc.get_line(0), Some("(empty)"));
-    }
-
-    #[test]
-    fn array_of_scalars() {
-        let rc = render_to_lines(&json!(["a", "b", "c"]));
-        let lines: Vec<&str> = rc.lines().collect();
-        assert_eq!(lines, vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn simple_object() {
-        let rc = render_to_lines(&json!({"name": "alice", "age": 30}));
-        let lines: Vec<&str> = rc.lines().collect();
-        assert!(lines.contains(&"name: alice"));
-        assert!(lines.contains(&"age: 30"));
-    }
-
-    #[test]
-    fn array_of_objects_short_fields() {
-        let rc = render_to_lines(&json!([
-            {"user": "alice", "role": "admin"},
-            {"user": "bob", "role": "viewer"}
-        ]));
-        let lines: Vec<&str> = rc.lines().collect();
-        assert!(lines.contains(&"- user: alice"));
-        assert!(lines.contains(&"  role: admin"));
-        assert!(lines.contains(&"- user: bob"));
-    }
-
-    #[test]
-    fn long_string_becomes_block_scalar() {
-        let long_text = "a ".repeat(100); // 200 chars
+        let long_text = "a ".repeat(100);
         let rc = render_to_lines(&json!({"message": long_text.trim()}));
         let lines: Vec<&str> = rc.lines().collect();
-        assert_eq!(lines[0], "message: >-");
-        assert!(lines.len() > 2, "should wrap into multiple lines");
+        assert_eq!(lines[0], "message: >-", "long_string block opener");
+        assert!(lines.len() > 2);
         for line in &lines[1..] {
-            assert!(
-                line.len() <= WRAP_WIDTH + 5,
-                "line too long: {} chars",
-                line.len()
-            );
+            assert!(line.len() <= WRAP_WIDTH + 5, "wrapped line too long");
         }
-    }
 
-    #[test]
-    fn multiline_string_becomes_block_scalar() {
         let rc = render_to_lines(&json!({"note": "line one\nline two\nline three"}));
         let lines: Vec<&str> = rc.lines().collect();
         assert_eq!(lines[0], "note: >-");
         assert!(lines.iter().any(|l| l.trim() == "line one"));
         assert!(lines.iter().any(|l| l.trim() == "line two"));
-    }
 
-    #[test]
-    fn ten_kb_string_many_lines() {
-        let huge = "deployment ".repeat(1000); // ~11KB
+        let huge = "deployment ".repeat(1000);
         let rc = render_to_lines(&json!({"body": huge.trim()}));
-        assert!(
-            rc.line_count() > 50,
-            "10KB string should produce many lines"
-        );
-        let has_deploy_line = rc.lines().any(|l| l.contains("deployment"));
-        assert!(
-            has_deploy_line,
-            "grep should be able to find content in block scalar lines"
-        );
-    }
-
-    #[test]
-    fn yaml_keyword_quoted() {
-        let rc = render_to_lines(&json!({"val": "null"}));
-        assert!(rc.lines().any(|l| l.contains("\"null\"")));
-    }
-
-    #[test]
-    fn colon_space_quoted() {
-        let rc = render_to_lines(&json!({"channel": "#general: main"}));
-        assert!(rc.lines().any(|l| l.contains("\"#general: main\"")));
-    }
-
-    #[test]
-    fn hash_prefix_quoted() {
-        let rc = render_to_lines(&json!({"channel": "#general"}));
-        assert!(rc.lines().any(|l| l.contains("\"#general\"")));
-    }
-
-    #[test]
-    fn empty_string_quoted() {
-        let rc = render_to_lines(&json!({"val": ""}));
-        assert!(rc.lines().any(|l| l.contains("\"\"")));
+        assert!(rc.line_count() > 50, "10KB body line count");
+        assert!(rc.lines().any(|l| l.contains("deployment")));
     }
 }

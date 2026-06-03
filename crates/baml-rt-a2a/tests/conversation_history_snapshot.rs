@@ -11,7 +11,7 @@
 //!
 //! Surface: **Message** (`#N`), **ToolCall** + **ToolResult** (execute), **SessionStep** (Open,
 //! SearchRead, PageRead; **SendDone** in graph only — not projected), **ContextRefTables** + **ArchiveReader** (live grep/cat).
-//! Normative: [`docs/baml-rt-conversation-spec.md`]. Update: `INSTA_UPDATE=1 cargo test -p baml-rt-a2a --test conversation_history_snapshot`
+//! Normative: [`docs/assertions/baml-rt-conversation-spec.md`]. Update: `INSTA_UPDATE=1 cargo test -p baml-rt-a2a --test conversation_history_snapshot`
 
 mod discover_stub {
     use std::sync::Arc;

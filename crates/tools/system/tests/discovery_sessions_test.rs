@@ -14,13 +14,14 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{
     CallScope, GlobalEvent, LlmUsage, ProvEvent, ProvEventData, ProvenanceWriter,
-    SurrealStoreBuilder, serialized_prompt_utf8_len,
+    serialized_prompt_utf8_len,
 };
 use baml_rt_tools::{ToolRegistry, ToolStep, prompt_message_char_count};
 use baml_tools_calculator::CalculatorTool;
 use baml_tools_system::SystemBundle;
 use futures_util::stream;
 use serde_json::json;
+use test_support::testing::provenance_fixtures::build_isolated_store;
 
 struct MockA2aHandler;
 
@@ -135,6 +136,31 @@ fn snapshot_safe_tool_output(output: serde_json::Value) -> serde_json::Value {
     redact_runtime_fields(output)
 }
 
+fn discovery_request_payload(output: &serde_json::Value) -> serde_json::Value {
+    output
+        .get("payloadJson")
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .or_else(|| output.get("payload").cloned())
+        .expect("payloadJson or payload field must be present")
+}
+
+fn assert_discovery_output_and_scope_snapshots(
+    output_name: &'static str,
+    scope_name: &'static str,
+    output: serde_json::Value,
+) {
+    insta::assert_json_snapshot!(output_name, snapshot_safe_tool_output(output.clone()));
+    insta::assert_json_snapshot!(
+        scope_name,
+        redact_runtime_fields(discovery_request_payload(&output))
+    );
+}
+
+fn assert_discovery_redacted_json_snapshot(name: &'static str, value: serde_json::Value) {
+    insta::assert_json_snapshot!(name, redact_runtime_fields(value));
+}
+
 async fn seeded_store_for_context(
     context_id: &ContextId,
     caller_agent: &AgentId,
@@ -147,10 +173,7 @@ async fn seeded_store_for_context(
     // timestamp_ms produces deterministic results regardless of platform clock resolution.
     // Events created with now_millis() could collide on fast machines, causing non-deterministic
     // sort order and snapshot mismatches between macOS (ARM64) and Linux CI (x86_64).
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build isolated in-memory store");
+    let store = build_isolated_store().await;
     let msg_caller = MessageId::from_external(ExternalId::new("tool-msg-caller".to_string()));
     let msg_other = MessageId::from_external(ExternalId::new("tool-msg-other".to_string()));
     let msg_linked = MessageId::from_external(ExternalId::new("tool-msg-linked".to_string()));
@@ -1160,153 +1183,92 @@ async fn discover_tools_session_returns_search_results() {
 }
 
 #[tokio::test]
-async fn introspection_session_snapshots_compact_result_and_agent_scope() {
+async fn discovery_session_output_and_scope_snapshot_matrix() {
+    struct Case {
+        label: &'static str,
+        context: ContextId,
+        caller_uuid: &'static str,
+        other_uuid: &'static str,
+        tool: &'static str,
+        send: serde_json::Value,
+        output_snap: &'static str,
+        scope_snap: &'static str,
+    }
+
     let _suite_guard = suite_lock().lock().await;
-    let registry = Arc::new(ToolRegistry::new());
-    let context = ContextId::new(9, 9);
-    registry
-        .register_bundle(SystemBundle::new_with_provenance(
-            Arc::new(MockAgentList::new(vec![])),
-            registry.clone(),
-            Arc::new(MockA2aHandler),
-            seeded_store_for_context(
-                &context,
-                &AgentId::from_uuid(
-                    UuidId::parse_str("00000000-0000-0000-0000-000000000123").unwrap(),
-                ),
-                &AgentId::from_uuid(
-                    UuidId::parse_str("00000000-0000-0000-0000-000000000999").unwrap(),
-                ),
-            )
-            .await,
-        ))
-        .unwrap();
-
-    let agent_id =
-        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000123").unwrap());
-    let requested_agent =
-        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000999").unwrap());
-    let session_id = registry
-        .open_session("system/introspection", json!({}), &context, &agent_id)
-        .await
-        .unwrap();
-
-    registry
-        .session_send(
-            &session_id,
-            json!({
+    let cases = [
+        Case {
+            label: "introspection",
+            context: ContextId::new(9, 9),
+            caller_uuid: "00000000-0000-0000-0000-000000000123",
+            other_uuid: "00000000-0000-0000-0000-000000000999",
+            tool: "system/introspection",
+            send: json!({
                 "resource": "llm_calls",
-                "agentId": requested_agent.as_str(),
+                "agentId": "00000000-0000-0000-0000-000000000999",
                 "groupBy": ["agent_id"],
                 "sortBy": "timestamp_ms",
                 "sortDir": "asc",
                 "pageSize": 20
             }),
-        )
-        .await
-        .unwrap();
-
-    let step = registry
-        .session_read(&session_id, serde_json::Value::Null)
-        .await
-        .unwrap();
-    let output = match step {
-        ToolStep::Done {
-            output: Some(output),
-        } => output,
-        other => panic!("expected Done(Some(output)), got {:?}", other),
-    };
-    insta::assert_json_snapshot!(
-        "introspection_tool_output",
-        snapshot_safe_tool_output(output.clone())
-    );
-    // Extract the payload from payloadJson or from "payload" key (platform-independent path).
-    let payload = output
-        .get("payloadJson")
-        .and_then(|v| v.as_str())
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-        .or_else(|| output.get("payload").cloned())
-        .expect("payloadJson or payload field must be present");
-    insta::assert_json_snapshot!(
-        "introspection_tool_request_scope",
-        redact_runtime_fields(payload)
-    );
-}
-
-#[tokio::test]
-async fn extrospection_session_snapshots_cross_scope_request() {
-    let _suite_guard = suite_lock().lock().await;
-    let registry = Arc::new(ToolRegistry::new());
-    let context = ContextId::new(9, 10);
-    registry
-        .register_bundle(SystemBundle::new_with_provenance(
-            Arc::new(MockAgentList::new(vec![])),
-            registry.clone(),
-            Arc::new(MockA2aHandler),
-            seeded_store_for_context(
-                &context,
-                &AgentId::from_uuid(
-                    UuidId::parse_str("00000000-0000-0000-0000-000000000124").unwrap(),
-                ),
-                &AgentId::from_uuid(
-                    UuidId::parse_str("00000000-0000-0000-0000-000000000999").unwrap(),
-                ),
-            )
-            .await,
-        ))
-        .unwrap();
-
-    let agent_id =
-        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000124").unwrap());
-    let cross_context = ContextId::new(123, 4).to_string();
-    let cross_agent =
-        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000999").unwrap());
-    let session_id = registry
-        .open_session("system/extrospection", json!({}), &context, &agent_id)
-        .await
-        .unwrap();
-
-    registry
-        .session_send(
-            &session_id,
-            json!({
+            output_snap: "introspection_tool_output",
+            scope_snap: "introspection_tool_request_scope",
+        },
+        Case {
+            label: "extrospection",
+            context: ContextId::new(9, 10),
+            caller_uuid: "00000000-0000-0000-0000-000000000124",
+            other_uuid: "00000000-0000-0000-0000-000000000999",
+            tool: "system/extrospection",
+            send: json!({
                 "resource": "tool_calls",
-                "contextId": cross_context,
-                "agentId": cross_agent.as_str(),
+                "contextId": ContextId::new(123, 4).to_string(),
+                "agentId": "00000000-0000-0000-0000-000000000999",
                 "groupBy": ["agent_id", "tool_name"],
                 "sortBy": "timestamp_ms",
                 "sortDir": "asc",
                 "outcome": "failed_only",
                 "pageSize": 5
             }),
-        )
-        .await
-        .unwrap();
+            output_snap: "extrospection_tool_output",
+            scope_snap: "extrospection_tool_request_scope",
+        },
+    ];
 
-    let step = registry
-        .session_read(&session_id, serde_json::Value::Null)
-        .await
-        .unwrap();
-    let output = match step {
-        ToolStep::Done {
-            output: Some(output),
-        } => output,
-        other => panic!("expected Done(Some(output)), got {:?}", other),
-    };
-    insta::assert_json_snapshot!(
-        "extrospection_tool_output",
-        snapshot_safe_tool_output(output.clone())
-    );
-    let payload = output
-        .get("payloadJson")
-        .and_then(|v| v.as_str())
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-        .or_else(|| output.get("payload").cloned())
-        .expect("payloadJson or payload field must be present");
-    insta::assert_json_snapshot!(
-        "extrospection_tool_request_scope",
-        redact_runtime_fields(payload)
-    );
+    for case in cases {
+        let caller = AgentId::from_uuid(UuidId::parse_str(case.caller_uuid).expect("caller uuid"));
+        let other = AgentId::from_uuid(UuidId::parse_str(case.other_uuid).expect("other uuid"));
+        let registry = Arc::new(ToolRegistry::new());
+        registry
+            .register_bundle(SystemBundle::new_with_provenance(
+                Arc::new(MockAgentList::new(vec![])),
+                registry.clone(),
+                Arc::new(MockA2aHandler),
+                seeded_store_for_context(&case.context, &caller, &other).await,
+            ))
+            .unwrap_or_else(|e| panic!("{}: register bundle: {e}", case.label));
+
+        let session_id = registry
+            .open_session(case.tool, json!({}), &case.context, &caller)
+            .await
+            .unwrap_or_else(|e| panic!("{}: open session: {e}", case.label));
+        registry
+            .session_send(&session_id, case.send)
+            .await
+            .unwrap_or_else(|e| panic!("{}: session_send: {e}", case.label));
+
+        let step = registry
+            .session_read(&session_id, serde_json::Value::Null)
+            .await
+            .unwrap_or_else(|e| panic!("{}: session_read: {e}", case.label));
+        let output = match step {
+            ToolStep::Done {
+                output: Some(output),
+            } => output,
+            other => panic!("{}: expected Done(Some(output)), got {other:?}", case.label),
+        };
+        assert_discovery_output_and_scope_snapshots(case.output_snap, case.scope_snap, output);
+    }
 }
 
 #[tokio::test]
@@ -1770,12 +1732,12 @@ async fn introspection_session_pagination_snapshots() {
         other => panic!("expected second Done(Some(output)), got {:?}", other),
     };
 
-    insta::assert_json_snapshot!(
+    assert_discovery_redacted_json_snapshot(
         "introspection_tool_pagination",
-        redact_runtime_fields(serde_json::json!({
+        serde_json::json!({
             "page1": snapshot_safe_tool_output(first_output),
             "page2": snapshot_safe_tool_output(second_output)
-        }))
+        }),
     );
 }
 
@@ -1856,12 +1818,12 @@ async fn extrospection_session_filter_sort_and_drilldown_snapshots() {
         other => panic!("expected drilldown Done(Some(output)), got {:?}", other),
     };
 
-    insta::assert_json_snapshot!(
+    assert_discovery_redacted_json_snapshot(
         "extrospection_tool_filter_sort_drilldown",
-        redact_runtime_fields(serde_json::json!({
+        serde_json::json!({
             "filtered": snapshot_safe_tool_output(filtered_output),
             "drilldown": snapshot_safe_tool_output(drilldown_output)
-        }))
+        }),
     );
 }
 
@@ -2002,9 +1964,9 @@ async fn extrospection_session_auto_drilldown_from_hotspot_snapshot() {
         other => panic!("expected pass2 Done(Some(output)), got {:?}", other),
     };
 
-    insta::assert_json_snapshot!(
+    assert_discovery_redacted_json_snapshot(
         "extrospection_tool_auto_drilldown_from_hotspot",
-        redact_runtime_fields(serde_json::json!({
+        serde_json::json!({
             "pass1": snapshot_safe_tool_output(pass1_output),
             "derived_filters": {
                 "agentId": derived_agent_id,
@@ -2012,7 +1974,7 @@ async fn extrospection_session_auto_drilldown_from_hotspot_snapshot() {
                 "bamlPrompt": derived_prompt
             },
             "pass2": snapshot_safe_tool_output(pass2_output)
-        }))
+        }),
     );
 }
 
@@ -2093,11 +2055,11 @@ async fn extrospection_session_failure_evidence_linked_modes_snapshots() {
         other => panic!("expected tool Done(Some(output)), got {:?}", other),
     };
 
-    insta::assert_json_snapshot!(
+    assert_discovery_redacted_json_snapshot(
         "extrospection_tool_failure_evidence_linked_modes",
-        redact_runtime_fields(serde_json::json!({
+        serde_json::json!({
             "llm_linked_prompt_rejected": snapshot_safe_tool_output(llm_output),
             "tool_linked_emitted_message": snapshot_safe_tool_output(tool_output)
-        }))
+        }),
     );
 }

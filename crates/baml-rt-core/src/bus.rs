@@ -244,7 +244,7 @@ pub enum EffectEvent {
     },
     /// Intent committed for a task. **Citations** are ref-table strings (`#N` history, `@N` archive, …),
     /// not opaque “evidence” prose — they tie the intent to **citable conversation history** as well as
-    /// archives so provenance and drift checks can validate grounding (see `docs/citable-history-and-checked-citations.md`).
+    /// archives so provenance and drift checks can validate grounding (see `docs/assertions/citable-history-and-checked-citations.md`).
     IntentResolved {
         context_id: ContextId,
         task_id: TaskId,

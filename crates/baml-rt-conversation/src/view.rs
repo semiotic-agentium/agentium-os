@@ -340,68 +340,78 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classify_ingress_from_metadata() {
+    fn classify_user_speaker_kind_matrix() {
         let ctx = ContextId::new(1, 2);
-        let anchor = ActivityAnchorId::from("derived-host-ingress-anchor");
-        let mut meta = HashMap::new();
-        meta.insert(
+
+        let mut ingress_meta = HashMap::new();
+        ingress_meta.insert(
             "user_speaker_kind".to_string(),
             baml_rt_vocabulary::vocabulary::user_speaker_kinds::INGRESS.to_string(),
         );
-        let kind = classify_user_speaker_kind(&ctx, &anchor, Some(&meta), "user").expect("user");
-        assert_eq!(kind, UserSpeakerKind::Ingress);
-    }
+        assert_eq!(
+            classify_user_speaker_kind(
+                &ctx,
+                &ActivityAnchorId::from("derived-host-ingress-anchor"),
+                Some(&ingress_meta),
+                "user"
+            )
+            .expect("ingress metadata"),
+            UserSpeakerKind::Ingress
+        );
 
-    #[test]
-    fn classify_ingress_poll_anchor() {
-        let ctx = ContextId::new(1, 2);
-        let anchor = ActivityAnchorId::from("ingress-poll-user:ctx-1-2:msg-1");
-        let kind = classify_user_speaker_kind(&ctx, &anchor, None, "user").expect("user");
-        assert_eq!(kind, UserSpeakerKind::Ingress);
-    }
+        for anchor in [
+            "ingress-poll-user:ctx-1-2:msg-1",
+            "ingress-unit-user:ctx-1-2:unit-a",
+        ] {
+            assert_eq!(
+                classify_user_speaker_kind(&ctx, &ActivityAnchorId::from(anchor), None, "user")
+                    .expect(anchor),
+                UserSpeakerKind::Ingress
+            );
+        }
 
-    #[test]
-    fn classify_ingress_unit_anchor() {
-        let ctx = ContextId::new(1, 2);
-        let anchor = ActivityAnchorId::from("ingress-unit-user:ctx-1-2:unit-a");
-        let kind = classify_user_speaker_kind(&ctx, &anchor, None, "user").expect("user");
-        assert_eq!(kind, UserSpeakerKind::Ingress);
-    }
+        let mut relay_meta = HashMap::new();
+        relay_meta.insert("kind".to_string(), "agent-to-agent".to_string());
+        assert_eq!(
+            classify_user_speaker_kind(
+                &ctx,
+                &ActivityAnchorId::from_counter(99),
+                Some(&relay_meta),
+                "ROLE_USER"
+            )
+            .expect("relay metadata"),
+            UserSpeakerKind::Relay
+        );
 
-    #[test]
-    fn classify_relay_from_metadata() {
-        let ctx = ContextId::new(1, 2);
-        let anchor = ActivityAnchorId::from_counter(99);
-        let mut meta = HashMap::new();
-        meta.insert("kind".to_string(), "agent-to-agent".to_string());
-        let kind =
-            classify_user_speaker_kind(&ctx, &anchor, Some(&meta), "ROLE_USER").expect("user");
-        assert_eq!(kind, UserSpeakerKind::Relay);
-    }
-
-    #[test]
-    fn classify_relay_from_a2a_child_context() {
         let caller = ContextId::new(1, 2);
         let child_task = TaskId::for_delegated_child(UuidId::new(Uuid::nil()));
-        let ctx = ContextId::for_a2a_child(&caller, "pkg", "default", &child_task);
-        let anchor = ActivityAnchorId::from_counter(100);
-        let kind = classify_user_speaker_kind(&ctx, &anchor, None, "user").expect("user");
-        assert_eq!(kind, UserSpeakerKind::Relay);
-    }
+        let child_ctx = ContextId::for_a2a_child(&caller, "pkg", "default", &child_task);
+        assert_eq!(
+            classify_user_speaker_kind(
+                &child_ctx,
+                &ActivityAnchorId::from_counter(100),
+                None,
+                "user"
+            )
+            .expect("a2a child context"),
+            UserSpeakerKind::Relay
+        );
 
-    #[test]
-    fn classify_human_default() {
-        let ctx = ContextId::new(1, 2);
-        let anchor = ActivityAnchorId::from_counter(101);
-        let kind = classify_user_speaker_kind(&ctx, &anchor, None, "user").expect("user");
-        assert_eq!(kind, UserSpeakerKind::Human);
-    }
+        assert_eq!(
+            classify_user_speaker_kind(&ctx, &ActivityAnchorId::from_counter(101), None, "user")
+                .expect("human default"),
+            UserSpeakerKind::Human
+        );
 
-    #[test]
-    fn classify_non_user_returns_none() {
-        let ctx = ContextId::new(1, 2);
-        let anchor = ActivityAnchorId::from_counter(102);
-        assert!(classify_user_speaker_kind(&ctx, &anchor, None, "assistant").is_none());
+        assert!(
+            classify_user_speaker_kind(
+                &ctx,
+                &ActivityAnchorId::from_counter(102),
+                None,
+                "assistant"
+            )
+            .is_none()
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 //! OpenTelemetry metrics for effect bus processing (`baml_rt_core.*` meter).
 //!
-//! Follows `docs/otel-metrics-instrumentation-guide.md`: static names, attributes for variants,
+//! Follows `docs/reference/otel-metrics-instrumentation-guide.md`: static names, attributes for variants,
 //! `OnceLock` for instruments.
 
 use std::{sync::OnceLock, time::Duration};

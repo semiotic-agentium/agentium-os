@@ -14,6 +14,7 @@ use baml_rt_provenance::{
     ProvenanceOpsQueryRequest, ProvenanceOpsResource, SurrealStoreBuilder,
 };
 use serde_json::json;
+use test_support::testing::provenance_fixtures::build_isolated_store;
 
 fn agent() -> AgentId {
     AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()))
@@ -154,10 +155,7 @@ async fn assert_effect_bus_tool_rows_for_task_id(
 
 #[tokio::test]
 async fn effect_bus_tool_events_materialize_in_tool_ops_query_for_task_scope_in_memory() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("in-memory store");
+    let store = build_isolated_store().await;
     assert_effect_bus_tool_rows(store).await;
 }
 
@@ -176,10 +174,7 @@ async fn effect_bus_tool_events_materialize_in_tool_ops_query_for_task_scope_fil
 
 #[tokio::test]
 async fn effect_bus_tool_events_materialize_for_live_task_ids() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("in-memory store");
+    let store = build_isolated_store().await;
     let context_id = ContextId::new(730, 2);
     let task_id = TaskId::from_external(ExternalId::new(
         "live-task:ctx-730-2:dispatch-echo-resume-msg".to_string(),

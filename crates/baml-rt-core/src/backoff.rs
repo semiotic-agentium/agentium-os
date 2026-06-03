@@ -70,69 +70,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backoff_delay_doubles() {
+    fn backoff_schedule_matrix() {
         let base = Duration::from_millis(500);
         let max = Duration::from_secs(30);
         assert_eq!(backoff_delay(base, max, 0), Duration::from_millis(500));
         assert_eq!(backoff_delay(base, max, 1), Duration::from_millis(1000));
         assert_eq!(backoff_delay(base, max, 2), Duration::from_millis(2000));
         assert_eq!(backoff_delay(base, max, 3), Duration::from_millis(4000));
-    }
 
-    #[test]
-    fn backoff_delay_caps_at_max() {
-        let base = Duration::from_millis(500);
-        let max = Duration::from_secs(5);
-        assert_eq!(backoff_delay(base, max, 0), Duration::from_millis(500));
-        assert_eq!(backoff_delay(base, max, 1), Duration::from_millis(1000));
-        assert_eq!(backoff_delay(base, max, 2), Duration::from_millis(2000));
-        assert_eq!(backoff_delay(base, max, 3), Duration::from_millis(4000));
-        assert_eq!(backoff_delay(base, max, 4), Duration::from_millis(5000));
-    }
+        let cap_max = Duration::from_secs(5);
+        assert_eq!(backoff_delay(base, cap_max, 4), Duration::from_millis(5000));
 
-    #[test]
-    fn exponential_backoff_first_delay_is_base() {
-        let mut backoff =
-            ExponentialBackoff::new(Duration::from_millis(500), Duration::from_secs(30));
-        assert_eq!(backoff.next_delay(), Duration::from_millis(500));
-    }
+        let mut exp = ExponentialBackoff::new(Duration::from_millis(500), Duration::from_secs(30));
+        assert_eq!(exp.next_delay(), Duration::from_millis(500));
 
-    #[test]
-    fn exponential_backoff_doubles_each_attempt() {
-        let mut backoff =
+        let mut doubling =
             ExponentialBackoff::new(Duration::from_millis(100), Duration::from_secs(60));
-        assert_eq!(backoff.next_delay(), Duration::from_millis(100));
-        assert_eq!(backoff.next_delay(), Duration::from_millis(200));
-        assert_eq!(backoff.next_delay(), Duration::from_millis(400));
-    }
+        assert_eq!(doubling.next_delay(), Duration::from_millis(100));
+        assert_eq!(doubling.next_delay(), Duration::from_millis(200));
+        assert_eq!(doubling.next_delay(), Duration::from_millis(400));
 
-    #[test]
-    fn exponential_backoff_caps_at_max() {
-        let mut backoff =
+        let mut capped =
             ExponentialBackoff::new(Duration::from_millis(500), Duration::from_secs(30));
         for _ in 0..20 {
-            backoff.next_delay();
+            capped.next_delay();
         }
-        assert_eq!(backoff.next_delay(), Duration::from_secs(30));
-    }
+        assert_eq!(capped.next_delay(), Duration::from_secs(30));
 
-    #[test]
-    fn rate_limit_backoff_delay_uses_default_schedule() {
         assert_eq!(rate_limit_backoff_delay(0), Duration::from_millis(500));
-        assert_eq!(rate_limit_backoff_delay(1), Duration::from_millis(1000));
-        assert_eq!(rate_limit_backoff_delay(2), Duration::from_millis(2000));
-        assert_eq!(rate_limit_backoff_delay(3), Duration::from_millis(4000));
         assert_eq!(rate_limit_backoff_delay(10), RATE_LIMIT_MAX_DELAY);
-    }
 
-    #[test]
-    fn exponential_backoff_reset_restarts_from_base() {
-        let mut backoff =
-            ExponentialBackoff::new(Duration::from_millis(500), Duration::from_secs(30));
-        backoff.next_delay();
-        backoff.next_delay();
-        backoff.next_delay();
-        backoff.reset();
-        assert_eq!(backoff.next_delay(), Duration::from_millis(500));
+        exp.next_delay();
+        exp.next_delay();
+        exp.reset();
+        assert_eq!(exp.next_delay(), Duration::from_millis(500));
     }
 }

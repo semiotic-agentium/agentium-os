@@ -865,81 +865,99 @@ mod tests {
     use super::{StreamChunk, StreamChunkView, Task, TaskState, TaskStatus, TaskStatusUpdateEvent};
 
     #[test]
-    fn stream_chunk_view_parses_task_id_from_nested_status_update_alias() {
-        let chunk = json!({
-            "statusUpdate": {
-                "status_update": {
-                    "contextId": "ctx-1-1",
-                    "taskId": "a2a-child-123",
-                    "status": { "state": "TASK_STATE_WORKING" }
-                }
-            }
-        });
-        let view = StreamChunkView::new(chunk);
-        assert_eq!(view.task_id().map(|id| id.as_str()), Some("a2a-child-123"));
-        assert_eq!(view.task_state(), Some("TASK_STATE_WORKING"));
-    }
+    fn stream_chunk_view_task_id_matrix() {
+        struct Case {
+            name: &'static str,
+            chunk: Value,
+            task_id: Option<&'static str>,
+            task_state: Option<&'static str>,
+        }
 
-    #[test]
-    fn stream_chunk_view_parses_task_id_from_string_task_payload() {
-        let chunk = json!({
-            "task": "{\"id\":\"a2a-child-789\",\"status\":{\"state\":\"TASK_STATE_SUBMITTED\"}}"
-        });
-        let view = StreamChunkView::new(chunk);
-        assert_eq!(view.task_id().map(|id| id.as_str()), Some("a2a-child-789"));
-        assert_eq!(view.task_state(), Some("TASK_STATE_SUBMITTED"));
-    }
+        let cases = [
+            Case {
+                name: "nested_status_update_alias",
+                chunk: json!({
+                    "statusUpdate": {
+                        "status_update": {
+                            "contextId": "ctx-1-1",
+                            "taskId": "a2a-child-123",
+                            "status": { "state": "TASK_STATE_WORKING" }
+                        }
+                    }
+                }),
+                task_id: Some("a2a-child-123"),
+                task_state: Some("TASK_STATE_WORKING"),
+            },
+            Case {
+                name: "string_task_payload",
+                chunk: json!({
+                    "task": "{\"id\":\"a2a-child-789\",\"status\":{\"state\":\"TASK_STATE_SUBMITTED\"}}"
+                }),
+                task_id: Some("a2a-child-789"),
+                task_state: Some("TASK_STATE_SUBMITTED"),
+            },
+            Case {
+                name: "message_task_id",
+                chunk: json!({ "message": { "taskId": "task-msg-1" } }),
+                task_id: Some("task-msg-1"),
+                task_state: None,
+            },
+            Case {
+                name: "top_level_status_update",
+                chunk: json!({
+                    "status_update": {
+                        "taskId": "task-snake-1",
+                        "status": { "state": "TASK_STATE_WORKING" }
+                    }
+                }),
+                task_id: Some("task-snake-1"),
+                task_state: Some("TASK_STATE_WORKING"),
+            },
+            Case {
+                name: "stringified_chunk_payload",
+                chunk: json!({
+                    "chunk": "{\"statusUpdate\":{\"taskId\":\"task-nested-1\"}}"
+                }),
+                task_id: Some("task-nested-1"),
+                task_state: None,
+            },
+            Case {
+                name: "tool_chunks_array",
+                chunk: json!({
+                    "chunks": [{
+                        "task": "{\"id\":\"task-array-1\"}",
+                        "statusUpdate": "{\"taskId\":\"task-array-1\"}"
+                    }]
+                }),
+                task_id: Some("task-array-1"),
+                task_state: None,
+            },
+        ];
 
-    #[test]
-    fn stream_chunk_view_parses_task_id_from_message_task_id() {
-        let view = StreamChunkView::new(json!({
-            "message": {
-                "taskId": "task-msg-1"
-            }
-        }));
-        assert_eq!(view.task_id().map(|id| id.as_str()), Some("task-msg-1"));
-    }
+        for case in cases {
+            let view = StreamChunkView::new(case.chunk);
+            assert_eq!(
+                view.task_id().map(|id| id.as_str()),
+                case.task_id,
+                "{}: task_id",
+                case.name
+            );
+            assert_eq!(
+                view.task_state(),
+                case.task_state,
+                "{}: task_state",
+                case.name
+            );
+        }
 
-    #[test]
-    fn stream_chunk_view_parses_task_id_from_top_level_status_update_alias() {
-        let view = StreamChunkView::new(json!({
-            "status_update": {
-                "taskId": "task-snake-1",
-                "status": { "state": "TASK_STATE_WORKING" }
-            }
-        }));
-        assert_eq!(view.task_id().map(|id| id.as_str()), Some("task-snake-1"));
-    }
-
-    #[test]
-    fn stream_chunk_view_parses_task_id_from_stringified_chunk_payload() {
-        let view = StreamChunkView::new(json!({
-            "chunk": "{\"statusUpdate\":{\"taskId\":\"task-nested-1\"}}"
-        }));
-        assert_eq!(view.task_id().map(|id| id.as_str()), Some("task-nested-1"));
-    }
-
-    #[test]
-    fn stream_chunk_view_parses_task_id_from_tool_chunks_array() {
-        let view = StreamChunkView::new(json!({
-            "chunks": [
-                {
-                    "task": "{\"id\":\"task-array-1\"}",
-                    "statusUpdate": "{\"taskId\":\"task-array-1\"}"
-                }
-            ]
-        }));
-        assert_eq!(view.task_id().map(|id| id.as_str()), Some("task-array-1"));
-    }
-
-    #[test]
-    fn stream_chunk_view_task_id_parsing_stops_after_depth_cap() {
         let mut nested: Value = json!({ "taskId": "task-too-deep" });
         for _ in 0..10 {
             nested = Value::String(nested.to_string());
         }
-        let view = StreamChunkView::new(nested);
-        assert!(view.task_id().is_none());
+        assert!(
+            StreamChunkView::new(nested).task_id().is_none(),
+            "depth cap stops parsing"
+        );
     }
 
     #[test]

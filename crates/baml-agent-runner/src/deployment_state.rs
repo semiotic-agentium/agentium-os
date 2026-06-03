@@ -1085,19 +1085,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn opens_and_lists_empty() {
+    async fn deployment_store_lifecycle_matrix() {
         let store = DeploymentStateStore::open_in_memory().await.unwrap();
-        let records = store.list_deployments().await.unwrap();
-        assert!(records.is_empty());
-    }
+        assert!(store.list_deployments().await.unwrap().is_empty());
 
-    #[tokio::test]
-    async fn save_and_remove_roundtrip() {
-        let store = DeploymentStateStore::open_in_memory().await.unwrap();
-        let record = DeploymentRecord {
-            content_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+        let hash: DeploymentContentHash =
+            "1111111111111111111111111111111111111111111111111111111111111111"
                 .parse()
-                .unwrap(),
+                .unwrap();
+        let record = DeploymentRecord {
+            content_hash: hash.clone(),
             agent_name: "clickup-agent".to_string(),
             deployed_at: "2026-03-25T16:30:00Z".to_string(),
             status: DeploymentStatus::Active,
@@ -1111,24 +1108,8 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0], record);
 
-        let removed = store
-            .remove_deployment(
-                &"1111111111111111111111111111111111111111111111111111111111111111"
-                    .parse()
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert!(removed);
-        let removed_again = store
-            .remove_deployment(
-                &"1111111111111111111111111111111111111111111111111111111111111111"
-                    .parse()
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert!(!removed_again);
+        assert!(store.remove_deployment(&hash).await.unwrap());
+        assert!(!store.remove_deployment(&hash).await.unwrap());
     }
 
     #[tokio::test]

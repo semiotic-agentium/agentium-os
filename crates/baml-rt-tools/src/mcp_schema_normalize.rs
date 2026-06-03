@@ -213,48 +213,67 @@ mod tests {
     }
 
     #[test]
-    fn ref_triggers_fallback() {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "child": { "$ref": "#/definitions/Foo" }
-            }
-        });
-        let normalized = normalize(&schema);
-        let reason = normalized.opaque_fallback_reason.expect("fallback");
-        assert!(reason.contains("$ref"));
-    }
-
-    #[test]
-    fn all_of_triggers_fallback() {
-        let schema = json!({
-            "allOf": [
-                { "type": "object" },
-                { "type": "object" }
-            ]
-        });
-        let reason = normalize(&schema).opaque_fallback_reason.expect("fallback");
-        assert!(reason.contains("allOf"));
-    }
-
-    #[test]
-    fn pattern_properties_triggers_fallback() {
-        let schema = json!({
-            "type": "object",
-            "patternProperties": { "^x-": { "type": "string" } }
-        });
-        let reason = normalize(&schema).opaque_fallback_reason.expect("fallback");
-        assert!(reason.contains("patternProperties"));
-    }
-
-    #[test]
-    fn additional_properties_schema_triggers_fallback() {
-        let schema = json!({
-            "type": "object",
-            "additionalProperties": { "type": "string" }
-        });
-        let reason = normalize(&schema).opaque_fallback_reason.expect("fallback");
-        assert!(reason.contains("additionalProperties"));
+    fn opaque_fallback_feature_matrix() {
+        let cases: &[(&str, Value, &str)] = &[
+            (
+                "ref",
+                json!({
+                    "type": "object",
+                    "properties": { "child": { "$ref": "#/definitions/Foo" } }
+                }),
+                "$ref",
+            ),
+            (
+                "all_of",
+                json!({ "allOf": [{ "type": "object" }, { "type": "object" }] }),
+                "allOf",
+            ),
+            (
+                "pattern_properties",
+                json!({
+                    "type": "object",
+                    "patternProperties": { "^x-": { "type": "string" } }
+                }),
+                "patternProperties",
+            ),
+            (
+                "additional_properties_schema",
+                json!({
+                    "type": "object",
+                    "additionalProperties": { "type": "string" }
+                }),
+                "additionalProperties",
+            ),
+            (
+                "complex_oneof",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "v": { "oneOf": [{ "type": "string" }, { "type": "integer" }] }
+                    }
+                }),
+                "oneOf",
+            ),
+            (
+                "nested_ref",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "outer": {
+                            "type": "object",
+                            "properties": { "inner": { "$ref": "#/Foo" } }
+                        }
+                    }
+                }),
+                "$ref",
+            ),
+        ];
+        for (label, schema, needle) in cases {
+            let reason = normalize(schema)
+                .opaque_fallback_reason
+                .unwrap_or_else(|| panic!("{label}: expected fallback"));
+            assert!(reason.contains(needle), "{label}: reason={reason}");
+        }
     }
 
     #[test]
@@ -276,41 +295,6 @@ mod tests {
             }
         });
         assert!(normalize(&schema).opaque_fallback_reason.is_none());
-    }
-
-    #[test]
-    fn complex_oneof_triggers_fallback() {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "v": {
-                    "oneOf": [
-                        { "type": "string" },
-                        { "type": "integer" }
-                    ]
-                }
-            }
-        });
-        let reason = normalize(&schema).opaque_fallback_reason.expect("fallback");
-        assert!(reason.contains("oneOf"));
-    }
-
-    #[test]
-    fn nested_unsupported_keyword_is_detected() {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "outer": {
-                    "type": "object",
-                    "properties": {
-                        "inner": { "$ref": "#/Foo" }
-                    }
-                }
-            }
-        });
-        let reason = normalize(&schema).opaque_fallback_reason.expect("fallback");
-        assert!(reason.contains("$ref"));
-        assert!(reason.contains("properties"));
     }
 
     #[test]

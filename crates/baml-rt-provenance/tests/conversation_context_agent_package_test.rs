@@ -10,14 +10,12 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{ProvEvent, ProvenanceQueryApi, ProvenanceWriter, SurrealStoreBuilder};
 use serde_json::json;
+use test_support::testing::provenance_fixtures::build_isolated_store;
 use uuid::Uuid;
 
 #[tokio::test]
 async fn query_conversation_context_with_agent_package_succeeds() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let ctx = ContextId::new(91, 92);
     store
         .add_event(baml_rt_provenance::ProvEvent::host_source_poll_recorded(
@@ -44,10 +42,7 @@ async fn query_conversation_context_with_agent_package_succeeds() {
 
 #[tokio::test]
 async fn query_conversation_context_with_agent_package_when_context_has_scoped_rows() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let ctx = ContextId::new(93, 94);
     let task_id = TaskId::from_external(ExternalId::new(Uuid::new_v4().to_string()));
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
@@ -78,10 +73,7 @@ async fn query_conversation_context_with_agent_package_when_context_has_scoped_r
 
 #[tokio::test]
 async fn query_conversation_context_with_agent_package_and_tool_call_row() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let ctx = ContextId::new(95, 96);
     let task_id = TaskId::from_external(ExternalId::new(Uuid::new_v4().to_string()));
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));

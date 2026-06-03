@@ -335,11 +335,11 @@ event_sources = [
 
 ### Phase G — Docs
 
-- Update [`host-to-agent-event-delivery.md`](docs/host-to-agent-event-delivery.md): Event Console section — shapes are **schema-scoped**; `source_kind` is subscription/publish metadata, not a separate message-shape dimension.
+- Update [`host-to-agent-event-delivery.md`](docs/assertions/host-to-agent-event-delivery.md): Event Console section — shapes are **schema-scoped**; `source_kind` is subscription/publish metadata, not a separate message-shape dimension.
 - Document that source types are registered through tool/source metadata, not Event Console code.
 - Document the source-family agent rule: raw source records go first to the source-family agent
   (`slack-agent`, `clickup-agent`, etc.); coordinator is a downstream orchestrator.
-- [`task-daemon-event-contract.md`](docs/task-daemon-event-contract.md): point at `HostSourceRecordsBatch`, not Slack-specific types.
+- [`task-daemon-event-contract.md`](docs/reference/task-daemon-event-contract.md): point at `HostSourceRecordsBatch`, not Slack-specific types.
 
 ## What we explicitly reject
 

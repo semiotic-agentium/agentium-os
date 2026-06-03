@@ -641,113 +641,105 @@ mod tests {
     }
 
     #[test]
-    fn send_done_replay_payload_seeds_page_read_without_archive_reader() {
+    fn send_done_replay_seeds_read_matrix() {
         let registry = ToolRegistry::new();
         let ref_table = RefTable::new();
-        let items = vec![
-            PromptProjectionItem {
-                timestamp_ms: 1,
-                activity_anchor: "evt-send-done".to_string(),
-                role: "tool".to_string(),
-                content: session_step_with_replay(
-                    "system/internal_a2a",
-                    SessionStepProjection::SendDone {
-                        archive_ref: "@8".to_string(),
-                        header: "@8 · \"delegated result\" · 2L · 64B".to_string(),
-                    },
-                    json!([
-                        {"agent": "cleese", "answer": "argument accepted"},
-                        {"agent": "chapman", "answer": "counterpoint found"}
-                    ]),
-                ),
+        let replay_payload = json!([
+            {"agent": "cleese", "answer": "argument accepted"},
+            {"agent": "chapman", "answer": "counterpoint found"}
+        ]);
+        let send_done = session_step_with_replay(
+            "system/internal_a2a",
+            SessionStepProjection::SendDone {
+                archive_ref: "@8".to_string(),
+                header: "@8 · \"delegated result\" · 2L · 64B".to_string(),
             },
-            PromptProjectionItem {
-                timestamp_ms: 2,
-                activity_anchor: "evt-page-read".to_string(),
-                role: "tool".to_string(),
-                content: session_step(
-                    "system/internal_a2a",
-                    SessionStepProjection::PageRead {
-                        archive_ref: "@8".to_string(),
-                        offset: 0,
-                        limit: 20,
-                    },
-                ),
+            replay_payload,
+        );
+
+        struct ReadCase {
+            label: &'static str,
+            read: SessionStepProjection,
+            want_in_content: &'static [&'static str],
+            want_absent: &'static [&'static str],
+        }
+        let cases = [
+            ReadCase {
+                label: "page_read",
+                read: SessionStepProjection::PageRead {
+                    archive_ref: "@8".to_string(),
+                    offset: 0,
+                    limit: 20,
+                },
+                want_in_content: &["cat -n @8", "argument accepted", "counterpoint found"],
+                want_absent: &[],
+            },
+            ReadCase {
+                label: "search_read",
+                read: SessionStepProjection::SearchRead {
+                    archive_ref: "@8".to_string(),
+                    grep: "counterpoint".to_string(),
+                    offset: 0,
+                    limit: 20,
+                },
+                want_in_content: &["grep -n", "counterpoint found"],
+                want_absent: &["argument accepted"],
             },
         ];
 
-        let history = project_prompt_context(items, &registry, &ref_table, None);
-        let rows = history.as_array().expect("array");
-
-        assert_eq!(rows.len(), 1, "SendDone stays filtered after seeding");
-        let content = rows[0]["content"].as_str().expect("content");
-        assert!(content.contains("cat -n @8"), "{content}");
-        assert!(content.contains("argument accepted"), "{content}");
-        assert!(content.contains("counterpoint found"), "{content}");
+        for case in cases {
+            let items = vec![
+                PromptProjectionItem {
+                    timestamp_ms: 1,
+                    activity_anchor: format!("evt-send-done-{}", case.label),
+                    role: "tool".to_string(),
+                    content: send_done.clone(),
+                },
+                PromptProjectionItem {
+                    timestamp_ms: 2,
+                    activity_anchor: format!("evt-read-{}", case.label),
+                    role: "tool".to_string(),
+                    content: session_step("system/internal_a2a", case.read),
+                },
+            ];
+            let history = project_prompt_context(items, &registry, &ref_table, None);
+            let rows = history.as_array().expect("array");
+            assert_eq!(rows.len(), 1, "{}: SendDone stays filtered", case.label);
+            let content = rows[0]["content"].as_str().expect("content");
+            for needle in case.want_in_content {
+                assert!(content.contains(needle), "{}: missing {needle}", case.label);
+            }
+            for needle in case.want_absent {
+                assert!(
+                    !content.contains(needle),
+                    "{}: unexpected {needle}",
+                    case.label
+                );
+            }
+        }
     }
 
     #[test]
-    fn send_done_replay_payload_seeds_search_read_without_archive_reader() {
-        let registry = ToolRegistry::new();
-        let ref_table = RefTable::new();
-        let items = vec![
-            PromptProjectionItem {
-                timestamp_ms: 1,
-                activity_anchor: "evt-send-done".to_string(),
-                role: "tool".to_string(),
-                content: session_step_with_replay(
-                    "system/internal_a2a",
-                    SessionStepProjection::SendDone {
-                        archive_ref: "@8".to_string(),
-                        header: "@8 · \"delegated result\" · 2L · 64B".to_string(),
-                    },
-                    json!([
-                        {"agent": "cleese", "answer": "argument accepted"},
-                        {"agent": "chapman", "answer": "counterpoint found"}
-                    ]),
-                ),
-            },
-            PromptProjectionItem {
-                timestamp_ms: 2,
-                activity_anchor: "evt-search-read".to_string(),
-                role: "tool".to_string(),
-                content: session_step(
-                    "system/internal_a2a",
-                    SessionStepProjection::SearchRead {
-                        archive_ref: "@8".to_string(),
-                        grep: "counterpoint".to_string(),
-                        offset: 0,
-                        limit: 20,
-                    },
-                ),
-            },
+    fn format_conversation_history_transcript_matrix() {
+        let cases: &[(&str, serde_json::Value, &str)] = &[
+            (
+                "plain",
+                json!({"role": "user", "content": "#1 hi"}),
+                "user: #1 hi",
+            ),
+            (
+                "openai_parts",
+                json!({
+                    "role": "user",
+                    "content": [{"type": "text", "text": "line1"}]
+                }),
+                "user: line1",
+            ),
         ];
-
-        let history = project_prompt_context(items, &registry, &ref_table, None);
-        let rows = history.as_array().expect("array");
-
-        assert_eq!(rows.len(), 1, "SendDone stays filtered after seeding");
-        let content = rows[0]["content"].as_str().expect("content");
-        assert!(content.contains("grep -n"), "{content}");
-        assert!(content.contains("counterpoint found"), "{content}");
-        assert!(!content.contains("argument accepted"), "{content}");
-    }
-
-    #[test]
-    fn format_conversation_history_transcript_flattens_role_content() {
-        let rows = vec![json!({"role": "user", "content": "#1 hi"})];
-        let t = format_conversation_history_transcript(&rows);
-        assert_eq!(t, "user: #1 hi");
-    }
-
-    #[test]
-    fn format_conversation_history_transcript_flattens_openai_text_part_array() {
-        let rows = vec![json!({
-            "role": "user",
-            "content": [{"type": "text", "text": "line1"}]
-        })];
-        let t = format_conversation_history_transcript(&rows);
-        assert_eq!(t, "user: line1");
+        for (label, row, want) in cases {
+            let got = format_conversation_history_transcript(std::slice::from_ref(row));
+            assert_eq!(&got, want, "{label}");
+        }
     }
 
     #[test]
@@ -861,62 +853,50 @@ mod tests {
     }
 
     #[test]
-    fn session_open_step_is_filtered_from_history() {
+    fn projection_yields_empty_history_matrix() {
         let registry = ToolRegistry::new();
         let ref_table = RefTable::new();
-        let items = vec![PromptProjectionItem {
-            timestamp_ms: 0,
-            activity_anchor: "evt-open".to_string(),
-            role: "tool".to_string(),
-            content: session_step("system/discover_agents", SessionStepProjection::Open),
-        }];
-        let history = project_prompt_context(items, &registry, &ref_table, None);
-        assert_eq!(history, json!([]));
-    }
-
-    #[test]
-    fn history_filters_numbered_model_and_tool_notices() {
-        let registry = ToolRegistry::new();
-        let ref_table = RefTable::new();
-        let items = vec![
-            PromptProjectionItem {
+        let cases: Vec<Vec<PromptProjectionItem>> = vec![
+            vec![PromptProjectionItem {
                 timestamp_ms: 0,
-                activity_anchor: "evt-msg-1".to_string(),
-                role: "assistant".to_string(),
-                content: PromptProjectionContent::Message {
-                    text: "#2 Calling model: openai/gpt-4o-mini".to_string(),
-                    citations: Vec::new(),
+                activity_anchor: "evt-open".to_string(),
+                role: "tool".to_string(),
+                content: session_step("system/discover_agents", SessionStepProjection::Open),
+            }],
+            vec![
+                PromptProjectionItem {
+                    timestamp_ms: 0,
+                    activity_anchor: "evt-msg-1".to_string(),
+                    role: "assistant".to_string(),
+                    content: PromptProjectionContent::Message {
+                        text: "#2 Calling model: openai/gpt-4o-mini".to_string(),
+                        citations: Vec::new(),
+                    },
                 },
-            },
-            PromptProjectionItem {
-                timestamp_ms: 1,
-                activity_anchor: "evt-msg-2".to_string(),
-                role: "assistant".to_string(),
-                content: PromptProjectionContent::Message {
-                    text: "#3 Invoking tool: system/discover_agents".to_string(),
-                    citations: Vec::new(),
+                PromptProjectionItem {
+                    timestamp_ms: 1,
+                    activity_anchor: "evt-msg-2".to_string(),
+                    role: "assistant".to_string(),
+                    content: PromptProjectionContent::Message {
+                        text: "#3 Invoking tool: system/discover_agents".to_string(),
+                        citations: Vec::new(),
+                    },
                 },
-            },
+            ],
+            vec![PromptProjectionItem {
+                timestamp_ms: 0,
+                activity_anchor: "evt-status".to_string(),
+                role: "tool".to_string(),
+                content: PromptProjectionContent::ToolResult {
+                    tool_name: "system/discover_agents".to_string(),
+                    result: json!({ "status": "sent" }),
+                },
+            }],
         ];
-        let history = project_prompt_context(items, &registry, &ref_table, None);
-        assert_eq!(history, json!([]));
-    }
-
-    #[test]
-    fn status_only_tool_payload_is_filtered_from_history() {
-        let registry = ToolRegistry::new();
-        let ref_table = RefTable::new();
-        let items = vec![PromptProjectionItem {
-            timestamp_ms: 0,
-            activity_anchor: "evt-status".to_string(),
-            role: "tool".to_string(),
-            content: PromptProjectionContent::ToolResult {
-                tool_name: "system/discover_agents".to_string(),
-                result: json!({ "status": "sent" }),
-            },
-        }];
-        let history = project_prompt_context(items, &registry, &ref_table, None);
-        assert_eq!(history, json!([]));
+        for (i, items) in cases.into_iter().enumerate() {
+            let history = project_prompt_context(items, &registry, &ref_table, None);
+            assert_eq!(history, json!([]), "case {i}");
+        }
     }
 
     #[test]

@@ -304,5 +304,13 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "cluster_heartbeat",
             retryability_for_a2a(error),
         ),
+        BamlRtError::AgentDraining(message) => mapping(
+            error,
+            -32009,
+            "Agent draining",
+            Some(serde_json::json!({ "details": message })),
+            "agent_draining",
+            retryability_for_a2a(error),
+        ),
     }
 }

@@ -17,7 +17,7 @@ use std::net::{IpAddr, SocketAddr};
 /// - Cloud metadata IPs (169.254.169.254, 100.100.100.200, fd00:ec2::/32)
 pub fn validate_cluster_endpoint(raw: &str) -> Result<url::Url, String> {
     // Reject non-ASCII input before URL parsing to prevent IDNA normalization
-    // bypasses (e.g. Unicode look-alikes that normalize to blocked hostnames).
+    // bypasses (e.g. Unicode homoglyphs that normalize to blocked hostnames).
     if !raw.is_ascii() {
         return Err("endpoint URL contains non-ASCII characters".to_string());
     }
@@ -224,172 +224,151 @@ pub fn truncate_body(text: &str, max_bytes: usize) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn valid_cluster_endpoint() {
-        let url = validate_cluster_endpoint("http://runner-0.runner.agentium.svc:18080");
-        assert!(url.is_ok(), "expected Ok, got {url:?}");
+    struct RejectCase {
+        label: &'static str,
+        url: &'static str,
+        check: fn(&str) -> bool,
     }
 
     #[test]
-    fn valid_https_endpoint() {
-        let url = validate_cluster_endpoint("https://runner-1.example.com:443");
-        assert!(url.is_ok());
+    fn cluster_endpoint_rejection_matrix() {
+        let cases = [
+            RejectCase {
+                label: "non_http_scheme",
+                url: "ftp://runner-0:18080",
+                check: |e| e.contains("scheme"),
+            },
+            RejectCase {
+                label: "loopback_ipv4",
+                url: "http://127.0.0.1:18080",
+                check: |e| e.contains("loopback"),
+            },
+            RejectCase {
+                label: "loopback_ipv6",
+                url: "http://[::1]:18080",
+                check: |e| e.contains("loopback"),
+            },
+            RejectCase {
+                label: "unspecified",
+                url: "http://0.0.0.0:18080",
+                check: |e| e.contains("unspecified"),
+            },
+            RejectCase {
+                label: "link_local_metadata",
+                url: "http://169.254.169.254/latest/meta-data",
+                check: |e| e.contains("link-local") || e.contains("metadata"),
+            },
+            RejectCase {
+                label: "localhost",
+                url: "http://localhost:18080",
+                check: |e| e.contains("blocked"),
+            },
+            RejectCase {
+                label: "cloud_metadata_hostname",
+                url: "http://metadata.google.internal/v1/instance",
+                check: |e| e.contains("blocked"),
+            },
+            RejectCase {
+                label: "azure_metadata_hostname",
+                url: "http://metadata.azure.internal/metadata",
+                check: |e| e.contains("blocked"),
+            },
+            RejectCase {
+                label: "metadata_subdomain",
+                url: "http://evil.metadata.google.internal/v1/instance",
+                check: |e| e.contains("blocked"),
+            },
+            RejectCase {
+                label: "aws_ipv6_imds_exact",
+                url: "http://[fd00:ec2::254]/latest/meta-data",
+                check: |e| e.contains("cloud metadata"),
+            },
+            RejectCase {
+                label: "aws_ipv6_imds_prefix",
+                url: "http://[fd00:ec2::1]:18080",
+                check: |e| e.contains("cloud metadata"),
+            },
+            RejectCase {
+                label: "alibaba_metadata_ip",
+                url: "http://100.100.100.200:18080",
+                check: |e| e.contains("cloud metadata"),
+            },
+            RejectCase {
+                label: "non_ascii_url",
+                url: "http://metadata\u{2161}.google.internal:18080",
+                check: |e| e.contains("non-ASCII"),
+            },
+        ];
+        for case in cases {
+            let err = validate_cluster_endpoint(case.url).expect_err(case.label);
+            assert!((case.check)(&err), "{}: {err}", case.label);
+        }
+    }
+
+    struct AllowCase {
+        label: &'static str,
+        url: &'static str,
+        hint: &'static str,
     }
 
     #[test]
-    fn rejects_non_http_scheme() {
-        let err = validate_cluster_endpoint("ftp://runner-0:18080").unwrap_err();
-        assert!(err.contains("scheme"), "error should mention scheme: {err}");
-    }
-
-    #[test]
-    fn rejects_loopback_ipv4() {
-        let err = validate_cluster_endpoint("http://127.0.0.1:18080").unwrap_err();
-        assert!(
-            err.contains("loopback"),
-            "error should mention loopback: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_loopback_ipv6() {
-        let err = validate_cluster_endpoint("http://[::1]:18080").unwrap_err();
-        assert!(
-            err.contains("loopback"),
-            "error should mention loopback: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_unspecified() {
-        let err = validate_cluster_endpoint("http://0.0.0.0:18080").unwrap_err();
-        assert!(
-            err.contains("unspecified"),
-            "error should mention unspecified: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_link_local_metadata() {
-        let err = validate_cluster_endpoint("http://169.254.169.254/latest/meta-data").unwrap_err();
-        assert!(
-            err.contains("link-local") || err.contains("metadata"),
-            "error should mention link-local or metadata: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_localhost() {
-        let err = validate_cluster_endpoint("http://localhost:18080").unwrap_err();
-        assert!(
-            err.contains("blocked"),
-            "error should mention blocked: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_cloud_metadata_hostname() {
-        let err =
-            validate_cluster_endpoint("http://metadata.google.internal/v1/instance").unwrap_err();
-        assert!(
-            err.contains("blocked"),
-            "error should mention blocked: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_azure_metadata_hostname() {
-        let err = validate_cluster_endpoint("http://metadata.azure.internal/metadata").unwrap_err();
-        assert!(
-            err.contains("blocked"),
-            "error should mention blocked: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_metadata_subdomain() {
-        let err = validate_cluster_endpoint("http://evil.metadata.google.internal/v1/instance")
-            .unwrap_err();
-        assert!(
-            err.contains("blocked"),
-            "subdomain of blocked host should be blocked: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_aws_ipv6_imds_exact() {
-        let err = validate_cluster_endpoint("http://[fd00:ec2::254]/latest/meta-data").unwrap_err();
-        assert!(
-            err.contains("cloud metadata"),
-            "error should mention cloud metadata: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_aws_ipv6_imds_prefix() {
-        let err = validate_cluster_endpoint("http://[fd00:ec2::1]:18080").unwrap_err();
-        assert!(
-            err.contains("cloud metadata"),
-            "fd00:ec2::/32 prefix should be blocked: {err}"
-        );
-    }
-
-    #[test]
-    fn allows_different_ipv6_ula_prefix() {
-        assert!(
-            validate_cluster_endpoint("http://[fd00:ec3::1]:18080").is_ok(),
-            "fd00:ec3:: is not in the fd00:ec2::/32 range and must be allowed"
-        );
-    }
-
-    #[test]
-    fn rejects_alibaba_metadata_ip() {
-        let err = validate_cluster_endpoint("http://100.100.100.200:18080").unwrap_err();
-        assert!(
-            err.contains("cloud metadata"),
-            "Alibaba Cloud metadata IP should be blocked: {err}"
-        );
-    }
-
-    #[test]
-    fn accepts_rfc1918_10() {
-        assert!(
-            validate_cluster_endpoint("http://10.0.0.1:18080").is_ok(),
-            "RFC1918 10.x addresses must be allowed for K8s cluster communication"
-        );
-    }
-
-    #[test]
-    fn accepts_rfc1918_172() {
-        assert!(
-            validate_cluster_endpoint("http://172.16.0.1:18080").is_ok(),
-            "RFC1918 172.16+ addresses must be allowed for K8s cluster communication"
-        );
-        assert!(validate_cluster_endpoint("http://172.15.0.1:18080").is_ok());
-    }
-
-    #[test]
-    fn accepts_rfc1918_192() {
-        assert!(
-            validate_cluster_endpoint("http://192.168.1.1:18080").is_ok(),
-            "RFC1918 192.168 addresses must be allowed for K8s cluster communication"
-        );
-    }
-
-    #[test]
-    fn accepts_ipv6_ula() {
-        assert!(
-            validate_cluster_endpoint("http://[fd12::1]:18080").is_ok(),
-            "non-IMDS ULA addresses must be allowed for K8s cluster communication"
-        );
-    }
-
-    #[test]
-    fn accepts_k8s_cluster_ip() {
-        assert!(
-            validate_cluster_endpoint("http://10.96.0.1:18080").is_ok(),
-            "typical K8s ClusterIP range must be allowed"
-        );
+    fn cluster_endpoint_allowance_matrix() {
+        let cases = [
+            AllowCase {
+                label: "valid_cluster",
+                url: "http://runner-0.runner.agentium.svc:18080",
+                hint: "expected Ok",
+            },
+            AllowCase {
+                label: "valid_https",
+                url: "https://runner-1.example.com:443",
+                hint: "expected Ok",
+            },
+            AllowCase {
+                label: "different_ipv6_ula_prefix",
+                url: "http://[fd00:ec3::1]:18080",
+                hint: "fd00:ec3:: is not in the fd00:ec2::/32 range and must be allowed",
+            },
+            AllowCase {
+                label: "rfc1918_10",
+                url: "http://10.0.0.1:18080",
+                hint: "RFC1918 10.x addresses must be allowed for K8s cluster communication",
+            },
+            AllowCase {
+                label: "rfc1918_172_16",
+                url: "http://172.16.0.1:18080",
+                hint: "RFC1918 172.16+ addresses must be allowed for K8s cluster communication",
+            },
+            AllowCase {
+                label: "rfc1918_172_15",
+                url: "http://172.15.0.1:18080",
+                hint: "RFC1918 172.15.x must be allowed",
+            },
+            AllowCase {
+                label: "rfc1918_192",
+                url: "http://192.168.1.1:18080",
+                hint: "RFC1918 192.168 addresses must be allowed for K8s cluster communication",
+            },
+            AllowCase {
+                label: "ipv6_ula",
+                url: "http://[fd12::1]:18080",
+                hint: "non-IMDS ULA addresses must be allowed for K8s cluster communication",
+            },
+            AllowCase {
+                label: "k8s_cluster_ip",
+                url: "http://10.96.0.1:18080",
+                hint: "typical K8s ClusterIP range must be allowed",
+            },
+        ];
+        for case in cases {
+            let result = validate_cluster_endpoint(case.url);
+            assert!(
+                result.is_ok(),
+                "{}: {} — got {result:?}",
+                case.label,
+                case.hint
+            );
+        }
     }
 
     #[test]
@@ -398,43 +377,65 @@ mod tests {
         assert_eq!(origin_url(&url), "http://runner-0:18080");
     }
 
-    #[test]
-    fn rejects_non_ascii_url() {
-        let err =
-            validate_cluster_endpoint("http://metadata\u{2161}.google.internal:18080").unwrap_err();
-        assert!(
-            err.contains("non-ASCII"),
-            "error should mention non-ASCII: {err}"
-        );
+    struct ResolveCase {
+        label: &'static str,
+        url: &'static str,
+        expect_ok: bool,
+        want_ip: Option<&'static str>,
     }
 
     #[tokio::test]
-    async fn resolve_rejects_localhost_dns() {
-        let err = resolve_and_validate_cluster_endpoint("http://localhost:18080")
-            .await
-            .unwrap_err();
-        assert!(
-            err.contains("blocked"),
-            "expected blocked error, got: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn resolve_accepts_literal_ip() {
-        let result = resolve_and_validate_cluster_endpoint("http://8.8.8.8:18080").await;
-        assert!(result.is_ok(), "expected Ok, got {result:?}");
-        let (_url, addrs) = result.unwrap();
-        assert!(!addrs.is_empty(), "resolved addresses should be non-empty");
-        assert_eq!(addrs[0].ip(), "8.8.8.8".parse::<IpAddr>().unwrap());
+    async fn resolve_and_validate_cluster_endpoint_matrix() {
+        let cases = [
+            ResolveCase {
+                label: "rejects_localhost_dns",
+                url: "http://localhost:18080",
+                expect_ok: false,
+                want_ip: None,
+            },
+            ResolveCase {
+                label: "accepts_literal_ip",
+                url: "http://8.8.8.8:18080",
+                expect_ok: true,
+                want_ip: Some("8.8.8.8"),
+            },
+        ];
+        for case in cases {
+            let result = resolve_and_validate_cluster_endpoint(case.url).await;
+            if case.expect_ok {
+                assert!(
+                    result.is_ok(),
+                    "{}: expected Ok, got {result:?}",
+                    case.label
+                );
+                let (_url, addrs) = result.unwrap();
+                assert!(
+                    !addrs.is_empty(),
+                    "{}: resolved addresses should be non-empty",
+                    case.label
+                );
+                if let Some(ip) = case.want_ip {
+                    assert_eq!(
+                        addrs[0].ip(),
+                        ip.parse::<IpAddr>().unwrap(),
+                        "{}",
+                        case.label
+                    );
+                }
+            } else {
+                let err = result.expect_err(case.label);
+                assert!(
+                    err.contains("blocked"),
+                    "{}: expected blocked error, got: {err}",
+                    case.label
+                );
+            }
+        }
     }
 
     #[test]
-    fn truncate_short_string_unchanged() {
+    fn truncate_body_matrix() {
         assert_eq!(truncate_body("hello", 512), "hello");
-    }
-
-    #[test]
-    fn truncate_long_string() {
         let long = "a".repeat(1000);
         let result = truncate_body(&long, 512);
         assert!(result.len() < 600, "truncated result should be bounded");

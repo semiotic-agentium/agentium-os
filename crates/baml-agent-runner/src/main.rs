@@ -1253,7 +1253,7 @@ globalThis.onChatMessage = async function(_message) {
 
     #[tokio::test]
     async fn test_draining_agent_rejects_a2a_request() {
-        use baml_rt_core::{AgentInstanceId, AgentPackageName, AgentRouteKey};
+        use baml_rt_core::{AgentInstanceId, AgentPackageName, AgentRouteKey, BamlRtError};
         let prov = test_provenance_config().await;
         let (_dir, state) = test_deployment_state().await;
         let runner = make_runner(prov, state);
@@ -1285,13 +1285,16 @@ globalThis.onChatMessage = async function(_message) {
             }
         });
         let wire = baml_rt_core::A2aWireRequest::from(request_val);
-        let result = runner.handle_a2a_by_key(&route_key, wire).await;
-        assert!(result.is_err(), "draining agent should reject requests");
-        let msg = result.err().unwrap().to_string();
-        assert!(
-            msg.contains("draining"),
-            "error should mention draining, got: {msg}"
-        );
+        match runner.handle_a2a_by_key(&route_key, wire).await {
+            Err(BamlRtError::AgentDraining(msg)) => {
+                assert!(
+                    msg.contains("draining"),
+                    "error should mention draining, got: {msg}"
+                );
+            }
+            Err(e) => panic!("expected AgentDraining, got: {e}"),
+            Ok(_) => panic!("draining agent should reject requests"),
+        }
     }
 
     // ── cluster resolver fallback ────────────────────────────────────────────

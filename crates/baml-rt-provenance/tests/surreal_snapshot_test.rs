@@ -21,11 +21,12 @@ use baml_rt_core::{
 use baml_rt_provenance::{
     AgentBootedEvent, AgentType, CallScope, LlmUsage, ProvEvent, ProvEventData,
     ProvenanceContextReader, ProvenanceOpsQuery, ProvenancePlanningQuery, ProvenanceQueryApi,
-    ProvenanceWriter, SurrealStoreBuilder, TaskScopedEvent, serialized_prompt_utf8_len,
+    ProvenanceWriter, TaskScopedEvent, serialized_prompt_utf8_len,
 };
 use baml_rt_tools::prompt_message_char_count;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use test_support::testing::provenance_fixtures::build_isolated_store;
 
 // ---------------------------------------------------------------------------
 // Unified store trait object
@@ -58,10 +59,7 @@ impl<T> SnapshotStore for T where
 // ---------------------------------------------------------------------------
 
 async fn build_surreal_store() -> Arc<dyn SnapshotStore> {
-    SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build SurrealDB isolated store")
+    build_isolated_store().await
 }
 
 // ---------------------------------------------------------------------------

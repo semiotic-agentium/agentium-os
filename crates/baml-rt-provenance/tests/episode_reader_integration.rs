@@ -9,16 +9,17 @@
 //! Despite unique namespace isolation, parallel execution causes sporadic failures. Run with
 //! `--test-threads=1` or via `cargo nextest` which runs each test in a separate process.
 
-use std::{sync::Arc, time::Duration};
-
 use baml_rt_conversation::view::SessionStepOp;
 use baml_rt_core::{
     Outcome,
     ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
-    AgentType, CallScope, Episode, EpisodeContent, LlmUsage, ProvEvent, ProvenanceWriter, StepType,
-    SurrealStoreBuilder, episode::EpisodeReader,
+    CallScope, Episode, EpisodeContent, LlmUsage, ProvEvent, ProvenanceWriter, StepType,
+    episode::EpisodeReader,
+};
+use test_support::testing::provenance_fixtures::{
+    bootstrap_task, build_isolated_store, complete_task, wall_clock_tick,
 };
 
 /// `ToolRead` rows with rendered archive/grep bodies (explicit Read only; `SendDone` stays off transcript), in timeline order.
@@ -36,78 +37,6 @@ fn transcript_tool_read_bodies(ep: &Episode) -> Vec<String> {
             }
         })
         .collect()
-}
-
-async fn build_isolated_store() -> Arc<baml_rt_provenance::SurrealProvenanceStore> {
-    SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build isolated in-memory store")
-}
-
-async fn wall_clock_tick() {
-    tokio::time::sleep(Duration::from_millis(12)).await;
-}
-
-/// Helper: bootstrap a minimal task lifecycle (agent boot, task exists, execution started).
-async fn bootstrap_task(
-    store: &baml_rt_provenance::SurrealProvenanceStore,
-    context_id: &ContextId,
-    task_id: &TaskId,
-    agent_id: &AgentId,
-) {
-    wall_clock_tick().await;
-    store
-        .add_event(ProvEvent::agent_booted(
-            agent_id.clone(),
-            AgentType::new("test_agent").expect("agent_type"),
-            "1.0.0".to_string(),
-            "test@1.0.0".to_string(),
-        ))
-        .await
-        .expect("agent_booted");
-    wall_clock_tick().await;
-    store
-        .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
-        .await
-        .expect("task_exists");
-    wall_clock_tick().await;
-    store
-        .add_event(ProvEvent::task_execution_started(
-            context_id.clone(),
-            task_id.clone(),
-            agent_id.clone(),
-        ))
-        .await
-        .expect("task_execution_started");
-    wall_clock_tick().await;
-    store
-        .add_event(ProvEvent::task_status_changed(
-            context_id.clone(),
-            task_id.clone(),
-            None,
-            Some("TASK_STATE_SUBMITTED".to_string()),
-        ))
-        .await
-        .expect("task_status_submitted");
-}
-
-/// Helper: complete a task.
-async fn complete_task(
-    store: &baml_rt_provenance::SurrealProvenanceStore,
-    context_id: &ContextId,
-    task_id: &TaskId,
-) {
-    wall_clock_tick().await;
-    store
-        .add_event(ProvEvent::task_status_changed(
-            context_id.clone(),
-            task_id.clone(),
-            Some("working".to_string()),
-            Some("completed".to_string()),
-        ))
-        .await
-        .expect("task_status_completed");
 }
 
 // ---------------------------------------------------------------------------
@@ -321,7 +250,7 @@ async fn episode_send_done_produces_read_entries_from_graph_hydrated_payload() {
         panic!("expected ToolOutput for PageRead");
     }
 
-    // --- Session history: golden file matches `assemble_session_history` / `project_prompt_context` (see `docs/baml-rt-conversation-spec.md`) ---
+    // --- Session history: golden file matches `assemble_session_history` / `project_prompt_context` (see `docs/assertions/baml-rt-conversation-spec.md`) ---
     let session_history = serde_json::to_value(&ep.session_history).expect("json");
     insta::assert_json_snapshot!(session_history);
 

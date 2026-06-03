@@ -9,19 +9,18 @@ use baml_rt_core::{
     ids::{AgentId, ArtifactId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
-    AgentType, GraphExporter, LlmUsage, ProvEvent, ProvenanceWriter, SurrealStoreBuilder,
+    AgentType, GraphExporter, LlmUsage, ProvEvent, ProvenanceWriter,
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
     metamodel::TaskStatusKind,
     normalize_event,
 };
 use insta::assert_snapshot;
 use serde_json::json;
+use test_support::testing::provenance_fixtures::build_isolated_store as shared_isolated_store;
 
 async fn build_isolated_store(_test_name: &str) -> Arc<baml_rt_provenance::SurrealProvenanceStore> {
-    SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build isolated in-memory store")
+    let _ = _test_name;
+    shared_isolated_store().await
 }
 
 fn event_anchor(event: &ProvEvent) -> baml_rt_core::ids::ActivityAnchorId {

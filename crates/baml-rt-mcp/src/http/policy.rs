@@ -212,116 +212,124 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rejects_plain_http_when_auth_present() {
-        let err = validate_http_target(
-            "s",
-            "http://example.com/mcp",
-            &cfg(&["example.com"], false),
-            true,
-        )
-        .expect_err("must reject");
-        assert!(matches!(err, PolicyError::PlaintextWithAuth { .. }));
+    struct PolicyCase {
+        label: &'static str,
+        url: &'static str,
+        allow_hosts: &'static [&'static str],
+        allow_private_ips: bool,
+        has_auth_secrets: bool,
+        expect_ok: bool,
+        check_err: Option<fn(&PolicyError) -> bool>,
     }
 
     #[test]
-    fn allows_plain_http_when_no_auth() {
-        let res = validate_http_target(
-            "s",
-            "http://example.com/mcp",
-            &cfg(&["example.com"], false),
-            false,
-        );
-        assert!(res.is_ok(), "{res:?}");
-    }
-
-    #[test]
-    fn allows_https_with_auth_and_allowlist() {
-        let res = validate_http_target(
-            "s",
-            "https://example.com/mcp",
-            &cfg(&["example.com"], false),
-            true,
-        );
-        assert!(res.is_ok(), "{res:?}");
-    }
-
-    #[test]
-    fn allows_loopback_when_allow_private_ips_set() {
-        let res = validate_http_target(
-            "s",
-            "http://127.0.0.1:8080/mcp",
-            &cfg(&["127.0.0.1"], true),
-            false,
-        );
-        assert!(res.is_ok(), "{res:?}");
-    }
-
-    #[test]
-    fn rejects_loopback_without_allow_private_ips() {
-        let err = validate_http_target(
-            "s",
-            "http://127.0.0.1/mcp",
-            &cfg(&["127.0.0.1"], false),
-            false,
-        )
-        .expect_err("reject");
-        assert!(matches!(err, PolicyError::PrivateIpRejected { .. }));
-    }
-
-    #[test]
-    fn rejects_ipv4_mapped_ipv6_private_without_allow_private_ips() {
-        let err =
-            validate_http_target("s", "http://[::ffff:10.0.0.1]/mcp", &cfg(&[], false), false)
-                .expect_err("reject");
-        assert!(matches!(err, PolicyError::PrivateIpRejected { .. }));
-    }
-
-    #[test]
-    fn rejects_userinfo() {
-        let err = validate_http_target(
-            "s",
-            "http://u:p@127.0.0.1/mcp",
-            &cfg(&["127.0.0.1"], true),
-            false,
-        )
-        .expect_err("reject");
-        assert!(matches!(err, PolicyError::UserinfoRejected { .. }));
-    }
-
-    #[test]
-    fn rejects_secret_query_param() {
-        let err = validate_http_target(
-            "s",
-            "http://127.0.0.1/mcp?token=abc",
-            &cfg(&["127.0.0.1"], true),
-            false,
-        )
-        .expect_err("reject");
-        assert!(matches!(err, PolicyError::SecretQueryRejected { .. }));
-    }
-
-    #[test]
-    fn rejects_non_allowlisted_host() {
-        let err = validate_http_target(
-            "s",
-            "https://evil.example/mcp",
-            &cfg(&["good.example"], false),
-            true,
-        )
-        .expect_err("reject");
-        assert!(matches!(err, PolicyError::HostNotAllowed { .. }));
-    }
-
-    #[test]
-    fn rejects_literal_private_ip() {
-        let err = validate_http_target(
-            "s",
-            "https://10.0.0.1/mcp",
-            &cfg(&["10.0.0.1"], false),
-            true,
-        )
-        .expect_err("reject");
-        assert!(matches!(err, PolicyError::PrivateIpRejected { .. }));
+    fn http_mcp_target_policy_matrix() {
+        let cases = [
+            PolicyCase {
+                label: "rejects_plain_http_when_auth_present",
+                url: "http://example.com/mcp",
+                allow_hosts: &["example.com"],
+                allow_private_ips: false,
+                has_auth_secrets: true,
+                expect_ok: false,
+                check_err: Some(|e| matches!(e, PolicyError::PlaintextWithAuth { .. })),
+            },
+            PolicyCase {
+                label: "allows_plain_http_when_no_auth",
+                url: "http://example.com/mcp",
+                allow_hosts: &["example.com"],
+                allow_private_ips: false,
+                has_auth_secrets: false,
+                expect_ok: true,
+                check_err: None,
+            },
+            PolicyCase {
+                label: "allows_https_with_auth_and_allowlist",
+                url: "https://example.com/mcp",
+                allow_hosts: &["example.com"],
+                allow_private_ips: false,
+                has_auth_secrets: true,
+                expect_ok: true,
+                check_err: None,
+            },
+            PolicyCase {
+                label: "allows_loopback_when_allow_private_ips_set",
+                url: "http://127.0.0.1:8080/mcp",
+                allow_hosts: &["127.0.0.1"],
+                allow_private_ips: true,
+                has_auth_secrets: false,
+                expect_ok: true,
+                check_err: None,
+            },
+            PolicyCase {
+                label: "rejects_loopback_without_allow_private_ips",
+                url: "http://127.0.0.1/mcp",
+                allow_hosts: &["127.0.0.1"],
+                allow_private_ips: false,
+                has_auth_secrets: false,
+                expect_ok: false,
+                check_err: Some(|e| matches!(e, PolicyError::PrivateIpRejected { .. })),
+            },
+            PolicyCase {
+                label: "rejects_ipv4_mapped_ipv6_private_without_allow_private_ips",
+                url: "http://[::ffff:10.0.0.1]/mcp",
+                allow_hosts: &[],
+                allow_private_ips: false,
+                has_auth_secrets: false,
+                expect_ok: false,
+                check_err: Some(|e| matches!(e, PolicyError::PrivateIpRejected { .. })),
+            },
+            PolicyCase {
+                label: "rejects_userinfo",
+                url: "http://u:p@127.0.0.1/mcp",
+                allow_hosts: &["127.0.0.1"],
+                allow_private_ips: true,
+                has_auth_secrets: false,
+                expect_ok: false,
+                check_err: Some(|e| matches!(e, PolicyError::UserinfoRejected { .. })),
+            },
+            PolicyCase {
+                label: "rejects_secret_query_param",
+                url: "http://127.0.0.1/mcp?token=abc",
+                allow_hosts: &["127.0.0.1"],
+                allow_private_ips: true,
+                has_auth_secrets: false,
+                expect_ok: false,
+                check_err: Some(|e| matches!(e, PolicyError::SecretQueryRejected { .. })),
+            },
+            PolicyCase {
+                label: "rejects_non_allowlisted_host",
+                url: "https://evil.example/mcp",
+                allow_hosts: &["good.example"],
+                allow_private_ips: false,
+                has_auth_secrets: true,
+                expect_ok: false,
+                check_err: Some(|e| matches!(e, PolicyError::HostNotAllowed { .. })),
+            },
+            PolicyCase {
+                label: "rejects_literal_private_ip",
+                url: "https://10.0.0.1/mcp",
+                allow_hosts: &["10.0.0.1"],
+                allow_private_ips: false,
+                has_auth_secrets: true,
+                expect_ok: false,
+                check_err: Some(|e| matches!(e, PolicyError::PrivateIpRejected { .. })),
+            },
+        ];
+        for case in cases {
+            let result = validate_http_target(
+                "s",
+                case.url,
+                &cfg(case.allow_hosts, case.allow_private_ips),
+                case.has_auth_secrets,
+            );
+            if case.expect_ok {
+                assert!(result.is_ok(), "{}: {result:?}", case.label);
+            } else {
+                let err = result.expect_err(case.label);
+                let check = case.check_err.expect("reject row must supply check_err");
+                assert!(check(&err), "{}: {err:?}", case.label);
+            }
+        }
     }
 }

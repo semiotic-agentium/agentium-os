@@ -2001,7 +2001,7 @@ async fn undeploy_drains_in_flight_request() {
 
     // Start an A2A request in background.
     let bg_client = client.clone();
-    let bg_url = format!("{}/agents/dispatch-echo/default/a2a/sse", runner.base_url);
+    let bg_url = format!("{}/agents/dispatch-echo/default/a2a", runner.base_url);
     let bg_body = send_stream_request("in-flight message");
     let bg_handle =
         tokio::spawn(async move { post_a2a_sse_collect(&bg_client, &bg_url, &bg_body).await });
@@ -2029,7 +2029,7 @@ async fn undeploy_drains_in_flight_request() {
     drop(bg_result);
 
     // New requests after undeploy should fail with 404.
-    let a2a_url = format!("{}/agents/dispatch-echo/default/a2a/sse", runner.base_url);
+    let a2a_url = format!("{}/agents/dispatch-echo/default/a2a", runner.base_url);
     let body = send_stream_request("post-undeploy message");
     let resp = client
         .post(&a2a_url)
@@ -2058,7 +2058,7 @@ async fn draining_agent_rejects_new_requests() {
     let hash = publish_and_deploy(&client, &runner.base_url, &package_path, DEFAULT_TOKEN).await;
 
     // Send one A2A message to create agent state.
-    let a2a_url = format!("{}/agents/dispatch-echo/default/a2a/sse", runner.base_url);
+    let a2a_url = format!("{}/agents/dispatch-echo/default/a2a", runner.base_url);
     let body = send_stream_request("warmup message");
     let _ = post_a2a_sse_collect(&client, &a2a_url, &body).await;
 
@@ -2076,7 +2076,7 @@ async fn draining_agent_rejects_new_requests() {
     });
 
     // Rapidly send A2A requests hoping to hit the drain window.
-    let mut saw_draining_or_404 = false;
+    let mut saw_draining = false;
     for _ in 0..20 {
         let body = send_stream_request("during-drain probe");
         match client
@@ -2086,14 +2086,14 @@ async fn draining_agent_rejects_new_requests() {
             .send()
             .await
         {
-            Ok(resp) if resp.status() == StatusCode::NOT_FOUND => {
-                // Agent is either draining or already removed.
+            Ok(resp) if resp.status() == StatusCode::SERVICE_UNAVAILABLE => {
                 let text = resp.text().await.unwrap_or_default();
-                saw_draining_or_404 = true;
-                // Informational: check if the response mentions draining.
-                if text.contains("draining") {
-                    eprintln!("draining_agent_rejects_new_requests: caught drain window");
-                }
+                saw_draining = true;
+                assert!(
+                    text.contains("draining"),
+                    "503 during drain should mention draining, got: {text}"
+                );
+                eprintln!("draining_agent_rejects_new_requests: caught drain window (503)");
                 break;
             }
             Ok(resp) if resp.status().is_success() => {
@@ -2123,7 +2123,7 @@ async fn draining_agent_rejects_new_requests() {
         "requests after undeploy must return 404"
     );
 
-    if !saw_draining_or_404 {
+    if !saw_draining {
         eprintln!(
             "draining_agent_rejects_new_requests: drain window too narrow to observe \
              (dispatch-echo completes instantly). This is expected."
@@ -2148,7 +2148,7 @@ async fn undeploy_emits_agent_stopped_event() {
     let hash = publish_and_deploy(&client, &runner.base_url, &package_path, DEFAULT_TOKEN).await;
 
     // Send one A2A message to create provenance context.
-    let a2a_url = format!("{}/agents/dispatch-echo/default/a2a/sse", runner.base_url);
+    let a2a_url = format!("{}/agents/dispatch-echo/default/a2a", runner.base_url);
     let body = send_stream_request("provenance test message");
     let _ = post_a2a_sse_collect(&client, &a2a_url, &body).await;
 

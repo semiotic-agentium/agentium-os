@@ -270,7 +270,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn citation_try_new_round_trip() {
+    fn citation_parse_and_try_new_matrix() {
         let c = Citation::try_new("#1").unwrap();
         assert_eq!(c.as_str(), "#1");
         assert_eq!(
@@ -280,47 +280,20 @@ mod tests {
                 negated: false
             }
         );
-    }
+        for bad in ["msg-1", "e"] {
+            assert!(Citation::try_new(bad).is_err(), "try_new {bad:?}");
+        }
 
-    #[test]
-    fn citation_try_new_rejects_garbage() {
-        assert!(Citation::try_new("msg-1").is_err());
-        assert!(Citation::try_new("e").is_err());
-    }
-
-    #[test]
-    fn parse_history_ref() {
+        let range = ParsedCitation::parse("@4:L2-L5").unwrap();
         assert_eq!(
-            ParsedCitation::parse("#1").unwrap(),
-            ParsedCitation::History {
-                n: 1,
-                negated: false
-            }
-        );
-    }
-
-    #[test]
-    fn parse_archive_ref_line_range() {
-        assert_eq!(
-            ParsedCitation::parse("@4:2-5").unwrap(),
+            range,
             ParsedCitation::Archive {
                 n: 4,
                 lines: Some(2..=5),
                 negated: false
             }
         );
-        assert_eq!(
-            ParsedCitation::parse("@4:L2-L5").unwrap(),
-            ParsedCitation::Archive {
-                n: 4,
-                lines: Some(2..=5),
-                negated: false
-            }
-        );
-    }
-
-    #[test]
-    fn parse_archive_ref_single_line_with_l_prefix() {
+        assert_eq!(ParsedCitation::parse("@4:2-5").unwrap(), range);
         assert_eq!(
             ParsedCitation::parse("@4:L2").unwrap(),
             ParsedCitation::Archive {
@@ -329,29 +302,14 @@ mod tests {
                 negated: false
             }
         );
-    }
-
-    #[test]
-    fn parse_archive_ref_line_range_accepts_repeated_l_prefix() {
+        assert_eq!(ParsedCitation::parse("@4:2-L5").unwrap(), range);
+        assert_eq!(ParsedCitation::parse("@4:l2-l5").unwrap(), range);
         assert_eq!(
-            ParsedCitation::parse("@4:L2-L5").unwrap(),
-            ParsedCitation::Archive {
-                n: 4,
-                lines: Some(2..=5),
+            ParsedCitation::parse("#1").unwrap(),
+            ParsedCitation::History {
+                n: 1,
                 negated: false
             }
-        );
-    }
-
-    #[test]
-    fn parse_archive_ref_line_range_accepts_l_on_end_bound() {
-        assert_eq!(
-            ParsedCitation::parse("@4:L2-L5").unwrap(),
-            ParsedCitation::parse("@4:2-L5").unwrap()
-        );
-        assert_eq!(
-            ParsedCitation::parse("@4:L2-L5").unwrap(),
-            ParsedCitation::parse("@4:l2-l5").unwrap()
         );
     }
 }

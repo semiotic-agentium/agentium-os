@@ -36,10 +36,11 @@ use std::sync::Arc;
 
 use baml_rt_core::ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, TaskId, UuidId};
 use baml_rt_provenance::{
-    ProvEvent, ProvenanceWriter, SurrealStoreBuilder,
+    ProvEvent, ProvenanceWriter,
     metamodel::{EdgeProjection, SemanticEdge, TaskStatusKind},
 };
 use serde_json::Value;
+use test_support::testing::provenance_fixtures::build_isolated_store;
 
 fn event_anchor(event: &ProvEvent) -> ActivityAnchorId {
     match event {
@@ -82,11 +83,7 @@ fn agent_runtime_instance_node_id(agent_id: &AgentId) -> String {
 
 #[tokio::test]
 async fn was_last_transitioned_to_keeps_exactly_one_edge_after_multiple_transitions() {
-    let store: Arc<baml_rt_provenance::SurrealProvenanceStore> =
-        SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("build isolated in-memory store");
+    let store: Arc<baml_rt_provenance::SurrealProvenanceStore> = build_isolated_store().await;
 
     let context_id = ContextId::new(91101, 1);
     let task_id = TaskId::from_external(ExternalId::new("hp-task-status"));
@@ -183,11 +180,7 @@ async fn was_last_transitioned_to_keeps_exactly_one_edge_after_multiple_transiti
 
 #[tokio::test]
 async fn was_last_executed_by_keeps_exactly_one_edge_after_re_execution() {
-    let store: Arc<baml_rt_provenance::SurrealProvenanceStore> =
-        SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("build isolated in-memory store");
+    let store: Arc<baml_rt_provenance::SurrealProvenanceStore> = build_isolated_store().await;
 
     let context_id = ContextId::new(91102, 1);
     let task_id = TaskId::from_external(ExternalId::new("hp-task-exec"));
@@ -237,11 +230,7 @@ async fn was_last_executed_by_keeps_exactly_one_edge_after_re_execution() {
 
 #[tokio::test]
 async fn was_last_resolved_to_points_at_latest_intent() {
-    let store: Arc<baml_rt_provenance::SurrealProvenanceStore> =
-        SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("build isolated in-memory store");
+    let store: Arc<baml_rt_provenance::SurrealProvenanceStore> = build_isolated_store().await;
 
     let context_id = ContextId::new(91103, 1);
     let task_id = TaskId::from_external(ExternalId::new("hp-task-intent"));
@@ -296,11 +285,7 @@ async fn was_last_resolved_to_points_at_latest_intent() {
 
 #[tokio::test]
 async fn was_last_planned_to_points_at_latest_plan() {
-    let store: Arc<baml_rt_provenance::SurrealProvenanceStore> =
-        SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("build isolated in-memory store");
+    let store: Arc<baml_rt_provenance::SurrealProvenanceStore> = build_isolated_store().await;
 
     let context_id = ContextId::new(91104, 1);
     let task_id = TaskId::from_external(ExternalId::new("hp-task-plan"));

@@ -79,6 +79,41 @@ Semantic variables — use these, not raw hex:
 
 Global: `@media (prefers-reduced-motion: reduce)` already defined — extend, don't fight it.
 
+## Event Console UX (CI run page pattern)
+
+The Event Console follows a **CI run page** pattern: thin control shell, status strip, linear
+provenance transcript (shared with Chat), and a centered publish modal.
+
+### Control shell
+
+- **Compose agent** (app shell, below navbar) — agent for validate/draft and run-history filtering; independent from Chat agent. Deep links: `eventAgentPackage`, `eventAgentInstance`, `eventContextId`.
+- **Run** — pick a prior `context_id` or publish a new event.
+- **Run status** — shared `OperatorRunStatus` via `RunStatusIndicator` (phase label, unit progress, severity dot).
+- **New event** — opens publish modal (source payload, scope, JSON batch).
+
+### After publish
+
+- **Run status strip** — `deriveEventRunStatus`: preparing → publishing → recording → executing → complete.
+- **Transcript timeline** (`EventTranscriptRow` row kinds):
+  - **Milestone** — publish acceptance summary
+  - **Ingress wire** — full-width JSON preview; optimistic row hydrates by `row:ingress-wire`
+  - **Operational** — host/system cards (`dispatch_*`, `source_poll_recorded`, failures)
+  - **Agent turn** — agent lane (text, tools, session steps)
+  - **Skeleton** — placeholder while provenance loads
+- **Traces** — expand right rail once a run is selected or after publish.
+
+### Transcript vs episode export
+
+- **Primary transcript** — `GET /contexts/{id}/conversation-history?profile=full` (host ops, ingress wire, agent rows).
+- **Live vs reload parity** — SSE snapshot and picker reload both use paginated GET merge via `applyConversationHistoryIngress`; SSE delta schedules the same reconcile (no incremental append).
+- **Episode download** — includes operational rows; BAML `conversation_transcript` projection omits operator diagnostics.
+
+After publish, observation resolves the first `dispatch-unit-*` task id when present.
+
+### Validate vs publish
+
+**Validate** → `POST /event-dispatch/validate`. **Publish event** → `POST /events/publish` (fans out to all matching subscribers, not only the compose agent).
+
 ## Runner API surfaces (UI-relevant)
 
 ### Public (Chat, Dashboard, Event Console)

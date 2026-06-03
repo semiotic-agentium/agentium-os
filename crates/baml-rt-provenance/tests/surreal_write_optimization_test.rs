@@ -12,18 +12,16 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{
     AgentType, ProvEvent, ProvenanceArchivePayload, ProvenanceError, ProvenanceOpsQuery,
-    ProvenanceQueryApi, ProvenanceWriter, SurrealStoreBuilder,
+    ProvenanceQueryApi, ProvenanceWriter,
 };
 use serde_json::{Value, json};
+use test_support::testing::provenance_fixtures::build_isolated_store;
 
 /// Must match [`baml_rt_provenance::surreal_tables::FTS_PAYLOAD_ACTIVITY_WHERE`] bind name `$query_text`.
 const FTS_PAYLOAD_ACTIVITY_WHERE: &str = "search_text @@ $query_text AND activity_id IS NOT NONE";
 
 async fn isolated_store() -> Arc<baml_rt_provenance::SurrealProvenanceStore> {
-    SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build store")
+    build_isolated_store().await
 }
 
 /// Boot → task → task execution → message → tool_call_started (shared prefix for blob/FTS tests).
