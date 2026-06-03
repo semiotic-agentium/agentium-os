@@ -18,15 +18,13 @@
 use baml_rt_core::ids::{AgentId, UuidId};
 use baml_rt_provenance::{
     ProvEvent, ProvenanceOpsQuery, ProvenanceOpsQueryRequest, ProvenanceOpsResource,
-    ProvenanceWriter, SurrealStoreBuilder,
+    ProvenanceWriter,
 };
+use test_support::testing::provenance_fixtures::build_isolated_store;
 
 #[tokio::test]
 async fn agent_stopped_is_queryable_as_lifecycle_event() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build isolated in-memory store");
+    let store = build_isolated_store().await;
 
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000042").unwrap());

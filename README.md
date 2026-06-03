@@ -62,11 +62,11 @@ session.
 
 ### Learn more
 
-- **[How to write agents](docs/how-to-write-agents.md)** — package layout, A2A
+- **[How to write agents](docs/assertions/how-to-write-agents.md)** — package layout, A2A
   entrypoints, tool sessions, and citations.
-- **[Agent runner](docs/agent-runner.md)** — runner CLI, HTTP endpoints, and the
+- **[Agent runner](docs/reference/agent-runner.md)** — runner CLI, HTTP endpoints, and the
   publish/deploy flow.
-- **[Kubernetes operator guide](docs/k8s-pilot-operator-guide.md)** — installing
+- **[Kubernetes operator guide](docs/runbooks/k8s-pilot-operator-guide.md)** — installing
   the Helm chart.
 - **[Contributing](CONTRIBUTING.md)** — full build/test/lint setup and
   conventions.
@@ -175,10 +175,12 @@ Default features enable all of the above.
 
 ## Documentation
 
-- **[How to write agents](docs/how-to-write-agents.md)** — Primary guide: package layout, A2A entrypoints, `ToolSessionPlan`, plan/intent + ReAct, `StructuredReply`, and **history / citations**.
-- **[Agent runner](docs/agent-runner.md)** — Runner CLI options, HTTP endpoints, repository/deploy flow, and startup restore behavior.
-- **[Kubernetes pilot operator guide](docs/k8s-pilot-operator-guide.md)** — Supported first-run path for installing the Helm chart, publishing the smoke fixture, and verifying the deployment.
-- **Deep references:** [Intent-based planning & session prompting](docs/intent-based-planning-and-session-prompting.md), [Agent patterns](docs/agent-patterns.md), [Host tool guide (Rust)](docs/host-tool-guide.md), [Citable history & citations](docs/citable-history-and-checked-citations.md).
+Full map (assertions / reference / runbooks): **[docs/README.md](docs/README.md)**.
+
+- **[How to write agents](docs/assertions/how-to-write-agents.md)** — Primary guide: package layout, A2A entrypoints, `ToolSessionPlan`, plan/intent + ReAct, `StructuredReply`, and **history / citations**.
+- **[Agent runner](docs/reference/agent-runner.md)** — Runner CLI options, HTTP endpoints, repository/deploy flow, and startup restore behavior.
+- **[Kubernetes pilot operator guide](docs/runbooks/k8s-pilot-operator-guide.md)** — Supported first-run path for installing the Helm chart, publishing the smoke fixture, and verifying the deployment.
+- **Deep references:** [Intent-based planning & session prompting](docs/assertions/intent-based-planning-and-session-prompting.md), [Agent patterns](docs/assertions/agent-patterns.md), [Host tool guide (Rust)](docs/reference/host-tool-guide.md), [Citable history & citations](docs/assertions/citable-history-and-checked-citations.md).
 
 ## BAML ↔ Host Tool Contract
 
@@ -187,7 +189,7 @@ Host tools are **session-based**. BAML returns a declarative session **fragment*
 `Finish`, `Abort`; the runtime executes each fragment **in Rust**. JavaScript
 does not mediate host tool execution except via generated helpers such as
 `openToolSession`; JS-only tools use `invokeTool`. Authoring details:
-[docs/how-to-write-agents.md](docs/how-to-write-agents.md) §3.
+[docs/assertions/how-to-write-agents.md](docs/assertions/how-to-write-agents.md) §3.
 
 `Open.initial_input` is open-time session configuration (for tools that define
 it). `Send.input` carries per-turn payloads.
@@ -201,7 +203,7 @@ executor has had a chance to emit effects); then the effect state is re-checked 
 fixed schedule (every 10 attempts for the first 500ms, then every 100). If
 in-flight effects (e.g. LLM or tool calls) are present for the invocation context,
 a long timeout is used; otherwise a short idle timeout applies. See
-`crates/baml-rt-quickjs/docs/HOST_QUICKJS_STREAM_INVARIANTS.md` and
+`crates/baml-rt-a2a/docs/INVARIANTS_AND_LIVENESS.md` and
 `crates/baml-rt-quickjs/src/quickjs_bridge/promise_polling.rs`.
 
 **Potential problem:** The Rust future that backs the JS promise (e.g. the BAML/LLM
@@ -299,7 +301,7 @@ Binaries that call `baml_rt_observability::init_tracing()` merge defaults such a
 
 ## Conversation Handling (A2A DSL)
 
-See **[How to write agents](docs/how-to-write-agents.md)** for the full authoring story. The **best reference** for multi-turn conversation and task lifecycle in code is the
+See **[How to write agents](docs/assertions/how-to-write-agents.md)** for the full authoring story. The **best reference** for multi-turn conversation and task lifecycle in code is the
 **task-lifecycle-demo** fixture:
 
 - **Path:** `tests/fixtures/agents/task-lifecycle-demo/src/index.ts`
@@ -355,10 +357,10 @@ The project uses [just](https://github.com/casey/just) as a command runner. A `.
 | `just coordinator-demo`             | `just coordinator-demo`              | Start coordinator + notion HTTP demo runner and stream one coordinated request via `coordinator-agent`.                                                                      |
 | `just coordinator-demo-stop`        | `just coordinator-demo-stop`         | Stop the background runner started by `coordinator-demo`.                                                                                                                    |
 
-For a provenance-first walkthrough of the Notion flow, see `docs/notion-demo.md`.
-For Slack auth/setup and demo notes, see `docs/slack-tool.md`.
-For the coordinator + Notion delegation walkthrough, see `docs/coordinator-demo.md`.
-For the next-stage Notion demo/UX strategy and invariants, see `docs/notion-experience-blueprint.md`.
+For a provenance-first walkthrough of the Notion flow, see `docs/runbooks/notion-demo.md`.
+For Slack auth/setup and demo notes, see `docs/reference/slack-tool.md`.
+For the coordinator + Notion delegation walkthrough, see `docs/runbooks/coordinator-demo.md`.
+For runtime architectural assertions, see [`docs/assertions/agentium-runtime-thesis.md`](docs/assertions/agentium-runtime-thesis.md).
 
 ### Performance benches
 

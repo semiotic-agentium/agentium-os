@@ -197,8 +197,8 @@ surrealdb:
 # When enabled, the runner emits OTLP traces and metrics with the pilot identity
 # contract: service.name=agentium-runner, service.instance.id=$POD_NAME,
 # k8s.namespace.name=$POD_NAMESPACE, deployment.environment=<environment>.
-# See docs/otel-trace-instrumentation-guide.md and
-# docs/otel-metrics-instrumentation-guide.md.
+# See docs/reference/docs/reference/otel-trace-instrumentation-guide.md and
+# docs/reference/docs/reference/otel-metrics-instrumentation-guide.md.
 observability:
   # -- Toggle injection of OTEL_* env vars on the runner container.
   enabled: true

@@ -3,7 +3,7 @@
 QuickJS-backed runtime host for BAML execution with host-authoritative context,
 strict stream/session routing, and resumable A2A stream handling.
 
-**Authoring agents:** [`docs/how-to-write-agents.md`](../../docs/how-to-write-agents.md) covers `__chat_register`, the A2A DSL, tool sessions from BAML, and citations.
+**Authoring agents:** [`docs/assertions/how-to-write-agents.md`](../../docs/assertions/how-to-write-agents.md) covers `__chat_register`, the A2A DSL, tool sessions from BAML, and citations.
 
 ## Responsibilities
 

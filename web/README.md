@@ -70,7 +70,7 @@ cargo run -p baml-agent-runner   # serves HTTP on 127.0.0.1:18080 by default
 
 ## Authentication
 
-The runner splits its HTTP surface into public routes (used by the Chat and Dashboard views — agent discovery, A2A JSON-RPC + SSE, conversation history) and operator routes (used by the Settings view — config, deploy/undeploy, repository mutation, migration). In cluster mode the runner gates operator routes behind an `X-Runner-Token` header. The full route table lives in `docs/agent-runner.md` ("HTTP API Authentication") and the project root `CLAUDE.md`.
+The runner splits its HTTP surface into public routes (used by the Chat and Dashboard views — agent discovery, A2A JSON-RPC + SSE, conversation history) and operator routes (used by the Settings view — config, deploy/undeploy, repository mutation, migration). In cluster mode the runner gates operator routes behind an `X-Runner-Token` header. The full route table lives in `docs/reference/agent-runner.md` ("HTTP API Authentication") and the project root `CLAUDE.md`.
 
 The UI does not inject the runner token itself, so the Settings view only works against **local development runners** or **pilot deployments fronted by a proxy that supplies the token**. Do not expose the operator routes — or this UI without an auth proxy in front — to untrusted networks.
 

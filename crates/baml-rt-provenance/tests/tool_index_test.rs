@@ -6,9 +6,10 @@
 
 use std::sync::Arc;
 
-use baml_rt_provenance::{SurrealStoreBuilder, index_tools};
+use baml_rt_provenance::index_tools;
 use baml_rt_tools::{SecretRequest, ToolFunctionMetadataExport, ToolName, ToolTypeSpec};
 use serde_json::{Value, json};
+use test_support::testing::provenance_fixtures::build_isolated_store;
 
 fn weather_tool() -> ToolFunctionMetadataExport {
     let name = ToolName::parse("support/get_weather").expect("valid tool name");
@@ -51,10 +52,7 @@ fn weather_tool() -> ToolFunctionMetadataExport {
 
 #[tokio::test]
 async fn tool_index_creates_tool_nodes() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build store");
+    let store = build_isolated_store().await;
 
     let tools = vec![weather_tool()];
 
@@ -103,10 +101,7 @@ async fn concurrent_tool_index_writes_succeed_under_mvcc_contention() {
     const PARALLEL_WRITERS: usize = 12;
     const UPSERTS_PER_WRITER: usize = 50;
 
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build store");
+    let store = build_isolated_store().await;
 
     let mut handles = Vec::with_capacity(PARALLEL_WRITERS);
     for _ in 0..PARALLEL_WRITERS {

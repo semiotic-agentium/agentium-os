@@ -6,10 +6,11 @@ use std::sync::Arc;
 
 use baml_rt_core::ids::{AgentId, ArtifactId, ContextId, ExternalId, MessageId, TaskId, UuidId};
 use baml_rt_provenance::{
-    AgentType, ProvEvent, ProvenanceWriter, SurrealStoreBuilder, TaskGraphReader, TaskReplayCursor,
-    TaskReplayEvent, metamodel::TaskStatusKind,
+    AgentType, ProvEvent, ProvenanceWriter, TaskGraphReader, TaskReplayCursor, TaskReplayEvent,
+    metamodel::TaskStatusKind,
 };
 use futures_util::StreamExt;
+use test_support::testing::provenance_fixtures::build_isolated_store;
 
 fn make_agent_id() -> AgentId {
     AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-0000000000aa").unwrap())
@@ -41,11 +42,7 @@ async fn collect_replay(
 
 #[tokio::test]
 async fn replay_since_is_exact_directional_and_preserves_same_status_repeats() {
-    let store: Arc<baml_rt_provenance::SurrealProvenanceStore> =
-        SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("build isolated in-memory store");
+    let store: Arc<baml_rt_provenance::SurrealProvenanceStore> = build_isolated_store().await;
     let reader: &dyn TaskGraphReader = store.as_ref();
 
     let context_id = ContextId::new(8_888_000_001, 1);

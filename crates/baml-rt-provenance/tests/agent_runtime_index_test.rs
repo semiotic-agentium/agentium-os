@@ -9,19 +9,17 @@ use baml_rt_core::{
     ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
-    AgentType, LlmUsage, ProvEvent, ProvenanceWriter, SurrealStoreBuilder,
+    AgentType, LlmUsage, ProvEvent, ProvenanceWriter,
     store::{
         ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest, ProvenanceOpsResource,
     },
 };
+use test_support::testing::provenance_fixtures::build_isolated_store;
 use uuid::Uuid;
 
 #[tokio::test]
 async fn agent_booted_upserts_package_instance_registry() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
     store
         .add_event(ProvEvent::agent_booted(
@@ -53,10 +51,7 @@ async fn agent_booted_upserts_package_instance_registry() {
 
 #[tokio::test]
 async fn dispatch_without_boot_does_not_index_route_stub() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let ctx = ContextId::new(1, 2);
     store
         .add_event(ProvEvent::host_dispatch_accepted(
@@ -91,10 +86,7 @@ async fn dispatch_without_boot_does_not_index_route_stub() {
 
 #[tokio::test]
 async fn context_scoped_llm_ops_uses_registry_for_agent_package_filter() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
     let context_id = ContextId::new(1_789_916_123_818, 1);
     let task_id = TaskId::from_external(ExternalId::new("dispatch-unit-test"));

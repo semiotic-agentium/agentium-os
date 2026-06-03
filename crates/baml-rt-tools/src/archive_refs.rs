@@ -376,79 +376,63 @@ mod tests {
     }
 
     #[test]
-    fn insert_and_get() {
+    fn ref_table_archive_lifecycle_matrix() {
         let table = RefTable::new();
         let entry = make_entry("support/crm", "listed 1 account");
         let r = table.insert(entry);
         assert_eq!(r.as_u32(), 1);
         assert!(table.get(r).is_some());
-    }
 
-    #[test]
-    fn refs_are_monotonic() {
-        let table = RefTable::new();
         let r1 = table.insert(make_entry("t", "s"));
         let r2 = table.insert(make_entry("t", "s"));
         let r3 = table.insert(make_entry("t", "s"));
-        assert_eq!(r1.as_u32(), 1);
-        assert_eq!(r2.as_u32(), 2);
-        assert_eq!(r3.as_u32(), 3);
-    }
+        assert_eq!(r1.as_u32(), 2);
+        assert_eq!(r2.as_u32(), 3);
+        assert_eq!(r3.as_u32(), 4);
 
-    #[test]
-    fn get_unknown_ref_returns_none() {
-        let table = RefTable::new();
         assert!(table.get(ShortRef::new(99)).is_none());
     }
 
     #[test]
-    fn display_header_uses_legacy_summary_without_action_identity() {
+    fn archive_display_header_matrix() {
         let content = render_to_lines(&json!([{"msg": "hello"}]));
-        let entry = ArchiveEntry::new(
-            content,
+        let legacy = ArchiveEntry::new(
+            content.clone(),
             "support/slack".into(),
             Some("fetched 1 message".into()),
             String::new(),
             "tool_result".into(),
         );
-        let r = ShortRef::new(3);
-        let header = entry.display_header(r);
-        assert!(header.starts_with("@3 · "));
-        assert!(header.contains("fetched 1 message"));
-        assert!(!header.contains("support/slack"));
-    }
+        let legacy_header = legacy.display_header(ShortRef::new(3));
+        assert!(legacy_header.starts_with("@3 · "));
+        assert!(legacy_header.contains("fetched 1 message"));
+        assert!(!legacy_header.contains("support/slack"));
 
-    #[test]
-    fn display_header_uses_tool_action_identity_when_available() {
-        let content = render_to_lines(&json!([{"msg": "hello"}]));
-        let entry = ArchiveEntry::new(
-            content,
+        let with_action = ArchiveEntry::new(
+            content.clone(),
             "dev/meteo-tool".into(),
             Some("weather result".into()),
             String::new(),
             "tool_result".into(),
         )
         .with_action_identity(Some("Send(location_query=\"Paris, France\")".into()));
-        let header = entry.display_header(ShortRef::new(1));
+        let action_header = with_action.display_header(ShortRef::new(1));
         assert!(
-            header.starts_with("@1 · dev/meteo-tool:Send(location_query=\"Paris, France\") · ")
+            action_header
+                .starts_with("@1 · dev/meteo-tool:Send(location_query=\"Paris, France\") · ")
         );
-        assert!(!header.contains("weather result"));
-    }
+        assert!(!action_header.contains("weather result"));
 
-    #[test]
-    fn display_header_falls_back_to_tool_name_when_summary_and_action_absent() {
-        let content = render_to_lines(&json!([{"msg": "hi"}]));
-        let entry = ArchiveEntry::new(
-            content,
+        let fallback = ArchiveEntry::new(
+            render_to_lines(&json!([{"msg": "hi"}])),
             "support/slack".into(),
             None,
             String::new(),
             "tool_result".into(),
         );
-        let header = entry.display_header(ShortRef::new(7));
-        assert!(header.starts_with("@7 · support/slack · "), "got: {header}");
-        assert!(!header.contains('"'), "no quoted-empty summary: {header}");
+        let fallback_header = fallback.display_header(ShortRef::new(7));
+        assert!(fallback_header.starts_with("@7 · support/slack · "));
+        assert!(!fallback_header.contains('"'));
     }
 
     #[test]

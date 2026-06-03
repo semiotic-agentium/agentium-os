@@ -561,7 +561,7 @@ impl AgentRunner {
                 && booted.lifecycle_state() == AgentLifecycleState::Draining
             {
                 let agent = key.agent_package.as_str();
-                return Err(BamlRtError::AgentNotFound(format!(
+                return Err(BamlRtError::AgentDraining(format!(
                     "Agent {agent} is draining (undeploy in progress)",
                 )));
             }
@@ -622,7 +622,7 @@ impl AgentRunner {
                 && booted.lifecycle_state() == AgentLifecycleState::Draining
             {
                 let agent = key.agent_package.as_str();
-                return Err(BamlRtError::AgentNotFound(format!(
+                return Err(BamlRtError::AgentDraining(format!(
                     "Agent {agent} is draining (undeploy in progress)",
                 )));
             }

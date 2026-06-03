@@ -26,5 +26,6 @@ schemars = { workspace = true }
 [dev-dependencies]
 baml-rt = { path = "../../baml-rt" }
 baml-tools-calculator = { path = "../calculator" }
+test-support = { path = "../../test-support" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 insta = { workspace = true, features = ["json"] }

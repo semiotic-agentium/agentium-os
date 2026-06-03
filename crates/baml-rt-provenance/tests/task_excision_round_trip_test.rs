@@ -30,9 +30,10 @@ use std::sync::Arc;
 
 use baml_rt_core::ids::{AgentId, ArtifactId, ContextId, ExternalId, MessageId, TaskId, UuidId};
 use baml_rt_provenance::{
-    ProvEvent, ProvenanceWriter, SurrealStoreBuilder, TaskGraphReader,
+    ProvEvent, ProvenanceWriter, TaskGraphReader,
     metamodel::{NonEmptyString, TaskStatusKind},
 };
+use test_support::testing::provenance_fixtures::build_isolated_store;
 
 // Wire status strings, matching `parse_status_kind` in
 // `surreal_store/task_graph_reader_impl.rs`. Round-trip parity is the
@@ -54,11 +55,7 @@ fn event_anchor(event: &ProvEvent) -> baml_rt_core::ids::ActivityAnchorId {
 
 #[tokio::test]
 async fn graph_only_round_trip_covers_creation_status_artifact_messages() {
-    let store: Arc<baml_rt_provenance::SurrealProvenanceStore> =
-        SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("build isolated in-memory store");
+    let store: Arc<baml_rt_provenance::SurrealProvenanceStore> = build_isolated_store().await;
 
     let context_id = ContextId::new(8_887_771_001, 1);
     let other_context = ContextId::new(8_887_771_002, 1);
@@ -250,11 +247,7 @@ async fn graph_only_round_trip_covers_creation_status_artifact_messages() {
 
 #[tokio::test]
 async fn payload_bearing_statuses_round_trip_without_loss() {
-    let store: Arc<baml_rt_provenance::SurrealProvenanceStore> =
-        SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("build isolated in-memory store");
+    let store: Arc<baml_rt_provenance::SurrealProvenanceStore> = build_isolated_store().await;
 
     let context_id = ContextId::new(8_887_771_101, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-excision-typed-status"));
@@ -382,11 +375,7 @@ async fn payload_bearing_statuses_round_trip_without_loss() {
 
 #[tokio::test]
 async fn payload_bearing_string_statuses_are_rejected_without_typed_payloads() {
-    let store: Arc<baml_rt_provenance::SurrealProvenanceStore> =
-        SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("build isolated in-memory store");
+    let store: Arc<baml_rt_provenance::SurrealProvenanceStore> = build_isolated_store().await;
 
     let context_id = ContextId::new(8_887_771_102, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-excision-invalid-status"));

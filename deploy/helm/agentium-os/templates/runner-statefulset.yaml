@@ -77,8 +77,8 @@ spec:
               value: /config/fnox.toml
             {{- end }}
             {{- if .Values.observability.enabled }}
-            # OTEL pilot contract — see docs/otel-metrics-instrumentation-guide.md and
-            # docs/otel-trace-instrumentation-guide.md. Resource attrs compose with the
+            # OTEL pilot contract — see docs/reference/otel-metrics-instrumentation-guide.md and
+            # docs/reference/otel-trace-instrumentation-guide.md. Resource attrs compose with the
             # in-process helper so `service.instance.id` on resources, spans, and metrics
             # cannot drift.
             - name: OTEL_SERVICE_NAME

@@ -6,17 +6,14 @@
 
 use baml_rt_core::ids::{AgentId, ContextId, ExternalId, TaskId, UuidId};
 use baml_rt_provenance::{
-    PlanStepSpec, ProvEvent, ProvenanceWriter, SurrealStoreBuilder,
-    surreal_store::PlanningScopeQuery,
+    PlanStepSpec, ProvEvent, ProvenanceWriter, surreal_store::PlanningScopeQuery,
 };
+use test_support::testing::provenance_fixtures::build_isolated_store;
 use uuid::Uuid;
 
 #[tokio::test]
 async fn planning_batch_reads_from_write_maintained_index() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let ctx = ContextId::new(1_900_000_000_200, 1);
     let task_id = TaskId::from_external(ExternalId::new("indexed-planning-task"));
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
@@ -101,10 +98,7 @@ async fn planning_batch_reads_from_write_maintained_index() {
 
 #[tokio::test]
 async fn planning_batch_empty_when_index_cleared() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let ctx = ContextId::new(1_900_000_000_201, 1);
     let task_id = TaskId::from_external(ExternalId::new("cleared-index-task"));
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));

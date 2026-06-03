@@ -18,7 +18,7 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{
     AgentType, GraphExporter, HostIngressRecorderImpl, ProvEvent, ProvenanceContextReader,
-    ProvenanceQueryApi, ProvenanceWriter, SurrealProvenanceStore, SurrealStoreBuilder,
+    ProvenanceQueryApi, ProvenanceWriter, SurrealProvenanceStore,
     events::ProvEventData,
     graph_model::event_kind_from_data,
     host_ingress_identity::{
@@ -29,6 +29,7 @@ use baml_rt_provenance::{
     vocabulary::a2a,
 };
 use serde_json::json;
+use test_support::testing::provenance_fixtures::build_isolated_store;
 use uuid::Uuid;
 
 fn test_route(package: &str) -> AgentRouteKey {
@@ -112,10 +113,7 @@ fn host_dispatch_accepted_requires_context() {
 
 #[tokio::test]
 async fn host_ingress_lineage_events_project_operational_transcript_rows() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let ctx = ContextId::new(10, 20);
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
 
@@ -181,10 +179,7 @@ async fn host_ingress_lineage_events_project_operational_transcript_rows() {
 
 #[tokio::test]
 async fn host_dispatch_rejected_projects_operational_row() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let ctx = ContextId::new(11, 22);
     store
         .add_event(ProvEvent::host_dispatch_rejected(
@@ -220,10 +215,7 @@ async fn host_dispatch_rejected_projects_operational_row() {
 
 #[tokio::test]
 async fn host_dispatch_rejected_is_idempotent_on_double_write() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let ctx = ContextId::new(11, 22);
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
     boot_test_agent(
@@ -278,10 +270,7 @@ async fn host_dispatch_rejected_is_idempotent_on_double_write() {
 
 #[tokio::test]
 async fn host_dispatch_accepted_links_booted_runtime_instance() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let ctx = ContextId::new(99, 88);
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
     boot_test_agent(
@@ -342,10 +331,7 @@ async fn host_dispatch_accepted_links_booted_runtime_instance() {
 
 #[tokio::test]
 async fn ingress_poll_user_message_projects_ingress_speaker_kind() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let ctx = ContextId::new(12, 34);
     let message_id = MessageId::from("poll-msg-1");
     let anchor = activity_anchor_for_ingress_poll_user(&ctx, message_id.as_str());
@@ -400,10 +386,7 @@ async fn ingress_poll_user_message_projects_ingress_speaker_kind() {
 
 #[tokio::test]
 async fn conversation_context_unit_ingress_only_without_poll_user_line() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let ctx = ContextId::new(55, 66);
     let unit_key = "clickup-created:task-a:1";
     let task_id = dispatch_unit_task_id(&ctx, unit_key);
@@ -473,12 +456,7 @@ async fn conversation_context_unit_ingress_only_without_poll_user_line() {
 
 #[tokio::test]
 async fn record_source_poll_and_unit_prelude_emit_single_ingress_user_line() {
-    let store = Arc::new(
-        SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("store"),
-    );
+    let store = Arc::new(build_isolated_store().await);
     let recorder = HostIngressRecorderImpl::new(Arc::clone(&store));
     let ctx = ContextId::new(77, 88);
     let unit_key = "clickup-created:task-1:1";
@@ -579,12 +557,7 @@ async fn record_source_poll_and_unit_prelude_emit_single_ingress_user_line() {
 async fn host_ingress_dispatch_accepted_precedes_unit_ingress_user() {
     use baml_rt_core::AgentDispatchRequest;
 
-    let store = Arc::new(
-        SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("store"),
-    );
+    let store = Arc::new(build_isolated_store().await);
     let recorder = HostIngressRecorderImpl::new(Arc::clone(&store));
     let ctx = ContextId::new(44, 55);
     let unit_key = "clickup-created:dispatch-order:1";
@@ -716,12 +689,7 @@ async fn transcript_engine_includes_event_order_zero_ingress_with_later_index_ro
         TranscriptPageRequest, TranscriptProjectionProfile,
     };
 
-    let store = Arc::new(
-        SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("store"),
-    );
+    let store = Arc::new(build_isolated_store().await);
     let recorder = HostIngressRecorderImpl::new(Arc::clone(&store));
     let ctx = ContextId::new(111, 222);
     let unit_key = "clickup-created:restore-ingress:1";
@@ -830,12 +798,7 @@ async fn transcript_engine_includes_event_order_zero_ingress_with_later_index_ro
 
 #[tokio::test]
 async fn with_task_prelude_is_idempotent_for_same_unit_key() {
-    let store = Arc::new(
-        SurrealStoreBuilder::in_memory_isolated()
-            .build()
-            .await
-            .expect("store"),
-    );
+    let store = Arc::new(build_isolated_store().await);
     let recorder = HostIngressRecorderImpl::new(Arc::clone(&store));
     let ctx = ContextId::new(88, 99);
     let unit_key = "slack:C012:1735720111.000001";
@@ -871,10 +834,7 @@ async fn with_task_prelude_is_idempotent_for_same_unit_key() {
 
 #[tokio::test]
 async fn transport_and_agent_reject_are_distinct_operational_rows() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let ctx = ContextId::new(21, 22);
     let source = HostIngressSourceRef::from_fields("slack", "slack:C123");
     store
@@ -921,10 +881,7 @@ async fn transport_and_agent_reject_are_distinct_operational_rows() {
 
 #[tokio::test]
 async fn host_source_poll_is_idempotent_on_double_write() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let ctx = ContextId::new(40, 41);
     let poll = ProvEvent::host_source_poll_recorded(
         ctx.clone(),
@@ -970,10 +927,7 @@ async fn prompt_rejected_persists_when_emitted_after_llm_completed_separate_add_
         events::{GlobalEvent, LlmUsage},
     };
 
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let ctx = ContextId::new(50, 51);
     let msg = MessageId::from("msg-llm-fail");
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::nil()));
@@ -1053,10 +1007,7 @@ async fn task_scoped_conversation_history_includes_llm_call_failed() {
         events::{LlmUsage, TaskScopedEvent},
     };
 
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let ctx = ContextId::new(60, 61);
     let task_id = dispatch_unit_task_id(&ctx, "unit-fail-a");
     let other_task_id = dispatch_unit_task_id(&ctx, "unit-fail-b");

@@ -29,7 +29,7 @@
 //! a subscriber attached to pod B will not see live frames produced by pod
 //! A; the replay path covers that gap by reading from the shared
 //! provenance graph. This is the deliberate durability / latency
-//! trade-off documented in `docs/baml-rt-conversation-spec.md`.
+//! trade-off documented in `docs/assertions/baml-rt-conversation-spec.md`.
 
 use std::sync::Arc;
 

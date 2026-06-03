@@ -128,6 +128,10 @@ pub enum BamlRtError {
     #[error("Agent not found: {0}")]
     AgentNotFound(String),
 
+    /// Agent instance is draining (undeploy in progress); new work must not be accepted.
+    #[error("Agent draining: {0}")]
+    AgentDraining(String),
+
     /// Invalid argument provided to a function
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
@@ -350,6 +354,7 @@ pub fn baml_error_disposition(err: &BamlRtError) -> ErrorDisposition {
         | BamlRtError::TypeConversion(_) => ErrorDisposition::LlmCorrectable,
         BamlRtError::StepPlanCorrectable(r) => r.disposition,
         BamlRtError::AgentNotFound(_) => ErrorDisposition::InformAndContinue,
+        BamlRtError::AgentDraining(_) => ErrorDisposition::HostRetriable,
         BamlRtError::Conflict(_) => ErrorDisposition::HostRetriable,
         BamlRtError::SessionLifecycle(
             SessionLifecycleError::ToolSessionNotFound { .. }

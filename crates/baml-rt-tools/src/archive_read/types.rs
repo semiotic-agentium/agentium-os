@@ -305,111 +305,89 @@ mod tests {
     use super::*;
 
     #[test]
-    fn short_ref_parse() {
+    fn archive_read_types_matrix() {
         assert_eq!(ShortRef::parse("@3").unwrap().as_u32(), 3);
         assert_eq!(ShortRef::parse("@0").unwrap().as_u32(), 0);
-        assert!(ShortRef::parse("3").is_none());
-        assert!(ShortRef::parse("@").is_none());
-        assert!(ShortRef::parse("@abc").is_none());
-        assert!(ShortRef::parse("").is_none());
-    }
-
-    #[test]
-    fn short_ref_display() {
+        for bad in ["3", "@", "@abc", ""] {
+            assert!(ShortRef::parse(bad).is_none(), "ShortRef parse {bad:?}");
+        }
         assert_eq!(ShortRef::new(42).to_string(), "@42");
-        assert_eq!(
-            ShortRef::new_prefixed(2, 5).to_string(),
-            "@2/5",
-            "non-entrypoint prefix uses composite form"
-        );
-    }
+        assert_eq!(ShortRef::new_prefixed(2, 5).to_string(), "@2/5");
+        let composite = ShortRef::parse("@2/7").expect("composite");
+        assert_eq!(composite.prefix, 2);
+        assert_eq!(composite.local, 7);
+        assert_eq!(composite.as_u32(), 7);
 
-    #[test]
-    fn short_ref_parse_composite() {
-        let r = ShortRef::parse("@2/7").expect("composite");
-        assert_eq!(r.prefix, 2);
-        assert_eq!(r.local, 7);
-        assert_eq!(r.as_u32(), 7);
-    }
-
-    #[test]
-    fn history_ref_parse() {
         assert_eq!(HistoryRef::parse("#1").unwrap().as_u32(), 1);
         assert_eq!(HistoryRef::parse("#42").unwrap().as_u32(), 42);
-        assert!(HistoryRef::parse("1").is_none());
-        assert!(HistoryRef::parse("#").is_none());
-        assert!(HistoryRef::parse("#abc").is_none());
-        assert!(HistoryRef::parse("").is_none());
-    }
-
-    #[test]
-    fn history_ref_display() {
+        for bad in ["1", "#", "#abc", ""] {
+            assert!(HistoryRef::parse(bad).is_none(), "HistoryRef parse {bad:?}");
+        }
         assert_eq!(HistoryRef::new(7).to_string(), "#7");
-    }
-
-    #[test]
-    fn history_ref_no_cross_parse_with_short_ref() {
         assert!(HistoryRef::parse("@3").is_none());
         assert!(ShortRef::parse("#3").is_none());
-    }
 
-    #[test]
-    fn page_limit_clamps() {
         assert_eq!(PageLimit::new(1000).get(), 500);
         assert_eq!(PageLimit::new(50).get(), 50);
         assert_eq!(PageLimit::default().get(), 200);
-    }
 
-    #[test]
-    fn grep_fixed_default() {
-        let g = GrepPattern::parse("deploy").unwrap();
-        assert!(g.matches("the deploy pipeline"));
-        assert!(!g.matches("the DEPLOY pipeline"));
-    }
-
-    #[test]
-    fn grep_case_insensitive() {
-        let g = GrepPattern::parse("-i deploy").unwrap();
-        assert!(g.matches("the DEPLOY pipeline"));
-        assert!(g.matches("deploy"));
-    }
-
-    #[test]
-    fn grep_regex() {
-        let g = GrepPattern::parse("-E error|warn").unwrap();
-        assert!(g.matches("this is an error"));
-        assert!(g.matches("this is a warning"));
-        assert!(!g.matches("this is fine"));
-    }
-
-    #[test]
-    fn grep_regex_case_insensitive() {
-        let g = GrepPattern::parse("-iE error|warn").unwrap();
-        assert!(g.matches("ERROR occurred"));
-        assert!(g.matches("Warning: low disk"));
-    }
-
-    #[test]
-    fn grep_explicit_fixed() {
-        let g = GrepPattern::parse("-F deploy.*pipeline").unwrap();
-        assert!(g.matches("the deploy.*pipeline thing"));
-        assert!(!g.matches("the deploy-pipeline thing"));
-    }
-
-    #[test]
-    fn grep_dash_in_pattern_not_flag() {
-        let g = GrepPattern::parse("-something").unwrap();
-        assert_eq!(g.pattern_text(), "-something");
-    }
-
-    #[test]
-    fn grep_empty_rejected() {
+        struct GrepCase {
+            label: &'static str,
+            pattern: &'static str,
+            matches: &'static [&'static str],
+            misses: &'static [&'static str],
+        }
+        let grep_cases = [
+            GrepCase {
+                label: "fixed",
+                pattern: "deploy",
+                matches: &["the deploy pipeline"],
+                misses: &["the DEPLOY pipeline"],
+            },
+            GrepCase {
+                label: "case_insensitive",
+                pattern: "-i deploy",
+                matches: &["the DEPLOY pipeline", "deploy"],
+                misses: &[],
+            },
+            GrepCase {
+                label: "regex",
+                pattern: "-E error|warn",
+                matches: &["this is an error", "this is a warning"],
+                misses: &["this is fine"],
+            },
+            GrepCase {
+                label: "regex_ci",
+                pattern: "-iE error|warn",
+                matches: &["ERROR occurred", "Warning: low disk"],
+                misses: &[],
+            },
+            GrepCase {
+                label: "fixed_literal",
+                pattern: "-F deploy.*pipeline",
+                matches: &["the deploy.*pipeline thing"],
+                misses: &["the deploy-pipeline thing"],
+            },
+        ];
+        for case in grep_cases {
+            let g = GrepPattern::parse(case.pattern).expect(case.label);
+            for text in case.matches {
+                assert!(g.matches(text), "{}: should match {text:?}", case.label);
+            }
+            for text in case.misses {
+                assert!(
+                    !g.matches(text),
+                    "{}: should not match {text:?}",
+                    case.label
+                );
+            }
+        }
+        assert_eq!(
+            GrepPattern::parse("-something").unwrap().pattern_text(),
+            "-something"
+        );
         assert!(GrepPattern::parse("").is_err());
         assert!(GrepPattern::parse("-E ").is_err());
-    }
-
-    #[test]
-    fn grep_invalid_regex() {
         assert!(GrepPattern::parse("-E [invalid").is_err());
     }
 }

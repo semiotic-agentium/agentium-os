@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Reject BAML that references ctx.tags conversation_history — canonical history is
-# conversation_transcript only (see docs/intent-based-planning-and-session-prompting.md).
+# conversation_transcript only (see docs/assertions/intent-based-planning-and-session-prompting.md).
 #
 # Usage: from repo root. No args: scan agents/ and tests/fixtures/agents/ .baml
 # Or pass .baml paths (pre-commit).

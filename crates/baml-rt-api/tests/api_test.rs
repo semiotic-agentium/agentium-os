@@ -2,6 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! HTTP API integration tests. Snapshot names map to routes; shared setup should use
+//! `test_support::common` (`bind_ephemeral_tokio`, `test_surreal_store`). See
+//! `docs/testing-handbook.md` (matrix testing, insta as documentation).
+
 //! HTTP API tests: discovery, A2A forward, and error mapping.
 //! Uses insta snapshots with selective redaction for variant parts (IDs, instance URLs, etc.).
 

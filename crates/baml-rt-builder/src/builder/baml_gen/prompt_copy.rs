@@ -15,11 +15,11 @@
 //!   the host allows empty (`[]`, omit).
 //! - **Verbs:** **Emit** — one FSM step or session-plan fragment. **Return** — reserved for human
 //!   doc / coordination intro (“return a report”) where it matches BAML wording; step rules use *emit*.
-//! - **Refs:** Preserve `#N` vs `@N` and `!` exactly — see `docs/how-to-write-agents.md` §6.
+//! - **Refs:** Preserve `#N` vs `@N` and `!` exactly — see `docs/assertions/how-to-write-agents.md` §6.
 //! - **Per-hop FSM:** Hand-written and generated prompts must not restate Open/Send/Read *field* JSON
 //!   or a second FSM that could disagree with the BAML return type. Legal ops and payloads: narrowed
 //!   return union and `*SendInput` / `*OpenInput` / archive classes in the merged runtime prelude only
-//!   (see `docs/how-to-write-agents.md` — prompt layout for session step functions).
+//!   (see `docs/assertions/how-to-write-agents.md` — prompt layout for session step functions).
 //! - **Step-executor archive policy:** [`baml_rt_tools::session_ctx_tags::SESSION_STEP_STABLE_PREFIX_BAML`]
 //!   is prepended literally to generated per-phase `prompt` bodies in `session_from_ir`. History
 //!   uses **`ctx.tags['conversation_transcript']` only** — no other `ctx.tags` keys are injected for

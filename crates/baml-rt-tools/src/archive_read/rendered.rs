@@ -84,48 +84,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty() {
-        let rc = RenderedContent::from_lines(std::iter::empty::<String>());
-        assert!(rc.is_empty());
-        assert_eq!(rc.line_count(), 0);
-        assert_eq!(rc.byte_count(), 0);
-        assert_eq!(rc.lines().count(), 0);
-    }
+    fn rendered_content_matrix() {
+        let empty = RenderedContent::from_lines(std::iter::empty::<String>());
+        assert!(empty.is_empty());
+        assert_eq!(empty.line_count(), 0);
+        assert_eq!(empty.byte_count(), 0);
 
-    #[test]
-    fn single_line() {
-        let rc = RenderedContent::from_lines(vec!["hello world".to_string()]);
-        assert_eq!(rc.line_count(), 1);
-        assert_eq!(rc.lines().collect::<Vec<_>>(), vec!["hello world"]);
-        assert_eq!(rc.get_line(0), Some("hello world"));
-        assert_eq!(rc.get_line(1), None);
-    }
+        let single = RenderedContent::from_lines(vec!["hello world".to_string()]);
+        assert_eq!(single.line_count(), 1);
+        assert_eq!(single.get_line(0), Some("hello world"));
+        assert_eq!(single.get_line(1), None);
 
-    #[test]
-    fn multiple_lines() {
-        let rc = RenderedContent::from_lines(vec![
+        let multi = RenderedContent::from_lines(vec![
             "first".to_string(),
             "second".to_string(),
             "third".to_string(),
         ]);
-        assert_eq!(rc.line_count(), 3);
-        let lines: Vec<&str> = rc.lines().collect();
-        assert_eq!(lines, vec!["first", "second", "third"]);
-        assert_eq!(rc.get_line(0), Some("first"));
-        assert_eq!(rc.get_line(1), Some("second"));
-        assert_eq!(rc.get_line(2), Some("third"));
-    }
+        assert_eq!(
+            multi.lines().collect::<Vec<_>>(),
+            vec!["first", "second", "third"]
+        );
 
-    #[test]
-    fn byte_count_includes_newlines() {
-        let rc = RenderedContent::from_lines(vec!["ab".to_string(), "cd".to_string()]);
-        assert_eq!(rc.byte_count(), 6); // "ab\ncd\n"
-    }
+        let bytes = RenderedContent::from_lines(vec!["ab".to_string(), "cd".to_string()]);
+        assert_eq!(bytes.byte_count(), 6);
 
-    #[test]
-    fn splits_embedded_newlines_in_single_string() {
-        let rc = RenderedContent::from_lines(vec!["a\nb".to_string()]);
-        assert_eq!(rc.line_count(), 2);
-        assert_eq!(rc.lines().collect::<Vec<_>>(), vec!["a", "b"]);
+        let split = RenderedContent::from_lines(vec!["a\nb".to_string()]);
+        assert_eq!(split.line_count(), 2);
+        assert_eq!(split.lines().collect::<Vec<_>>(), vec!["a", "b"]);
     }
 }

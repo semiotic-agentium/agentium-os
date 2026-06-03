@@ -1,7 +1,0 @@
----
-source: crates/baml-rt-quickjs/src/execution_session_types.rs
-expression: "serde_json::to_value(&cmd).unwrap()"
----
-{
-  "action": "open"
-}

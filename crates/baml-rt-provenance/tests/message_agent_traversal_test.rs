@@ -19,13 +19,14 @@
 
 use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId};
 use baml_rt_provenance::{
-    ProvEvent, SurrealStoreBuilder,
+    ProvEvent,
     store::{
         ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest, ProvenanceOpsResource,
         ProvenanceWriter,
     },
 };
 use serde_json::Value;
+use test_support::testing::provenance_fixtures::build_isolated_store;
 
 fn agent() -> AgentId {
     AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()))
@@ -33,10 +34,7 @@ fn agent() -> AgentId {
 
 #[tokio::test]
 async fn message_entity_does_not_carry_denormalised_agent_id_property() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("in-memory store");
+    let store = build_isolated_store().await;
 
     let agent_id = agent();
     let context_id = ContextId::new(1_780_000_010_000, 1);
@@ -83,10 +81,7 @@ async fn message_entity_does_not_carry_denormalised_agent_id_property() {
 
 #[tokio::test]
 async fn message_rows_can_be_filtered_by_agent_id_via_edge_traversal() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("in-memory store");
+    let store = build_isolated_store().await;
 
     let agent_a = agent();
     let agent_b = agent();

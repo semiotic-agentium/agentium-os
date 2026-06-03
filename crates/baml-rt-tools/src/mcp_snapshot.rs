@@ -620,34 +620,27 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_minimal_approved_snapshot() {
+    fn mcp_snapshot_wire_matrix() {
         let snap = sample_snapshot(McpApprovalState::Approved);
         let json = serde_json::to_string(&snap).expect("serialize");
         let parsed: McpServerSnapshot = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(snap, parsed);
-    }
 
-    #[test]
-    fn approval_variants_serialize_predictably() {
-        for state in [
-            McpApprovalState::Pending,
-            McpApprovalState::Approved,
-            McpApprovalState::Rejected,
-            McpApprovalState::Stale,
+        for (state, expected) in [
+            (McpApprovalState::Pending, "pending"),
+            (McpApprovalState::Approved, "approved"),
+            (McpApprovalState::Rejected, "rejected"),
+            (McpApprovalState::Stale, "stale"),
         ] {
             let snap = sample_snapshot(state);
             let json = serde_json::to_value(&snap).expect("serialize");
-            let serialized_state = json
-                .pointer("/approval/state")
-                .and_then(Value::as_str)
-                .expect("state field present");
-            let expected = match state {
-                McpApprovalState::Pending => "pending",
-                McpApprovalState::Approved => "approved",
-                McpApprovalState::Rejected => "rejected",
-                McpApprovalState::Stale => "stale",
-            };
-            assert_eq!(serialized_state, expected);
+            assert_eq!(
+                json.pointer("/approval/state")
+                    .and_then(Value::as_str)
+                    .expect("approval.state"),
+                expected,
+                "approval state {expected}"
+            );
         }
     }
 
@@ -700,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn output_mode_variants_round_trip() {
+    fn mcp_wire_variant_round_trip_matrix() {
         let envelope = McpOutputMode::ContentEnvelope;
         let opaque = McpOutputMode::OpaqueJson;
         let schema = McpOutputMode::JsonSchema {
@@ -714,10 +707,7 @@ mod tests {
             let parsed: McpOutputMode = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(mode, parsed);
         }
-    }
 
-    #[test]
-    fn transport_ref_variants_round_trip() {
         let stdio = McpTransportRef::Stdio {
             command_ref: "fake-mcp".into(),
             args: vec!["--quiet".into()],

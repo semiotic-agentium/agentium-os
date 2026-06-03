@@ -1,3 +1,5 @@
+<!-- doc-type: reference -->
+
 # A2A Provenance Mapping (W3C PROV)
 
 This document defines how `ProvEvent` is normalized into W3C PROV structures

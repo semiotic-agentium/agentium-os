@@ -23,9 +23,9 @@
 //!   when graph refs are present.
 //! - **Prefix cacheability (append-only before compaction):** default projection **extends** the
 //!   item stream; it does not rewrite earlier rows on each new turn. See **R9** in
-//!   [`docs/baml-rt-conversation-spec.md`](../../docs/baml-rt-conversation-spec.md).
+//!   [`docs/assertions/baml-rt-conversation-spec.md`](../../docs/assertions/baml-rt-conversation-spec.md).
 //! - **Normative spec** (requirements, ecosystem comparison, gap analysis, traceability):
-//!   [`docs/baml-rt-conversation-spec.md`](../../docs/baml-rt-conversation-spec.md).
+//!   [`docs/assertions/baml-rt-conversation-spec.md`](../../docs/assertions/baml-rt-conversation-spec.md).
 //!
 //! # Heuristics
 //!

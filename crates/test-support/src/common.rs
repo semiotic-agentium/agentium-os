@@ -28,7 +28,6 @@ use baml_rt_core::bus::{
     BusWithEffects, EffectEmitter, EffectEvent, EffectLiveness, EffectSubscriber,
     EffectSubscriberTier,
 };
-use baml_rt_provenance::SurrealStoreBuilder;
 pub use test_tools::{
     AddNumbersInput, AddNumbersOutput, AddNumbersTool, DelayedResponseTool, UppercaseTool,
     WeatherTool,
@@ -702,14 +701,12 @@ pub async fn assert_tool_registered_in_js(
 
 /// In-memory SurrealDB store for tests that build A2aAgent (persistent mode required).
 ///
-/// Uses **isolated** memory (not [`SurrealStoreBuilder::in_memory`], which is a process-wide singleton).
+/// Uses **isolated** memory via [`crate::testing::provenance_fixtures::build_isolated_store`]
+/// (not the process-wide singleton in-memory builder).
 /// A shared store survives across tests; tearing down streams/agents can close internal channels and
 /// surface `Failed to read provenance context` / `sending into a closed channel` in later tests.
 pub async fn test_surreal_store() -> std::sync::Arc<baml_rt_provenance::SurrealProvenanceStore> {
-    SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("in-memory isolated provenance store for test")
+    crate::testing::provenance_fixtures::build_isolated_store().await
 }
 
 /// Builds a minimal A2aAgent for malformed/error-path A2A tests: no BAML schema or tools.

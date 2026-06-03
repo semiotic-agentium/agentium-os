@@ -18,7 +18,7 @@
 //! must not control sensitive ids (the wire omits this field; legacy JSON keys are ignored). Provenance
 //! `IntentResolved` effects carry **citations** only (see `baml_rt_core::bus`).
 //!
-//! See **`docs/citable-history-and-checked-citations.md`**.
+//! See **`docs/assertions/citable-history-and-checked-citations.md`**.
 
 use async_trait::async_trait;
 use baml_rt_core::{

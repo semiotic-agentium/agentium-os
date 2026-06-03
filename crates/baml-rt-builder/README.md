@@ -2,7 +2,7 @@
 
 Agent build pipeline and packaging utilities.
 
-**Authoring agents:** [`docs/how-to-write-agents.md`](../../docs/how-to-write-agents.md) — when to run `regen_fixtures`, `steps` vs `plan_steps`, and generated artifacts.
+**Authoring agents:** [`docs/assertions/how-to-write-agents.md`](../../docs/assertions/how-to-write-agents.md) — when to run `regen_fixtures`, `steps` vs `plan_steps`, and generated artifacts.
 
 ## Responsibilities
 

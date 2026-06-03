@@ -1,3 +1,5 @@
+<!-- doc-type: reference -->
+
 # A2A Session & Runtime: Channel-Based Design for MT and High Concurrency
 
 ## Goals
@@ -152,4 +154,4 @@ So the runtime **already has** a worker thread; we do not need to create a separ
 1. **Dedicated thread + block_on (current):** A std thread that runs `block_on(run_runtime_worker(handler, rx))`. Simple and correct; one such thread per “bridge” (per runtime).
 2. **Submit jobs to the QuickJS EventLoop:** A task that receives `HandleA2a` and, for each message, submits a fire-and-forget job to the existing QuickJS runtime’s EventLoop (via bridge `post_to_worker_void` backed by `add_task_to_event_loop_void`). The job runs on the **runtime’s** worker thread, drains one queued A2A message, runs `with_scope(scope, handle_a2a(request))`, and sends the result on `response_tx`. No extra thread; one EventLoop per runtime.
 
-Option 2 aligns with the crate’s model (“add a job to the EventLoop”; closure runs in the worker thread) and keeps a single worker thread per runtime. Our internal doc [QUICKJS_THREADING_AND_SCOPE.md](../baml-rt-quickjs/docs/QUICKJS_THREADING_AND_SCOPE.md) describes how scope is passed to native callbacks on that worker thread (thread-local or token → scope map).
+Option 2 aligns with the crate’s model (“add a job to the EventLoop”; closure runs in the worker thread) and keeps a single worker thread per runtime. See [baml-rt-quickjs README](../../baml-rt-quickjs/README.md) for bridge threading and scope handling.

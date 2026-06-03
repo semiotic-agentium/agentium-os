@@ -85,44 +85,70 @@ mod tests {
         }
     }
 
-    #[test]
-    fn accepts_safe_header() {
-        let map = build_validated_static_headers("s", &[header("x-tenant", "t1")]).unwrap();
-        assert_eq!(map.get("x-tenant").unwrap(), "t1");
+    struct HeaderCase {
+        label: &'static str,
+        name: &'static str,
+        value: &'static str,
+        expect_ok: bool,
+        check_err: Option<fn(&HeaderError) -> bool>,
     }
 
     #[test]
-    fn rejects_reserved_session_id() {
-        let err = build_validated_static_headers("s", &[header("Mcp-Session-Id", "abc")])
-            .expect_err("must reject");
-        assert!(matches!(err, HeaderError::Reserved { .. }));
-    }
-
-    #[test]
-    fn rejects_reserved_authorization_case_insensitive() {
-        let err = build_validated_static_headers("s", &[header("AUTHORIZATION", "Bearer xyz")])
-            .expect_err("must reject");
-        assert!(matches!(err, HeaderError::Reserved { .. }));
-    }
-
-    #[test]
-    fn rejects_reserved_protocol_version() {
-        let err = build_validated_static_headers("s", &[header("mcp-protocol-version", "x")])
-            .expect_err("must reject");
-        assert!(matches!(err, HeaderError::Reserved { .. }));
-    }
-
-    #[test]
-    fn rejects_reserved_last_event_id_case_insensitive() {
-        let err = build_validated_static_headers("s", &[header("Last-Event-ID", "7")])
-            .expect_err("must reject");
-        assert!(matches!(err, HeaderError::Reserved { .. }));
-    }
-
-    #[test]
-    fn rejects_malformed_name() {
-        let err = build_validated_static_headers("s", &[header("invalid header", "v")])
-            .expect_err("must reject");
-        assert!(matches!(err, HeaderError::Malformed { .. }));
+    fn mcp_static_header_policy_matrix() {
+        let cases = [
+            HeaderCase {
+                label: "accepts_safe_header",
+                name: "x-tenant",
+                value: "t1",
+                expect_ok: true,
+                check_err: None,
+            },
+            HeaderCase {
+                label: "rejects_reserved_session_id",
+                name: "Mcp-Session-Id",
+                value: "abc",
+                expect_ok: false,
+                check_err: Some(|e| matches!(e, HeaderError::Reserved { .. })),
+            },
+            HeaderCase {
+                label: "rejects_reserved_authorization_case_insensitive",
+                name: "AUTHORIZATION",
+                value: "Bearer xyz",
+                expect_ok: false,
+                check_err: Some(|e| matches!(e, HeaderError::Reserved { .. })),
+            },
+            HeaderCase {
+                label: "rejects_reserved_protocol_version",
+                name: "mcp-protocol-version",
+                value: "x",
+                expect_ok: false,
+                check_err: Some(|e| matches!(e, HeaderError::Reserved { .. })),
+            },
+            HeaderCase {
+                label: "rejects_reserved_last_event_id_case_insensitive",
+                name: "Last-Event-ID",
+                value: "7",
+                expect_ok: false,
+                check_err: Some(|e| matches!(e, HeaderError::Reserved { .. })),
+            },
+            HeaderCase {
+                label: "rejects_malformed_name",
+                name: "invalid header",
+                value: "v",
+                expect_ok: false,
+                check_err: Some(|e| matches!(e, HeaderError::Malformed { .. })),
+            },
+        ];
+        for case in cases {
+            let result = build_validated_static_headers("s", &[header(case.name, case.value)]);
+            if case.expect_ok {
+                let map = result.expect(case.label);
+                assert_eq!(map.get(case.name).unwrap(), case.value, "{}", case.label);
+            } else {
+                let err = result.expect_err(case.label);
+                let check = case.check_err.expect("reject row must supply check_err");
+                assert!(check(&err), "{}: {err:?}", case.label);
+            }
+        }
     }
 }

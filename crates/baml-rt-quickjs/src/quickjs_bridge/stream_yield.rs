@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Task-local stream-yield sender so tool-session streaming outputs can be pushed
-//! into the same channel as __baml_stream results (see docs/argument-sketch-stream-trace.md).
+//! into the same channel as __baml_stream results (see docs/assertions/testing-handbook.md).
 //!
 //! Also hosts [`emit_stream_chunk_static`]: decorate chunk, push to QuickJS stream path, and emit
 //! `ToolStreamChunk` for provenance (lives here with `decorate_tool_chunk` / `send_tool_stream_chunk`).

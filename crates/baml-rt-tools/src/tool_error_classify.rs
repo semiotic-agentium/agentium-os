@@ -59,23 +59,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_execution_core_default_is_inform_continue() {
-        let err = BamlRtError::ToolExecution("slack rate_limited, retry later".to_string());
-        let c = ClassifiedToolError::from_baml_error(&err);
-        assert_eq!(c.disposition, ErrorDisposition::InformAndContinue);
-        assert!(!should_host_retry(&c));
-    }
+    fn classified_tool_error_matrix() {
+        let cases: &[(&str, BamlRtError, ErrorDisposition, &str, bool)] = &[
+            (
+                "tool_execution_inform",
+                BamlRtError::ToolExecution("slack rate_limited, retry later".to_string()),
+                ErrorDisposition::InformAndContinue,
+                "tool_execution",
+                false,
+            ),
+            (
+                "invalid_argument_llm_correctable",
+                BamlRtError::InvalidArgument("bad field".to_string()),
+                ErrorDisposition::LlmCorrectable,
+                "invalid_argument",
+                false,
+            ),
+        ];
+        for (name, err, disposition, code, host_retry) in cases {
+            let c = ClassifiedToolError::from_baml_error(err);
+            assert_eq!(c.disposition, *disposition, "{name}: disposition");
+            assert_eq!(c.code, *code, "{name}: code");
+            assert_eq!(should_host_retry(&c), *host_retry, "{name}: host_retry");
+        }
 
-    #[test]
-    fn invalid_argument_llm_correctable() {
-        let err = BamlRtError::InvalidArgument("bad field".to_string());
-        let c = ClassifiedToolError::from_baml_error(&err);
-        assert_eq!(c.disposition, ErrorDisposition::LlmCorrectable);
-        assert_eq!(c.code, "invalid_argument");
-    }
-
-    #[test]
-    fn tool_classified_skips_session_classifier() {
         let inner = ClassifiedToolError {
             code: "x".into(),
             disposition: ErrorDisposition::HostRetriable,
@@ -91,7 +98,6 @@ mod tests {
             hint: None,
             retry_after_ms: None,
         }));
-        let got = classify_for_session(&classifier, &err);
-        assert_eq!(got, inner);
+        assert_eq!(classify_for_session(&classifier, &err), inner);
     }
 }

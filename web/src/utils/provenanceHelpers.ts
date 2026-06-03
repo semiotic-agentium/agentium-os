@@ -408,7 +408,7 @@ export const driftHelp = {
   tactical:
     "Cosine similarity between the prompt's user message and the LLM response. Only meaningful when the prompt includes a user message.",
   grounding:
-    "Each score compares the model's answer to the text of the ref it cited (#N history, @N archive). ≥0.65 strong, 0.40–0.65 moderate, <0.40 weak. Counter-evidence (!# / !@) is shown but excluded from the mean. See docs/drift-catalogue.md for full calibration.",
+    "Each score compares the model's answer to the text of the ref it cited (#N history, @N archive). ≥0.65 strong, 0.40–0.65 moderate, <0.40 weak. Counter-evidence (!# / !@) is shown but excluded from the mean. See docs/assertions/drift-catalogue.md for full calibration.",
   groundingEmpty:
     "No resolved citation grounding on this row: the model may not have emitted citations, refs could not be resolved, or embedding scoring did not run.",
 } as const;

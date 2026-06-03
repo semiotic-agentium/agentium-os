@@ -132,8 +132,8 @@ reuse lint
 ## Where to look next
 
 - `README.md` — workspace architecture and runtime flow.
-- `CLAUDE.md` — the authoritative reference for build commands, conventions, and
-  the crate map.
+- `CLAUDE.md` — pointer hub for build commands and doc map entry.
+- `docs/README.md` — documentation map (assertions, reference, runbooks).
 - `docs/` — design notes, agent-authoring guides, and testing documentation.
 
 We review pull requests as quickly as we can. Thank you for contributing!

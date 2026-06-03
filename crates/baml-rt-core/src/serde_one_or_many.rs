@@ -102,58 +102,37 @@ mod tests {
     }
 
     #[test]
-    fn optional_missing_is_none() {
-        let v: OptField = serde_json::from_value(json!({})).expect("deserialize");
+    fn deserialize_vec_or_one_matrix() {
+        let v: OptField = serde_json::from_value(json!({})).expect("optional_missing");
         assert!(v.items.is_none());
-    }
 
-    #[test]
-    fn optional_null_is_none() {
-        let v: OptField = serde_json::from_value(json!({ "items": null })).expect("deserialize");
+        let v: OptField = serde_json::from_value(json!({ "items": null })).expect("optional_null");
         assert!(v.items.is_none());
-    }
 
-    #[test]
-    fn optional_empty_array() {
-        let v: OptField = serde_json::from_value(json!({ "items": [] })).expect("deserialize");
+        let v: OptField = serde_json::from_value(json!({ "items": [] })).expect("optional_empty");
         assert_eq!(v.items, Some(vec![]));
-    }
 
-    #[test]
-    fn optional_array_of_two() {
         let v: OptField = serde_json::from_value(json!({ "items": [{ "k": 1 }, { "k": 2 }] }))
-            .expect("deserialize");
+            .expect("optional_array");
         assert_eq!(v.items, Some(vec![Block { k: 1 }, Block { k: 2 }]));
-    }
 
-    #[test]
-    fn optional_single_object_becomes_one_element_vec() {
         let v: OptField =
-            serde_json::from_value(json!({ "items": { "k": 7 } })).expect("deserialize");
+            serde_json::from_value(json!({ "items": { "k": 7 } })).expect("optional_singleton");
         assert_eq!(v.items, Some(vec![Block { k: 7 }]));
-    }
 
-    #[test]
-    fn required_single_object() {
         let v: ReqField =
-            serde_json::from_value(json!({ "items": { "k": 3 } })).expect("deserialize");
+            serde_json::from_value(json!({ "items": { "k": 3 } })).expect("required_singleton");
         assert_eq!(v.items, vec![Block { k: 3 }]);
-    }
 
-    #[test]
-    fn required_array() {
         let v: ReqField =
-            serde_json::from_value(json!({ "items": [{ "k": 0 }] })).expect("deserialize");
+            serde_json::from_value(json!({ "items": [{ "k": 0 }] })).expect("required_array");
         assert_eq!(v.items, vec![Block { k: 0 }]);
-    }
 
-    #[test]
-    fn required_null_errors() {
         let err = serde_json::from_value::<ReqField>(json!({ "items": null })).unwrap_err();
+        let msg = err.to_string();
         assert!(
-            err.to_string().contains("invalid type")
-                || err.to_string().contains("data did not match"),
-            "unexpected error: {err}"
+            msg.contains("invalid type") || msg.contains("data did not match"),
+            "required_null: unexpected error: {err}"
         );
     }
 }

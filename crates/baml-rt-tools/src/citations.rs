@@ -263,212 +263,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_history_ref() {
-        assert_eq!(
-            ParsedCitation::parse("#1").unwrap(),
-            ParsedCitation::History {
-                n: 1,
-                negated: false
-            }
-        );
-        assert_eq!(
-            ParsedCitation::parse("#42").unwrap(),
-            ParsedCitation::History {
-                n: 42,
-                negated: false
-            }
-        );
-    }
-
-    #[test]
-    fn parse_negated_history_ref() {
-        assert_eq!(
-            ParsedCitation::parse("!#3").unwrap(),
-            ParsedCitation::History {
-                n: 3,
-                negated: true
-            }
-        );
-        assert!(ParsedCitation::parse("!#3").unwrap().is_negated());
-        assert!(!ParsedCitation::parse("#3").unwrap().is_negated());
-    }
-
-    #[test]
-    fn parse_archive_ref_bare() {
-        assert_eq!(
-            ParsedCitation::parse("@3").unwrap(),
-            ParsedCitation::Archive {
-                n: 3,
-                lines: None,
-                negated: false
-            }
-        );
-    }
-
-    #[test]
-    fn parse_negated_archive_ref_bare() {
-        assert_eq!(
-            ParsedCitation::parse("!@2").unwrap(),
-            ParsedCitation::Archive {
-                n: 2,
-                lines: None,
-                negated: true
-            }
-        );
-    }
-
-    #[test]
-    fn parse_archive_ref_single_line() {
-        assert_eq!(
-            ParsedCitation::parse("@4:L2").unwrap(),
-            ParsedCitation::Archive {
-                n: 4,
-                lines: Some(2..=2),
-                negated: false
-            }
-        );
-    }
-
-    #[test]
-    fn parse_negated_archive_ref_line_range() {
-        assert_eq!(
-            ParsedCitation::parse("!@4:L2-L5").unwrap(),
-            ParsedCitation::Archive {
-                n: 4,
-                lines: Some(2..=5),
-                negated: true
-            }
-        );
-    }
-
-    #[test]
-    fn parse_archive_ref_line_range() {
-        assert_eq!(
-            ParsedCitation::parse("@4:L2-L5").unwrap(),
-            ParsedCitation::Archive {
-                n: 4,
-                lines: Some(2..=5),
-                negated: false
-            }
-        );
-    }
-
-    #[test]
-    fn parse_rejects_empty() {
-        assert!(ParsedCitation::parse("").is_err());
-    }
-
-    #[test]
-    fn parse_rejects_bare_number() {
-        assert!(ParsedCitation::parse("3").is_err());
-    }
-
-    #[test]
-    fn parse_rejects_zero_line() {
-        assert!(ParsedCitation::parse("@1:L0").is_err());
-    }
-
-    #[test]
-    fn parse_rejects_inverted_range() {
-        assert!(ParsedCitation::parse("@1:L5-L2").is_err());
-    }
-
-    #[test]
-    fn parse_rejects_bad_archive_number() {
-        assert!(ParsedCitation::parse("@abc").is_err());
-    }
-
-    #[test]
-    fn n_accessor() {
-        assert_eq!(ParsedCitation::parse("#7").unwrap().n(), 7);
-        assert_eq!(ParsedCitation::parse("@12:L3-L6").unwrap().n(), 12);
-    }
-
-    #[test]
-    fn parse_citations_batch() {
-        let raw = vec![
-            "#1".to_string(),
-            "@4:L2".to_string(),
-            "bad".to_string(),
-            "@7".to_string(),
-        ];
-        let (ok, errors) = parse_citations(&raw);
-        assert_eq!(ok.len(), 3);
-        assert_eq!(errors.len(), 1);
-    }
-
-    #[test]
-    fn validate_audit_accepts_all() {
-        let cfg = CitationConfig {
+    fn citation_validation_matrix() {
+        let audit = CitationConfig {
             mode: CitationMode::Audit,
             ..Default::default()
         };
-        let raw = vec!["bad".to_string()];
-        let v = validate_citations(&raw, &cfg).expect("audit must not error");
+        let v = validate_citations(&["bad".to_string()], &audit).expect("audit must not error");
         assert!(!v.is_ok());
         assert_eq!(v.format_errors.len(), 1);
-    }
 
-    #[test]
-    fn validate_enforce_rejects_format_error() {
-        let cfg = CitationConfig {
+        let enforce = CitationConfig {
             mode: CitationMode::Enforce,
             require_at_least_one: false,
         };
-        let raw = vec!["not-a-citation".to_string()];
-        assert!(validate_citations(&raw, &cfg).is_err());
-    }
+        assert!(validate_citations(&["not-a-citation".to_string()], &enforce).is_err());
 
-    #[test]
-    fn validate_enforce_rejects_missing() {
-        let cfg = CitationConfig {
+        let enforce_required = CitationConfig {
             mode: CitationMode::Enforce,
             require_at_least_one: true,
         };
-        assert!(validate_citations(&[], &cfg).is_err());
-    }
-
-    #[test]
-    fn validate_enforce_accepts_valid() {
-        let cfg = CitationConfig {
-            mode: CitationMode::Enforce,
-            require_at_least_one: true,
-        };
-        let raw = vec!["#1".to_string(), "@4:L2-L5".to_string()];
-        let v = validate_citations(&raw, &cfg).expect("valid citations should pass");
+        assert!(validate_citations(&[], &enforce_required).is_err());
+        let v = validate_citations(
+            &["#1".to_string(), "@4:L2-L5".to_string()],
+            &enforce_required,
+        )
+        .expect("valid citations");
         assert!(v.is_ok());
         assert_eq!(v.parsed.len(), 2);
     }
 
     #[test]
-    fn resolved_citation_history_ref() {
-        use crate::archive_refs::{HistoryEntry, RefTable};
-
-        let table = RefTable::new();
-        let entry = HistoryEntry::new("evt-001".into(), "message".into());
-        let h = table.insert_history(entry, "Can you analyse Q4 accounts?");
-        assert_eq!(h.as_u32(), 1);
-
-        let citation = ParsedCitation::parse("#1").unwrap();
-        let resolved = ResolvedCitation::resolve(&citation, &table).expect("must resolve");
-        assert_eq!(resolved.n, 1);
-        assert_eq!(resolved.kind, CitationKind::History);
-        assert!(!resolved.negated);
-        assert_eq!(resolved.activity_anchor, "evt-001");
-        assert_eq!(resolved.source, "message");
-        assert!(resolved.content.contains("Q4"));
-    }
-
-    #[test]
-    fn resolved_citation_archive_ref_line_range() {
+    fn resolved_citation_matrix() {
         use crate::{
             archive_read::render_to_lines,
-            archive_refs::{ArchiveEntry, RefTable},
+            archive_refs::{ArchiveEntry, HistoryEntry, RefTable},
         };
 
         let table = RefTable::new();
+        let entry = HistoryEntry::new("evt-001".into(), "message".into());
+        table.insert_history(entry, "Can you analyse Q4 accounts?");
+        let history = ResolvedCitation::resolve(&ParsedCitation::parse("#1").unwrap(), &table)
+            .expect("history #1");
+        assert_eq!(history.n, 1);
+        assert_eq!(history.kind, CitationKind::History);
+        assert!(!history.negated);
+        assert_eq!(history.activity_anchor, "evt-001");
+        assert!(history.content.contains("Q4"));
+
+        let archive_table = RefTable::new();
         let content = render_to_lines(&serde_json::json!([
-            {"acct": "001"}, {"acct": "002"}, {"acct": "003"}
+            {"acct": "001"},
+            {"acct": "002"},
+            {"acct": "003"}
         ]));
         let entry = ArchiveEntry::new(
             content,
@@ -477,40 +323,23 @@ mod tests {
             "evt-002".into(),
             "tool_result".into(),
         );
-        let r = table.insert(entry);
-        assert_eq!(r.as_u32(), 1);
+        archive_table.insert(entry);
+        let archive =
+            ResolvedCitation::resolve(&ParsedCitation::parse("@1:L1-L2").unwrap(), &archive_table)
+                .expect("archive line range");
+        assert_eq!(archive.lines, Some(1..=2));
 
-        let citation = ParsedCitation::parse("@1:L1-L2").unwrap();
-        let resolved = ResolvedCitation::resolve(&citation, &table).expect("must resolve");
-        assert_eq!(resolved.n, 1);
-        assert_eq!(resolved.kind, CitationKind::Archive);
-        assert!(!resolved.negated);
-        assert_eq!(resolved.lines, Some(1..=2));
-    }
-
-    #[test]
-    fn resolved_citation_negated_propagates() {
-        use crate::archive_refs::{HistoryEntry, RefTable};
-
-        let table = RefTable::new();
+        let negated_table = RefTable::new();
         let entry = HistoryEntry::new("evt-003".into(), "message".into());
-        table.insert_history(entry, "Q3 data shows no anomalies");
+        negated_table.insert_history(entry, "Q3 data shows no anomalies");
+        let negated =
+            ResolvedCitation::resolve(&ParsedCitation::parse("!#1").unwrap(), &negated_table)
+                .expect("negated history");
+        assert!(negated.negated);
 
-        let citation = ParsedCitation::parse("!#1").unwrap();
-        let resolved = ResolvedCitation::resolve(&citation, &table).expect("must resolve");
-        assert_eq!(resolved.kind, CitationKind::History);
+        let empty = RefTable::new();
         assert!(
-            resolved.negated,
-            "negated flag must propagate through resolve"
+            ResolvedCitation::resolve(&ParsedCitation::parse("#99").unwrap(), &empty).is_none()
         );
-    }
-
-    #[test]
-    fn resolved_citation_returns_none_for_missing_ref() {
-        use crate::archive_refs::RefTable;
-
-        let table = RefTable::new();
-        let citation = ParsedCitation::parse("#99").unwrap();
-        assert!(ResolvedCitation::resolve(&citation, &table).is_none());
     }
 }

@@ -20,7 +20,7 @@ processors:
   # Prometheus-normalized form of the `service.instance.id` resource attribute
   # exposed via `target_info`, so operators see the same label name in every
   # view.
-  # See docs/otel-metrics-instrumentation-guide.md.
+  # See docs/reference/docs/reference/otel-metrics-instrumentation-guide.md.
   transform/runner_identity:
     metric_statements:
       - context: datapoint

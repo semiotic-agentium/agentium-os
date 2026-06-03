@@ -6,16 +6,12 @@
 
 use baml_rt_conversation::view::UserSpeakerKind;
 use baml_rt_core::ids::{ContextId, MessageId, TaskId, UuidId};
-use baml_rt_provenance::{
-    ProvEvent, ProvenanceContextReader, ProvenanceWriter, SurrealStoreBuilder,
-};
+use baml_rt_provenance::{ProvEvent, ProvenanceContextReader, ProvenanceWriter};
+use test_support::testing::provenance_fixtures::build_isolated_store;
 
 #[tokio::test]
 async fn a2a_child_context_user_message_classified_as_relay() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("store");
+    let store = build_isolated_store().await;
     let caller = ContextId::new(1_700_000_000_000, 7);
     let child_task_id = TaskId::for_delegated_child(
         UuidId::parse_str("00000000-0000-0000-0000-0000000000a2").unwrap(),

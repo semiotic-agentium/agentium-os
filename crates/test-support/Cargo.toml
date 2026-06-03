@@ -27,6 +27,8 @@ dotenvy = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 axum = { workspace = true }
+insta = { workspace = true }
+paste = { workspace = true }
 
 [features]
 default = []

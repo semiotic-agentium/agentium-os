@@ -9,7 +9,7 @@ use std::time::Duration;
 /// Parsed value of an HTTP `Retry-After` response header.
 ///
 /// Only the seconds-form is interpreted as a concrete delay via
-/// [`RetryAfter::as_duration`]; HTTP-date values and unparseable bytes are
+/// [`RetryAfter::as_duration`]; HTTP-date values and unparsable bytes are
 /// surfaced as [`RetryAfter::Unknown`] so that callers can log them while
 /// falling back to their own backoff schedule.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,54 +66,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_header_yields_missing() {
+    fn parse_retry_after_matrix() {
         assert!(matches!(parse_retry_after(None), RetryAfter::Missing));
-    }
-
-    #[test]
-    fn integer_seconds_parses() {
         assert!(matches!(
             parse_retry_after(Some(b"42")),
             RetryAfter::Seconds(42)
         ));
-    }
-
-    #[test]
-    fn whitespace_around_seconds_is_trimmed() {
         assert!(matches!(
             parse_retry_after(Some(b"  7 ")),
             RetryAfter::Seconds(7)
         ));
-    }
-
-    #[test]
-    fn http_date_value_is_unknown() {
         match parse_retry_after(Some(b"Wed, 21 Oct 2015 07:28:00 GMT")) {
             RetryAfter::Unknown(raw) => assert_eq!(raw, "Wed, 21 Oct 2015 07:28:00 GMT"),
-            other => panic!("expected Unknown, got {other:?}"),
+            other => panic!("http_date: expected Unknown, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn non_utf8_bytes_are_unknown() {
         match parse_retry_after(Some(&[0xFF, 0xFE])) {
             RetryAfter::Unknown(raw) => assert_eq!(raw, "invalid-utf8"),
-            other => panic!("expected Unknown, got {other:?}"),
+            other => panic!("non_utf8: expected Unknown, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn as_duration_only_for_seconds() {
         assert_eq!(
             RetryAfter::Seconds(3).as_duration(),
             Some(Duration::from_secs(3))
         );
         assert!(RetryAfter::Unknown("x".to_string()).as_duration().is_none());
         assert!(RetryAfter::Missing.as_duration().is_none());
-    }
-
-    #[test]
-    fn display_formats() {
         assert_eq!(RetryAfter::Seconds(5).to_string(), "5s");
         assert_eq!(
             RetryAfter::Unknown("foo".to_string()).to_string(),

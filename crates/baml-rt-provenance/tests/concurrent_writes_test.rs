@@ -18,7 +18,8 @@
 use std::sync::Arc;
 
 use baml_rt_core::ids::{AgentId, ContextId, ExternalId, TaskId, UuidId};
-use baml_rt_provenance::{ProvEvent, ProvenanceWriter, SurrealStoreBuilder};
+use baml_rt_provenance::{ProvEvent, ProvenanceWriter};
+use test_support::testing::provenance_fixtures::build_isolated_store;
 
 #[tokio::test]
 async fn parallel_task_execution_started_writes_succeed_under_mvcc_contention() {
@@ -27,10 +28,7 @@ async fn parallel_task_execution_started_writes_succeed_under_mvcc_contention() 
     // this test fails reliably (verified by reverting the retry loop locally).
     const PARALLEL_WRITERS: usize = 8;
 
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build isolated in-memory store");
+    let store = build_isolated_store().await;
 
     let context_id = ContextId::new(7777, 1);
     let agent_id =

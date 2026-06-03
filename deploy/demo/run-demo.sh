@@ -10,7 +10,7 @@
 # exploration.
 #
 # For the supported install path see:
-#   - docs/k8s-pilot-operator-guide.md     — operator first-run flow
+#   - docs/runbooks/k8s-pilot-operator-guide.md     — operator first-run flow
 #   - deploy/helm/agentium-os/README.md    — chart contract
 #   - scripts/verify-k8s-pilot-package.sh  — in-repo mirror of the
 #                                             operator flow (`just

@@ -8,13 +8,14 @@
 
 use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId};
 use baml_rt_provenance::{
-    ProvEvent, SurrealStoreBuilder,
+    ProvEvent,
     store::{
         ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest, ProvenanceOpsResource,
         ProvenanceWriter,
     },
 };
 use serde_json::json;
+use test_support::testing::provenance_fixtures::build_isolated_store;
 
 fn test_agent_id() -> AgentId {
     AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()))
@@ -22,10 +23,7 @@ fn test_agent_id() -> AgentId {
 
 #[tokio::test]
 async fn tool_ops_query_finds_minted_dispatch_scope_without_task_bootstrap() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("in-memory store");
+    let store = build_isolated_store().await;
 
     let agent_id = test_agent_id();
     let context_id = ContextId::new(1_778_546_320_939, 1);
@@ -95,10 +93,7 @@ async fn tool_ops_query_finds_minted_dispatch_scope_without_task_bootstrap() {
 /// emit `TASK_CALL` from `TaskExecution` using that metadata (not only `ProvEvent::Task`).
 #[tokio::test]
 async fn tool_ops_query_finds_global_envelope_when_metadata_carries_task_id() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("in-memory store");
+    let store = build_isolated_store().await;
 
     let agent_id = test_agent_id();
     let context_id = ContextId::new(1_778_546_320_940, 1);

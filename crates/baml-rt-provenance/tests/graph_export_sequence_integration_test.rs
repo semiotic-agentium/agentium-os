@@ -17,10 +17,14 @@ use baml_rt_core::{
     ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
-    AgentType, GraphExporter, LlmUsage, ProvEvent, ProvenanceWriter, SurrealStoreBuilder,
+    AgentType, GraphExporter, LlmUsage, ProvEvent, ProvenanceWriter,
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
 };
 use insta::assert_snapshot;
+use test_support::testing::{
+    assert_no_isolated_nodes, assert_node_exists, count_edges, count_nodes,
+    provenance_fixtures::build_isolated_store,
+};
 
 /// End-to-end check for file-backed provenance export:
 /// write events -> export graph by context -> simplify -> render Mermaid sequence.
@@ -29,10 +33,7 @@ use insta::assert_snapshot;
 /// refactors do not silently break sequence diagrams.
 #[tokio::test]
 async fn file_backed_export_renders_expected_sequence_flow() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build store");
+    let store = build_isolated_store().await;
 
     let context_id = ContextId::new(1_771_470_000_000, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-sequence-1"));
@@ -192,6 +193,21 @@ async fn file_backed_export_renders_expected_sequence_flow() {
         !graph.nodes.is_empty(),
         "expected exported graph to have nodes"
     );
+    assert_node_exists(&graph, "Message", &[]);
+    assert_node_exists(&graph, "AgentRuntimeInstance", &[]);
+    assert!(
+        count_nodes(&graph, "LlmCall", None) >= 1,
+        "expected LlmCall node"
+    );
+    assert!(
+        count_nodes(&graph, "ToolCall", None) >= 1,
+        "expected ToolCall node"
+    );
+    assert!(
+        count_edges(&graph, "WAS_EXECUTED_BY") >= 1,
+        "agent execution edge"
+    );
+    assert_no_isolated_nodes(&graph);
 
     let simplified = simplify_graph(&graph);
     eprintln!(
@@ -266,10 +282,7 @@ async fn file_backed_export_renders_expected_sequence_flow() {
 /// agent chain, not all agents).
 #[tokio::test]
 async fn export_by_context_is_scoped_when_db_has_multiple_contexts() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build store");
+    let store = build_isolated_store().await;
 
     const N_CONTEXTS: u64 = 8;
     let requested_context = ContextId::new(1_771_470_000_000, 1);
@@ -348,10 +361,7 @@ async fn export_by_context_is_scoped_when_db_has_multiple_contexts() {
 /// MessageProcessing to Agent via metadata.agent_id so the initial User→Agent arrow appears.
 #[tokio::test]
 async fn message_received_global_with_agent_id_renders_initial_user_message() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build store");
+    let store = build_isolated_store().await;
 
     let context_id = ContextId::new(1_771_470_000_100, 1);
     let agent_id =
@@ -401,10 +411,7 @@ async fn message_received_global_with_agent_id_renders_initial_user_message() {
 /// the delegated JSON. Tests that parent context merge includes the first message.
 #[tokio::test]
 async fn coordinator_flow_shows_initial_user_message_before_delegated_message() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build store");
+    let store = build_isolated_store().await;
 
     let context_id = ContextId::new(1_771_470_000_200, 1);
     let coordinator_id =
@@ -502,10 +509,7 @@ async fn coordinator_flow_shows_initial_user_message_before_delegated_message() 
 /// both user messages, both replies, and at least two task rects.
 #[tokio::test]
 async fn two_tasks_in_same_context_both_render_with_separate_rects() {
-    let store = SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build store");
+    let store = build_isolated_store().await;
 
     let context_id = ContextId::new(1_771_470_000_300, 1);
     let agent_id =

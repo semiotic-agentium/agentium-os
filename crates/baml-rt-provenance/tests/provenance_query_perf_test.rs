@@ -11,17 +11,14 @@ use baml_rt_core::{
     ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
-    AgentType, LlmUsage, ProvEvent, ProvenanceQueryApi, ProvenanceWriter, SurrealStoreBuilder,
-    context_metrics_queries, episode::EpisodeReader, graph_export::GraphExporter,
-    task_graph_reader::TaskGraphReader,
+    AgentType, LlmUsage, ProvEvent, ProvenanceQueryApi, ProvenanceWriter, context_metrics_queries,
+    episode::EpisodeReader, graph_export::GraphExporter, task_graph_reader::TaskGraphReader,
 };
 use serde_json::Value;
+use test_support::testing::provenance_fixtures::build_isolated_store;
 
 async fn isolated_store() -> Arc<baml_rt_provenance::SurrealProvenanceStore> {
-    SurrealStoreBuilder::in_memory_isolated()
-        .build()
-        .await
-        .expect("build store")
+    build_isolated_store().await
 }
 
 async fn seed_high_cardinality_context(

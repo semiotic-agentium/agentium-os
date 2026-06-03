@@ -632,6 +632,12 @@ test-crate crate:
 test-unit:
     cargo nextest run --workspace --features baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory
 
+# Per-file #[test] counts under crates/ (matrix-consolidation triage baseline).
+test-inventory:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bash scripts/test-inventory.sh
+
 # SDK CLI: workspace integrity check
 doctor:
     cargo run --release -p cargo-agent-platform -- doctor
