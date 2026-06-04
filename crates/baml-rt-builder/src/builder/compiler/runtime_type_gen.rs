@@ -6,7 +6,7 @@
 //! [`super::codegen_pipeline`]; this file contains only the [`TypeGenerator`] impl that wires
 //! the named phases together and bridges between blocking and async halves.
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use baml_rt_repository::RepositoryService;
 use tokio::task;
@@ -108,6 +108,7 @@ async fn prepare_external_tool_registry_cache(
     if tool_names.is_empty() {
         return Ok(());
     }
+    let manifest_tool_names: HashSet<String> = tool_names.iter().map(ToString::to_string).collect();
 
     let root = build_dir.as_path();
     if let Some(service) = &generator.mcp_registry_service {
@@ -118,13 +119,16 @@ async fn prepare_external_tool_registry_cache(
                 message: "failed to fetch external-tool snapshots from registry".to_string(),
                 source: Box::new(err),
             })?;
-        for snapshot in snapshots {
+        for snapshot in snapshots
+            .into_iter()
+            .filter(|snapshot| manifest_tool_names.contains(&snapshot.tool.name))
+        {
             tracing::info!(
                 external_tool = %snapshot.tool.name,
                 external_tool_schema_digest = %snapshot.digests.schema_digest,
                 external_tool_runtime_digest = %snapshot.digests.runtime_digest,
                 external_tool_registry_source = "embedded",
-                "resolved external-tool snapshot for agent build"
+                "resolved manifest-referenced external-tool snapshot for agent build"
             );
             baml_rt_tools::external_tool_cache::write_approved_snapshot(root, &snapshot)
                 .map_err(BamlBuilderError::Io)?;
@@ -170,13 +174,16 @@ async fn prepare_external_tool_registry_cache(
             message: "failed to decode external-tool snapshot list from registry".to_string(),
             source: Box::new(err),
         })?;
-    for snapshot in snapshots {
+    for snapshot in snapshots
+        .into_iter()
+        .filter(|snapshot| manifest_tool_names.contains(&snapshot.tool.name))
+    {
         tracing::info!(
             external_tool = %snapshot.tool.name,
             external_tool_schema_digest = %snapshot.digests.schema_digest,
             external_tool_runtime_digest = %snapshot.digests.runtime_digest,
             external_tool_registry_source = %registry_url,
-            "resolved external-tool snapshot for agent build"
+            "resolved manifest-referenced external-tool snapshot for agent build"
         );
         baml_rt_tools::external_tool_cache::write_approved_snapshot(root, &snapshot)
             .map_err(BamlBuilderError::Io)?;

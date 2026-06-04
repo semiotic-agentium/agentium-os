@@ -217,7 +217,7 @@ impl AgentPackage {
             Some(lifecycle_recorder.clone()),
             &lockfile_path,
             ExternalLockfileMode::from_env(),
-            sandbox_wiring,
+            sandbox_wiring.clone(),
             external_tools_dirs.to_vec(),
         )
         .await?;
@@ -248,7 +248,7 @@ impl AgentPackage {
         let registry_external_resolver = if package_external_root.exists() {
             Some(ExternalRegistryResolver::from_cache_root_with_sandbox(
                 &self.extract_dir,
-                build_sandbox_wiring(sandbox_bind_roots.to_vec())?,
+                sandbox_wiring.clone(),
                 Some(lifecycle_recorder.clone()),
             )?)
         } else {

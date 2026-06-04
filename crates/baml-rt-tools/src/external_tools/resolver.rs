@@ -59,6 +59,7 @@ pub type SandboxSpecFactory = Arc<
 ///
 /// Ownership model: the runner keeps one provider + cache per process
 /// (§9.2 `runner_id`).
+#[derive(Clone)]
 pub struct SandboxRuntimeWiring {
     pub provider: Arc<dyn SandboxProvider>,
     pub cache: Arc<SandboxCache>,
