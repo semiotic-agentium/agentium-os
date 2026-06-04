@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use baml_rt_core::{BamlRtError, ClassifiedToolError, ErrorDisposition, Result};
 use serde_json::Value;
 
-use super::protocol::{ErrorClass, JsonRpcError, ToolDescribeResult};
+use super::protocol::{ErrorClass, JsonRpcError, ToolDescribeResult, ToolSchemaResult};
 use crate::ToolName;
 
 /// Runner-side request for `tool/invoke`.
@@ -66,6 +66,12 @@ pub trait ExternalInvoker: Send + Sync {
     /// `(tool_name, digest)` at load time and cached.
     async fn describe(&self, tool: &ToolName, timeout: Duration) -> Result<ToolDescribe>;
 
+    /// Fetch the tool's JSON Schema for input and output via `tool/schema`.
+    /// Callers must verify that `tool/schema` is listed in `supported_methods`
+    /// from `describe` before calling; if the tool does not support it this
+    /// returns an `InvalidArgument` error.
+    async fn schema(&self, tool: &ToolName, timeout: Duration) -> Result<ToolSchemaResult>;
+
     /// Execute a single `tool/invoke`. Stateless: one call, one result.
     async fn invoke(&self, req: InvokeRequest) -> Result<InvokeResponse>;
 }
@@ -83,6 +89,7 @@ pub trait ExternalInvoker: Send + Sync {
 #[async_trait]
 pub trait ToolInvoker: Send + Sync {
     async fn describe(&self, tool: &ToolName, timeout: Duration) -> Result<ToolDescribe>;
+    async fn schema(&self, tool: &ToolName, timeout: Duration) -> Result<ToolSchemaResult>;
     async fn invoke(&self, req: InvokeRequest) -> Result<InvokeResponse>;
 }
 
@@ -90,6 +97,9 @@ pub trait ToolInvoker: Send + Sync {
 impl<T: ExternalInvoker + ?Sized> ToolInvoker for T {
     async fn describe(&self, tool: &ToolName, timeout: Duration) -> Result<ToolDescribe> {
         <Self as ExternalInvoker>::describe(self, tool, timeout).await
+    }
+    async fn schema(&self, tool: &ToolName, timeout: Duration) -> Result<ToolSchemaResult> {
+        <Self as ExternalInvoker>::schema(self, tool, timeout).await
     }
     async fn invoke(&self, req: InvokeRequest) -> Result<InvokeResponse> {
         <Self as ExternalInvoker>::invoke(self, req).await

@@ -31,8 +31,8 @@ use tracing::{debug, warn};
 use super::{
     invoker::{ExternalInvoker, InvokeRequest, InvokeResponse, ToolDescribe, map_jsonrpc_error},
     protocol::{
-        JsonRpcRequest, JsonRpcResponse, METHOD_DESCRIBE, METHOD_INVOKE, ToolDescribeResult,
-        ToolInvokeParams, ToolInvokeResult,
+        JsonRpcRequest, JsonRpcResponse, METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA,
+        ToolDescribeResult, ToolInvokeParams, ToolInvokeResult, ToolSchemaResult,
     },
 };
 use crate::ToolName;
@@ -208,6 +208,23 @@ impl ExternalInvoker for StdioSubprocessInvoker {
             }
         })?;
         Ok(describe.into())
+    }
+
+    async fn schema(&self, tool: &ToolName, call_timeout: Duration) -> Result<ToolSchemaResult> {
+        let params = serde_json::json!({ "tool_name": tool.to_string() });
+        let request = JsonRpcRequest::new(METHOD_SCHEMA, self.next_request_id(), params);
+        let response = self.call_once(&request, call_timeout).await?;
+
+        if let Some(err) = response.error {
+            return Err(map_jsonrpc_error(tool, &err));
+        }
+        let result_value = response.result.ok_or_else(|| {
+            BamlRtError::InvalidArgument("tool/schema: missing result field".into())
+        })?;
+        serde_json::from_value(result_value).map_err(|e| BamlRtError::InvalidArgumentWithSource {
+            message: "tool/schema: result did not match schema".into(),
+            source: Box::new(e),
+        })
     }
 
     async fn invoke(&self, req: InvokeRequest) -> Result<InvokeResponse> {

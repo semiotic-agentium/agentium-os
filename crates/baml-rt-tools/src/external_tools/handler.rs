@@ -272,7 +272,7 @@ mod tests {
     use crate::{
         external_tools::{
             invoker::{InvokeResponse, ToolDescribe},
-            protocol::METHOD_INVOKE,
+            protocol::{METHOD_INVOKE, ToolSchemaResult},
         },
         tool_fsm::ToolSessionId,
         tools::{ToolAccess, ToolBackend, ToolOrigin, ToolSessionContext, ToolTypeSpec},
@@ -315,6 +315,12 @@ mod tests {
                 schema_digest: None,
                 capabilities: None,
             })
+        }
+
+        async fn schema(&self, tool: &ToolName, _timeout: Duration) -> Result<ToolSchemaResult> {
+            Err(BamlRtError::InvalidArgument(format!(
+                "tool/schema not supported by mock invoker for {tool}"
+            )))
         }
 
         async fn invoke(&self, _req: InvokeRequest) -> Result<InvokeResponse> {
@@ -377,6 +383,12 @@ mod tests {
                 schema_digest: None,
                 capabilities: None,
             })
+        }
+
+        async fn schema(&self, tool: &ToolName, _timeout: Duration) -> Result<ToolSchemaResult> {
+            Err(BamlRtError::InvalidArgument(format!(
+                "tool/schema not supported by mock invoker for {tool}"
+            )))
         }
 
         async fn invoke(&self, _req: InvokeRequest) -> Result<InvokeResponse> {

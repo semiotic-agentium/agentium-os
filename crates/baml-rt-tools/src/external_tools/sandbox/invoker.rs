@@ -36,8 +36,8 @@ use crate::{
     external_tools::{
         invoker::{InvokeRequest, InvokeResponse, ToolDescribe, ToolInvoker},
         protocol::{
-            JsonRpcRequest, JsonRpcResponse, METHOD_DESCRIBE, METHOD_INVOKE, ToolDescribeResult,
-            ToolInvokeParams, ToolInvokeResult,
+            JsonRpcRequest, JsonRpcResponse, METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA,
+            ToolDescribeResult, ToolInvokeParams, ToolInvokeResult, ToolSchemaResult,
         },
     },
 };
@@ -344,6 +344,22 @@ impl ToolInvoker for SandboxInvoker {
                 source: Box::new(e),
             })?;
         Ok(parsed.into())
+    }
+
+    async fn schema(&self, tool: &ToolName, timeout: Duration) -> Result<ToolSchemaResult> {
+        let params = json!({ "tool_name": tool.to_string() });
+        let value = self
+            .json_rpc_call(
+                tool,
+                METHOD_SCHEMA,
+                params,
+                timeout.min(self.describe_timeout),
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| BamlRtError::InvalidArgumentWithSource {
+            message: "failed to decode tool/schema result".to_string(),
+            source: Box::new(e),
+        })
     }
 
     async fn invoke(&self, req: InvokeRequest) -> Result<InvokeResponse> {

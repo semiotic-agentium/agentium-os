@@ -14,8 +14,10 @@ use baml_rt_tools::{
     ManifestToolNames, ToolAccessPolicy, ToolRegistry,
     external_tools::{
         DevModeResolver,
+        invoker::ExternalInvoker,
         resolver::SandboxRuntimeWiring,
         sandbox::{MockSandboxProvider, SandboxCache, SandboxProvider, SandboxSpec},
+        stdio::StdioSubprocessInvoker,
     },
     register_manifest_tools_with_fallback,
 };
@@ -341,4 +343,99 @@ fn write_tool_server(path: &Path, script: &str) {
     let mut perms = fs::metadata(path).expect("metadata").permissions();
     perms.set_mode(0o755);
     fs::set_permissions(path, perms).expect("set executable permissions");
+}
+
+// ---------------------------------------------------------------------------
+// Phase 0: tool/schema invoker tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn stdio_invoker_schema_returns_parsed_tool_schema_result() {
+    let temp = unique_temp_dir("stdio-schema-happy");
+    fs::create_dir_all(&temp).unwrap();
+    let binary = temp.join("tool-server");
+
+    write_tool_server(
+        &binary,
+        "#!/bin/sh\n\
+        IFS= read -r req\n\
+        if printf '%s' \"$req\" | grep -q '\"method\":\"tool/schema\"'; then\n\
+          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"schema_version\":1,\"tool_name\":\"support/weather\",\"content_type\":\"application/schema+json\",\"content_digest\":\"sha256:abc123\",\"input\":{\"type\":\"object\"},\"output\":{\"type\":\"object\"}}}'\n\
+        fi\n",
+    );
+
+    let tool = baml_rt_tools::ToolName::parse("support/weather").unwrap();
+    let invoker = StdioSubprocessInvoker::new(binary);
+    let result = invoker
+        .schema(&tool, std::time::Duration::from_secs(5))
+        .await
+        .expect("schema() should succeed");
+
+    assert_eq!(result.tool_name, "support/weather");
+    assert_eq!(result.content_type, "application/schema+json");
+    assert_eq!(result.content_digest, "sha256:abc123");
+    assert_eq!(result.input, json!({"type": "object"}));
+    assert_eq!(result.output, json!({"type": "object"}));
+
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[tokio::test]
+async fn stdio_invoker_schema_propagates_jsonrpc_error() {
+    let temp = unique_temp_dir("stdio-schema-error");
+    fs::create_dir_all(&temp).unwrap();
+    let binary = temp.join("tool-server");
+
+    // Tool returns METHOD_NOT_FOUND — simulates tool that doesn't support tool/schema.
+    write_tool_server(
+        &binary,
+        "#!/bin/sh\n\
+        IFS= read -r _req\n\
+        printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"unknown method tool/schema\"}}'\n",
+    );
+
+    let tool = baml_rt_tools::ToolName::parse("support/weather").unwrap();
+    let invoker = StdioSubprocessInvoker::new(binary);
+    let err = invoker
+        .schema(&tool, std::time::Duration::from_secs(5))
+        .await
+        .expect_err("schema() should fail when tool returns JSON-RPC error");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unknown method tool/schema") || msg.contains("tool/schema"),
+        "error should mention tool/schema, got: {msg}"
+    );
+
+    let _ = fs::remove_dir_all(temp);
+}
+
+#[tokio::test]
+async fn stdio_invoker_schema_fails_on_malformed_result() {
+    let temp = unique_temp_dir("stdio-schema-malformed");
+    fs::create_dir_all(&temp).unwrap();
+    let binary = temp.join("tool-server");
+
+    // Tool returns a result that doesn't match ToolSchemaResult shape.
+    write_tool_server(
+        &binary,
+        "#!/bin/sh\n\
+        IFS= read -r _req\n\
+        printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"unexpected_field\":true}}'\n",
+    );
+
+    let tool = baml_rt_tools::ToolName::parse("support/weather").unwrap();
+    let invoker = StdioSubprocessInvoker::new(binary);
+    let err = invoker
+        .schema(&tool, std::time::Duration::from_secs(5))
+        .await
+        .expect_err("schema() should fail on malformed result");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("tool/schema"),
+        "error should mention tool/schema, got: {msg}"
+    );
+
+    let _ = fs::remove_dir_all(temp);
 }
