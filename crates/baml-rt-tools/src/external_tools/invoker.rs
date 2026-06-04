@@ -59,6 +59,19 @@ impl From<ToolDescribeResult> for ToolDescribe {
     }
 }
 
+impl From<ToolDescribe> for ToolDescribeResult {
+    fn from(d: ToolDescribe) -> Self {
+        Self {
+            protocol_version: d.protocol_version,
+            tool_name: d.tool_name,
+            supported_methods: d.supported_methods,
+            max_payload_bytes: d.max_payload_bytes,
+            schema_digest: d.schema_digest,
+            capabilities: d.capabilities,
+        }
+    }
+}
+
 /// Transport-abstract interface for the external tool protocol.
 #[async_trait]
 pub trait ExternalInvoker: Send + Sync {

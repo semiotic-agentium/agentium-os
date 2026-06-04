@@ -262,13 +262,15 @@ Re-discover from snapshot `source_ref` or `--dir`. Compare; create pending if ch
 
 Phase 2 complete. Follow-up note: stale/drift event emission remains Phase 5 lifecycle work unless CLI refresh owns the emission in Phase 3. Cache catalog/resolver currently reject stale records and tampered approved snapshots but do not perform live schema drift checks.
 
-### Phase 3: CLI enable/inspect/refresh (cache path)
+### Phase 3: CLI enable/inspect/refresh (cache path) ✅
 
-- [ ] `external-tool enable <dir>`: discover → pending snapshot → approval prompt → write cache.
-- [ ] `external-tool inspect <name>`: show approved/pending/stale with digests.
-- [ ] `external-tool refresh <name> --dir <dir>`: re-discover → compare → pending if changed → prompt.
-- [ ] Schema diff/digest summary display.
-- [ ] Tests: `--yes` approves; abort leaves cache unchanged; `--json` raw output.
+- [x] `external-tool enable <dir>`: discover → pending snapshot → approval prompt → write cache.
+- [x] `external-tool inspect <name>`: show approved/pending/stale with digests.
+- [x] `external-tool refresh <name> --dir <dir>`: re-discover → compare → pending if changed → prompt.
+- [x] Schema diff/digest summary display.
+- [x] Tests: `--yes` approves; abort leaves cache unchanged; `--json` raw output.
+
+Phase 3 complete. Implemented cache-path CLI for process external tools; validation command run: `cargo check -p cargo-agent-platform`.
 
 ### Phase 4: repository registry write/read
 

@@ -406,6 +406,12 @@ enum Commands {
         warn_missing_catalog: bool,
     },
 
+    /// Inspect and manage external-tool snapshot cache entries
+    ExternalTool {
+        #[command(subcommand)]
+        command: ExternalToolCommands,
+    },
+
     /// Inspect and manage MCP registry entries
     Mcp {
         #[command(subcommand)]
@@ -429,6 +435,52 @@ enum Commands {
         /// Print debug diagnostics
         #[arg(long, short)]
         verbose: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExternalToolCommands {
+    /// Discover, approve, and store an external-tool snapshot in cache.
+    Enable {
+        /// Path to external tool directory (contains tool-manifest.json).
+        dir: String,
+        /// Snapshot cache root. Falls back to BAML_EXTERNAL_TOOL_CACHE_DIR.
+        #[arg(long)]
+        cache_dir: Option<String>,
+        /// Skip interactive approval prompt.
+        #[arg(long)]
+        yes: bool,
+        /// Emit raw snapshot JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show approved and pending snapshots for a tool.
+    Inspect {
+        /// Tool name, e.g. support/weather.
+        name: String,
+        /// Snapshot cache root. Falls back to BAML_EXTERNAL_TOOL_CACHE_DIR.
+        #[arg(long)]
+        cache_dir: Option<String>,
+        /// Emit raw JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Re-discover an external tool and approve changed snapshot.
+    Refresh {
+        /// Tool name, e.g. support/weather.
+        name: String,
+        /// Path to external tool directory (contains tool-manifest.json).
+        #[arg(long)]
+        dir: String,
+        /// Snapshot cache root. Falls back to BAML_EXTERNAL_TOOL_CACHE_DIR.
+        #[arg(long)]
+        cache_dir: Option<String>,
+        /// Skip interactive approval prompt.
+        #[arg(long)]
+        yes: bool,
+        /// Emit raw JSON.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -879,6 +931,27 @@ fn main() -> anyhow::Result<()> {
             ci,
             warn_missing_catalog,
         } => commands::doctor::run(ci, warn_missing_catalog),
+
+        Commands::ExternalTool { command } => match command {
+            ExternalToolCommands::Enable {
+                dir,
+                cache_dir,
+                yes,
+                json,
+            } => commands::external_tool::enable(&dir, cache_dir.as_deref(), yes, json),
+            ExternalToolCommands::Inspect {
+                name,
+                cache_dir,
+                json,
+            } => commands::external_tool::inspect(&name, cache_dir.as_deref(), json),
+            ExternalToolCommands::Refresh {
+                name,
+                dir,
+                cache_dir,
+                yes,
+                json,
+            } => commands::external_tool::refresh(&name, &dir, cache_dir.as_deref(), yes, json),
+        },
 
         Commands::Mcp { command } => match command {
             McpCommands::List {
