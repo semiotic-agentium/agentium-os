@@ -7,15 +7,22 @@
 # Shared helpers for the E2E k8s test harness.
 # Sourced by run.sh — not executed directly.
 
+if (( BASH_VERSINFO[0] < 4 )); then
+  echo "ERROR: bash 4.0+ required for e2e-k8s (have ${BASH_VERSION})." >&2
+  echo "On macOS: brew install bash && export PATH=\"/opt/homebrew/bin:\$PATH\"" >&2
+  exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 NAMESPACE="agentium"
 CLUSTER_NAME="agentium"
-RELEASE_NAME="agentium"                 # helm release; matches examples/k3d-values.yaml
+RELEASE_NAME="agentium"                 # helm releaseName in Argo Application
 IMAGE_NAME="agentium-runner"
-IMAGE_TAG="demo"                        # aligns with examples/k3d-values.yaml
-IMAGE_PULL_POLICY="Never"               # local-k3d-import strategy
+IMAGE_TAG=""                            # set by resolve_image_tag
+IMAGE_PULL_POLICY="Always"              # local k3d registry contract
+LAST_IMAGE_TAG_FILE="deploy/values/generated/.last-image-tag"
 SURREAL_USER="e2e"
 SURREAL_PASS="e2e-test-pass"
 E2E_TOKEN="e2e-token-${RANDOM}"         # also written into runner-token secret
@@ -23,9 +30,6 @@ RUNNER0_PORT=18081
 RUNNER1_PORT=18082
 REMOTE_PORT=18080
 RUNNER_CONTAINER_PORT=18080             # chart value runner.service.headless.port
-HELM_VALUES_FILE="deploy/helm/agentium-os/examples/k3d-values.yaml"
-RUNNER_IMAGE_STRATEGY="${RUNNER_IMAGE_STRATEGY:-local-k3d-import}"
-
 # k3d-managed local registry contract (see deploy/k3d/cluster.yaml).
 # The cluster pulls images from k3d-agentium-registry:5000; the host
 # pushes to localhost:5400. ensure_runner_image_available wires both.
@@ -34,11 +38,8 @@ REGISTRY_CONTAINER_HOST="k3d-${REGISTRY_NAME}"
 REGISTRY_CONTAINER_PORT="5000"
 REGISTRY_HOST_PORT="5400"
 
-# Image reference passed to `helm install --set runner.image.repository=`.
-# Both image strategies overwrite this in ensure_runner_image_available
-# before install_pilot_chart runs; the source-time default exists so the
-# variable is always defined for callers that introspect it.
-IMAGE_REPOSITORY_FOR_INSTALL="$IMAGE_NAME"
+# In-cluster registry repository (without tag) after ensure_runner_image_available.
+IMAGE_REPOSITORY_FOR_INSTALL="${REGISTRY_CONTAINER_HOST}:${REGISTRY_CONTAINER_PORT}/${IMAGE_NAME}"
 
 # Populated at runtime by resolve_chart_names (after helm install)
 RUNNER_FULLNAME=""      # e.g. agentium-agentium-os-runner
@@ -49,11 +50,7 @@ RUNNER_POD_1=""
 SURREAL_POD_0=""
 RUNNER_HEADLESS_DNS=""  # ${RUNNER_FULLNAME}.${NAMESPACE}.svc
 
-# Populated by ensure_runner_image_available (registry branch) from the
-# registry's Docker-Content-Digest header for the pushed manifest.
-# Consumed by verify_pod_image_digests to compare against each runner
-# pod's containerStatuses[].imageID. Empty for non-registry strategies,
-# which the assertion already skips.
+# Populated by ensure_runner_image_available from the registry digest header.
 PUSHED_IMAGE_DIGEST=""
 
 # Populated at runtime
@@ -651,24 +648,79 @@ has_llm_keys() {
 }
 
 # ---------------------------------------------------------------------------
-# Package bringup (Helm)
+# Package bringup (Argo CD + local k3d registry)
 #
 # Shared by scripts/verify-k8s-pilot-package.sh and scripts/e2e-k8s/run.sh.
-# Both scripts install the chart the same way; only the set of verifications
-# that run afterwards differs.
 # ---------------------------------------------------------------------------
 
-# values_file_for_strategy <strategy>
-#
-# Echo the path (relative to repo root) of the Helm values file that
-# matches the given image strategy. Returns non-zero on unknown input so
-# callers can surface their own error message.
-values_file_for_strategy() {
-  case "$1" in
-    local-k3d-import) echo "deploy/helm/agentium-os/examples/k3d-values.yaml" ;;
-    registry)         echo "deploy/helm/agentium-os/examples/k3d-registry-values.yaml" ;;
-    *) return 1 ;;
-  esac
+# resolve_image_tag — AGENTIUM_IMAGE_TAG > .last-image-tag > error.
+resolve_image_tag() {
+  if [[ -n "${AGENTIUM_IMAGE_TAG:-}" ]]; then
+    IMAGE_TAG="${AGENTIUM_IMAGE_TAG}"
+    return 0
+  fi
+  local tag_file="${REPO_ROOT}/${LAST_IMAGE_TAG_FILE}"
+  if [[ -f "${tag_file}" ]]; then
+    IMAGE_TAG="$(tr -d '[:space:]' <"${tag_file}")"
+    return 0
+  fi
+  log_fail "No image tag configured."
+  echo "  Run: just image-tag-nonce   or set AGENTIUM_IMAGE_TAG" >&2
+  return 1
+}
+
+# ensure_image_tag_or_nonce — write a fresh nonce when no tag is configured.
+ensure_image_tag_or_nonce() {
+  if [[ -n "${AGENTIUM_IMAGE_TAG:-}" ]] || [[ -f "${REPO_ROOT}/${LAST_IMAGE_TAG_FILE}" ]]; then
+    resolve_image_tag
+    return $?
+  fi
+  bash "${REPO_ROOT}/scripts/e2e-k8s/image-tag-nonce.sh"
+  resolve_image_tag
+}
+
+# write_scenario_values [path]
+# Copies a Helm values overlay to deploy/values/generated/scenario.yaml for Argo sync.
+write_scenario_values() {
+  local src="${1:-}"
+  local out="${REPO_ROOT}/deploy/values/generated/scenario.yaml"
+  mkdir -p "$(dirname "${out}")"
+  if [[ -z "${src}" ]]; then
+    printf '%s\n' '# no scenario overrides' >"${out}"
+    return 0
+  fi
+  if [[ ! -f "${src}" ]]; then
+    log_fail "scenario values file not found: ${src}"
+    return 1
+  fi
+  cp "${src}" "${out}"
+}
+
+# ensure_k3d_cluster — create the k3d cluster if missing (reuse when present).
+ensure_k3d_cluster() {
+  if k3d cluster list -o json 2>/dev/null | grep -q "\"name\":\"${CLUSTER_NAME}\""; then
+    log_info "Reusing k3d cluster '${CLUSTER_NAME}'"
+  else
+    log_step "Creating k3d cluster '${CLUSTER_NAME}'"
+    k3d cluster create --config "${REPO_ROOT}/deploy/k3d/cluster.yaml"
+  fi
+  ensure_k3d_registry
+  connect_registry_to_cluster
+}
+
+# install_pilot_release — Argo sync + resolve chart names + wait for readyz.
+install_pilot_release() {
+  install_pilot_via_argo || return 1
+  resolve_chart_names || return 1
+  wait_for_runner_readyz || return 1
+}
+
+# bringup_pilot_stack — full local k3d install (registry, secrets, Argo, wait).
+bringup_pilot_stack() {
+  ensure_runner_image_available || return 1
+  create_pilot_objects || return 1
+  write_scenario_values "${AGENTIUM_SCENARIO_VALUES:-}" || return 1
+  install_pilot_release || return 1
 }
 
 # ensure_k3d_registry — start (or reuse) a plain `registry:2` container
@@ -719,148 +771,82 @@ connect_registry_to_cluster() {
   docker network connect "$network" "${REGISTRY_CONTAINER_HOST}"
 }
 
-# ensure_runner_image_available — make ${IMAGE_NAME}:${IMAGE_TAG} reachable
-# from the cluster. Strategy selected by $RUNNER_IMAGE_STRATEGY.
-#
-# Each strategy writes three outputs read by install_pilot_chart:
-#   IMAGE_PULL_POLICY            — runner.image.pullPolicy override
-#   HELM_VALUES_FILE             — base values file matching the contract
-#   IMAGE_REPOSITORY_FOR_INSTALL — runner.image.repository override
+# ensure_runner_image_available — push ${IMAGE_NAME}:${IMAGE_TAG} to the local k3d registry.
 ensure_runner_image_available() {
-  case "$RUNNER_IMAGE_STRATEGY" in
-    local-k3d-import)
-      log_step "Importing runner image into k3d (${IMAGE_NAME}:${IMAGE_TAG})"
-      local import_tar import_name="${IMAGE_NAME}:${IMAGE_TAG}"
-      import_tar="$(mktemp -t agentium-image-XXXXXX).tar"
-      if [[ "$IMAGE_NAME" != */* ]]; then
-        # Bare name: kubelet normalizes pod refs like `agentium-runner:demo`
-        # to `docker.io/library/agentium-runner:demo`. Save under the
-        # normalized name so k3d/containerd match the pod ref. Qualified
-        # names (e.g. `ghcr.io/acme/agentium-runner`) already match the
-        # pod ref verbatim and must not be retagged.
-        docker tag "${IMAGE_NAME}:${IMAGE_TAG}" \
-          "docker.io/library/${IMAGE_NAME}:${IMAGE_TAG}" 2>/dev/null || true
-        import_name="docker.io/library/${IMAGE_NAME}:${IMAGE_TAG}"
+  resolve_image_tag || return 1
+
+  if [[ "$IMAGE_NAME" == *"/"* || "$IMAGE_NAME" == *":"* ]]; then
+    log_fail "IMAGE_NAME must be a bare name (got '${IMAGE_NAME}'); local registry prefix is added automatically."
+    return 1
+  fi
+
+  ensure_k3d_registry
+  connect_registry_to_cluster
+
+  log_step "Publishing runner image to local registry (${REGISTRY_CONTAINER_HOST})"
+
+  local host_ref="localhost:${REGISTRY_HOST_PORT}/${IMAGE_NAME}:${IMAGE_TAG}"
+  local cluster_repo="${REGISTRY_CONTAINER_HOST}:${REGISTRY_CONTAINER_PORT}/${IMAGE_NAME}"
+
+  local deadline=$((SECONDS + 30))
+  local probed=0
+  while (( SECONDS < deadline )); do
+    if curl -sf -o /dev/null --connect-timeout 2 \
+        "http://localhost:${REGISTRY_HOST_PORT}/v2/"; then
+      probed=1
+      break
+    fi
+    sleep 0.5
+  done
+  if (( probed == 0 )); then
+    log_fail "Local registry not reachable at localhost:${REGISTRY_HOST_PORT}"
+    return 1
+  fi
+
+  docker tag "${IMAGE_NAME}:${IMAGE_TAG}" "$host_ref"
+
+  local -a push_args=()
+  if docker push --help 2>&1 | grep -q -- "--tls-verify"; then
+    push_args+=("--tls-verify=false")
+  fi
+  docker push "${push_args[@]}" "$host_ref"
+
+  local manifest_url="http://localhost:${REGISTRY_HOST_PORT}/v2/${IMAGE_NAME}/manifests/${IMAGE_TAG}"
+  local hdr_file
+  hdr_file="$(mktemp -t agentium-manifest.XXXXXX.hdr)"
+  deadline=$((SECONDS + 30))
+  local last_status="000"
+  PUSHED_IMAGE_DIGEST=""
+  while (( SECONDS < deadline )); do
+    : > "$hdr_file"
+    last_status="$(
+      curl -sI -o "$hdr_file" -w '%{http_code}' \
+        -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+        -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+        -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+        -H 'Accept: application/vnd.oci.image.index.v1+json' \
+        "$manifest_url" 2>/dev/null
+    )" || last_status="000"
+    if [[ "$last_status" == "200" ]]; then
+      PUSHED_IMAGE_DIGEST="$(
+        awk 'tolower($1) == "docker-content-digest:" {print $2}' "$hdr_file" \
+          | tr -d '\r'
+      )"
+      if [[ -n "$PUSHED_IMAGE_DIGEST" ]]; then
+        break
       fi
-      docker save -o "$import_tar" "$import_name"
-      k3d image import "$import_tar" -c "$CLUSTER_NAME"
-      rm -f "$import_tar"
-      IMAGE_PULL_POLICY="Never"
-      HELM_VALUES_FILE="$(values_file_for_strategy local-k3d-import)"
-      IMAGE_REPOSITORY_FOR_INSTALL="$IMAGE_NAME"
-      ;;
-    registry)
-      # Registry strategy owns the registry prefix; reject fully-qualified
-      # inputs so users don't accidentally route to an external registry.
-      # External registries are out of scope for the in-repo validator.
-      if [[ "$IMAGE_NAME" == *"/"* || "$IMAGE_NAME" == *":"* ]]; then
-        log_fail "--image-strategy=registry expects a bare --image-repository (got '${IMAGE_NAME}')."
-        echo "  The local registry prefix is added automatically." >&2
-        echo "  External registries are out of scope here." >&2
-        return 1
-      fi
+    fi
+    sleep 0.5
+  done
+  rm -f "$hdr_file"
+  if [[ -z "$PUSHED_IMAGE_DIGEST" ]]; then
+    log_fail "Could not resolve pushed-image digest from registry (last HTTP status: ${last_status})"
+    return 1
+  fi
+  log_info "Pushed image digest: ${PUSHED_IMAGE_DIGEST}"
 
-      ensure_k3d_registry
-      connect_registry_to_cluster
-
-      log_step "Publishing runner image to local registry (${REGISTRY_CONTAINER_HOST})"
-
-      local host_ref="localhost:${REGISTRY_HOST_PORT}/${IMAGE_NAME}:${IMAGE_TAG}"
-      local cluster_repo="${REGISTRY_CONTAINER_HOST}:${REGISTRY_CONTAINER_PORT}/${IMAGE_NAME}"
-
-      # Distribution needs a beat after `docker run` on slow machines.
-      # Probe /v2/ before pushing so a transient race surfaces as a clear
-      # error, not a docker push retry loop.
-      local deadline=$((SECONDS + 30))
-      local probed=0
-      while (( SECONDS < deadline )); do
-        if curl -sf -o /dev/null --connect-timeout 2 \
-            "http://localhost:${REGISTRY_HOST_PORT}/v2/"; then
-          probed=1
-          break
-        fi
-        sleep 0.5
-      done
-      if (( probed == 0 )); then
-        log_fail "Local registry not reachable at localhost:${REGISTRY_HOST_PORT}"
-        echo "  Verify container: docker ps --filter name=${REGISTRY_CONTAINER_HOST}" >&2
-        echo "  Inspect logs:     docker logs ${REGISTRY_CONTAINER_HOST}" >&2
-        return 1
-      fi
-
-      docker tag "${IMAGE_NAME}:${IMAGE_TAG}" "$host_ref"
-
-      # Real Docker treats localhost as an insecure registry by default;
-      # Podman defaults to HTTPS and requires `--tls-verify=false`. Detect
-      # by probing the binary's --help output for the flag itself: this is
-      # the direct test of the capability we use, and it correctly
-      # identifies the `podman-docker` shim (which self-reports as
-      # "docker version" in --version but accepts --tls-verify).
-      local -a push_args=()
-      if docker push --help 2>&1 | grep -q -- "--tls-verify"; then
-        push_args+=("--tls-verify=false")
-      fi
-      docker push "${push_args[@]}" "$host_ref"
-
-      # Query the registry for the manifest digest rather than parsing
-      # client output: docker prints `<tag>: digest: sha256:<hex> size: <n>`
-      # at the end of a push, but podman does not, so any client-side
-      # parser breaks for podman users (issue #469). The registry's
-      # Docker-Content-Digest header is authoritative and client-agnostic,
-      # and matches the digest the kubelet records in containerStatuses[].imageID.
-      #
-      # The Accept headers mirror what the kubelet sends so the registry
-      # returns the manifest variant the cluster will actually pull.
-      #
-      # Retry around the lookup: the local registry has been observed to
-      # transiently 404 the manifest-by-tag endpoint immediately after a
-      # push under CI load. Mirrors the /v2/ liveness probe pattern above.
-      local manifest_url="http://localhost:${REGISTRY_HOST_PORT}/v2/${IMAGE_NAME}/manifests/${IMAGE_TAG}"
-      local hdr_file
-      hdr_file="$(mktemp -t agentium-manifest.XXXXXX.hdr)"
-      local deadline=$((SECONDS + 30))
-      local last_status="000"
-      PUSHED_IMAGE_DIGEST=""
-      while (( SECONDS < deadline )); do
-        : > "$hdr_file"
-        last_status="$(
-          curl -sI -o "$hdr_file" -w '%{http_code}' \
-            -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
-            -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
-            -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
-            -H 'Accept: application/vnd.oci.image.index.v1+json' \
-            "$manifest_url" 2>/dev/null
-        )" || last_status="000"
-        if [[ "$last_status" == "200" ]]; then
-          PUSHED_IMAGE_DIGEST="$(
-            awk 'tolower($1) == "docker-content-digest:" {print $2}' "$hdr_file" \
-              | tr -d '\r'
-          )"
-          if [[ -n "$PUSHED_IMAGE_DIGEST" ]]; then
-            break
-          fi
-        fi
-        sleep 0.5
-      done
-      rm -f "$hdr_file"
-      if [[ -z "$PUSHED_IMAGE_DIGEST" ]]; then
-        log_fail "Could not resolve pushed-image digest from registry at ${manifest_url} (last HTTP status: ${last_status})"
-        return 1
-      fi
-      log_info "Pushed image digest: ${PUSHED_IMAGE_DIGEST}"
-
-      # `Always` matches the install contract in k3d-registry-values.yaml:
-      # a same-tag rebuild + rollout-restart must pick up the new digest
-      # rather than the layer already cached on the node.
-      IMAGE_PULL_POLICY="Always"
-      HELM_VALUES_FILE="$(values_file_for_strategy registry)"
-      IMAGE_REPOSITORY_FOR_INSTALL="$cluster_repo"
-      ;;
-    *)
-      log_fail "Unknown RUNNER_IMAGE_STRATEGY: '$RUNNER_IMAGE_STRATEGY' (expected local-k3d-import|registry)"
-      return 1
-      ;;
-  esac
+  IMAGE_PULL_POLICY="Always"
+  IMAGE_REPOSITORY_FOR_INSTALL="$cluster_repo"
 }
 
 # create_pilot_objects — create the three objects the chart requires:
@@ -907,33 +893,25 @@ TOML
   fi
 }
 
-# rustlog_override <RUST_LOG-value>
-#
-# Echo a `--set-string` pair that safely passes <RUST_LOG-value> to the
-# chart's runner.logging.rustLog knob. Helm splits on commas inside --set
-# values, so they must be backslash-escaped; this helper hides that.
+# rustlog_override <RUST_LOG-value> — write scenario values for router debug logging.
 rustlog_override() {
-  local value="${1//,/\\,}"
-  echo "--set-string"
-  echo "runner.logging.rustLog=${value}"
+  local value="$1"
+  local out="${REPO_ROOT}/deploy/values/generated/scenario.yaml"
+  mkdir -p "$(dirname "${out}")"
+  cat >"${out}" <<EOF
+runner:
+  logging:
+    rustLog: "${value}"
+EOF
 }
 
-# install_pilot_chart [extra helm args]...
-#
-# `helm upgrade --install` using the strategy-selected values file,
-# overriding image fields. Image-strategy choice is resolved beforehand
-# by ensure_runner_image_available, which writes HELM_VALUES_FILE,
-# IMAGE_REPOSITORY_FOR_INSTALL, and IMAGE_PULL_POLICY.
-install_pilot_chart() {
-  log_step "Installing Helm chart ${RELEASE_NAME} (namespace ${NAMESPACE})"
-  helm upgrade --install "$RELEASE_NAME" \
-    "${REPO_ROOT}/deploy/helm/agentium-os/" \
-    --namespace "$NAMESPACE" \
-    -f "${REPO_ROOT}/${HELM_VALUES_FILE}" \
-    --set-string "runner.image.repository=${IMAGE_REPOSITORY_FOR_INSTALL}" \
-    --set-string "runner.image.tag=${IMAGE_TAG}" \
-    --set-string "runner.image.pullPolicy=${IMAGE_PULL_POLICY}" \
-    "$@"
+# install_pilot_via_argo — local k3d install via Argo CD (registry push + sync job).
+install_pilot_via_argo() {
+  log_step "Installing pilot via Argo CD (namespace ${NAMESPACE})"
+  bash "${REPO_ROOT}/scripts/e2e-k8s/render-values.sh"
+  bash "${REPO_ROOT}/scripts/e2e-k8s/argocd-install.sh"
+  bash "${REPO_ROOT}/scripts/e2e-k8s/argocd-bootstrap-apps.sh"
+  bash "${REPO_ROOT}/scripts/e2e-k8s/sync-argocd.sh"
 }
 
 # resolve_chart_names — populate runtime name variables from the installed
@@ -1015,10 +993,6 @@ wait_for_runner_readyz() {
 #     verify_pod_image_digests
 #   # → "pod imageID does not match pushed registry digest", rc=1
 verify_pod_image_digests() {
-  if [[ "${RUNNER_IMAGE_STRATEGY:-}" != "registry" ]]; then
-    log_info "Image-digest assertion skipped (strategy='${RUNNER_IMAGE_STRATEGY:-}'; only meaningful for 'registry')"
-    return 0
-  fi
   if [[ -z "${PUSHED_IMAGE_DIGEST:-}" ]]; then
     log_fail "verify_pod_image_digests: PUSHED_IMAGE_DIGEST unset — ensure_runner_image_available must run first"
     return 1

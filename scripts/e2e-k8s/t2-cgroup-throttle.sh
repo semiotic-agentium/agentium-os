@@ -163,6 +163,7 @@ build_phase() {
   log_step "Building agent builder binary"
   (cd "$REPO_ROOT" && cargo build --release -p baml-rt-builder --bin baml-agent-builder --all-features)
   log_step "Building runner Docker image (${IMAGE_NAME}:${IMAGE_TAG})"
+  ensure_image_tag_or_nonce
   docker build -t "${IMAGE_NAME}:${IMAGE_TAG}" "$REPO_ROOT"
 }
 
@@ -176,11 +177,8 @@ setup_cluster() {
 
   ensure_runner_image_available
   create_pilot_objects
-  install_pilot_chart \
-    -f "$THROTTLE_OVERLAY" \
-    --set "runner.replicaCount=1"
-  resolve_chart_names
-  wait_for_runner_readyz
+  write_scenario_values "$THROTTLE_OVERLAY"
+  install_pilot_release
 
   log_step "Starting port-forward to ${RUNNER_POD_0} on localhost:${RUNNER0_PORT}"
   start_port_forward "$RUNNER_POD_0" "$RUNNER0_PORT" "$REMOTE_PORT"

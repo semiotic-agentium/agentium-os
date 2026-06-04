@@ -1,0 +1,24 @@
+# Render via scripts/e2e-k8s/render-argocd-apps.sh — do not kubectl apply raw.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: agentium-os
+  namespace: argocd
+spec:
+  project: agentium
+  source:
+    repoURL: __AGENTIUM_GIT_REPO__
+    targetRevision: __AGENTIUM_GIT_REVISION__
+    path: deploy/helm/agentium-os
+    helm:
+      releaseName: agentium
+      valueFiles:
+        - ../../values/local/defaults.yaml
+        - ../../values/generated/images.yaml
+        - ../../values/generated/scenario.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: agentium
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true

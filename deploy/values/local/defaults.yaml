@@ -1,0 +1,22 @@
+# Local k3d defaults for Argo-managed installs.
+# Image repository/tag/pullPolicy come from deploy/values/generated/images.yaml.
+
+global:
+  environment: development
+
+runner:
+  replicaCount: 2
+  auth:
+    existingSecret: runner-token
+  persistence:
+    size: 1Gi
+
+surrealdb:
+  auth:
+    existingSecret: surrealdb-credentials
+  persistence:
+    size: 1Gi
+
+fnox:
+  config:
+    existingConfigMap: fnox-config

@@ -1,7 +1,8 @@
 name: K8s Pilot Validation
 
-# Pre-merge validator: scripts/verify-k8s-pilot-package.sh on k3d (Helm +
-# registry). Trusted CI only — not fork PRs. See docs/runbooks/ci-security.md.
+# Pre-merge validator: scripts/verify-k8s-pilot-package.sh on k3d via Argo CD
+# and local registry push. Trusted CI only — not fork PRs. See
+# docs/runbooks/ci-security.md.
 
 on:
   push:
@@ -52,13 +53,17 @@ jobs:
               - 'tests/fixtures/agents/dispatch-echo/**'
               - 'deploy/helm/**'
               - 'deploy/k3d/**'
+              - 'deploy/argocd/**'
+              - 'deploy/values/**'
+              - 'docker/agentium-argocd-sync.Dockerfile'
               - 'scripts/verify-k8s-pilot-package.sh'
               - 'scripts/k8s-pilot-smoke.sh'
-              - 'scripts/e2e-k8s/lib.sh'
+              - 'scripts/e2e-k8s/**'
+              - 'scripts/release/**'
               - '.github/workflows/k8s-pilot-validation.yml'
 
   validate:
-    name: Helm install + registry-backed package validation
+    name: Argo CD + registry package validation
     runs-on: arc-runner-set
     needs: changes
     if: |
@@ -161,16 +166,11 @@ jobs:
           echo "=== free -h ==="
           free -h
 
-      - name: Run authoritative validator (registry strategy)
-        # Mirrors the supported design-partner install contract:
-        # docker push → k3d-agentium-registry:5000 → kubelet pull →
-        # helm upgrade --install → k8s-pilot-smoke → cluster_runners=2.
-        # No --image-tag override: the script's default ('demo') aligns
-        # with deploy/helm/agentium-os/examples/k3d-registry-values.yaml.
+      - name: Run authoritative validator (Argo + registry)
         run: |
-          ./scripts/verify-k8s-pilot-package.sh \
-            --image-strategy registry \
-            --image-repository agentium-runner
+          AGENTIUM_FIXED_TAG="ci-$(git rev-parse --short HEAD)" \
+            bash scripts/e2e-k8s/image-tag-nonce.sh
+          ./scripts/verify-k8s-pilot-package.sh
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
 
@@ -187,7 +187,7 @@ jobs:
           retention-days: 14
 
   validate-fork-skipped:
-    name: Helm install + registry package validation (fork — skipped)
+    name: Argo CD + registry package validation (fork — skipped)
     runs-on: ubuntu-latest
     needs: changes
     if: |
@@ -196,4 +196,4 @@ jobs:
     steps:
       - name: Explain skipped k8s validation
         run: |
-          echo "::notice title=Fork PR — k8s pilot validation skipped::Untrusted fork PRs do not run k3d/Helm on self-hosted runners. Full validation runs on push to main after merge, or via workflow_dispatch on a trusted branch. See docs/runbooks/ci-security.md"
+          echo "::notice title=Fork PR — k8s pilot validation skipped::Untrusted fork PRs do not run k3d/Argo on self-hosted runners. Full validation runs on push to main after merge, or via workflow_dispatch on a trusted branch. See docs/runbooks/ci-security.md"

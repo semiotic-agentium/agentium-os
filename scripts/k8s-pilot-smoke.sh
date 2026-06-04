@@ -174,9 +174,11 @@ runner_sts="$(kubectl -n "$NAMESPACE" get statefulset \
 if [[ -z "$runner_sts" ]]; then
   fail "no runner StatefulSet found for release '${RELEASE_NAME}' in namespace '${NAMESPACE}'" 1
 fi
-if [[ "$(printf '%s\n' "$runner_sts" | wc -w)" != "1" ]]; then
+read -r -a _runner_sts_items <<< "$runner_sts"
+if ((${#_runner_sts_items[@]} != 1)); then
   fail "expected exactly one runner StatefulSet, found: $runner_sts" 1
 fi
+runner_sts="${_runner_sts_items[0]}"
 replicas="$(kubectl -n "$NAMESPACE" get statefulset "$runner_sts" \
   -o jsonpath='{.spec.replicas}' 2>/dev/null)"
 if [[ -z "$replicas" || "$replicas" -lt 1 ]]; then

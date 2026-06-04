@@ -4,6 +4,7 @@
 # partner / production installs.
 
 runner:
+  replicaCount: 1
   resources:
     limits:
       cpu: 500m

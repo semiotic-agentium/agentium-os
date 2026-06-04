@@ -1,0 +1,6 @@
+{
+  "repoURL": "https://github.com/semiotic-agentium/agentium-os.git",
+  "targetRevision": "main",
+  "imageTag": "latest",
+  "description": "Local k3d: Argo sync with generated images.yaml. Semver: just publish-release vX.Y.Z; deploy refs bumped after images exist."
+}

@@ -14,6 +14,8 @@ Use `baml_src/` for shared example schemas, and `crates/test-support` for common
 - `just test`: run the full `cargo nextest` LLM and non-LLM suites with CI-like flags.
 - `just test-unit` or `just test-crate baml-rt-provenance`: faster local verification.
 - `just regen-fixtures`: regenerate committed agent artifacts such as `baml_src/_baml_runtime.baml` and `src/baml-runtime.d.ts`.
+- `just up` / `just sync`: local k3d pilot stack via Argo CD (see [`RELEASING.md`](RELEASING.md)).
+- `just verify-k8s-pilot-package`: authoritative k8s install validation (CI mirror).
 
 ## Coding Style & Naming Conventions
 Rust uses edition 2024 and nightly `rustfmt`; keep formatting tool-driven, with grouped imports and a 100-column width. Use `snake_case` for Rust modules, files, and tests. TypeScript/Vue in `web/` and `agents/` follows Prettier defaults here: 2-space indentation, semicolons, double quotes, and trailing commas. Prefix intentionally unused TS variables with `_` to satisfy ESLint.

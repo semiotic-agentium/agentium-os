@@ -1,0 +1,20 @@
+name: Release tag verify
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify tag matches workspace version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify release tag
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: bash scripts/release/verify-release-tag-matches-workspace-version.sh

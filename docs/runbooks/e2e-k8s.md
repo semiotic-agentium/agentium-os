@@ -3,43 +3,22 @@
 The repo has three in-repo validation paths for the Kubernetes pilot:
 
 1. **Authoritative package-validation flow** — `scripts/verify-k8s-pilot-package.sh`.
-   Brings up a k3d cluster, makes the runner image reachable via the
-   selected image strategy, creates the three package-required objects,
-   installs the supported Helm chart
-   (`deploy/helm/agentium-os/`, values from `examples/k3d-values.yaml`),
-   runs `scripts/k8s-pilot-smoke.sh --port-forward` against the running
-   release, and verifies both runner pods register in SurrealDB
-   `cluster_runners`. This is the in-repo mirror of the operator flow
-   documented in `docs/runbooks/k8s-pilot-operator-guide.md`. No raw manifests, no
-   post-install `kubectl set env` / `kubectl patch`.
+   Brings up k3d, pushes the runner image to the local registry, creates
+   required secrets/configmaps, installs via **Argo CD sync**
+   (`install_pilot_via_argo` in `scripts/e2e-k8s/lib.sh`), runs
+   `scripts/k8s-pilot-smoke.sh`, and verifies `cluster_runners`.
 2. **Richer scenario coverage** — `scripts/e2e-k8s/run.sh`. 15 scenarios
-   on top of the same Helm-installed topology: pod DNS resolution, PVC
-   persistence across restarts, kubelet probe behaviour, StatefulSet
-   lifecycle, cross-pod A2A, migration, heartbeat TTL, SSRF, token
-   enforcement, and full agent lifecycle.
+   on the same Argo-managed topology.
 3. **Cgroup-throttled deploy** — `scripts/e2e-k8s/t2-cgroup-throttle.sh`.
-   Installs the chart with `examples/cpu-throttle-test-values.yaml` (caps
-   the runner at `runner.resources.limits.cpu: 500m`), deploys
-   `cpu-peg-agent`, and probes `/readyz` and `/diagnose` at ~100ms cadence
-   during the deploy. Asserts (1) every `/readyz` returns an HTTP response
-   (status in `{200, 503}`) within 1s — `503` is the correct gate verdict
-   while runtime-progress lag exceeds `READYZ_LAG_THRESHOLD_MS` (#339), so
-   I1 defends transport-level liveness only — (2) no transport drops, and
-   (3) `runtime_progress_lag_ms > 200` for at least one sample. The
-   runner-internal counterpart is the T1 `#[tokio::test]` in
-   `crates/baml-agent-runner/tests/runner_starvation_test.rs`.
 
-All three paths now install via `helm upgrade --install` using the shared
-bringup helpers in `scripts/e2e-k8s/lib.sh`
+All three paths use the shared bringup helpers in `scripts/e2e-k8s/lib.sh`
 (`ensure_runner_image_available`, `create_pilot_objects`,
-`install_pilot_chart`, `resolve_chart_names`, `wait_for_runner_readyz`).
-A chart regression that breaks package wiring (wrong env name, wrong
-ConfigMap mount, wrong secret key) now surfaces here rather than being
-masked by post-install `kubectl` mutations.
+`install_pilot_via_argo`, `resolve_chart_names`, `wait_for_runner_readyz`).
 
-The raw manifests under `deploy/k8s/` and `deploy/demo/run-demo.sh`
-remain as demo/legacy assets (see `CLAUDE.md`) and are **not** the
-supported install surface.
+**Local dev entry:** `just up` (k3d + nonce tag + Argo sync).
+
+The raw manifests under `deploy/k8s/` are legacy assets and are **not**
+the supported install surface.
 
 ## Prerequisites
 
@@ -68,37 +47,9 @@ Or directly:
 ./scripts/verify-k8s-pilot-package.sh
 ```
 
-Flags: `--no-build`, `--keep-cluster`, `--image-strategy`,
-`--image-repository`, `--image-tag`, `--local-port`, `--values`. See
-`--help`.
+Flags: `--no-build`, `--keep-cluster`, `--image-tag`, `--local-port`, `--values`. See `--help`.
 
-#### Image strategies
-
-`verify-k8s-pilot-package.sh` supports two strategies for getting the
-runner image into the cluster:
-
-- `local-k3d-import` (default): `docker save` + `k3d image import`; the
-  runner manifest installs with `pullPolicy: Never`. Fast dev fallback
-  that bypasses the kubelet pull path.
-- `registry`: `docker push` to a local `registry:2` container
-  (`k3d-agentium-registry`) started by the bringup helper and attached to
-  the cluster's docker network. `deploy/k3d/cluster.yaml` injects the
-  matching containerd mirror block. Runner pods pull from
-  `k3d-agentium-registry:5000`, mirroring the design-partner install
-  contract. Confirm by inspecting `kubectl describe pod` events:
-
-  ```text
-  Successfully pulled image "k3d-agentium-registry:5000/agentium-runner:demo"
-  ```
-
-`--image-repository` accepts a bare image name only when used with
-`--image-strategy=registry`; the registry prefix is added automatically.
-External registries (GHCR, ECR, …) are out of scope for the in-repo
-validator — the supported install contract assumes operators bring their
-own cluster-reachable image source.
-
-The validator's invariants — Helm install, runner readyz, smoke,
-`cluster_runners` count = 2 — are identical for both strategies.
+Image tags are nonces from `deploy/values/generated/.last-image-tag` (or `AGENTIUM_IMAGE_TAG`). The runner image is pushed to `k3d-agentium-registry:5000` and installed via Argo CD.
 
 ### Richer scenario suite
 
@@ -252,7 +203,7 @@ k3d cluster delete agentium
 
 # Optional: also remove the local registry container (persists across runs
 # with --restart=unless-stopped so it stays available for future
-# --image-strategy registry runs).
+# with --keep-cluster).
 docker rm -f k3d-agentium-registry
 ```
 
