@@ -90,6 +90,8 @@ pub struct ExternalToolMetadata {
     /// `single_shot` tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coordination: Option<CoordinationSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordination_baml: Option<String>,
 }
 
 /// Tool-author-supplied coordination BAML pointer.
@@ -99,7 +101,7 @@ pub struct ExternalToolMetadata {
 /// (Report / AskUser / etc.). The builder concatenates this into the prelude;
 /// auto-generated session classes (Open/Send/.../SessionPlan) come from the
 /// JSON schema and are emitted by the builder, not by the tool author.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoordinationSpec {
     /// File name (relative to the tool directory) containing the coordination
     /// BAML fragment.
@@ -140,6 +142,7 @@ impl ExternalToolMetadata {
             config_bundle: None,
             runtime: None,
             coordination: None,
+            coordination_baml: None,
         }
     }
 
@@ -211,6 +214,79 @@ pub struct MetadataSchemas {
     pub output: Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalToolManifest {
+    pub tool_abi_version: String,
+    pub name: String,
+    pub description: String,
+    pub bundle: String,
+    pub local_name: String,
+    pub access_level: ToolAccess,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub invocation_mode: InvocationMode,
+    #[serde(default)]
+    pub session_policy: ExternalSessionPolicy,
+    #[serde(default)]
+    pub secrets: Vec<String>,
+    #[serde(default)]
+    pub secret_scope: ExternalSecretScope,
+    #[serde(default)]
+    pub capabilities: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_bundle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<ToolRuntime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordination: Option<CoordinationSpec>,
+}
+
+impl ExternalToolManifest {
+    pub fn into_metadata(self, schemas: MetadataSchemas) -> ExternalToolMetadata {
+        ExternalToolMetadata {
+            tool_abi_version: self.tool_abi_version,
+            name: self.name,
+            description: self.description,
+            bundle: self.bundle,
+            local_name: self.local_name,
+            access_level: self.access_level,
+            tags: self.tags,
+            invocation_mode: self.invocation_mode,
+            session_policy: self.session_policy,
+            schemas,
+            secrets: self.secrets,
+            secret_scope: self.secret_scope,
+            capabilities: self.capabilities,
+            config_bundle: self.config_bundle,
+            runtime: self.runtime,
+            coordination: self.coordination,
+            coordination_baml: None,
+        }
+    }
+}
+
+impl From<ExternalToolMetadata> for ExternalToolManifest {
+    fn from(meta: ExternalToolMetadata) -> Self {
+        Self {
+            tool_abi_version: meta.tool_abi_version,
+            name: meta.name,
+            description: meta.description,
+            bundle: meta.bundle,
+            local_name: meta.local_name,
+            access_level: meta.access_level,
+            tags: meta.tags,
+            invocation_mode: meta.invocation_mode,
+            session_policy: meta.session_policy,
+            secrets: meta.secrets,
+            secret_scope: meta.secret_scope,
+            capabilities: meta.capabilities,
+            config_bundle: meta.config_bundle,
+            runtime: meta.runtime,
+            coordination: meta.coordination,
+        }
+    }
+}
+
 /// Read + validate the authored `<dir>/tool-metadata.json` source only.
 ///
 /// This does not resolve bind paths and does not read/merge the local
@@ -233,15 +309,50 @@ pub fn read_external_metadata(dir: &Path) -> Result<ExternalToolMetadata> {
             message: format!("failed to parse {}", metadata_path.display()),
             source: Box::new(e),
         })?;
+    validate_external_abi(&parsed.name, &parsed.tool_abi_version)?;
+    Ok(parsed)
+}
 
-    if parsed.tool_abi_version != PROTOCOL_VERSION {
+/// Read the tool manifest from `<dir>/tool-manifest.json`.
+///
+/// Schema discovery and snapshot creation require `tool-manifest.json`.
+/// Legacy `tool-metadata.json` files that embed schemas are not accepted
+/// here — schemas must come from a live `tool/schema` call. Use
+/// [`read_external_metadata`] if you need the legacy format for dev-mode
+/// resolver paths.
+pub fn read_external_manifest(dir: &Path) -> Result<ExternalToolManifest> {
+    let manifest_path = dir.join("tool-manifest.json");
+    if !manifest_path.exists() {
         return Err(BamlRtError::InvalidArgument(format!(
-            "external tool '{}' declares unsupported ABI version '{}' (expected '{}')",
-            parsed.name, parsed.tool_abi_version, PROTOCOL_VERSION
+            "no tool-manifest.json found in {}; create one (without schemas) and implement \
+             tool/schema — run `cargo agent-platform external-tool migrate <dir>` to convert \
+             an existing tool-metadata.json",
+            dir.display()
         )));
     }
-
+    let raw = std::fs::read_to_string(&manifest_path).map_err(|e| {
+        BamlRtError::InvalidArgumentWithSource {
+            message: format!("failed to read {}", manifest_path.display()),
+            source: Box::new(e),
+        }
+    })?;
+    let parsed: ExternalToolManifest =
+        serde_json::from_str(&raw).map_err(|e| BamlRtError::InvalidArgumentWithSource {
+            message: format!("failed to parse {}", manifest_path.display()),
+            source: Box::new(e),
+        })?;
+    validate_external_abi(&parsed.name, &parsed.tool_abi_version)?;
     Ok(parsed)
+}
+
+fn validate_external_abi(name: &str, abi: &str) -> Result<()> {
+    if abi != PROTOCOL_VERSION {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "external tool '{}' declares unsupported ABI version '{}' (expected '{}')",
+            name, abi, PROTOCOL_VERSION
+        )));
+    }
+    Ok(())
 }
 
 /// Read authored metadata and resolve it into the launch-ready runtime view.
@@ -317,8 +428,9 @@ pub(crate) fn build_tool_metadata(
         })
         .collect();
 
-    let coordination_baml = match &meta.coordination {
-        Some(spec) => {
+    let coordination_baml = match (&meta.coordination_baml, &meta.coordination) {
+        (Some(body), _) => Some(body.clone()),
+        (None, Some(spec)) => {
             if matches!(meta.invocation_mode, InvocationMode::SingleShot) {
                 return Err(BamlRtError::InvalidArgument(format!(
                     "tool '{}' declares coordination.baml_file but invocation_mode is single_shot; \
@@ -345,7 +457,7 @@ pub(crate) fn build_tool_metadata(
             })?;
             Some(body)
         }
-        None => None,
+        (None, None) => None,
     };
 
     Ok(ToolFunctionMetadata {
@@ -522,6 +634,73 @@ mod tests {
             serde_json::from_value(raw).expect("legacy metadata should parse");
         assert!(parsed.runtime.is_none());
         assert_eq!(parsed.secret_scope, ExternalSecretScope::Send);
+    }
+
+    #[test]
+    fn read_external_manifest_prefers_manifest_file() {
+        let dir = unique_temp_dir("manifest-preferred");
+        fs::create_dir_all(&dir).expect("create temp tool dir");
+        fs::write(
+            dir.join("tool-metadata.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "tool_abi_version": "1",
+                "name": "support/legacy",
+                "description": "legacy",
+                "bundle": "support",
+                "local_name": "legacy",
+                "access_level": "read",
+                "invocation_mode": "single_shot",
+                "schemas": {"input": {"type":"object"}, "output": {"type":"object"}}
+            }))
+            .expect("serialize metadata"),
+        )
+        .expect("write metadata");
+        fs::write(
+            dir.join("tool-manifest.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "tool_abi_version": "1",
+                "name": "support/manifest",
+                "description": "manifest",
+                "bundle": "support",
+                "local_name": "manifest",
+                "access_level": "read",
+                "invocation_mode": "single_shot"
+            }))
+            .expect("serialize manifest"),
+        )
+        .expect("write manifest");
+
+        let manifest = read_external_manifest(&dir).expect("manifest reads");
+        assert_eq!(manifest.name, "support/manifest");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_external_manifest_rejects_missing_manifest_file() {
+        let dir = unique_temp_dir("manifest-missing");
+        fs::create_dir_all(&dir).expect("create temp tool dir");
+        fs::write(
+            dir.join("tool-metadata.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "tool_abi_version": "1",
+                "name": "support/legacy",
+                "description": "legacy",
+                "bundle": "support",
+                "local_name": "legacy",
+                "access_level": "read",
+                "invocation_mode": "single_shot",
+                "schemas": {"input": {"type":"object"}, "output": {"type":"object"}}
+            }))
+            .expect("serialize metadata"),
+        )
+        .expect("write metadata");
+
+        let err = read_external_manifest(&dir).expect_err("must fail without tool-manifest.json");
+        assert!(
+            err.to_string().contains("tool-manifest.json"),
+            "error should mention tool-manifest.json: {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

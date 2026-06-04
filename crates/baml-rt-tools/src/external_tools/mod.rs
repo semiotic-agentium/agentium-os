@@ -24,6 +24,7 @@ pub mod sandbox;
 pub mod session_handler;
 pub mod session_invoker;
 pub mod sidecar_bundle;
+pub mod snapshot;
 pub mod stdio;
 
 use std::sync::Arc;
@@ -37,9 +38,9 @@ pub use lockfile::{
     ExternalToolsLockfile,
 };
 pub use metadata::{
-    CoordinationSpec, ExternalSecretScope, ExternalSessionPolicy, ExternalToolMetadata,
-    InvocationMode, MetadataSchemas, compute_tool_digest, read_external_metadata,
-    read_runtime_external_metadata,
+    CoordinationSpec, ExternalSecretScope, ExternalSessionPolicy, ExternalToolManifest,
+    ExternalToolMetadata, InvocationMode, MetadataSchemas, compute_tool_digest,
+    read_external_manifest, read_external_metadata, read_runtime_external_metadata,
 };
 pub use metadata_catalog::{
     BUILDER_EXTERNAL_TOOLS_ENV, ExternalMetadataCatalog, build_builder_catalog,
@@ -74,6 +75,12 @@ pub use sidecar_bundle::{
     DEFAULT_SCHEMA_CONTENT_TYPE, SIDECAR_BUNDLE_ABS_PATH, SIDECAR_BUNDLE_REL_PATH, SIDECAR_DIR_ABS,
     ToolManifestSidecar, ToolRuntimeSidecar, ToolSchemaSidecar, ToolSidecarBundle,
     read_sidecar_bundle, render_sidecar_bundle,
+};
+pub use snapshot::{
+    EXTERNAL_TOOL_SNAPSHOT_SCHEMA_VERSION, EXTERNAL_TOOL_SOURCE, ExternalApprovalState,
+    ExternalToolDescribeSnapshot, ExternalToolSnapshot, ExternalToolSnapshotDigests,
+    compute_external_schema_digest, compute_manifest_digest, compute_runtime_digest,
+    compute_snapshot_digest, validate_describe_schema_support,
 };
 pub use stdio::StdioSubprocessInvoker;
 
