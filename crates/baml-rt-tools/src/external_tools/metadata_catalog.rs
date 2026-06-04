@@ -15,7 +15,10 @@ use std::path::{Path, PathBuf};
 
 use baml_rt_core::{BamlRtError, Result};
 
-use super::metadata::{build_tool_metadata, read_external_metadata};
+use super::{
+    metadata::{build_tool_metadata, read_external_metadata},
+    snapshot_catalog::ExternalToolSnapshotCatalog,
+};
 use crate::{
     ToolName,
     mcp_builder_catalog::McpSnapshotCatalog,
@@ -58,6 +61,8 @@ pub fn build_builder_catalog_with_mcp_root(mcp_root: Option<&Path>) -> Result<Co
         None => None,
     };
 
+    let snapshot_external = ExternalToolSnapshotCatalog::from_env()?.filter(|c| !c.is_empty());
+
     if let Some(ext) = &external {
         // Strict collision check: any external tool name also present in
         // inventory is a hard build-time error.
@@ -92,6 +97,16 @@ pub fn build_builder_catalog_with_mcp_root(mcp_root: Option<&Path>) -> Result<Co
             existing_names.insert(meta.name.clone());
         }
     }
+    if let Some(ext) = &snapshot_external {
+        for meta in ext.iter() {
+            if !existing_names.insert(meta.name.clone()) {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "External tool snapshot name collision at build time: '{}' already exists in inventory or legacy external sources.",
+                    meta.name
+                )));
+            }
+        }
+    }
     if let Some(mcp) = &mcp {
         for meta in mcp.iter() {
             if !existing_names.insert(meta.name.clone()) {
@@ -106,6 +121,9 @@ pub fn build_builder_catalog_with_mcp_root(mcp_root: Option<&Path>) -> Result<Co
     let mut composite = CompositeCatalog::new();
     composite.add(Box::new(inventory));
     if let Some(ext) = external {
+        composite.add(Box::new(ext));
+    }
+    if let Some(ext) = snapshot_external {
         composite.add(Box::new(ext));
     }
     if let Some(mcp) = mcp {

@@ -19,6 +19,7 @@ pub mod citations;
 pub mod config_resolver;
 pub mod event_producer;
 pub mod event_source_type;
+pub mod external_tool_cache;
 pub mod external_tools;
 pub mod host_registration;
 pub mod ingress_store;

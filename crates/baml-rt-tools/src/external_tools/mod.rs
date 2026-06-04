@@ -17,6 +17,7 @@ pub mod metadata;
 pub mod metadata_catalog;
 pub mod policy;
 pub mod protocol;
+pub mod registry_resolver;
 pub mod resolver;
 pub mod runtime;
 pub mod runtime_lock;
@@ -25,6 +26,7 @@ pub mod session_handler;
 pub mod session_invoker;
 pub mod sidecar_bundle;
 pub mod snapshot;
+pub mod snapshot_catalog;
 pub mod stdio;
 
 use std::sync::Arc;
@@ -58,6 +60,7 @@ pub use protocol::{
     METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA, PROTOCOL_VERSION, SUPPORTED_METHODS,
     SUPPORTED_METHODS_V2, ToolDescribeResult, ToolInvokeParams, ToolInvokeResult, ToolSchemaResult,
 };
+pub use registry_resolver::ExternalRegistryResolver;
 pub use resolver::DevModeResolver;
 pub use runtime::{
     DEFAULT_PROCESS_COMMAND, ProcessRuntimeSpec, SandboxAdapterRuntimeSpec, SandboxImageRef,
@@ -80,8 +83,9 @@ pub use snapshot::{
     EXTERNAL_TOOL_SNAPSHOT_SCHEMA_VERSION, EXTERNAL_TOOL_SOURCE, ExternalApprovalState,
     ExternalToolDescribeSnapshot, ExternalToolSnapshot, ExternalToolSnapshotDigests,
     compute_external_schema_digest, compute_manifest_digest, compute_runtime_digest,
-    compute_snapshot_digest, validate_describe_schema_support,
+    compute_snapshot_digest, validate_describe_schema_support, validate_external_tool_snapshot,
 };
+pub use snapshot_catalog::{BUILDER_EXTERNAL_TOOL_CACHE_ENV, ExternalToolSnapshotCatalog};
 pub use stdio::StdioSubprocessInvoker;
 
 #[derive(Debug, Clone)]

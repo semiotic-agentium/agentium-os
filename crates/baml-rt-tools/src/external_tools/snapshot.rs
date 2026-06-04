@@ -158,6 +158,66 @@ pub fn compute_runtime_digest(runtime: Option<&ToolRuntime>) -> Result<Digest> {
     }
 }
 
+pub fn validate_external_tool_snapshot(snapshot: &ExternalToolSnapshot) -> Result<()> {
+    if snapshot.coordination_requires_inline_baml() {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "external tool snapshot '{}' declares coordination but does not inline coordination_baml",
+            snapshot.tool.name
+        )));
+    }
+
+    let manifest = ExternalToolManifest::from(snapshot.tool.clone());
+    let manifest_digest = compute_manifest_digest(&manifest);
+    if snapshot.digests.manifest_digest != manifest_digest {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "external tool snapshot '{}' manifest_digest mismatch: expected {}, computed {}",
+            snapshot.tool.name, snapshot.digests.manifest_digest, manifest_digest
+        )));
+    }
+
+    let schema_digest = compute_external_schema_digest(&snapshot.tool);
+    if snapshot.digests.schema_digest != schema_digest {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "external tool snapshot '{}' schema_digest mismatch: expected {}, computed {}",
+            snapshot.tool.name, snapshot.digests.schema_digest, schema_digest
+        )));
+    }
+    if let Some(describe_digest) = snapshot.describe.schema_digest
+        && describe_digest != schema_digest
+    {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "external tool snapshot '{}' describe schema_digest mismatch: expected {}, computed {}",
+            snapshot.tool.name, describe_digest, schema_digest
+        )));
+    }
+
+    let runtime_digest = compute_runtime_digest(snapshot.tool.runtime.as_ref())?;
+    if snapshot.digests.runtime_digest != runtime_digest {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "external tool snapshot '{}' runtime_digest mismatch: expected {}, computed {}",
+            snapshot.tool.name, snapshot.digests.runtime_digest, runtime_digest
+        )));
+    }
+
+    let snapshot_digest = compute_snapshot_digest(snapshot)?;
+    if snapshot.snapshot_digest != snapshot_digest
+        || snapshot.digests.snapshot_digest != snapshot_digest
+    {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "external tool snapshot '{}' snapshot_digest mismatch: expected {}, computed {}",
+            snapshot.tool.name, snapshot.snapshot_digest, snapshot_digest
+        )));
+    }
+
+    Ok(())
+}
+
+impl ExternalToolSnapshot {
+    fn coordination_requires_inline_baml(&self) -> bool {
+        self.tool.coordination.is_some() && self.tool.coordination_baml.is_none()
+    }
+}
+
 pub fn compute_snapshot_digest(snapshot: &ExternalToolSnapshot) -> Result<Digest> {
     let mut value =
         serde_json::to_value(snapshot).map_err(|e| BamlRtError::InvalidArgumentWithSource {
@@ -229,7 +289,6 @@ fn parse_digest(value: &str, label: &str) -> Result<Digest> {
         .parse()
         .map_err(|e| BamlRtError::InvalidArgument(format!("invalid {label}: {e}")))
 }
-
 
 #[cfg(test)]
 mod tests {
