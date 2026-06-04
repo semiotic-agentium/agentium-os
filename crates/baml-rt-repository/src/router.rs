@@ -56,6 +56,19 @@ pub fn repository_read_router(service: Arc<RepositoryService>) -> Router {
             get(handlers::get_mcp_snapshot),
         )
         .route("/mcp/tools", get(handlers::find_mcp_tool))
+        .route("/external-tools", get(handlers::list_external_tools))
+        .route(
+            "/external-tools/snapshots",
+            get(handlers::list_approved_external_tool_snapshots),
+        )
+        .route(
+            "/external-tools/snapshot",
+            get(handlers::get_external_tool_snapshot),
+        )
+        .route(
+            "/external-tools/versions",
+            get(handlers::list_external_tool_versions),
+        )
         .with_state(service)
 }
 
@@ -73,6 +86,14 @@ pub fn repository_mutation_router(service: Arc<RepositoryService>) -> Router {
         .route(
             "/mcp/servers/{server_id}/versions/{version}/mark-stale",
             post(handlers::mark_mcp_version_stale),
+        )
+        .route(
+            "/external-tools/snapshots/import",
+            post(handlers::import_external_tool_snapshot),
+        )
+        .route(
+            "/external-tools/snapshots/mark-stale",
+            post(handlers::mark_external_tool_version_stale),
         )
         .with_state(service)
 }
@@ -109,6 +130,27 @@ fn repository_router_with_publish(
         .route(
             "/mcp/servers/{server_id}/versions/{version}/mark-stale",
             post(handlers::mark_mcp_version_stale),
+        )
+        .route("/external-tools", get(handlers::list_external_tools))
+        .route(
+            "/external-tools/snapshots",
+            get(handlers::list_approved_external_tool_snapshots),
+        )
+        .route(
+            "/external-tools/snapshot",
+            get(handlers::get_external_tool_snapshot),
+        )
+        .route(
+            "/external-tools/versions",
+            get(handlers::list_external_tool_versions),
+        )
+        .route(
+            "/external-tools/snapshots/import",
+            post(handlers::import_external_tool_snapshot),
+        )
+        .route(
+            "/external-tools/snapshots/mark-stale",
+            post(handlers::mark_external_tool_version_stale),
         )
         .route("/entries/{hash}/tags", post(handlers::add_tag))
         .route("/entries/{hash}/tags", delete(handlers::remove_tag));

@@ -20,12 +20,14 @@ use crate::{
     commands::{ForkCommand, PublishCommand, PublishResult},
     entry::{RepositoryEntry, RepositoryEntryHeader, Tag},
     http::{
-        AddTagRequest, BlobPath, EntriesQuery, EntriesQueryMode, EntriesResponse, GetByHashPath,
-        GetByVersionPath, HttpResult, ImportMcpSnapshotRequest, ImportMcpSnapshotResponse,
-        LineagePath, LineageQuery, LineageResponse, ListAgentsResponse, ListVersionsPath,
-        ListVersionsResponse, McpServerPath, McpServerVersionPath, McpServerVersionsResponse,
-        McpServersResponse, McpToolLookupResponse, McpToolQuery, RemoveTagRequest, SearchResponse,
-        TagPath,
+        AddTagRequest, BlobPath, EntriesQuery, EntriesQueryMode, EntriesResponse,
+        ExternalToolNameQuery, ExternalToolSnapshotsResponse, ExternalToolVersionsResponse,
+        ExternalToolsResponse, GetByHashPath, GetByVersionPath, HttpResult,
+        ImportExternalToolSnapshotRequest, ImportExternalToolSnapshotResponse,
+        ImportMcpSnapshotRequest, ImportMcpSnapshotResponse, LineagePath, LineageQuery,
+        LineageResponse, ListAgentsResponse, ListVersionsPath, ListVersionsResponse, McpServerPath,
+        McpServerVersionPath, McpServerVersionsResponse, McpServersResponse, McpToolLookupResponse,
+        McpToolQuery, RemoveTagRequest, SearchResponse, TagPath,
     },
     ids::Version,
     search::SearchQuery,
@@ -278,6 +280,120 @@ pub async fn mark_mcp_version_stale(
     Path(p): Path<McpServerVersionPath>,
 ) -> HttpResult<()> {
     svc.mark_mcp_version_stale(&p.server_id, p.version)
+        .await
+        .map_err(HttpApiProblem::from)?;
+    Ok(Json(()))
+}
+
+/// List external tools in the registry (GET /repository/external-tools).
+pub async fn list_external_tools(State(svc): State<RepoState>) -> HttpResult<ExternalToolsResponse> {
+    let tools = svc.list_external_tools().await.map_err(HttpApiProblem::from)?;
+    let total = tools.len();
+    Ok(Json(ExternalToolsResponse { tools, total }))
+}
+
+/// List all latest-approved external-tool snapshots (GET /repository/external-tools/snapshots).
+///
+/// This is the builder catalog source.
+pub async fn list_approved_external_tool_snapshots(
+    State(svc): State<RepoState>,
+) -> HttpResult<ExternalToolSnapshotsResponse> {
+    let snapshots = svc
+        .list_approved_external_tool_snapshots()
+        .await
+        .map_err(HttpApiProblem::from)?;
+    let total = snapshots.len();
+    Ok(Json(ExternalToolSnapshotsResponse { snapshots, total }))
+}
+
+/// List versions for one external tool (GET /repository/external-tools/versions?tool_name=...).
+pub async fn list_external_tool_versions(
+    State(svc): State<RepoState>,
+    Query(q): Query<ExternalToolNameQuery>,
+) -> HttpResult<ExternalToolVersionsResponse> {
+    if q.tool_name.trim().is_empty() {
+        return Err(bad_request("tool_name must not be empty"));
+    }
+    let versions = svc
+        .list_external_tool_versions(&q.tool_name)
+        .await
+        .map_err(HttpApiProblem::from)?;
+    Ok(Json(ExternalToolVersionsResponse {
+        tool_name: q.tool_name,
+        versions,
+    }))
+}
+
+/// Get an external-tool snapshot (GET /repository/external-tools/snapshot?tool_name=...&version=N).
+///
+/// Without `version`, returns the latest approved snapshot.
+pub async fn get_external_tool_snapshot(
+    State(svc): State<RepoState>,
+    Query(q): Query<ExternalToolNameQuery>,
+) -> HttpResult<baml_rt_tools::external_tools::ExternalToolSnapshot> {
+    if q.tool_name.trim().is_empty() {
+        return Err(bad_request("tool_name must not be empty"));
+    }
+    let snapshot = match q.version {
+        Some(version) => svc
+            .get_external_tool_snapshot(&q.tool_name, version)
+            .await
+            .map_err(HttpApiProblem::from)?,
+        None => svc
+            .get_latest_external_tool_snapshot(&q.tool_name)
+            .await
+            .map_err(HttpApiProblem::from)?,
+    };
+    match snapshot {
+        Some(snapshot) => Ok(Json(snapshot)),
+        None => Err(not_found(format!(
+            "external tool snapshot not found: {}",
+            q.tool_name
+        ))),
+    }
+}
+
+/// Import a full external-tool snapshot as a new registry version
+/// (POST /repository/external-tools/snapshots/import).
+///
+/// Validates digest integrity, tool name, and source at the boundary so a
+/// tampered snapshot is rejected here rather than failing later in the builder.
+pub async fn import_external_tool_snapshot(
+    State(svc): State<RepoState>,
+    Json(body): Json<ImportExternalToolSnapshotRequest>,
+) -> HttpResult<ImportExternalToolSnapshotResponse> {
+    let snapshot = &body.snapshot;
+    if snapshot.source != baml_rt_tools::external_tools::EXTERNAL_TOOL_SOURCE {
+        return Err(bad_request(format!(
+            "unexpected snapshot source '{}', expected '{}'",
+            snapshot.source,
+            baml_rt_tools::external_tools::EXTERNAL_TOOL_SOURCE
+        )));
+    }
+    baml_rt_tools::ToolName::parse(&snapshot.tool.name)
+        .map_err(|e| bad_request(format!("invalid tool name '{}': {e}", snapshot.tool.name)))?;
+    baml_rt_tools::external_tools::validate_external_tool_snapshot(snapshot)
+        .map_err(|e| bad_request(format!("invalid external tool snapshot: {e}")))?;
+    let version = svc
+        .put_external_tool_snapshot(snapshot)
+        .await
+        .map_err(HttpApiProblem::from)?;
+    Ok(Json(ImportExternalToolSnapshotResponse { version }))
+}
+
+/// Mark an external-tool snapshot version stale
+/// (POST /repository/external-tools/snapshots/mark-stale?tool_name=...&version=N).
+pub async fn mark_external_tool_version_stale(
+    State(svc): State<RepoState>,
+    Query(q): Query<ExternalToolNameQuery>,
+) -> HttpResult<()> {
+    let Some(version) = q.version else {
+        return Err(bad_request("version query parameter is required"));
+    };
+    if q.tool_name.trim().is_empty() {
+        return Err(bad_request("tool_name must not be empty"));
+    }
+    svc.mark_external_tool_version_stale(&q.tool_name, version)
         .await
         .map_err(HttpApiProblem::from)?;
     Ok(Json(()))

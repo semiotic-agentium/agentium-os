@@ -447,6 +447,12 @@ enum ExternalToolCommands {
         /// Snapshot cache root. Falls back to BAML_EXTERNAL_TOOL_CACHE_DIR.
         #[arg(long)]
         cache_dir: Option<String>,
+        /// Repository URL to import the approved snapshot into (optional).
+        #[arg(long)]
+        repository_url: Option<String>,
+        /// Operator token for registry import. Falls back to RUNNER_TOKEN.
+        #[arg(long)]
+        runner_token: Option<String>,
         /// Skip interactive approval prompt.
         #[arg(long)]
         yes: bool,
@@ -475,6 +481,12 @@ enum ExternalToolCommands {
         /// Snapshot cache root. Falls back to BAML_EXTERNAL_TOOL_CACHE_DIR.
         #[arg(long)]
         cache_dir: Option<String>,
+        /// Repository URL to import the approved snapshot into (optional).
+        #[arg(long)]
+        repository_url: Option<String>,
+        /// Operator token for registry import. Falls back to RUNNER_TOKEN.
+        #[arg(long)]
+        runner_token: Option<String>,
         /// Skip interactive approval prompt.
         #[arg(long)]
         yes: bool,
@@ -936,9 +948,18 @@ fn main() -> anyhow::Result<()> {
             ExternalToolCommands::Enable {
                 dir,
                 cache_dir,
+                repository_url,
+                runner_token,
                 yes,
                 json,
-            } => commands::external_tool::enable(&dir, cache_dir.as_deref(), yes, json),
+            } => commands::external_tool::enable(
+                &dir,
+                cache_dir.as_deref(),
+                repository_url.as_deref(),
+                runner_token.as_deref(),
+                yes,
+                json,
+            ),
             ExternalToolCommands::Inspect {
                 name,
                 cache_dir,
@@ -948,9 +969,19 @@ fn main() -> anyhow::Result<()> {
                 name,
                 dir,
                 cache_dir,
+                repository_url,
+                runner_token,
                 yes,
                 json,
-            } => commands::external_tool::refresh(&name, &dir, cache_dir.as_deref(), yes, json),
+            } => commands::external_tool::refresh(
+                &name,
+                &dir,
+                cache_dir.as_deref(),
+                repository_url.as_deref(),
+                runner_token.as_deref(),
+                yes,
+                json,
+            ),
         },
 
         Commands::Mcp { command } => match command {

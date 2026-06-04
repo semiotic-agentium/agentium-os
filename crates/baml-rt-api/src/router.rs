@@ -252,6 +252,12 @@ fn repository_route_metric_label(matched: &MatchedPath) -> &'static str {
         }
         "/mcp/tools" => "repository_mcp_find_tool",
         "/mcp/snapshots/import" => "repository_mcp_import_snapshot",
+        "/external-tools" => "repository_external_tool_list",
+        "/external-tools/snapshots" => "repository_external_tool_list_snapshots",
+        "/external-tools/snapshot" => "repository_external_tool_get_snapshot",
+        "/external-tools/versions" => "repository_external_tool_list_versions",
+        "/external-tools/snapshots/import" => "repository_external_tool_import_snapshot",
+        "/external-tools/snapshots/mark-stale" => "repository_external_tool_mark_stale",
         "/entries/{hash}/tags" => "repository_tags",
         "/publish" => "repository_publish",
         _ => "repository_unknown",

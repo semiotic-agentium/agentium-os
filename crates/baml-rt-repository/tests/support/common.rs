@@ -55,7 +55,8 @@ pub async fn setup_service() -> RepositoryService {
         store.clone() as Arc<dyn MetadataStore>,
         store.clone() as Arc<dyn LineageStore>,
         store.clone() as Arc<dyn SearchStore>,
-        store as Arc<dyn baml_rt_repository::McpRegistryStore>,
+        store.clone() as Arc<dyn baml_rt_repository::McpRegistryStore>,
+        store as Arc<dyn baml_rt_repository::ExternalToolRegistryStore>,
     )
 }
 
@@ -66,7 +67,8 @@ pub async fn setup_app() -> Router {
         store.clone() as Arc<dyn MetadataStore>,
         store.clone() as Arc<dyn LineageStore>,
         store.clone() as Arc<dyn SearchStore>,
-        store as Arc<dyn baml_rt_repository::McpRegistryStore>,
+        store.clone() as Arc<dyn baml_rt_repository::McpRegistryStore>,
+        store as Arc<dyn baml_rt_repository::ExternalToolRegistryStore>,
     ));
     repository_router(svc)
 }

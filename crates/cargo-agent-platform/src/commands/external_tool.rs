@@ -26,7 +26,14 @@ use serde_json::json;
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub fn enable(dir: &str, cache_dir: Option<&str>, yes: bool, json_output: bool) -> Result<()> {
+pub fn enable(
+    dir: &str,
+    cache_dir: Option<&str>,
+    repository_url: Option<&str>,
+    runner_token: Option<&str>,
+    yes: bool,
+    json_output: bool,
+) -> Result<()> {
     let dir = PathBuf::from(dir);
     let cache_root = cache_root(cache_dir)?;
     let snapshot = discover_process_snapshot(&dir)?;
@@ -52,6 +59,7 @@ pub fn enable(dir: &str, cache_dir: Option<&str>, yes: bool, json_output: bool) 
             approved.snapshot_digest
         );
     }
+    post_to_registry(&approved, repository_url, runner_token, json_output)?;
     Ok(())
 }
 
@@ -104,6 +112,8 @@ pub fn refresh(
     name: &str,
     dir: &str,
     cache_dir: Option<&str>,
+    repository_url: Option<&str>,
+    runner_token: Option<&str>,
     yes: bool,
     json_output: bool,
 ) -> Result<()> {
@@ -170,6 +180,42 @@ pub fn refresh(
             "approved {} snapshot={}",
             style(name).cyan(),
             approved.snapshot_digest
+        );
+    }
+    post_to_registry(&approved, repository_url, runner_token, json_output)?;
+    Ok(())
+}
+
+/// Post an approved snapshot to the repository registry when `--repository-url`
+/// is set. Cache writes already happened; the registry is an additional sink.
+fn post_to_registry(
+    snapshot: &ExternalToolSnapshot,
+    repository_url: Option<&str>,
+    runner_token: Option<&str>,
+    json_output: bool,
+) -> Result<()> {
+    let Some(repository_url) = repository_url else {
+        return Ok(());
+    };
+    let rt = tokio::runtime::Runtime::new()?;
+    let body = rt.block_on(
+        baml_rt_builder::external_tool_registry::post_external_tool_snapshot_to_registry(
+            repository_url,
+            snapshot.clone(),
+            runner_token,
+            "external-tool registry import",
+        ),
+    )?;
+    if !json_output {
+        let version = body
+            .get("version")
+            .and_then(|v| v.get("version"))
+            .and_then(|v| v.as_u64())
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "<unknown>".into());
+        println!(
+            "imported {} into registry as version {version}",
+            style(&snapshot.tool.name).cyan()
         );
     }
     Ok(())

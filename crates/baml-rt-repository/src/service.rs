@@ -11,17 +11,21 @@
 use std::sync::Arc;
 
 use baml_rt_core::clock_events;
-use baml_rt_tools::mcp_snapshot::McpServerSnapshot;
+use baml_rt_tools::{external_tools::ExternalToolSnapshot, mcp_snapshot::McpServerSnapshot};
 
 use crate::{
     commands::{ForkCommand, PublishCommand, PublishOrigin, PublishResult},
     entry::{NewEntry, RepositoryEntry, RepositoryEntryHeader, Tag, Timestamp},
     error::{RepositoryError, Result},
+    external_tool::{ExternalToolRegistryTool, ExternalToolRegistryToolVersion},
     ids::{AgentName, ContentHash, Generation, LineageEdgeId, Version},
     lineage::{EdgeDescription, LineageEdge, LineageKind, LineageSubgraph, Parentage},
     mcp::{McpRegistryServer, McpRegistryServerVersion, McpRegistryToolVersion},
     search::SearchQuery,
-    storage::{BlobStore, LineageStore, McpRegistryStore, MetadataStore, SearchStore},
+    storage::{
+        BlobStore, ExternalToolRegistryStore, LineageStore, McpRegistryStore, MetadataStore,
+        SearchStore,
+    },
 };
 
 /// The main repository service.
@@ -34,6 +38,7 @@ pub struct RepositoryService {
     lineage: Arc<dyn LineageStore>,
     search: Arc<dyn SearchStore>,
     mcp_registry: Arc<dyn McpRegistryStore>,
+    external_tool_registry: Arc<dyn ExternalToolRegistryStore>,
 }
 
 impl RepositoryService {
@@ -44,6 +49,7 @@ impl RepositoryService {
         lineage: Arc<dyn LineageStore>,
         search: Arc<dyn SearchStore>,
         mcp_registry: Arc<dyn McpRegistryStore>,
+        external_tool_registry: Arc<dyn ExternalToolRegistryStore>,
     ) -> Self {
         Self {
             blobs,
@@ -51,6 +57,7 @@ impl RepositoryService {
             lineage,
             search,
             mcp_registry,
+            external_tool_registry,
         }
     }
 
@@ -101,6 +108,69 @@ impl RepositoryService {
     pub async fn mark_mcp_version_stale(&self, server_id: &str, version: u32) -> Result<()> {
         self.mcp_registry
             .mark_mcp_version_stale(server_id, version)
+            .await
+    }
+
+    // -----------------------------------------------------------------------
+    // External-tool registry
+    // -----------------------------------------------------------------------
+
+    pub async fn list_external_tools(&self) -> Result<Vec<ExternalToolRegistryTool>> {
+        self.external_tool_registry.list_external_tools().await
+    }
+
+    pub async fn put_external_tool_snapshot(
+        &self,
+        snapshot: &ExternalToolSnapshot,
+    ) -> Result<ExternalToolRegistryToolVersion> {
+        self.external_tool_registry
+            .put_external_tool_snapshot(snapshot)
+            .await
+    }
+
+    pub async fn get_external_tool_snapshot(
+        &self,
+        tool_name: &str,
+        version: u32,
+    ) -> Result<Option<ExternalToolSnapshot>> {
+        self.external_tool_registry
+            .get_external_tool_snapshot(tool_name, version)
+            .await
+    }
+
+    pub async fn get_latest_external_tool_snapshot(
+        &self,
+        tool_name: &str,
+    ) -> Result<Option<ExternalToolSnapshot>> {
+        self.external_tool_registry
+            .get_latest_external_tool_snapshot(tool_name)
+            .await
+    }
+
+    pub async fn list_approved_external_tool_snapshots(
+        &self,
+    ) -> Result<Vec<ExternalToolSnapshot>> {
+        self.external_tool_registry
+            .list_approved_external_tool_snapshots()
+            .await
+    }
+
+    pub async fn list_external_tool_versions(
+        &self,
+        tool_name: &str,
+    ) -> Result<Vec<ExternalToolRegistryToolVersion>> {
+        self.external_tool_registry
+            .list_external_tool_versions(tool_name)
+            .await
+    }
+
+    pub async fn mark_external_tool_version_stale(
+        &self,
+        tool_name: &str,
+        version: u32,
+    ) -> Result<()> {
+        self.external_tool_registry
+            .mark_external_tool_version_stale(tool_name, version)
             .await
     }
 

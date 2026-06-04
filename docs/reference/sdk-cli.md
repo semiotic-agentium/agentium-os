@@ -546,19 +546,21 @@ cargo agent-platform external-tool <command> [options]
 
 | Subcommand | Description |
 |------------|-------------|
-| `enable <dir>` | Read `tool-manifest.json`, call `tool/describe` + `tool/schema`, prompt for approval, and write approved snapshot to cache |
+| `enable <dir>` | Read `tool-manifest.json`, call `tool/describe` + `tool/schema`, prompt for approval, write approved snapshot to cache, and (with `--repository-url`) import it into the repository registry |
 | `inspect <name>` | Show approved and pending snapshots for a tool name such as `support/weather` |
-| `refresh <name> --dir <dir>` | Re-discover from a source directory, compare digests with approved cache snapshot, and approve changed snapshot |
+| `refresh <name> --dir <dir>` | Re-discover from a source directory, compare digests with approved cache snapshot, approve changed snapshot, and (with `--repository-url`) import into the registry |
 
 Common options:
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--cache-dir <dir>` | `BAML_EXTERNAL_TOOL_CACHE_DIR`, else `./.baml-external-tool-cache` | External-tool snapshot cache root |
+| `--repository-url <url>` | none (cache-only) | When set on `enable`/`refresh`, also POST the approved snapshot to the registry at `<url>/external-tools/snapshots/import` |
+| `--runner-token <token>` | `RUNNER_TOKEN` env | Operator token for the registry import (sent as `X-Runner-Token`) |
 | `--json` | off | Emit raw JSON for command output |
 | `--yes` | off | Skip interactive approval prompt (`enable`, `refresh`) |
 
-Current cache-path CLI discovery supports process-runtime external tools. Sandbox discovery and repository registry writes are later phases.
+Cache-path CLI discovery supports process-runtime external tools. The cache write always happens; the registry import is an additional sink enabled by `--repository-url`. Sandbox discovery is a later phase.
 
 Example cache flow:
 
@@ -566,6 +568,13 @@ Example cache flow:
 # Discover and approve snapshot into local cache.
 cargo agent-platform external-tool enable ./weather-tool \
   --cache-dir ./.baml-external-tool-cache \
+  --yes
+
+# Discover, approve, and import into the repository registry (cache + registry).
+cargo agent-platform external-tool enable ./weather-tool \
+  --cache-dir ./.baml-external-tool-cache \
+  --repository-url http://127.0.0.1:18080/repository \
+  --runner-token "$RUNNER_TOKEN" \
   --yes
 
 # Inspect approved/pending snapshots.
@@ -577,6 +586,8 @@ cargo agent-platform external-tool refresh support/weather \
   --dir ./weather-tool \
   --cache-dir ./.baml-external-tool-cache
 ```
+
+Registry endpoints (mounted under the repository router): `GET /external-tools`, `GET /external-tools/snapshots` (latest-approved, builder source), `GET /external-tools/snapshot?tool_name=&version=`, `GET /external-tools/versions?tool_name=`, `POST /external-tools/snapshots/import`, `POST /external-tools/snapshots/mark-stale?tool_name=&version=`. Active selection is the highest **approved, non-stale** version, so a pending refresh or a stale-marked version falls back to the previous approved snapshot.
 
 Builder/runner cache lookup uses `BAML_EXTERNAL_TOOL_CACHE_DIR`:
 

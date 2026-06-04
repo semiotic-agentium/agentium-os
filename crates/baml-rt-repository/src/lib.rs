@@ -30,6 +30,7 @@
 
 // --- Domain types ---
 pub mod entry;
+pub mod external_tool;
 pub mod ids;
 pub mod lineage;
 pub mod mcp;
@@ -67,6 +68,9 @@ mod spans;
 // --- Re-exports for public API ---
 pub use commands::{ForkCommand, PublishCommand, PublishResult};
 pub use entry::{ChangeRationale, NewEntry, RepositoryEntry, RepositoryEntryHeader, SourceBundle};
+pub use external_tool::{
+    ExternalToolRegistryTool, ExternalToolRegistryToolVersion, ExternalToolSnapshotBlob,
+};
 pub use error::{RepositoryError, Result};
 pub use ids::{AgentName, ContentHash, Generation, Version, VersionRef};
 pub use lineage::{LineageEdge, LineageKind, LineageSubgraph, Parentage};
@@ -83,5 +87,8 @@ pub use router::{
     repository_router_without_publish,
 };
 pub use service::RepositoryService;
-pub use storage::{BlobStore, LineageStore, McpRegistryStore, MetadataStore, SearchStore};
+pub use storage::{
+    BlobStore, ExternalToolRegistryStore, LineageStore, McpRegistryStore, MetadataStore,
+    SearchStore,
+};
 pub use surreal_store::SurrealStore;

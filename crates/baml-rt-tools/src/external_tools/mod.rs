@@ -46,7 +46,7 @@ pub use metadata::{
 };
 pub use metadata_catalog::{
     BUILDER_EXTERNAL_TOOLS_ENV, ExternalMetadataCatalog, build_builder_catalog,
-    build_builder_catalog_with_mcp_root, external_dirs_from_env,
+    build_builder_catalog_with_mcp_root, build_builder_catalog_with_roots, external_dirs_from_env,
 };
 pub use policy::{
     BACKOFF_SCHEDULE_MS, DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT, DEFAULT_MAX_CONCURRENT,
@@ -85,7 +85,9 @@ pub use snapshot::{
     compute_external_schema_digest, compute_manifest_digest, compute_runtime_digest,
     compute_snapshot_digest, validate_describe_schema_support, validate_external_tool_snapshot,
 };
-pub use snapshot_catalog::{BUILDER_EXTERNAL_TOOL_CACHE_ENV, ExternalToolSnapshotCatalog};
+pub use snapshot_catalog::{
+    BUILDER_EXTERNAL_TOOL_CACHE_ENV, ExternalToolRegistryCatalog, ExternalToolSnapshotCatalog,
+};
 pub use stdio::StdioSubprocessInvoker;
 
 #[derive(Debug, Clone)]

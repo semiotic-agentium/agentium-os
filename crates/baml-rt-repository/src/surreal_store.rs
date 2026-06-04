@@ -13,7 +13,10 @@ use std::{
 };
 
 use async_trait::async_trait;
-use baml_rt_tools::mcp_snapshot::{McpApprovalState, McpServerSnapshot};
+use baml_rt_tools::{
+    external_tools::ExternalToolSnapshot,
+    mcp_snapshot::{Digest, McpApprovalState, McpServerSnapshot},
+};
 use serde_json::Value;
 use surrealdb::{
     Surreal,
@@ -30,12 +33,16 @@ use crate::{
     lineage::{
         AncestryNode, EdgeDescription, LineageEdge, LineageKind, LineageSubgraph, Parentage,
     },
+    external_tool::{ExternalToolRegistryTool, ExternalToolRegistryToolVersion},
     mcp::{
         McpRegistryServer, McpRegistryServerVersion, McpRegistryToolVersion,
         compute_snapshot_digest,
     },
     search::{LineageRelation, SearchOrder, SearchQuery},
-    storage::{BlobStore, LineageStore, McpRegistryStore, MetadataStore, SearchStore},
+    storage::{
+        BlobStore, ExternalToolRegistryStore, LineageStore, McpRegistryStore, MetadataStore,
+        SearchStore,
+    },
 };
 
 type LineageAdjacency = HashMap<ContentHash, Vec<(ContentHash, LineageKind)>>;
@@ -51,6 +58,9 @@ const TBL_MCP_SERVERS: &str = "mcp_servers";
 const TBL_MCP_SERVER_VERSIONS: &str = "mcp_server_versions";
 const TBL_MCP_TOOL_VERSIONS: &str = "mcp_tool_versions";
 const TBL_MCP_SNAPSHOT_BLOBS: &str = "mcp_snapshot_blobs";
+const TBL_EXT_TOOLS: &str = "external_tools";
+const TBL_EXT_TOOL_VERSIONS: &str = "external_tool_versions";
+const TBL_EXT_SNAPSHOT_BLOBS: &str = "external_tool_snapshot_blobs";
 
 const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE TABLE IF NOT EXISTS entries SCHEMAFULL",
@@ -131,6 +141,35 @@ const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE FIELD IF NOT EXISTS snapshot_digest ON mcp_snapshot_blobs TYPE string",
     "DEFINE FIELD IF NOT EXISTS snapshot_json ON mcp_snapshot_blobs TYPE string",
     "DEFINE INDEX IF NOT EXISTS idx_mcp_snapshot_digest ON mcp_snapshot_blobs FIELDS snapshot_digest UNIQUE",
+    "DEFINE TABLE IF NOT EXISTS external_tools SCHEMAFULL",
+    "DEFINE FIELD IF NOT EXISTS tool_name ON external_tools TYPE string",
+    "DEFINE FIELD IF NOT EXISTS tenant_id ON external_tools TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS display_name ON external_tools TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS latest_version ON external_tools TYPE option<int>",
+    "DEFINE FIELD IF NOT EXISTS created_at ON external_tools TYPE string",
+    "DEFINE INDEX IF NOT EXISTS idx_ext_tool_name ON external_tools FIELDS tool_name UNIQUE",
+    "DEFINE TABLE IF NOT EXISTS external_tool_versions SCHEMAFULL",
+    "DEFINE FIELD IF NOT EXISTS tool_name ON external_tool_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS version ON external_tool_versions TYPE int",
+    "DEFINE FIELD IF NOT EXISTS snapshot_digest ON external_tool_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS manifest_digest ON external_tool_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS schema_digest ON external_tool_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS runtime_digest ON external_tool_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS protocol_version ON external_tool_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS runtime_json ON external_tool_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS secrets_json ON external_tool_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS capabilities_json ON external_tool_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS approval_state ON external_tool_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS owner ON external_tool_versions TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS reviewed_at ON external_tool_versions TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS expires_at ON external_tool_versions TYPE option<string>",
+    "DEFINE FIELD IF NOT EXISTS created_at ON external_tool_versions TYPE string",
+    "DEFINE FIELD IF NOT EXISTS stale_at ON external_tool_versions TYPE option<string>",
+    "DEFINE INDEX IF NOT EXISTS idx_ext_tool_version_unique ON external_tool_versions FIELDS tool_name, version UNIQUE",
+    "DEFINE TABLE IF NOT EXISTS external_tool_snapshot_blobs SCHEMAFULL",
+    "DEFINE FIELD IF NOT EXISTS snapshot_digest ON external_tool_snapshot_blobs TYPE string",
+    "DEFINE FIELD IF NOT EXISTS snapshot_json ON external_tool_snapshot_blobs TYPE string",
+    "DEFINE INDEX IF NOT EXISTS idx_ext_snapshot_digest ON external_tool_snapshot_blobs FIELDS snapshot_digest UNIQUE",
 ];
 
 fn map_surreal_write(e: surrealdb::Error) -> RepositoryError {
@@ -1451,6 +1490,297 @@ fn row_to_mcp_tool_version(row: &Value) -> Result<McpRegistryToolVersion> {
         reviewed_at: get_optional_str(row, "reviewed_at"),
         opaque_fallback_reason: get_optional_str(row, "opaque_fallback_reason"),
         tool_json: decode_json(get_required_str(row, "tool_json")?, "tool_json")?,
+    })
+}
+
+#[async_trait]
+impl ExternalToolRegistryStore for SurrealStore {
+    async fn list_external_tools(&self) -> Result<Vec<ExternalToolRegistryTool>> {
+        let mut resp = self
+            .db
+            .query(format!("SELECT * FROM {TBL_EXT_TOOLS} ORDER BY tool_name ASC"))
+            .await
+            .map_err(map_surreal_read)?;
+        let rows: Vec<Value> = resp.take(0).map_err(map_surreal_read)?;
+        rows.iter().map(row_to_ext_tool).collect()
+    }
+
+    async fn put_external_tool_snapshot(
+        &self,
+        snapshot: &ExternalToolSnapshot,
+    ) -> Result<ExternalToolRegistryToolVersion> {
+        let tool_name = snapshot.tool.name.clone();
+        let mut resp = self
+            .db
+            .query(format!(
+                "SELECT version FROM {TBL_EXT_TOOL_VERSIONS} WHERE tool_name = $tool_name ORDER BY version DESC LIMIT 1"
+            ))
+            .bind(("tool_name", tool_name.clone()))
+            .await
+            .map_err(map_surreal_read)?;
+        let rows: Vec<Value> = resp.take(0).map_err(map_surreal_read)?;
+        let next_version = rows
+            .first()
+            .and_then(|r| r.get("version").and_then(Value::as_u64))
+            .map(|v| v as u32 + 1)
+            .unwrap_or(1);
+
+        let created_at = crate::service::chrono_now().as_str().to_string();
+        let snapshot_digest = snapshot.snapshot_digest;
+        let snapshot_json = encode_json(snapshot, "external_tool_snapshot")?;
+        let runtime_json = serde_json::to_value(&snapshot.tool.runtime)
+            .map_err(|e| decode_err(format!("runtime serialization failed: {e}")))?;
+        let secrets_json = serde_json::to_value(&snapshot.tool.secrets)
+            .map_err(|e| decode_err(format!("secrets serialization failed: {e}")))?;
+        let capabilities_json = snapshot.tool.capabilities.clone();
+
+        self.db
+            .query(format!(
+                "UPSERT {TBL_EXT_SNAPSHOT_BLOBS} SET snapshot_digest = $snapshot_digest, snapshot_json = $snapshot_json WHERE snapshot_digest = $snapshot_digest"
+            ))
+            .bind(("snapshot_digest", snapshot_digest.to_string()))
+            .bind(("snapshot_json", snapshot_json))
+            .await
+            .map_err(map_surreal_write)?;
+
+        let _ = self
+            .db
+            .query(format!(
+                "UPSERT {TBL_EXT_TOOLS} SET tool_name = $tool_name, latest_version = $latest_version, created_at = $created_at WHERE tool_name = $tool_name"
+            ))
+            .bind(("tool_name", tool_name.clone()))
+            .bind(("latest_version", next_version as i64))
+            .bind(("created_at", created_at.clone()))
+            .await
+            .map_err(map_surreal_write)?;
+
+        let approval_state = mcp_approval_state_str(snapshot.approval.state).to_string();
+        let _ = self
+            .db
+            .query(format!(
+                "CREATE {TBL_EXT_TOOL_VERSIONS} SET \
+                    tool_name = $tool_name, \
+                    version = $version, \
+                    snapshot_digest = $snapshot_digest, \
+                    manifest_digest = $manifest_digest, \
+                    schema_digest = $schema_digest, \
+                    runtime_digest = $runtime_digest, \
+                    protocol_version = $protocol_version, \
+                    runtime_json = $runtime_json, \
+                    secrets_json = $secrets_json, \
+                    capabilities_json = $capabilities_json, \
+                    approval_state = $approval_state, \
+                    owner = $owner, \
+                    reviewed_at = $reviewed_at, \
+                    expires_at = $expires_at, \
+                    created_at = $created_at, \
+                    stale_at = $stale_at"
+            ))
+            .bind(("tool_name", tool_name.clone()))
+            .bind(("version", next_version as i64))
+            .bind(("snapshot_digest", snapshot_digest.to_string()))
+            .bind(("manifest_digest", snapshot.digests.manifest_digest.to_string()))
+            .bind(("schema_digest", snapshot.digests.schema_digest.to_string()))
+            .bind(("runtime_digest", snapshot.digests.runtime_digest.to_string()))
+            .bind(("protocol_version", snapshot.describe.protocol_version.clone()))
+            .bind(("runtime_json", encode_json(&runtime_json, "runtime_json")?))
+            .bind(("secrets_json", encode_json(&secrets_json, "secrets_json")?))
+            .bind((
+                "capabilities_json",
+                encode_json(&capabilities_json, "capabilities_json")?,
+            ))
+            .bind(("approval_state", approval_state))
+            .bind(("owner", snapshot.approval.owner.clone()))
+            .bind(("reviewed_at", snapshot.approval.reviewed_at.clone()))
+            .bind(("expires_at", snapshot.approval.expires_at.clone()))
+            .bind(("created_at", created_at.clone()))
+            .bind(("stale_at", Option::<String>::None))
+            .await
+            .map_err(map_surreal_write)?;
+
+        Ok(ExternalToolRegistryToolVersion {
+            tool_name,
+            version: next_version,
+            snapshot_digest,
+            manifest_digest: snapshot.digests.manifest_digest,
+            schema_digest: snapshot.digests.schema_digest,
+            runtime_digest: snapshot.digests.runtime_digest,
+            protocol_version: snapshot.describe.protocol_version.clone(),
+            runtime_json,
+            secrets_json,
+            capabilities_json,
+            approval_state: snapshot.approval.state,
+            owner: snapshot.approval.owner.clone(),
+            reviewed_at: snapshot.approval.reviewed_at.clone(),
+            expires_at: snapshot.approval.expires_at.clone(),
+            created_at,
+            stale_at: None,
+        })
+    }
+
+    async fn get_external_tool_snapshot(
+        &self,
+        tool_name: &str,
+        version: u32,
+    ) -> Result<Option<ExternalToolSnapshot>> {
+        let mut resp = self
+            .db
+            .query(format!(
+                "SELECT snapshot_digest, approval_state, owner, reviewed_at, expires_at FROM {TBL_EXT_TOOL_VERSIONS} WHERE tool_name = $tool_name AND version = $version LIMIT 1"
+            ))
+            .bind(("tool_name", tool_name.to_string()))
+            .bind(("version", version as i64))
+            .await
+            .map_err(map_surreal_read)?;
+        let rows: Vec<Value> = resp.take(0).map_err(map_surreal_read)?;
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        let Some(snapshot_digest) = row.get("snapshot_digest").and_then(Value::as_str) else {
+            return Ok(None);
+        };
+        let Some(mut snapshot) = self.load_external_snapshot_blob(snapshot_digest).await? else {
+            return Ok(None);
+        };
+        // The content-addressed blob carries only import-time approval; the
+        // version row is the authoritative registry lifecycle state. Overlay it
+        // so callers (and `mark_external_tool_version_stale`) never see drift.
+        // `snapshot_digest` excludes `approval`, so this does not invalidate it.
+        snapshot.approval.state = parse_mcp_approval_state(get_required_str(row, "approval_state")?)?;
+        snapshot.approval.owner = get_optional_str(row, "owner");
+        snapshot.approval.reviewed_at = get_optional_str(row, "reviewed_at");
+        snapshot.approval.expires_at = get_optional_str(row, "expires_at");
+        Ok(Some(snapshot))
+    }
+
+    async fn get_latest_external_tool_snapshot(
+        &self,
+        tool_name: &str,
+    ) -> Result<Option<ExternalToolSnapshot>> {
+        // Active version = highest *approved* (non-stale/pending/rejected)
+        // version. A pending refresh or a stale-marked latest must not
+        // deactivate the previous approved snapshot. `latest_version` on the
+        // tool row tracks the latest *imported* version for audit only.
+        let mut resp = self
+            .db
+            .query(format!(
+                "SELECT version FROM {TBL_EXT_TOOL_VERSIONS} WHERE tool_name = $tool_name AND approval_state = 'approved' ORDER BY version DESC LIMIT 1"
+            ))
+            .bind(("tool_name", tool_name.to_string()))
+            .await
+            .map_err(map_surreal_read)?;
+        let rows: Vec<Value> = resp.take(0).map_err(map_surreal_read)?;
+        let Some(version) = rows.first().and_then(|r| r.get("version")).and_then(Value::as_u64)
+        else {
+            return Ok(None);
+        };
+        self.get_external_tool_snapshot(tool_name, version as u32).await
+    }
+
+    async fn list_approved_external_tool_snapshots(&self) -> Result<Vec<ExternalToolSnapshot>> {
+        let tools = self.list_external_tools().await?;
+        let mut snapshots = Vec::new();
+        for tool in tools {
+            if let Some(snapshot) = self.get_latest_external_tool_snapshot(&tool.tool_name).await? {
+                snapshots.push(snapshot);
+            }
+        }
+        Ok(snapshots)
+    }
+
+    async fn list_external_tool_versions(
+        &self,
+        tool_name: &str,
+    ) -> Result<Vec<ExternalToolRegistryToolVersion>> {
+        let mut resp = self
+            .db
+            .query(format!(
+                "SELECT * FROM {TBL_EXT_TOOL_VERSIONS} WHERE tool_name = $tool_name ORDER BY version DESC"
+            ))
+            .bind(("tool_name", tool_name.to_string()))
+            .await
+            .map_err(map_surreal_read)?;
+        let rows: Vec<Value> = resp.take(0).map_err(map_surreal_read)?;
+        rows.iter().map(row_to_ext_tool_version).collect()
+    }
+
+    async fn mark_external_tool_version_stale(&self, tool_name: &str, version: u32) -> Result<()> {
+        let stale_at = crate::service::chrono_now().as_str().to_string();
+        self.db
+            .query(format!(
+                "UPDATE {TBL_EXT_TOOL_VERSIONS} SET approval_state = $approval_state, stale_at = $stale_at WHERE tool_name = $tool_name AND version = $version"
+            ))
+            .bind(("approval_state", "stale".to_string()))
+            .bind(("stale_at", stale_at))
+            .bind(("tool_name", tool_name.to_string()))
+            .bind(("version", version as i64))
+            .await
+            .map_err(map_surreal_write)?;
+        Ok(())
+    }
+}
+
+impl SurrealStore {
+    async fn load_external_snapshot_blob(
+        &self,
+        snapshot_digest: &str,
+    ) -> Result<Option<ExternalToolSnapshot>> {
+        let mut blob_resp = self
+            .db
+            .query(format!(
+                "SELECT snapshot_json FROM {TBL_EXT_SNAPSHOT_BLOBS} WHERE snapshot_digest = $snapshot_digest LIMIT 1"
+            ))
+            .bind(("snapshot_digest", snapshot_digest.to_string()))
+            .await
+            .map_err(map_surreal_read)?;
+        let blob_rows: Vec<Value> = blob_resp.take(0).map_err(map_surreal_read)?;
+        let Some(snapshot_json) = blob_rows
+            .first()
+            .and_then(|r| r.get("snapshot_json"))
+            .and_then(Value::as_str)
+        else {
+            return Err(decode_err(format!(
+                "external tool snapshot blob missing for digest {snapshot_digest}"
+            )));
+        };
+        Ok(Some(decode_json(snapshot_json, "external_tool_snapshot")?))
+    }
+}
+
+fn row_to_ext_tool(row: &Value) -> Result<ExternalToolRegistryTool> {
+    Ok(ExternalToolRegistryTool {
+        tool_name: get_required_str(row, "tool_name")?.to_string(),
+        tenant_id: get_optional_str(row, "tenant_id"),
+        display_name: get_optional_str(row, "display_name"),
+        created_at: get_required_str(row, "created_at")?.to_string(),
+        latest_version: row
+            .get("latest_version")
+            .and_then(Value::as_u64)
+            .map(|v| v as u32),
+    })
+}
+
+fn row_to_ext_tool_version(row: &Value) -> Result<ExternalToolRegistryToolVersion> {
+    Ok(ExternalToolRegistryToolVersion {
+        tool_name: get_required_str(row, "tool_name")?.to_string(),
+        version: get_required_u32(row, "version")?,
+        snapshot_digest: Digest::new(get_required_str(row, "snapshot_digest")?),
+        manifest_digest: Digest::new(get_required_str(row, "manifest_digest")?),
+        schema_digest: Digest::new(get_required_str(row, "schema_digest")?),
+        runtime_digest: Digest::new(get_required_str(row, "runtime_digest")?),
+        protocol_version: get_required_str(row, "protocol_version")?.to_string(),
+        runtime_json: decode_json(get_required_str(row, "runtime_json")?, "runtime_json")?,
+        secrets_json: decode_json(get_required_str(row, "secrets_json")?, "secrets_json")?,
+        capabilities_json: decode_json(
+            get_required_str(row, "capabilities_json")?,
+            "capabilities_json",
+        )?,
+        approval_state: parse_mcp_approval_state(get_required_str(row, "approval_state")?)?,
+        owner: get_optional_str(row, "owner"),
+        reviewed_at: get_optional_str(row, "reviewed_at"),
+        expires_at: get_optional_str(row, "expires_at"),
+        created_at: get_required_str(row, "created_at")?.to_string(),
+        stale_at: get_optional_str(row, "stale_at"),
     })
 }
 

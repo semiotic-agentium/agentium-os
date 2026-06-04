@@ -29,6 +29,7 @@ use crate::builder::{
 pub struct RuntimeTypeGenerator {
     mcp_registry_service: Option<Arc<RepositoryService>>,
     mcp_registry_url: Option<String>,
+    external_tool_registry_url: Option<String>,
 }
 
 impl RuntimeTypeGenerator {
@@ -38,6 +39,9 @@ impl RuntimeTypeGenerator {
             mcp_registry_url: std::env::var("BAML_MCP_REGISTRY_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            external_tool_registry_url: std::env::var("BAML_EXTERNAL_TOOL_REGISTRY_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
         }
     }
 
@@ -45,6 +49,7 @@ impl RuntimeTypeGenerator {
         Self {
             mcp_registry_service: Some(service),
             mcp_registry_url: None,
+            external_tool_registry_url: None,
         }
     }
 
@@ -52,6 +57,9 @@ impl RuntimeTypeGenerator {
         Self {
             mcp_registry_service: None,
             mcp_registry_url: Some(url.into()),
+            external_tool_registry_url: std::env::var("BAML_EXTERNAL_TOOL_REGISTRY_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
         }
     }
 }
@@ -60,6 +68,7 @@ impl RuntimeTypeGenerator {
 impl TypeGenerator for RuntimeTypeGenerator {
     async fn generate(&self, agent_dir: &AgentDir, build_dir: &BuildDir) -> Result<()> {
         prepare_mcp_registry_cache(agent_dir, build_dir, self).await?;
+        prepare_external_tool_registry_cache(agent_dir, build_dir, self).await?;
 
         let agent_dir = agent_dir.clone();
         let build_dir = build_dir.clone();
@@ -88,6 +97,91 @@ impl TypeGenerator for RuntimeTypeGenerator {
         }
         Ok(())
     }
+}
+
+async fn prepare_external_tool_registry_cache(
+    agent_dir: &AgentDir,
+    build_dir: &BuildDir,
+    generator: &RuntimeTypeGenerator,
+) -> Result<()> {
+    let tool_names = load_manifest_tools(&agent_dir.baml_src())?;
+    if tool_names.is_empty() {
+        return Ok(());
+    }
+
+    let root = build_dir.as_path();
+    if let Some(service) = &generator.mcp_registry_service {
+        let snapshots = service
+            .list_approved_external_tool_snapshots()
+            .await
+            .map_err(|err| BamlBuilderError::InvalidArgumentWithSource {
+                message: "failed to fetch external-tool snapshots from registry".to_string(),
+                source: Box::new(err),
+            })?;
+        for snapshot in snapshots {
+            tracing::info!(
+                external_tool = %snapshot.tool.name,
+                external_tool_schema_digest = %snapshot.digests.schema_digest,
+                external_tool_runtime_digest = %snapshot.digests.runtime_digest,
+                external_tool_registry_source = "embedded",
+                "resolved external-tool snapshot for agent build"
+            );
+            baml_rt_tools::external_tool_cache::write_approved_snapshot(root, &snapshot)
+                .map_err(BamlBuilderError::Io)?;
+        }
+        return Ok(());
+    }
+
+    let Some(registry_url) = &generator.external_tool_registry_url else {
+        return Ok(());
+    };
+    let url = format!(
+        "{}/external-tools/snapshots",
+        registry_url.trim_end_matches('/')
+    );
+    let response = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|err| BamlBuilderError::InvalidArgumentWithSource {
+            message: format!("failed to fetch external-tool snapshots from {url}"),
+            source: Box::new(err),
+        })?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(BamlBuilderError::InvalidArgument(format!(
+            "failed to fetch external-tool snapshots from registry ({status}): {body}"
+        )));
+    }
+    let parsed: serde_json::Value =
+        serde_json::from_str(&body).map_err(|err| BamlBuilderError::InvalidArgumentWithSource {
+            message: "failed to parse external-tool snapshots from registry".to_string(),
+            source: Box::new(err),
+        })?;
+    let snapshots: Vec<baml_rt_tools::external_tools::ExternalToolSnapshot> =
+        serde_json::from_value(
+            parsed
+                .get("snapshots")
+                .cloned()
+                .unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
+        )
+        .map_err(|err| BamlBuilderError::InvalidArgumentWithSource {
+            message: "failed to decode external-tool snapshot list from registry".to_string(),
+            source: Box::new(err),
+        })?;
+    for snapshot in snapshots {
+        tracing::info!(
+            external_tool = %snapshot.tool.name,
+            external_tool_schema_digest = %snapshot.digests.schema_digest,
+            external_tool_runtime_digest = %snapshot.digests.runtime_digest,
+            external_tool_registry_source = %registry_url,
+            "resolved external-tool snapshot for agent build"
+        );
+        baml_rt_tools::external_tool_cache::write_approved_snapshot(root, &snapshot)
+            .map_err(BamlBuilderError::Io)?;
+    }
+    Ok(())
 }
 
 async fn prepare_mcp_registry_cache(

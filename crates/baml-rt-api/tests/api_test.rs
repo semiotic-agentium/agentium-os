@@ -2859,7 +2859,8 @@ async fn authed_test_router_with_repo(token: Option<&str>, mode: ClusterMode) ->
         store.clone() as Arc<dyn baml_rt_repository::MetadataStore>,
         store.clone() as Arc<dyn baml_rt_repository::LineageStore>,
         store.clone() as Arc<dyn baml_rt_repository::SearchStore>,
-        store as Arc<dyn baml_rt_repository::McpRegistryStore>,
+        store.clone() as Arc<dyn baml_rt_repository::McpRegistryStore>,
+        store as Arc<dyn baml_rt_repository::ExternalToolRegistryStore>,
     ));
 
     api_router_with_services_and_deploy(

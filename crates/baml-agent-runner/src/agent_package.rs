@@ -36,8 +36,8 @@ use baml_rt_tools::{
     ToolAccessPolicy, ToolRegistry,
     external_tools::{
         DevModeResolver, EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLifecycleEvent,
-        ExternalLifecycleRecorder, ExternalLockfileMode, ExternalToolsLockfile,
-        resolver::SandboxRuntimeWiring,
+        ExternalLifecycleRecorder, ExternalLockfileMode, ExternalRegistryResolver,
+        ExternalToolsLockfile, resolver::SandboxRuntimeWiring,
     },
     register_manifest_tools_with_fallback,
 };
@@ -244,7 +244,19 @@ impl AgentPackage {
         } else {
             None
         };
+        let package_external_root = self.extract_dir.join("external-tools");
+        let registry_external_resolver = if package_external_root.exists() {
+            Some(ExternalRegistryResolver::from_cache_root_with_sandbox(
+                &self.extract_dir,
+                build_sandbox_wiring(sandbox_bind_roots.to_vec())?,
+            )?)
+        } else {
+            None
+        };
         let mut composite = CompositeResolver::new();
+        if let Some(registry) = registry_external_resolver {
+            composite.push(Box::new(registry) as Box<dyn ExternalToolResolver>);
+        }
         if let Some(boxed) = external_resolver {
             composite.push(boxed as Box<dyn ExternalToolResolver>);
         }

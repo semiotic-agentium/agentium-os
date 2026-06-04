@@ -8,13 +8,49 @@ use std::path::{Path, PathBuf};
 
 use baml_rt_core::{BamlRtError, Result};
 
-use super::{metadata::build_tool_metadata, snapshot::validate_external_tool_snapshot};
+use super::{
+    ExternalToolSnapshot, metadata::build_tool_metadata, snapshot::validate_external_tool_snapshot,
+};
 use crate::{
     ToolName, external_tool_cache, tool_catalog::ToolCatalog, tools::ToolFunctionMetadata,
 };
 
 /// Env var that points builder/runner at an external-tool snapshot cache root.
 pub const BUILDER_EXTERNAL_TOOL_CACHE_ENV: &str = "BAML_EXTERNAL_TOOL_CACHE_DIR";
+
+/// Validate and project a set of approved external-tool snapshots into builder
+/// tool metadata. Non-approved snapshots are skipped; duplicate tool names are a
+/// hard error. `source` names the origin for error messages (cache dir / registry).
+///
+/// Registry/cache snapshots must be source-dir independent. Validation rejects
+/// coordination specs unless `coordination_baml` was inlined at approval time,
+/// so the empty source path cannot silently drop a referenced coordination file.
+fn project_approved_snapshots(
+    snapshots: Vec<ExternalToolSnapshot>,
+    source: &str,
+) -> Result<Vec<ToolFunctionMetadata>> {
+    let mut tools = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for snapshot in snapshots {
+        if !snapshot.approval.state.is_approved() {
+            continue;
+        }
+        validate_external_tool_snapshot(&snapshot)?;
+        let tool_name = ToolName::parse(&snapshot.tool.name)?;
+        if !seen.insert(tool_name.clone()) {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "duplicate external tool snapshot '{tool_name}' loaded from {source}"
+            )));
+        }
+        let mut metadata = build_tool_metadata(Path::new(""), &snapshot.tool, &tool_name)?;
+        metadata.digest = Some(snapshot.digests.schema_digest.to_string());
+        tools.push(metadata);
+    }
+
+    tools.sort_by_key(|tool| tool.name.to_string());
+    Ok(tools)
+}
 
 #[derive(Debug, Default)]
 pub struct ExternalToolSnapshotCatalog {
@@ -24,31 +60,7 @@ pub struct ExternalToolSnapshotCatalog {
 impl ExternalToolSnapshotCatalog {
     pub fn from_root(root: &Path) -> Result<Self> {
         let snapshots = external_tool_cache::read_approved_snapshots(root)?;
-        let mut tools = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-
-        for snapshot in snapshots {
-            if !snapshot.approval.state.is_approved() {
-                continue;
-            }
-            validate_external_tool_snapshot(&snapshot)?;
-            let tool_name = ToolName::parse(&snapshot.tool.name)?;
-            if !seen.insert(tool_name.clone()) {
-                return Err(BamlRtError::InvalidArgument(format!(
-                    "duplicate external tool snapshot '{}' loaded from {}",
-                    tool_name,
-                    root.display()
-                )));
-            }
-            // Registry/cache snapshots must be source-dir independent. Validation above rejects
-            // coordination specs unless `coordination_baml` was inlined at approval time, so an
-            // empty source path cannot silently drop a referenced coordination file here.
-            let mut metadata = build_tool_metadata(Path::new(""), &snapshot.tool, &tool_name)?;
-            metadata.digest = Some(snapshot.digests.schema_digest.to_string());
-            tools.push(metadata);
-        }
-
-        tools.sort_by_key(|tool| tool.name.to_string());
+        let tools = project_approved_snapshots(snapshots, &root.display().to_string())?;
         Ok(Self { tools })
     }
 
@@ -71,6 +83,41 @@ impl ExternalToolSnapshotCatalog {
 }
 
 impl ToolCatalog for ExternalToolSnapshotCatalog {
+    fn by_name(&self, name: &ToolName) -> Option<&ToolFunctionMetadata> {
+        self.tools.iter().find(|tool| &tool.name == name)
+    }
+
+    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = &'a ToolFunctionMetadata> + 'a> {
+        Box::new(self.tools.iter())
+    }
+}
+
+/// Builder catalog backed by approved snapshots fetched from the repository
+/// registry (`GET /external-tools/snapshots`). Projects identically to
+/// [`ExternalToolSnapshotCatalog`]; only the snapshot source differs.
+#[derive(Debug, Default)]
+pub struct ExternalToolRegistryCatalog {
+    tools: Vec<ToolFunctionMetadata>,
+}
+
+impl ExternalToolRegistryCatalog {
+    /// Build from snapshots already fetched from the registry. The HTTP fetch
+    /// lives in `baml-rt-builder` so this crate stays transport-free.
+    pub fn from_snapshots(snapshots: Vec<ExternalToolSnapshot>) -> Result<Self> {
+        let tools = project_approved_snapshots(snapshots, "external-tool registry")?;
+        Ok(Self { tools })
+    }
+
+    pub fn len(&self) -> usize {
+        self.tools.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
+    }
+}
+
+impl ToolCatalog for ExternalToolRegistryCatalog {
     fn by_name(&self, name: &ToolName) -> Option<&ToolFunctionMetadata> {
         self.tools.iter().find(|tool| &tool.name == name)
     }
@@ -161,6 +208,37 @@ mod tests {
 
         let err = ExternalToolSnapshotCatalog::from_root(tmp.path()).unwrap_err();
         assert!(err.to_string().contains("digest mismatch"));
+    }
+
+    #[test]
+    fn registry_catalog_projects_approved_filters_pending_and_stale() {
+        let snapshots = vec![
+            snapshot("support/reg_ok", ApprovalState::Approved),
+            snapshot("support/reg_pending", ApprovalState::Pending),
+            snapshot("support/reg_stale", ApprovalState::Stale),
+        ];
+        let catalog = ExternalToolRegistryCatalog::from_snapshots(snapshots).unwrap();
+        assert_eq!(catalog.len(), 1);
+        assert!(
+            catalog
+                .by_name(&ToolName::parse("support/reg_ok").unwrap())
+                .is_some()
+        );
+        assert!(
+            catalog
+                .by_name(&ToolName::parse("support/reg_pending").unwrap())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn registry_catalog_rejects_duplicate_tool_names() {
+        let snapshots = vec![
+            snapshot("support/reg_dup", ApprovalState::Approved),
+            snapshot("support/reg_dup", ApprovalState::Approved),
+        ];
+        let err = ExternalToolRegistryCatalog::from_snapshots(snapshots).unwrap_err();
+        assert!(err.to_string().contains("duplicate external tool snapshot"));
     }
 
     #[test]

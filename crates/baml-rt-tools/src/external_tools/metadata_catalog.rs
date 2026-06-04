@@ -43,10 +43,17 @@ pub const BUILDER_EXTERNAL_TOOLS_ENV: &str = "BAML_EXTERNAL_TOOLS_DIR";
 /// external metadata source — duplicate tool IDs across static and external
 /// are not allowed (design invariant §7 #8).
 pub fn build_builder_catalog() -> Result<CompositeCatalog> {
-    build_builder_catalog_with_mcp_root(None)
+    build_builder_catalog_with_roots(None, None)
 }
 
 pub fn build_builder_catalog_with_mcp_root(mcp_root: Option<&Path>) -> Result<CompositeCatalog> {
+    build_builder_catalog_with_roots(mcp_root, None)
+}
+
+pub fn build_builder_catalog_with_roots(
+    mcp_root: Option<&Path>,
+    external_cache_root: Option<&Path>,
+) -> Result<CompositeCatalog> {
     let inventory = InventoryCatalog::new();
 
     let external = match external_dirs_from_env() {
@@ -61,7 +68,17 @@ pub fn build_builder_catalog_with_mcp_root(mcp_root: Option<&Path>) -> Result<Co
         None => None,
     };
 
-    let snapshot_external = ExternalToolSnapshotCatalog::from_env()?.filter(|c| !c.is_empty());
+    let snapshot_external = match external_cache_root {
+        Some(root) => {
+            let catalog = ExternalToolSnapshotCatalog::from_root(root)?;
+            if catalog.is_empty() {
+                None
+            } else {
+                Some(catalog)
+            }
+        }
+        None => ExternalToolSnapshotCatalog::from_env()?.filter(|c| !c.is_empty()),
+    };
 
     if let Some(ext) = &external {
         // Strict collision check: any external tool name also present in

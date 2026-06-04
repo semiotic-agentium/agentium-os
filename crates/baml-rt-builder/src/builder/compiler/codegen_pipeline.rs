@@ -106,9 +106,20 @@ impl WorkspaceReady {
         } else {
             None
         };
+        let external_cache_dir = paths.build_dir.join("external-tools");
+        let external_cache_root = if external_cache_dir.exists() {
+            tracing::info!(
+                external_cache_root = %external_cache_dir.display(),
+                "using packaged external-tool registry snapshots during type generation"
+            );
+            Some(paths.build_dir.as_path().to_path_buf())
+        } else {
+            None
+        };
         let tool_metadata = if !tool_names.is_empty() {
-            let catalog = baml_rt_tools::external_tools::build_builder_catalog_with_mcp_root(
+            let catalog = baml_rt_tools::external_tools::build_builder_catalog_with_roots(
                 mcp_root.as_deref(),
+                external_cache_root.as_deref(),
             )?;
             baml_rt_tools::tool_catalog::resolve_manifest_tools_with_catalog(&catalog, &tool_names)?
         } else {
