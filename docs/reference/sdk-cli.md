@@ -22,6 +22,9 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 | `check-external-tool --path <dir>` | Validate external tool metadata against schema + runtime parser |
 | `sandbox-bind-sync --tool-dir <dir> [--rootfs <path>] [--image <tag>]` | Generate local bind dev runtime lock + sidecar bundle; can build/export rootfs from Docker |
 | `sandbox-oci-prepare --tool-dir <dir>` | Materialize OCI sidecar bundle from metadata (no registry pull required) |
+| `external-tool enable <dir>` | Discover, approve, and store an external-tool snapshot in local cache |
+| `external-tool inspect <name>` | Inspect approved and pending external-tool snapshots in local cache |
+| `external-tool refresh <name> --dir <dir>` | Re-discover an external tool and approve a changed cache snapshot |
 | `mcp list` | List MCP servers imported into the repository registry |
 | `mcp enable <server-id>` | Discover, approve, and store an MCP server snapshot in the repository registry |
 | `mcp server|versions|tool ...` | Inspect MCP registry snapshots, versions, and platform tool entries |
@@ -530,6 +533,59 @@ cargo agent-platform sandbox-bind-sync \
 | `--json` | off | Emit machine-readable JSON summary |
 
 `--image` is intentionally explicit: scaffolds and setup scripts use the conventional `<bundle>-<tool-name>-sandbox:local` tag, but the sync command should not silently pick or overwrite a Docker tag if the caller did not ask for Docker-assisted mode.
+
+---
+
+### `external-tool`
+
+Discovers and manages approved external-tool snapshots in a local cache. Snapshot mode is the production-facing path for external tools: schemas come from live `tool/schema`, then operators approve the resulting snapshot before builder/runner catalog projection.
+
+```bash
+cargo agent-platform external-tool <command> [options]
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| `enable <dir>` | Read `tool-manifest.json`, call `tool/describe` + `tool/schema`, prompt for approval, and write approved snapshot to cache |
+| `inspect <name>` | Show approved and pending snapshots for a tool name such as `support/weather` |
+| `refresh <name> --dir <dir>` | Re-discover from a source directory, compare digests with approved cache snapshot, and approve changed snapshot |
+
+Common options:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--cache-dir <dir>` | `BAML_EXTERNAL_TOOL_CACHE_DIR`, else `./.baml-external-tool-cache` | External-tool snapshot cache root |
+| `--json` | off | Emit raw JSON for command output |
+| `--yes` | off | Skip interactive approval prompt (`enable`, `refresh`) |
+
+Current cache-path CLI discovery supports process-runtime external tools. Sandbox discovery and repository registry writes are later phases.
+
+Example cache flow:
+
+```bash
+# Discover and approve snapshot into local cache.
+cargo agent-platform external-tool enable ./weather-tool \
+  --cache-dir ./.baml-external-tool-cache \
+  --yes
+
+# Inspect approved/pending snapshots.
+cargo agent-platform external-tool inspect support/weather \
+  --cache-dir ./.baml-external-tool-cache
+
+# Re-discover after tool implementation/schema changes.
+cargo agent-platform external-tool refresh support/weather \
+  --dir ./weather-tool \
+  --cache-dir ./.baml-external-tool-cache
+```
+
+Builder/runner cache lookup uses `BAML_EXTERNAL_TOOL_CACHE_DIR`:
+
+```bash
+BAML_EXTERNAL_TOOL_CACHE_DIR=$PWD/.baml-external-tool-cache \
+  cargo agent-platform build --path agents/weather-agent
+```
+
+The command uses shared `baml-rt-tools` protocol/snapshot code directly; it does not shell out to a builder binary.
 
 ---
 
