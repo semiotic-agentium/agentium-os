@@ -6,8 +6,10 @@
 
 """Meteo external tool implementation (JSON-RPC over stdio)."""
 
+import hashlib
 import json
 import os
+import pathlib
 import struct
 import sys
 import time
@@ -18,8 +20,10 @@ from urllib.request import Request, urlopen
 
 PROTOCOL_VERSION = "1"
 METHOD_DESCRIBE = "tool/describe"
+METHOD_SCHEMA = "tool/schema"
 METHOD_INVOKE = "tool/invoke"
-SUPPORTED_METHODS = [METHOD_DESCRIBE, METHOD_INVOKE]
+SUPPORTED_METHODS = [METHOD_DESCRIBE, METHOD_SCHEMA, METHOD_INVOKE]
+DEFAULT_SCHEMA_CONTENT_TYPE = "application/schema+json"
 
 ERR_METHOD_NOT_FOUND = -32601
 ERR_PARSE_ERROR = -32700
@@ -30,6 +34,35 @@ TOOL_NAME = "dev/meteo-tool"
 GEOCODING_ENDPOINT = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_ENDPOINT = "https://api.open-meteo.com/v1/forecast"
 DEBUG = os.environ.get("METEO_TOOL_DEBUG", "1") not in ("0", "false", "False")
+
+
+def _schema_payload():
+    metadata_path = pathlib.Path(__file__).resolve().with_name("tool-metadata.json")
+    meta = json.loads(metadata_path.read_text(encoding="utf-8"))
+    schemas = meta["schemas"]
+    return {"input": schemas["input"], "output": schemas["output"]}
+
+
+def _schema_digest(schema_payload):
+    canonical = json.dumps(
+        schema_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
+def _schema_result():
+    payload = _schema_payload()
+    return {
+        "schema_version": 1,
+        "tool_name": TOOL_NAME,
+        "content_type": DEFAULT_SCHEMA_CONTENT_TYPE,
+        "content_digest": _schema_digest(payload),
+        "input": payload["input"],
+        "output": payload["output"],
+    }
 
 
 def _log(msg):
@@ -359,15 +392,21 @@ def main():
     _log(f"parsed request framed={framed} id={req_id} method={method}")
 
     if method == METHOD_DESCRIBE:
+        schema = _schema_result()
         write_result(
             req_id,
             {
                 "protocol_version": PROTOCOL_VERSION,
                 "tool_name": TOOL_NAME,
                 "supported_methods": SUPPORTED_METHODS,
+                "schema_digest": schema["content_digest"],
             },
             framed=framed,
         )
+        return
+
+    if method == METHOD_SCHEMA:
+        write_result(req_id, _schema_result(), framed=framed)
         return
 
     if method == METHOD_INVOKE:

@@ -1,0 +1,34 @@
+{
+  "tool_abi_version": "1",
+  "name": "dev/meteo-tool",
+  "description": "Accurate Weather Forecasts for Any Location",
+  "bundle": "dev",
+  "local_name": "meteo-tool",
+  "access_level": "read",
+  "tags": [
+    "dev",
+    "meteo",
+    "external",
+    "weather"
+  ],
+  "invocation_mode": "single_shot",
+  "session_policy": "strict",
+  "secrets": [],
+  "capabilities": {},
+  "runtime": {
+    "kind": "sandbox",
+    "image": {
+      "kind": "bind",
+      "path": "./.tmp/dev-meteo-tool-rootfs"
+    },
+    "adapter": {
+      "schema_version": 1,
+      "protocol": "jsonrpc-stdio",
+      "command": [
+        "python3",
+        "/opt/tool/main.py"
+      ],
+      "workdir": "/opt/tool"
+    }
+  }
+}

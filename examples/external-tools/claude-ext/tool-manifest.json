@@ -1,0 +1,50 @@
+{
+  "tool_abi_version": "1",
+  "name": "dev/claude-ext",
+  "description": "Sandboxed Claude-style streaming session external tool",
+  "bundle": "dev",
+  "local_name": "claude-ext",
+  "access_level": "write",
+  "tags": [
+    "dev",
+    "claude-ext",
+    "external",
+    "session",
+    "streaming"
+  ],
+  "invocation_mode": "session",
+  "session_policy": "strict",
+  "secrets": [
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_EXT_USE_SHELL_PIPELINE"
+  ],
+  "secret_scope": "send",
+  "capabilities": {
+    "http": {
+      "hosts": [
+        "api.anthropic.com",
+        "statsig.anthropic.com",
+        "registry.npmjs.org"
+      ]
+    }
+  },
+  "coordination": {
+    "baml_file": "coordination.baml"
+  },
+  "runtime": {
+    "kind": "sandbox",
+    "image": {
+      "kind": "bind",
+      "path": "./.tmp/dev-claude-ext-rootfs"
+    },
+    "adapter": {
+      "schema_version": 1,
+      "protocol": "jsonrpc-stdio",
+      "command": [
+        "/tool-adapter"
+      ],
+      "workdir": "/home/sandbox/workspace"
+    }
+  }
+}

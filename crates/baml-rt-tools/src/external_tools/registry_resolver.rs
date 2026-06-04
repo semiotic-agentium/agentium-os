@@ -12,11 +12,10 @@ use super::{
     ExternalLifecycleRecorder, ExternalToolSnapshot,
     drift::DriftGuard,
     handler::ProcessToolHandler,
-    metadata::build_tool_metadata,
+    metadata::{InvocationMode, build_tool_metadata},
     policy::{DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT},
-    resolver::SandboxRuntimeWiring,
+    resolver::{SandboxRuntimeWiring, build_sandbox_tool_handler},
     runtime::{DEFAULT_PROCESS_COMMAND, ToolRuntime},
-    sandbox::{SandboxSpecBuilder, SandboxToolHandler},
     snapshot::validate_external_tool_snapshot,
     snapshot_catalog::BUILDER_EXTERNAL_TOOL_CACHE_ENV,
     stdio::StdioSubprocessInvoker,
@@ -111,6 +110,15 @@ fn load_snapshot(
     // `from_snapshots` rejects coordination specs unless `coordination_baml` was
     // inlined at approval time, so an empty source path cannot silently drop a
     // referenced coordination file here.
+    if matches!(snapshot.tool.invocation_mode, InvocationMode::Session)
+        && !matches!(snapshot.tool.runtime, Some(ToolRuntime::Sandbox(_)))
+    {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "registry-backed external tool '{}' declares invocation_mode=session but is not sandbox runtime; session mode is sandbox-only",
+            tool_name
+        )));
+    }
+
     let mut metadata = build_tool_metadata(Path::new(""), &snapshot.tool, &tool_name)?;
     metadata.digest = Some(snapshot.digests.schema_digest.to_string());
 
@@ -146,18 +154,14 @@ fn load_snapshot(
                     tool_name
                 ))
             })?;
-            let spec_builder: SandboxSpecBuilder =
-                (wiring.spec_factory)(&tool_name, &snapshot.tool)?;
-            Arc::new(
-                SandboxToolHandler::new(
-                    metadata.clone(),
-                    wiring.provider.clone(),
-                    wiring.cache.clone(),
-                    spec_builder,
-                    DEFAULT_INVOKE_TIMEOUT,
-                )
-                .with_capabilities(snapshot.tool.capabilities.clone())
-                .with_drift_guard(drift_guard),
+            let spec_builder = (wiring.spec_factory)(&tool_name, &snapshot.tool)?;
+            build_sandbox_tool_handler(
+                metadata.clone(),
+                &snapshot.tool,
+                wiring,
+                spec_builder,
+                None,
+                Some(drift_guard),
             )
         }
     };

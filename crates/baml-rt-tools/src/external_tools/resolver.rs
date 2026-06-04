@@ -23,6 +23,7 @@ use baml_rt_core::{BamlRtError, Result};
 
 use super::{
     ExternalLifecycleEvent, ExternalLifecycleRecorder, ExternalSessionToolHandler,
+    drift::DriftGuard,
     handler::ProcessToolHandler,
     invoker::{ExternalInvoker, ToolDescribe},
     lockfile::{ExternalLockfileMode, ExternalToolsLockfile},
@@ -393,6 +394,79 @@ async fn load_process_tool_dir(
     ))
 }
 
+pub(super) fn build_sandbox_tool_handler(
+    metadata: ToolFunctionMetadata,
+    meta: &ExternalToolMetadata,
+    wiring: &SandboxRuntimeWiring,
+    spec_builder: SandboxSpecBuilder,
+    lifecycle_recorder: Option<&ExternalLifecycleRecorder>,
+    drift_guard: Option<Arc<DriftGuard>>,
+) -> Arc<dyn ToolHandler> {
+    match meta.invocation_mode {
+        InvocationMode::SingleShot => {
+            let mut handler_builder = SandboxToolHandler::new(
+                metadata,
+                wiring.provider.clone(),
+                wiring.cache.clone(),
+                spec_builder,
+                DEFAULT_INVOKE_TIMEOUT,
+            )
+            .with_capabilities(meta.capabilities.clone());
+            if let Some(recorder) = lifecycle_recorder {
+                handler_builder = handler_builder.with_lifecycle_recorder(recorder.clone());
+            }
+            if let Some(guard) = drift_guard {
+                handler_builder = handler_builder.with_drift_guard(guard);
+            }
+            Arc::new(handler_builder)
+        }
+        InvocationMode::Session => {
+            // TODO(phase-4 sandbox-streaming §7.2/§9.4): wire per-tool
+            // configuration from metadata into the pool/invoker instead of
+            // using the type defaults below. Specifically:
+            //   - `meta.session_policy` (Strict / MultiSend) — should drive
+            //     `SandboxSessionInvokerConfig` once a corresponding field
+            //     exists; today every tool gets the same FSM enforcement.
+            //   - `meta.reuse_after_session` — must override
+            //     `SandboxSessionInvokerConfig::reuse_after_session`
+            //     (default `false`); right now opt-in reuse is dropped on
+            //     the floor so every finish destroys the sandbox.
+            //   - `SessionPoolConfig::default_pool_max` /
+            //     `pool_checkout_timeout` — should pull from a future
+            //     `meta.pool_*` block once Phase 4 lands; today every tool
+            //     shares the global default cap.
+            let pool = Arc::new(SessionPool::new(
+                wiring.cache.runner_id().to_string(),
+                wiring.provider.clone(),
+                spec_builder,
+                SessionPoolConfig::default(),
+            ));
+            let invoker_config = SandboxSessionInvokerConfig::default();
+            let invoker_factory = {
+                let pool = pool.clone();
+                Arc::new(move |ctx: &ToolSessionContext| {
+                    Arc::new(SandboxSessionInvoker::new(
+                        pool.clone(),
+                        ctx.agent_id.clone(),
+                        ctx.context_id.clone(),
+                        invoker_config.clone(),
+                    )) as Arc<dyn super::SessionToolInvoker>
+                })
+            };
+
+            Arc::new(
+                ExternalSessionToolHandler::new_with_factory(
+                    metadata,
+                    invoker_factory,
+                    DEFAULT_INVOKE_TIMEOUT,
+                )
+                .with_capabilities(meta.capabilities.clone())
+                .with_secret_scope(meta.secret_scope),
+            )
+        }
+    }
+}
+
 async fn load_sandbox_tool_dir(
     dir: &Path,
     meta: ExternalToolMetadata,
@@ -436,66 +510,14 @@ async fn load_sandbox_tool_dir(
     // first invoke.
     let spec_builder = (wiring.spec_factory)(&tool_name, &meta)?;
 
-    let handler: Arc<dyn ToolHandler> = match meta.invocation_mode {
-        InvocationMode::SingleShot => {
-            let mut handler_builder = SandboxToolHandler::new(
-                metadata.clone(),
-                wiring.provider.clone(),
-                wiring.cache.clone(),
-                spec_builder,
-                DEFAULT_INVOKE_TIMEOUT,
-            )
-            .with_capabilities(meta.capabilities.clone());
-            if let Some(recorder) = lifecycle_recorder {
-                handler_builder = handler_builder.with_lifecycle_recorder(recorder.clone());
-            }
-            Arc::new(handler_builder)
-        }
-        InvocationMode::Session => {
-            // TODO(phase-4 sandbox-streaming §7.2/§9.4): wire per-tool
-            // configuration from metadata into the pool/invoker instead of
-            // using the type defaults below. Specifically:
-            //   - `meta.session_policy` (Strict / MultiSend) — should drive
-            //     `SandboxSessionInvokerConfig` once a corresponding field
-            //     exists; today every tool gets the same FSM enforcement.
-            //   - `meta.reuse_after_session` — must override
-            //     `SandboxSessionInvokerConfig::reuse_after_session`
-            //     (default `false`); right now opt-in reuse is dropped on
-            //     the floor so every finish destroys the sandbox.
-            //   - `SessionPoolConfig::default_pool_max` /
-            //     `pool_checkout_timeout` — should pull from a future
-            //     `meta.pool_*` block once Phase 4 lands; today every tool
-            //     shares the global default cap.
-            let pool = Arc::new(SessionPool::new(
-                wiring.cache.runner_id().to_string(),
-                wiring.provider.clone(),
-                spec_builder,
-                SessionPoolConfig::default(),
-            ));
-            let invoker_config = SandboxSessionInvokerConfig::default();
-            let invoker_factory = {
-                let pool = pool.clone();
-                Arc::new(move |ctx: &ToolSessionContext| {
-                    Arc::new(SandboxSessionInvoker::new(
-                        pool.clone(),
-                        ctx.agent_id.clone(),
-                        ctx.context_id.clone(),
-                        invoker_config.clone(),
-                    )) as Arc<dyn super::SessionToolInvoker>
-                })
-            };
-
-            Arc::new(
-                ExternalSessionToolHandler::new_with_factory(
-                    metadata.clone(),
-                    invoker_factory,
-                    DEFAULT_INVOKE_TIMEOUT,
-                )
-                .with_capabilities(meta.capabilities.clone())
-                .with_secret_scope(meta.secret_scope),
-            )
-        }
-    };
+    let handler = build_sandbox_tool_handler(
+        metadata.clone(),
+        &meta,
+        wiring,
+        spec_builder,
+        lifecycle_recorder,
+        None,
+    );
 
     let artifact_ref = dir.display().to_string();
     Ok((

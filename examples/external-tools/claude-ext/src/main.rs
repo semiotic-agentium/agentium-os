@@ -187,6 +187,7 @@ async fn handle_request(request: Value, sessions: Arc<SessionStore>) -> Value {
                 "protocol_version": PROTOCOL_VERSION,
                 "tool_name": TOOL_NAME,
                 "supported_methods": SUPPORTED_METHODS,
+                "schema_digest": "sha256:5bca5f9e64313cbcad5d89fb2907f466434e24f6203c6ffd2aa4f798ac7f086b",
             }),
         ),
         METHOD_SCHEMA => {
