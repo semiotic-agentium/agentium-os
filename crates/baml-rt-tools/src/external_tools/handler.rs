@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 use super::{
     ExternalLifecycleEvent, ExternalLifecycleRecorder,
+    drift::DriftGuard,
     invoker::{ExternalInvoker, InvokeRequest},
     policy::{InvocationPolicy, PolicyError, QuarantineState, ToolQuota},
 };
@@ -41,6 +42,10 @@ pub struct ProcessToolHandler {
     secrets: serde_json::Map<String, Value>,
     /// Effective capabilities (policy intersection). Passed through to the tool.
     capabilities: Value,
+    /// Snapshot-backed tools attach a drift guard: the first invoke verifies the
+    /// live `tool/schema` against the approved digest and fails closed on drift.
+    /// `None` for dev-mode tools (validated eagerly at load instead).
+    drift_guard: Option<Arc<DriftGuard>>,
 }
 
 impl ProcessToolHandler {
@@ -61,6 +66,7 @@ impl ProcessToolHandler {
             lifecycle_recorder: None,
             secrets: serde_json::Map::new(),
             capabilities: Value::Null,
+            drift_guard: None,
         }
     }
 
@@ -81,6 +87,14 @@ impl ProcessToolHandler {
 
     pub fn with_lifecycle_recorder(mut self, recorder: ExternalLifecycleRecorder) -> Self {
         self.lifecycle_recorder = Some(recorder);
+        self
+    }
+
+    /// Attach a [`DriftGuard`] so the first invoke verifies the live tool schema
+    /// against the approved snapshot digest. Used by the snapshot/registry
+    /// resolver; dev-mode tools omit it (they validate describe at load).
+    pub fn with_drift_guard(mut self, guard: Arc<DriftGuard>) -> Self {
+        self.drift_guard = Some(guard);
         self
     }
 
@@ -119,6 +133,7 @@ impl ToolHandler for ProcessToolHandler {
             secrets: self.secrets.clone(),
             capabilities: self.capabilities.clone(),
             pending_input: None,
+            drift_guard: self.drift_guard.clone(),
         }))
     }
 }
@@ -134,6 +149,9 @@ pub struct ProcessToolSession {
     capabilities: Value,
     /// Input buffered by `send`, consumed by the next `read`.
     pending_input: Option<Value>,
+    /// Shared with the parent handler so the live-schema check runs once per
+    /// handler lifetime, not once per session.
+    drift_guard: Option<Arc<DriftGuard>>,
 }
 
 #[async_trait]
@@ -151,6 +169,19 @@ impl ToolSession for ProcessToolSession {
                 return Ok(ToolStep::Done { output: None });
             }
         };
+
+        // Lazy first-invoke drift check: verify the live tool schema matches the
+        // approved snapshot before the first real call, then cache the verdict.
+        // Runs only for snapshot-backed tools (guard present); fails closed on
+        // drift. `?` maps the classified error into `ToolSessionError`.
+        if let Some(guard) = &self.drift_guard {
+            let invoker = self.invoker.clone();
+            let tool = self.tool_name.clone();
+            let timeout = guard.schema_timeout();
+            guard
+                .ensure_verified(move || async move { invoker.schema(&tool, timeout).await })
+                .await?;
+        }
 
         let _permit = self
             .policy

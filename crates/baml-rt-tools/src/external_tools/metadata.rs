@@ -502,9 +502,22 @@ pub(crate) fn build_tool_metadata(
 /// Both runner and tool author must compute this identically for
 /// describe-mismatch detection to work.
 pub(crate) fn metadata_schema_digest(meta: &ExternalToolMetadata) -> String {
+    schema_digest_from_io(&meta.schemas.input, &meta.schemas.output)
+}
+
+/// JCS-canonical SHA-256 over a raw `{input, output}` schema pair.
+///
+/// Identical hashing to [`metadata_schema_digest`], but taking the schemas
+/// directly. Used by the runtime drift guard to recompute a live tool's schema
+/// digest from a `tool/schema` response without trusting the tool's
+/// self-reported `content_digest`.
+pub(crate) fn schema_digest_from_io(
+    input: &serde_json::Value,
+    output: &serde_json::Value,
+) -> String {
     let payload = serde_json::json!({
-        "input": &meta.schemas.input,
-        "output": &meta.schemas.output,
+        "input": input,
+        "output": output,
     });
     let canonical = serde_jcs::to_vec(&payload)
         .expect("serializing canonical tool schema payload should not fail");

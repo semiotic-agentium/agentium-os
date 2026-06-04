@@ -13,6 +13,7 @@
 pub mod handler;
 pub mod invoker;
 pub mod lockfile;
+pub mod drift;
 pub mod metadata;
 pub mod metadata_catalog;
 pub mod policy;
@@ -60,6 +61,7 @@ pub use protocol::{
     METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA, PROTOCOL_VERSION, SUPPORTED_METHODS,
     SUPPORTED_METHODS_V2, ToolDescribeResult, ToolInvokeParams, ToolInvokeResult, ToolSchemaResult,
 };
+pub use drift::DriftGuard;
 pub use registry_resolver::ExternalRegistryResolver;
 pub use resolver::DevModeResolver;
 pub use runtime::{
@@ -119,6 +121,14 @@ pub enum ExternalLifecycleEvent {
         tool_name: String,
         lifted_by: String,
         lifted_at_ms: u64,
+    },
+    /// The live tool's `tool/schema` no longer matches its approved snapshot
+    /// digest, detected lazily on first invoke by [`drift::DriftGuard`]. The
+    /// invoke fails closed; this event records the drift for provenance/audit.
+    SchemaDrift {
+        tool_name: String,
+        expected_schema_digest: String,
+        observed_schema_digest: String,
     },
 }
 

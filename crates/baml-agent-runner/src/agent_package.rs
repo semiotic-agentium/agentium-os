@@ -214,7 +214,7 @@ impl AgentPackage {
         let lockfile_path = self.extract_dir.join(EXTERNAL_TOOLS_LOCKFILE_NAME);
         let sandbox_wiring = build_sandbox_wiring(sandbox_bind_roots.to_vec())?;
         let external_resolver = build_dev_mode_resolver(
-            Some(lifecycle_recorder),
+            Some(lifecycle_recorder.clone()),
             &lockfile_path,
             ExternalLockfileMode::from_env(),
             sandbox_wiring,
@@ -249,6 +249,7 @@ impl AgentPackage {
             Some(ExternalRegistryResolver::from_cache_root_with_sandbox(
                 &self.extract_dir,
                 build_sandbox_wiring(sandbox_bind_roots.to_vec())?,
+                Some(lifecycle_recorder.clone()),
             )?)
         } else {
             None
@@ -677,6 +678,19 @@ fn build_external_lifecycle_recorder(
                     serde_json::json!({
                         "lifted_by": lifted_by,
                         "lifted_at_ms": lifted_at_ms,
+                    }),
+                ),
+                ExternalLifecycleEvent::SchemaDrift {
+                    tool_name,
+                    expected_schema_digest,
+                    observed_schema_digest,
+                } => (
+                    tool_name,
+                    "schema_drift".to_string(),
+                    "drifted".to_string(),
+                    serde_json::json!({
+                        "expected_schema_digest": expected_schema_digest,
+                        "observed_schema_digest": observed_schema_digest,
                     }),
                 ),
             };

@@ -9,10 +9,11 @@ use std::{path::Path, sync::Arc};
 use baml_rt_core::{BamlRtError, Result};
 
 use super::{
-    ExternalToolSnapshot,
+    ExternalLifecycleRecorder, ExternalToolSnapshot,
+    drift::DriftGuard,
     handler::ProcessToolHandler,
     metadata::build_tool_metadata,
-    policy::DEFAULT_INVOKE_TIMEOUT,
+    policy::{DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT},
     resolver::SandboxRuntimeWiring,
     runtime::{DEFAULT_PROCESS_COMMAND, ToolRuntime},
     sandbox::{SandboxSpecBuilder, SandboxToolHandler},
@@ -36,7 +37,7 @@ struct RegistryToolEntry {
 
 impl ExternalRegistryResolver {
     pub fn from_cache_root(root: &Path) -> Result<Self> {
-        Self::from_cache_root_with_sandbox(root, None)
+        Self::from_cache_root_with_sandbox(root, None, None)
     }
 
     pub fn from_env() -> Result<Option<Self>> {
@@ -51,14 +52,16 @@ impl ExternalRegistryResolver {
     pub fn from_cache_root_with_sandbox(
         root: &Path,
         sandbox: Option<SandboxRuntimeWiring>,
+        recorder: Option<ExternalLifecycleRecorder>,
     ) -> Result<Self> {
         let snapshots = external_tool_cache::read_approved_snapshots(root)?;
-        Self::from_snapshots(snapshots, sandbox)
+        Self::from_snapshots(snapshots, sandbox, recorder)
     }
 
     pub fn from_snapshots(
         snapshots: Vec<ExternalToolSnapshot>,
         sandbox: Option<SandboxRuntimeWiring>,
+        recorder: Option<ExternalLifecycleRecorder>,
     ) -> Result<Self> {
         let mut entries = std::collections::HashMap::new();
         for snapshot in snapshots {
@@ -66,7 +69,7 @@ impl ExternalRegistryResolver {
                 continue;
             }
             validate_external_tool_snapshot(&snapshot)?;
-            let (name, entry) = load_snapshot(snapshot, sandbox.as_ref())?;
+            let (name, entry) = load_snapshot(snapshot, sandbox.as_ref(), recorder.as_ref())?;
             if entries.insert(name.clone(), entry).is_some() {
                 return Err(BamlRtError::InvalidArgument(format!(
                     "duplicate external tool snapshot '{}'",
@@ -101,6 +104,7 @@ impl ExternalToolResolver for ExternalRegistryResolver {
 fn load_snapshot(
     snapshot: ExternalToolSnapshot,
     sandbox: Option<&SandboxRuntimeWiring>,
+    recorder: Option<&ExternalLifecycleRecorder>,
 ) -> Result<(ToolName, RegistryToolEntry)> {
     let tool_name = ToolName::parse(&snapshot.tool.name)?;
     // Registry/cache snapshots must be source-dir independent. Validation in
@@ -109,6 +113,16 @@ fn load_snapshot(
     // referenced coordination file here.
     let mut metadata = build_tool_metadata(Path::new(""), &snapshot.tool, &tool_name)?;
     metadata.digest = Some(snapshot.digests.schema_digest.to_string());
+
+    // Lazy first-invoke drift guard: the live tool's `tool/schema` is checked
+    // against this approved digest on first use, then cached (mirrors the MCP
+    // runtime tools-digest check). Drift fails the invoke closed.
+    let drift_guard = Arc::new(DriftGuard::new(
+        tool_name.clone(),
+        snapshot.digests.schema_digest.to_string(),
+        DEFAULT_DESCRIBE_TIMEOUT,
+        recorder.cloned(),
+    ));
 
     let runtime = snapshot.tool.runtime.clone().unwrap_or_default();
     let handler: Arc<dyn ToolHandler> = match runtime {
@@ -121,7 +135,8 @@ fn load_snapshot(
             let invoker = Arc::new(StdioSubprocessInvoker::from_command(command)?);
             Arc::new(
                 ProcessToolHandler::new(metadata.clone(), invoker, DEFAULT_INVOKE_TIMEOUT)
-                    .with_capabilities(snapshot.tool.capabilities.clone()),
+                    .with_capabilities(snapshot.tool.capabilities.clone())
+                    .with_drift_guard(drift_guard),
             )
         }
         ToolRuntime::Sandbox(_) => {
@@ -141,7 +156,8 @@ fn load_snapshot(
                     spec_builder,
                     DEFAULT_INVOKE_TIMEOUT,
                 )
-                .with_capabilities(snapshot.tool.capabilities.clone()),
+                .with_capabilities(snapshot.tool.capabilities.clone())
+                .with_drift_guard(drift_guard),
             )
         }
     };
