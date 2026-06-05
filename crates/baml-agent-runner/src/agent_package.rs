@@ -980,7 +980,10 @@ impl BundleRegistrar for MemoryBundleRegistrar {
 mod tests {
     use std::{fs, os::unix::fs::PermissionsExt, path::Path, sync::OnceLock};
 
-    use baml_rt_tools::external_tools::{ExternalToolLockEntry, ExternalToolsLockfile};
+    use baml_rt_tools::external_tools::{
+        ExternalToolLockEntry, ExternalToolMetadata, ExternalToolsLockfile,
+        compute_external_schema_digest,
+    };
     use tempfile::tempdir;
 
     use super::{EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLockfileMode, build_allowed_dirs_resolver};
@@ -1013,13 +1016,21 @@ mod tests {
             serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
         )
         .expect("write metadata");
+        let metadata: ExternalToolMetadata =
+            serde_json::from_value(metadata).expect("fixture metadata should deserialize");
+        let schema_digest = compute_external_schema_digest(&metadata);
 
         let describe = format!(
-            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"{tool_name}\",\"supported_methods\":[\"tool/describe\",\"tool/invoke\"]}}}}"
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"{tool_name}\",\"supported_methods\":[\"tool/describe\",\"tool/invoke\",\"tool/schema\"],\"schema_digest\":\"{schema_digest}\"}}}}"
+        );
+        let schema = format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"schema_version\":1,\"tool_name\":\"{tool_name}\",\"content_type\":\"application/schema+json\",\"content_digest\":\"{schema_digest}\",\"input\":{{\"type\":\"object\"}},\"output\":{{\"type\":\"object\"}}}}}}"
         );
         // Drain stdin to EOF then emit one JSON-RPC frame (matches stdio invoker: one line + shutdown).
         // `cat` is faster and less flaky under parallel test load than a shell read loop.
-        let script = format!("#!/bin/sh\ncat >/dev/null 2>&1\nprintf '%s\\n' '{describe}'\n");
+        let script = format!(
+            "#!/bin/sh\nreq=$(cat)\nif printf '%s' \"$req\" | grep -q '\"method\":\"tool/schema\"'; then\n  printf '%s\\n' '{schema}'\nelse\n  printf '%s\\n' '{describe}'\nfi\n"
+        );
         let bin = dir.join("tool-server");
         fs::write(&bin, script.as_bytes()).expect("write tool-server");
         let mut perms = fs::metadata(&bin).expect("stat tool-server").permissions();

@@ -184,16 +184,9 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             )
         }
         ProvenanceDb::File(path) => Arc::new(
-            baml_rt_config::SurrealConfigStore::open(
-                path.parent()
-                    .unwrap_or_else(|| {
-                        tracing::debug!(path = %path.display(), "no parent, using path as config base");
-                        path.as_ref()
-                    })
-                    .join("config.db"),
-            )
-            .await
-            .context("Failed to open config store (config.db)")?,
+            baml_rt_config::SurrealConfigStore::open(path.join("config.db"))
+                .await
+                .context("Failed to open config store (config.db)")?,
         ),
     };
     let fnox_resolver = Arc::new(FnoxFileSecretResolver::default_path_resolver());

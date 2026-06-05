@@ -21,7 +21,10 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
-use baml_rt_tools::{BundleName, external_tools::SandboxImageRef};
+use baml_rt_tools::{
+    BundleName,
+    external_tools::{RUNTIME_LOCK_FILE_NAME, SandboxImageRef},
+};
 use console::style;
 
 use crate::{
@@ -271,7 +274,7 @@ pub fn build_file_set(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
         // per-machine and must never be committed. Keeping the rule next to
         // the tool means it travels with the tool if the package is moved or
         // published, instead of relying on a workspace-level wildcard.
-        ensure_gitignore_entry(&mut files, "tool-runtime.lock.json");
+        ensure_gitignore_entry(&mut files, RUNTIME_LOCK_FILE_NAME);
     }
     files
 }
