@@ -86,6 +86,23 @@ pre-commit install                  # run the hooks on every commit
 pre-commit run --all-files          # run them manually across the tree
 ```
 
+## Continuous integration (fork PRs)
+
+This repository is **public**. CI uses a **trusted / untrusted** split:
+
+| Your PR is from… | What runs |
+|------------------|-----------|
+| A **fork** | GitHub-hosted jobs only: fmt, clippy, nextest **without** LLM tests, reuse, gitleaks. **No** API secrets, **no** self-hosted runners, **no** k8s pilot validation. |
+| A **branch in this repo** (collaborator) | Full CI on self-hosted runners, including LLM tests and k8s pilot validation when paths match. |
+| After **merge to `main`** | Full trusted CI on every push. |
+
+Fork PRs may sit idle until a maintainer **approves** the workflow run (repo
+setting). Full k8s validation runs on merge to `main` or via maintainer
+`workflow_dispatch`.
+
+See [`docs/runbooks/ci-security.md`](docs/runbooks/ci-security.md) for operator
+settings (branch protection, runner groups, secrets).
+
 ## Commit and PR conventions
 
 - Use [Conventional Commits](https://www.conventionalcommits.org/) for commit

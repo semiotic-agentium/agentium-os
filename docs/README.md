@@ -55,6 +55,7 @@ Install, test, demo, and operate.
 |-----|---------|
 | [k8s-pilot-operator-guide.md](runbooks/k8s-pilot-operator-guide.md) | Supported Helm install path |
 | [e2e-k8s.md](runbooks/e2e-k8s.md) | K8s validation harness |
+| [ci-security.md](runbooks/ci-security.md) | Public-repo CI trust model and GitHub settings |
 | [k8s-pilot-load-testing.md](runbooks/k8s-pilot-load-testing.md) | Load-test harness contract |
 | [task-daemon.md](runbooks/task-daemon.md) | Task-daemon user guide |
 | [host-tool-quickstart.md](runbooks/host-tool-quickstart.md) | Sandboxed external tool + agent checklist |
