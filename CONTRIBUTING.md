@@ -116,14 +116,32 @@ settings (branch protection, runner groups, secrets).
   PR resolves with a closing keyword (`Closes #N`), and make sure the build,
   tests, clippy, and `cargo fmt --check` are green.
 
-## Licensing (REUSE)
+## Licensing
 
-The repository follows the [REUSE 3.3](https://reuse.software) specification:
-every file carries copyright and license metadata, and the `reuse` CI job fails
-the build if any file is missing it.
+Agentium OS is licensed under the **[Apache License, Version 2.0](LICENSE)**
+only. There is no separate “SPDX license” — `Apache-2.0` is the standard
+[SPDX](https://spdx.org/licenses/) identifier for that same legal text.
 
-New hand-written source must carry a two-line SPDX header. Use the comment style
-appropriate to the language (`//`, `#`, `<!-- -->`):
+| Declaration | Meaning |
+|-------------|---------|
+| [`LICENSE`](LICENSE) | Full Apache 2.0 legal text |
+| [`NOTICE`](NOTICE) | Copyright and attribution |
+| Root [`Cargo.toml`](Cargo.toml) `[workspace.package].license` | Crate metadata (`Apache-2.0`) |
+| Source `# SPDX-License-Identifier: Apache-2.0` | Per-file tag (REUSE) |
+| [`REUSE.toml`](REUSE.toml) bulk annotations | Config, docs, generated trees |
+
+Use **`Apache-2.0`** everywhere for first-party work. Do not use `MIT`, bare
+`Apache`, or other identifiers unless you are documenting **third-party**
+upstream code (e.g. vendored models under `models/fastembed/` — see `REUSE.toml`).
+
+### REUSE compliance
+
+The repository follows [REUSE 3.3](https://reuse.software): every tracked file
+must carry copyright and license metadata. The `reuse` CI job fails if anything
+is missing.
+
+New hand-written source needs a two-line SPDX header (comment style for the
+language: `//`, `#`, `<!-- -->`):
 
 ```rust
 // SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
@@ -131,7 +149,7 @@ appropriate to the language (`//`, `#`, `<!-- -->`):
 // SPDX-License-Identifier: Apache-2.0
 ```
 
-The headers are reproducible with the `reuse` CLI rather than typed by hand:
+Generate headers with the `reuse` CLI:
 
 ```bash
 reuse annotate --copyright "Semiotic AI, Inc." --license Apache-2.0 \
@@ -139,8 +157,8 @@ reuse annotate --copyright "Semiotic AI, Inc." --license Apache-2.0 \
 ```
 
 Generated trees, content-hashed agent/fixture bundles, configuration, docs, and
-vendored assets are annotated in bulk via [`REUSE.toml`](REUSE.toml) instead of
-inline headers — add new such paths there. Verify locally with:
+other non-headered paths are covered in bulk via [`REUSE.toml`](REUSE.toml) —
+add new paths there when needed. Verify locally:
 
 ```bash
 reuse lint
