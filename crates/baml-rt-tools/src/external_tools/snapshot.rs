@@ -2,7 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::Path,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use baml_rt_core::{BamlRtError, Result};
 use serde::{Deserialize, Serialize};
@@ -21,6 +25,46 @@ pub const EXTERNAL_TOOL_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 pub const EXTERNAL_TOOL_SOURCE: &str = "external_tool";
 
 pub type ExternalApprovalState = ApprovalState;
+
+/// Current wall-clock as an RFC3339 UTC timestamp string, the canonical format
+/// for external-tool snapshot `created_at` / `reviewed_at` fields.
+///
+/// Shared by every snapshot producer (CLI local discovery and the runner-owned
+/// enable endpoint) so a single field never carries two formats across paths.
+pub fn now_snapshot_timestamp() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format_unix_rfc3339_utc(secs)
+}
+
+/// Format Unix seconds as `YYYY-MM-DDThh:mm:ssZ` without pulling in a date
+/// crate. Uses Howard Hinnant's civil-from-days algorithm.
+pub fn format_unix_rfc3339_utc(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let seconds_of_day = secs % 86_400;
+    let (year, month, day) = civil_from_days(days);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+fn civil_from_days(days_since_unix_epoch: i64) -> (i64, u32, u32) {
+    let z = days_since_unix_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    let year = year + if month <= 2 { 1 } else { 0 };
+    (year, month as u32, day as u32)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalToolSnapshot {

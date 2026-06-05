@@ -232,9 +232,7 @@ mod tests {
             let drifted_in = drifted_in.clone();
             let approved_out = approved_out.clone();
             let err = guard
-                .ensure_verified(move || async move {
-                    Ok(schema_result(drifted_in, approved_out))
-                })
+                .ensure_verified(move || async move { Ok(schema_result(drifted_in, approved_out)) })
                 .await
                 .expect_err("drift must fail closed");
             assert!(err.to_string().contains("schema drift"), "got: {err}");
@@ -262,7 +260,9 @@ mod tests {
         // First attempt: schema fetch fails transiently.
         let err = guard
             .ensure_verified(|| async {
-                Err(BamlRtError::InvalidArgument("temporary spawn failure".into()))
+                Err(BamlRtError::InvalidArgument(
+                    "temporary spawn failure".into(),
+                ))
             })
             .await
             .expect_err("transient fetch failure must surface");

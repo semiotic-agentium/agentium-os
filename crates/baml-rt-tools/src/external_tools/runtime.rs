@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Runtime declarations for external tools (`runtime` block in
-//! `tool-metadata.json`).
+//! `tool-manifest.json`).
 //!
 //! Workstream A of `tool_sandbox.md`: introduce the typed model with no
 //! behavior change. Dispatch by `ToolRuntime` kind lands in Workstream B when

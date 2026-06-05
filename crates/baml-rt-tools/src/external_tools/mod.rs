@@ -10,10 +10,11 @@
 //! Phase 1 scope: stateless, single-shot subprocess invocation. Later phases
 //! extend the same protocol to Wasm or keep-alive transports.
 
+pub mod discovery;
+pub mod drift;
 pub mod handler;
 pub mod invoker;
 pub mod lockfile;
-pub mod drift;
 pub mod metadata;
 pub mod metadata_catalog;
 pub mod policy;
@@ -32,6 +33,8 @@ pub mod stdio;
 
 use std::sync::Arc;
 
+pub use discovery::{DEFAULT_DISCOVERY_TIMEOUT, discover_snapshot};
+pub use drift::DriftGuard;
 pub use handler::{ProcessToolHandler, ProcessToolSession};
 pub use invoker::{
     ExternalInvoker, InvokeRequest, InvokeResponse, ToolDescribe, ToolInvoker, map_jsonrpc_error,
@@ -43,11 +46,11 @@ pub use lockfile::{
 pub use metadata::{
     CoordinationSpec, ExternalSecretScope, ExternalSessionPolicy, ExternalToolManifest,
     ExternalToolMetadata, InvocationMode, MetadataSchemas, compute_tool_digest,
-    read_external_manifest, read_external_metadata, read_runtime_external_metadata,
+    read_external_manifest,
 };
 pub use metadata_catalog::{
-    BUILDER_EXTERNAL_TOOLS_ENV, ExternalMetadataCatalog, build_builder_catalog,
-    build_builder_catalog_with_mcp_root, build_builder_catalog_with_roots, external_dirs_from_env,
+    BUILDER_EXTERNAL_TOOLS_ENV, build_builder_catalog, build_builder_catalog_with_mcp_root,
+    build_builder_catalog_with_roots, external_dirs_from_env,
 };
 pub use policy::{
     BACKOFF_SCHEDULE_MS, DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT, DEFAULT_MAX_CONCURRENT,
@@ -61,9 +64,7 @@ pub use protocol::{
     METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA, PROTOCOL_VERSION, SUPPORTED_METHODS,
     SUPPORTED_METHODS_V2, ToolDescribeResult, ToolInvokeParams, ToolInvokeResult, ToolSchemaResult,
 };
-pub use drift::DriftGuard;
 pub use registry_resolver::ExternalRegistryResolver;
-pub use resolver::DevModeResolver;
 pub use runtime::{
     DEFAULT_PROCESS_COMMAND, ProcessRuntimeSpec, SandboxAdapterRuntimeSpec, SandboxImageRef,
     SandboxRuntimeSpec, ToolRuntime, ToolRuntimeKind,
@@ -85,7 +86,8 @@ pub use snapshot::{
     EXTERNAL_TOOL_SNAPSHOT_SCHEMA_VERSION, EXTERNAL_TOOL_SOURCE, ExternalApprovalState,
     ExternalToolDescribeSnapshot, ExternalToolSnapshot, ExternalToolSnapshotDigests,
     compute_external_schema_digest, compute_manifest_digest, compute_runtime_digest,
-    compute_snapshot_digest, validate_describe_schema_support, validate_external_tool_snapshot,
+    compute_snapshot_digest, format_unix_rfc3339_utc, now_snapshot_timestamp,
+    validate_describe_schema_support, validate_external_tool_snapshot,
 };
 pub use snapshot_catalog::{
     BUILDER_EXTERNAL_TOOL_CACHE_ENV, ExternalToolRegistryCatalog, ExternalToolSnapshotCatalog,

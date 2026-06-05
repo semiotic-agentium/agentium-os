@@ -10,32 +10,6 @@
     "fixture"
   ],
   "invocation_mode": "single_shot",
-  "schemas": {
-    "input": {
-      "type": "object",
-      "properties": {
-        "message": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "message"
-      ],
-      "additionalProperties": false
-    },
-    "output": {
-      "type": "object",
-      "properties": {
-        "reply": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "reply"
-      ],
-      "additionalProperties": false
-    }
-  },
   "secrets": [],
   "capabilities": {},
   "runtime": {

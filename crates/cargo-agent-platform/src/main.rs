@@ -27,8 +27,8 @@
 //! - `regen` — Regenerate type declarations for all agents
 //! - `doctor` — Validate workspace integrity
 //! - `chat` — Interactive terminal chat with a deployed agent
-//! - `check-external-tool` — Validate tool metadata schema/runtime compatibility
-//! - `sandbox-bind-sync` — Sync local bind dev rootfs path into tool metadata (optionally Docker-assisted)
+//! - `check-external-tool` — Validate tool manifest/runtime compatibility
+//! - `sandbox-bind-sync` — Sync local bind dev rootfs path for tool manifest (optionally Docker-assisted)
 
 mod commands;
 mod event_schemas;
@@ -90,11 +90,11 @@ enum Commands {
         #[arg(long, value_enum)]
         access: Option<Access>,
 
-        /// Runtime declaration to scaffold into tool-metadata.json
+        /// Runtime declaration to scaffold into tool-manifest.json
         #[arg(long, value_enum, default_value_t = Runtime::Process)]
         runtime: Runtime,
 
-        /// Invocation contract to scaffold into tool-metadata.json.
+        /// Invocation contract to scaffold into tool-manifest.json.
         ///
         /// - `single-shot`: stateless `tool/invoke`
         /// - `session`: `tool/session_*` protocol (requires `--runtime sandbox`)
@@ -318,9 +318,9 @@ enum Commands {
         paths: Vec<String>,
     },
 
-    /// Validate standalone external tool metadata against schema + runtime parser
+    /// Validate standalone external tool manifest against runtime parser
     CheckExternalTool {
-        /// Path to external tool directory (contains tool-metadata.json)
+        /// Path to external tool directory (contains tool-manifest.json)
         #[arg(long, default_value = ".")]
         path: String,
     },
@@ -329,12 +329,12 @@ enum Commands {
     ///
     /// Optional Docker-assisted mode can build/export rootfs first.
     SandboxBindSync {
-        /// Path to external tool directory (contains tool-metadata.json)
+        /// Path to external tool directory (contains tool-manifest.json)
         #[arg(long)]
         tool_dir: String,
 
         /// Bind rootfs path. Relative paths resolve against --tool-dir.
-        /// Defaults to runtime.image.path from tool-metadata.json.
+        /// Defaults to runtime.image.path from tool-manifest.json.
         #[arg(long)]
         rootfs: Option<String>,
 
@@ -371,7 +371,7 @@ enum Commands {
     ///
     /// Writes `tool-bundle.json` using shared sidecar helpers from metadata.
     SandboxOciPrepare {
-        /// Path to external tool directory (contains tool-metadata.json)
+        /// Path to external tool directory (contains tool-manifest.json)
         #[arg(long, default_value = ".")]
         tool_dir: String,
 
@@ -453,6 +453,12 @@ enum ExternalToolCommands {
         /// Operator token for registry import. Falls back to RUNNER_TOKEN.
         #[arg(long)]
         runner_token: Option<String>,
+        /// Bind sandbox rootfs path to use for runner-owned approval.
+        #[arg(long)]
+        sandbox_rootfs: Option<String>,
+        /// Audit identity recorded as the approval owner (self-asserted).
+        #[arg(long)]
+        approved_by: Option<String>,
         /// Skip interactive approval prompt.
         #[arg(long)]
         yes: bool,
@@ -950,6 +956,8 @@ fn main() -> anyhow::Result<()> {
                 cache_dir,
                 repository_url,
                 runner_token,
+                sandbox_rootfs,
+                approved_by,
                 yes,
                 json,
             } => commands::external_tool::enable(
@@ -957,6 +965,8 @@ fn main() -> anyhow::Result<()> {
                 cache_dir.as_deref(),
                 repository_url.as_deref(),
                 runner_token.as_deref(),
+                sandbox_rootfs.as_deref(),
+                approved_by.as_deref(),
                 yes,
                 json,
             ),

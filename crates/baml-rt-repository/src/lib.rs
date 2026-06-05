@@ -68,10 +68,10 @@ mod spans;
 // --- Re-exports for public API ---
 pub use commands::{ForkCommand, PublishCommand, PublishResult};
 pub use entry::{ChangeRationale, NewEntry, RepositoryEntry, RepositoryEntryHeader, SourceBundle};
+pub use error::{RepositoryError, Result};
 pub use external_tool::{
     ExternalToolRegistryTool, ExternalToolRegistryToolVersion, ExternalToolSnapshotBlob,
 };
-pub use error::{RepositoryError, Result};
 pub use ids::{AgentName, ContentHash, Generation, Version, VersionRef};
 pub use lineage::{LineageEdge, LineageKind, LineageSubgraph, Parentage};
 pub use mcp::{

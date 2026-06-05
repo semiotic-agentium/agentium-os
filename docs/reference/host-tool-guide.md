@@ -120,7 +120,7 @@ Tool naming rules:
 
 `new-tool` creates a standalone tool directory with at least:
 
-- `tool-metadata.json` (runtime / access / schema contract)
+- `tool-manifest.json` (runtime / access / schema contract)
 - `README.md`
 - language-specific source files
 
@@ -131,7 +131,7 @@ Runtime-specific emissions:
 
 For sandbox tools, metadata points to a sandbox image source, but you still need to build/provide the adapter artifact (next section).
 
-If `runtime.adapter.workdir` is set in `tool-metadata.json`, the runner uses it as the guest working directory when creating the sandbox and launching `/tool-adapter`, and also as the default `PWD`. That path must already exist inside the guest filesystem/rootfs. If omitted, the runner falls back to `/`.
+If `runtime.adapter.workdir` is set in `tool-manifest.json`, the runner uses it as the guest working directory when creating the sandbox and launching `/tool-adapter`, and also as the default `PWD`. That path must already exist inside the guest filesystem/rootfs. If omitted, the runner falls back to `/`.
 
 This field is the authoritative runtime contract across sandbox image sources: Bind, OCI, and future sandbox backends such as Disk. Do not rely on an OCI image's Dockerfile `WORKDIR` being discovered automatically by the runner — if your tool expects a non-`/` cwd, declare the same path explicitly in `runtime.adapter.workdir`.
 
@@ -235,8 +235,8 @@ Non-Docker alternatives: `skopeo copy oci:...` followed by manual layer flatten,
 
 Then:
 
-3. Point source metadata `runtime.image` to a portable relative path such as `{"kind": "bind", "path": "./.tmp/my-tool-rootfs"}`.
-4. Run `sandbox-bind-sync` (§4) to write the local `tool-metadata.lock.json` with the canonical absolute path.
+3. Point source manifest `runtime.image` to a portable relative path such as `{"kind": "bind", "path": "./.tmp/my-tool-rootfs"}`.
+4. Run `sandbox-bind-sync` (§4) to write the local `tool-manifest.lock.json` with the canonical absolute path.
 5. Ensure the resolved bind path is under `BAML_SANDBOX_BIND_ROOTS` before starting the runner (§6).
 
 Reference runnable example:
@@ -249,11 +249,11 @@ Reference runnable example:
 Sandbox runtime identity is source-specific:
 
 - **OCI** is the distributable runtime format. Identity is the digest-pinned image ref in metadata: `repo@sha256:<64hex>`.
-- **Bind** is a local development convenience. It points at a host rootfs directory and is not treated as a distributable verified artifact. `sandbox-bind-sync` records only the host-resolved path in `tool-metadata.lock.json` and writes the compatibility sidecar bundle when needed.
+- **Bind** is a local development convenience. It points at a host rootfs directory and is not treated as a distributable verified artifact. `sandbox-bind-sync` records only the host-resolved path in `tool-manifest.lock.json` and writes the compatibility sidecar bundle when needed.
 
 ### Bind sync command
 
-Use `sandbox-bind-sync` to write the local `tool-metadata.lock.json` with the resolved bind path, generate the adapter sidecar bundle (`/etc/agentium/tool-bundle.json`), and optionally validate metadata. It never mutates committed `tool-metadata.json`. Relative `--rootfs` and `--dockerfile` paths resolve against `--tool-dir`; if `--rootfs` is omitted, it defaults to the source metadata `runtime.image.path`.
+Use `sandbox-bind-sync` to write the local `tool-manifest.lock.json` with the resolved bind path, generate the adapter sidecar bundle (`/etc/agentium/tool-bundle.json`), and optionally validate manifest. It never mutates committed `tool-manifest.json`. Relative `--rootfs` and `--dockerfile` paths resolve against `--tool-dir`; if `--rootfs` is omitted, it defaults to the source manifest `runtime.image.path`.
 
 ```bash
 cargo agent-platform sandbox-bind-sync \
@@ -273,7 +273,7 @@ cargo agent-platform sandbox-bind-sync \
 
 ### OCI sidecar preparation (compatibility only)
 
-`tool-metadata.json` is the builder/runtime source of truth. `sandbox-oci-prepare` can still render a compatibility `tool-bundle.json` next to tool sources for adapters that explicitly need that file, but OCI identity remains the digest-pinned image ref and the bundle is not part of image identity.
+`tool-manifest.json` is the builder/runtime source of truth. `sandbox-oci-prepare` can still render a compatibility `tool-bundle.json` next to tool sources for adapters that explicitly need that file, but OCI identity remains the digest-pinned image ref and the bundle is not part of image identity.
 
 ```bash
 cargo agent-platform sandbox-oci-prepare \
@@ -295,7 +295,7 @@ This validates:
 2. runtime typed parse,
 3. sandbox source consistency:
    - OCI image refs are digest-pinned (`repo@sha256:...`),
-   - Bind source metadata is portable and the local lock path, when present, resolves to a directory.
+   - Bind source manifest is portable and the local lock path, when present, resolves to a directory.
 
 ---
 
@@ -316,7 +316,7 @@ roots = ["/abs/root1", "/abs/root2"]
 cargo run -p baml-agent-runner --all-features -- --runner-config ./runner.toml
 ```
 
-Each entry under `[external_tools].dirs` is a tool package directory containing its own `tool-metadata.json`. The runner loads the catalog at boot — **restart the runner after adding / editing / removing tools**; there is no hot reload in v1.
+Each entry under `[external_tools].dirs` is a tool package directory containing its own `tool-manifest.json`. The runner loads the catalog at boot — **restart the runner after adding / editing / removing tools**; there is no hot reload in v1.
 
 Legacy env vars still work (for back-compat and quick scripts):
 
@@ -385,7 +385,7 @@ In `agents/<agent>/manifest.json`:
 }
 ```
 
-The allowlist entry must match the `name` field in the tool's `tool-metadata.json` exactly (`bundle/local_name`). If not allowlisted, tool registration/invocation fails.
+The allowlist entry must match the `name` field in the tool's `tool-manifest.json` exactly (`bundle/local_name`). If not allowlisted, tool registration/invocation fails.
 
 ## 7.2 Publish + deploy + verify
 

@@ -3,8 +3,8 @@
 Smallest possible `runtime.kind = "sandbox"` tool package. Exists to exercise
 the end-to-end resolve path introduced in Workstream Y of `tool_sandbox.md`:
 
-- parsed into the runtime view by `read_runtime_external_metadata`
-- routed through `DevModeResolver::from_dirs_with_sandbox`
+- discovered from `tool-manifest.json` into an approved snapshot
+- routed through `ExternalRegistryResolver::from_allowed_dirs`
 - dispatched to a `SandboxToolHandler` built by the runner-wired
   `SandboxSpecFactory`
 

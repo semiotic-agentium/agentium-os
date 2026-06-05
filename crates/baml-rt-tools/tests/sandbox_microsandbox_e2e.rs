@@ -7,8 +7,8 @@
 use std::{env, fs, path::Path, time::Duration};
 
 use baml_rt_tools::external_tools::{
-    ERR_INTERNAL, JsonRpcRequest, JsonRpcResponse, METHOD_INVOKE, SandboxImageRef,
-    SandboxRuntimeSpec, ToolInvokeParams, ToolRuntime,
+    ERR_INTERNAL, ExternalToolManifest, JsonRpcRequest, JsonRpcResponse, METHOD_INVOKE,
+    MetadataSchemas, SandboxImageRef, SandboxRuntimeSpec, ToolInvokeParams, ToolRuntime,
     metadata::ExternalToolMetadata,
     sandbox::{MicrosandboxProvider, SandboxImageSource, SandboxProvider, SandboxSpec},
 };
@@ -94,16 +94,19 @@ async fn run_required_scenarios() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn load_sandbox_metadata() -> Result<ExternalToolMetadata, Box<dyn std::error::Error>> {
-    let path = env::var("BAML_SANDBOX_E2E_METADATA").unwrap_or_else(|_| {
+    let path = env::var("BAML_SANDBOX_E2E_MANIFEST").unwrap_or_else(|_| {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         Path::new(manifest_dir)
-            .join("tests/fixtures/external-tools/sandbox_echo/tool-metadata.json")
+            .join("tests/fixtures/external-tools/sandbox_echo/tool-manifest.json")
             .display()
             .to_string()
     });
     let raw = fs::read_to_string(&path)?;
-    let parsed: ExternalToolMetadata = serde_json::from_str(&raw)?;
-    Ok(parsed)
+    let parsed: ExternalToolManifest = serde_json::from_str(&raw)?;
+    Ok(parsed.into_metadata(MetadataSchemas {
+        input: json!({"type": "object"}),
+        output: json!({"type": "object"}),
+    }))
 }
 
 fn image_ref_to_source(

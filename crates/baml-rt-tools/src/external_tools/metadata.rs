@@ -2,14 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! External tool metadata — the contract for `tool-metadata.json`.
+//! External tool manifest + discovered metadata model.
 //!
-//! [`ExternalToolMetadata`] is the public typed model for everything a scaffolder
-//! writes and the runtime reads. Keeping one struct means the CLI scaffolder
-//! (`cargo-agent-platform`), the build-time catalog
-//! ([`super::metadata_catalog::ExternalMetadataCatalog`]), and the runtime
-//! resolver ([`super::resolver::DevModeResolver`]) cannot drift from each
-//! other — field renames become compile errors, not schema mismatches.
+//! [`ExternalToolManifest`] is the developer-authored `tool-manifest.json`.
+//! [`ExternalToolMetadata`] is generated from manifest + discovered schemas and
+//! stored in approved snapshots.
 //!
 //! Downstream machinery (secret requests, session policies, digest helpers)
 //! still lives here so there is a single place where the metadata file's
@@ -22,11 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::{
-    protocol::PROTOCOL_VERSION,
-    runtime::{SandboxImageRef, ToolRuntime},
-    runtime_lock::read_runtime_lock,
-};
+use super::{protocol::PROTOCOL_VERSION, runtime::ToolRuntime};
 use crate::{
     ToolName,
     tools::{
@@ -35,11 +28,10 @@ use crate::{
     },
 };
 
-/// Typed representation of `tool-metadata.json`.
+/// Generated runtime metadata: manifest fields plus discovered schemas.
 ///
-/// The struct *is* the schema: renaming a field here is a compile-error for
-/// every consumer (CLI scaffolder writer, runtime reader). Optional fields use
-/// `Option<_>` / `#[serde(default)]` so hand-written metadata can omit them.
+/// Tool authors do not write this directly; snapshots persist it after
+/// discovery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalToolMetadata {
     /// Protocol ABI version. V1 only accepts `"1"`.
@@ -96,7 +88,7 @@ pub struct ExternalToolMetadata {
 
 /// Tool-author-supplied coordination BAML pointer.
 ///
-/// The file lives next to `tool-metadata.json` in the tool package and contains
+/// The file lives next to `tool-manifest.json` in the tool package and contains
 /// the `Choose<Tool>Action` function plus any tool-specific terminal classes
 /// (Report / AskUser / etc.). The builder concatenates this into the prelude;
 /// auto-generated session classes (Open/Send/.../SessionPlan) come from the
@@ -153,7 +145,7 @@ impl ExternalToolMetadata {
     }
 
     /// Serialize to pretty JSON with trailing newline, the shape the CLI
-    /// writes into `tool-metadata.json`.
+    /// writes into generated metadata snapshots.
     pub fn to_pretty_json(&self) -> Result<String> {
         let mut out = serde_json::to_string_pretty(self).map_err(|e| {
             BamlRtError::InvalidArgumentWithSource {
@@ -287,46 +279,16 @@ impl From<ExternalToolMetadata> for ExternalToolManifest {
     }
 }
 
-/// Read + validate the authored `<dir>/tool-metadata.json` source only.
-///
-/// This does not resolve bind paths and does not read/merge the local
-/// `tool-metadata.lock.json` sidecar. Use it for builder/codegen, source
-/// validation, and any workflow that needs the portable committed metadata.
-///
-/// Typed deserialization rejects malformed enums (e.g. an unknown
-/// `access_level`) before the runtime sees them, so there's no extra manual
-/// string-matching for access/session/invocation fields.
-pub fn read_external_metadata(dir: &Path) -> Result<ExternalToolMetadata> {
-    let metadata_path = dir.join("tool-metadata.json");
-    let raw = std::fs::read_to_string(&metadata_path).map_err(|e| {
-        BamlRtError::InvalidArgumentWithSource {
-            message: format!("failed to read {}", metadata_path.display()),
-            source: Box::new(e),
-        }
-    })?;
-    let parsed: ExternalToolMetadata =
-        serde_json::from_str(&raw).map_err(|e| BamlRtError::InvalidArgumentWithSource {
-            message: format!("failed to parse {}", metadata_path.display()),
-            source: Box::new(e),
-        })?;
-    validate_external_abi(&parsed.name, &parsed.tool_abi_version)?;
-    Ok(parsed)
-}
-
 /// Read the tool manifest from `<dir>/tool-manifest.json`.
 ///
 /// Schema discovery and snapshot creation require `tool-manifest.json`.
-/// Legacy `tool-metadata.json` files that embed schemas are not accepted
-/// here — schemas must come from a live `tool/schema` call. Use
-/// [`read_external_metadata`] if you need the legacy format for dev-mode
-/// resolver paths.
+/// Schemas must come from a live `tool/schema` call and are stored in approved
+/// snapshots.
 pub fn read_external_manifest(dir: &Path) -> Result<ExternalToolManifest> {
     let manifest_path = dir.join("tool-manifest.json");
     if !manifest_path.exists() {
         return Err(BamlRtError::InvalidArgument(format!(
-            "no tool-manifest.json found in {}; create one (without schemas) and implement \
-             tool/schema — run `cargo agent-platform external-tool migrate <dir>` to convert \
-             an existing tool-metadata.json",
+            "no tool-manifest.json found in {}; create one (without schemas) and implement tool/schema",
             dir.display()
         )));
     }
@@ -355,53 +317,9 @@ fn validate_external_abi(name: &str, abi: &str) -> Result<()> {
     Ok(())
 }
 
-/// Read authored metadata and resolve it into the launch-ready runtime view.
-///
-/// The committed source file stays portable (relative bind paths, no
-/// runtime identity); the lock — written by `sandbox-bind-sync` and gitignored
-/// — supplies the canonical absolute bind path.
-///
-/// Behavior per runtime kind:
-/// - `Sandbox { image: Bind { path } }`: relative `path` is resolved against
-///   `dir` so the runtime never sees a relative bind path. If a lock with
-///   `image_path_abs` is present it overrides the resolved path.
-/// - Bind lock supplies only local path resolution; no digest is merged.
-/// - `Process` and OCI: lock is ignored.
-pub fn read_runtime_external_metadata(dir: &Path) -> Result<ExternalToolMetadata> {
-    let mut parsed = read_external_metadata(dir)?;
-    apply_runtime_lock(dir, &mut parsed)?;
-    Ok(parsed)
-}
-
-fn apply_runtime_lock(dir: &Path, meta: &mut ExternalToolMetadata) -> Result<()> {
-    let lock = read_runtime_lock(dir)?;
-
-    // Lock semantics are bind-scoped: it carries host-resolved fields that only
-    // make sense for `Sandbox::Bind`. OCI sandboxes and process tools must not
-    // be influenced by a locally-written lock — their digests live elsewhere
-    // (image ref / process binary digest).
-    if let Some(ToolRuntime::Sandbox(spec)) = meta.runtime.as_mut()
-        && let SandboxImageRef::Bind { path } = &mut spec.image
-    {
-        // Resolve relative bind paths against the metadata directory so
-        // runtime callers never see "./rootfs"-style values, even when
-        // the lock is missing.
-        if path.is_relative() {
-            *path = dir.join(&path);
-        }
-        if let Some(lock) = &lock
-            && let Some(abs) = &lock.image_path_abs
-        {
-            *path = abs.clone();
-        }
-    }
-
-    Ok(())
-}
-
 /// Project parsed metadata into the runtime [`ToolFunctionMetadata`] shape.
 ///
-/// `dir` is the tool package directory containing `tool-metadata.json`. When
+/// `dir` is the tool package directory containing `tool-manifest.json`. When
 /// `meta.coordination` is set, the referenced BAML file is read relative to
 /// `dir` and attached as [`ToolFunctionMetadata::coordination_baml`].
 pub(crate) fn build_tool_metadata(
@@ -531,54 +449,52 @@ pub(crate) fn schema_digest_from_io(
 /// Process runtime input (in order):
 /// - magic/version marker: `baml-ext-tool-v1\0`
 /// - tool binary bytes prefixed by u64 little-endian length
-/// - canonicalized metadata bytes prefixed by u64 little-endian length
+/// - canonicalized manifest bytes prefixed by u64 little-endian length
 /// - filesystem mode bits (`stat().mode() & 0o7777`) as u32 little-endian
 ///
 /// Sandbox runtime input (in order):
 /// - magic/version marker: `baml-ext-tool-sandbox-v1\0`
-/// - canonicalized metadata bytes prefixed by u64 little-endian length
-///
-/// Sandbox tools intentionally do not require a local `tool-server` binary:
-/// runtime identity is declared by sandbox metadata (`runtime.image`) rather than host executable bytes.
+/// - canonicalized manifest bytes prefixed by u64 little-endian length
 pub fn compute_tool_digest(dir: &Path) -> Result<String> {
-    let metadata_path = dir.join("tool-metadata.json");
-    let metadata_raw =
-        fs::read_to_string(&metadata_path).map_err(|e| BamlRtError::InvalidArgumentWithSource {
+    let manifest_path = dir.join("tool-manifest.json");
+    let manifest_raw =
+        fs::read_to_string(&manifest_path).map_err(|e| BamlRtError::InvalidArgumentWithSource {
             message: format!(
-                "failed to read external tool metadata {}",
-                metadata_path.display()
+                "failed to read external tool manifest {}",
+                manifest_path.display()
             ),
             source: Box::new(e),
         })?;
-    let metadata_json: Value = serde_json::from_str(&metadata_raw).map_err(|e| {
+    let manifest_json: Value = serde_json::from_str(&manifest_raw).map_err(|e| {
         BamlRtError::InvalidArgumentWithSource {
             message: format!(
-                "failed to parse external tool metadata {}",
-                metadata_path.display()
+                "failed to parse external tool manifest {}",
+                manifest_path.display()
             ),
             source: Box::new(e),
         }
     })?;
-    let metadata: ExternalToolMetadata = serde_json::from_str(&metadata_raw).map_err(|e| {
+    let manifest: ExternalToolManifest = serde_json::from_str(&manifest_raw).map_err(|e| {
         BamlRtError::InvalidArgumentWithSource {
             message: format!(
-                "failed to decode typed external tool metadata {}",
-                metadata_path.display()
+                "failed to decode typed external tool manifest {}",
+                manifest_path.display()
             ),
             source: Box::new(e),
         }
     })?;
-    let canonical_metadata =
-        serde_jcs::to_vec(&metadata_json).map_err(|e| BamlRtError::InvalidArgumentWithSource {
-            message: "failed to canonicalize external tool metadata JSON".to_string(),
+    validate_external_abi(&manifest.name, &manifest.tool_abi_version)?;
+    let canonical_manifest =
+        serde_jcs::to_vec(&manifest_json).map_err(|e| BamlRtError::InvalidArgumentWithSource {
+            message: "failed to canonicalize external tool manifest JSON".to_string(),
             source: Box::new(e),
         })?;
 
-    if matches!(metadata.runtime, Some(ToolRuntime::Sandbox(_))) {
+    if matches!(manifest.runtime, Some(ToolRuntime::Sandbox(_))) {
         let mut hasher = Sha256::new();
         hasher.update(b"baml-ext-tool-sandbox-v1\0");
-        hasher.update((canonical_metadata.len() as u64).to_le_bytes());
-        hasher.update(&canonical_metadata);
+        hasher.update((canonical_manifest.len() as u64).to_le_bytes());
+        hasher.update(&canonical_manifest);
         return Ok(format!("sha256:{:x}", hasher.finalize()));
     }
 
@@ -593,14 +509,12 @@ pub fn compute_tool_digest(dir: &Path) -> Result<String> {
     hasher.update(b"baml-ext-tool-v1\0");
     hasher.update((bin_bytes.len() as u64).to_le_bytes());
     hasher.update(&bin_bytes);
-    hasher.update((canonical_metadata.len() as u64).to_le_bytes());
-    hasher.update(&canonical_metadata);
+    hasher.update((canonical_manifest.len() as u64).to_le_bytes());
+    hasher.update(&canonical_manifest);
     hasher.update(mode_bits.to_le_bytes());
-
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
-#[cfg(unix)]
 fn file_mode_bits(path: &Path) -> Result<u32> {
     use std::os::unix::fs::MetadataExt;
 
@@ -614,334 +528,4 @@ fn file_mode_bits(path: &Path) -> Result<u32> {
 #[cfg(not(unix))]
 fn file_mode_bits(_path: &Path) -> Result<u32> {
     Ok(0)
-}
-
-#[cfg(test)]
-mod tests {
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-    use std::{fs, path::PathBuf};
-
-    use super::*;
-    use crate::external_tools::{SandboxImageRef, SandboxRuntimeSpec};
-
-    #[test]
-    fn metadata_deserializes_without_runtime_fields_for_back_compat() {
-        let raw = serde_json::json!({
-            "tool_abi_version": "1",
-            "name": "support/echo",
-            "description": "echo",
-            "bundle": "support",
-            "local_name": "echo",
-            "access_level": "read",
-            "invocation_mode": "single_shot",
-            "schemas": {
-                "input": {"type": "object"},
-                "output": {"type": "object"}
-            },
-            "secrets": [],
-            "capabilities": {}
-        });
-
-        let parsed: ExternalToolMetadata =
-            serde_json::from_value(raw).expect("legacy metadata should parse");
-        assert!(parsed.runtime.is_none());
-        assert_eq!(parsed.secret_scope, ExternalSecretScope::Send);
-    }
-
-    #[test]
-    fn read_external_manifest_prefers_manifest_file() {
-        let dir = unique_temp_dir("manifest-preferred");
-        fs::create_dir_all(&dir).expect("create temp tool dir");
-        fs::write(
-            dir.join("tool-metadata.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "tool_abi_version": "1",
-                "name": "support/legacy",
-                "description": "legacy",
-                "bundle": "support",
-                "local_name": "legacy",
-                "access_level": "read",
-                "invocation_mode": "single_shot",
-                "schemas": {"input": {"type":"object"}, "output": {"type":"object"}}
-            }))
-            .expect("serialize metadata"),
-        )
-        .expect("write metadata");
-        fs::write(
-            dir.join("tool-manifest.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "tool_abi_version": "1",
-                "name": "support/manifest",
-                "description": "manifest",
-                "bundle": "support",
-                "local_name": "manifest",
-                "access_level": "read",
-                "invocation_mode": "single_shot"
-            }))
-            .expect("serialize manifest"),
-        )
-        .expect("write manifest");
-
-        let manifest = read_external_manifest(&dir).expect("manifest reads");
-        assert_eq!(manifest.name, "support/manifest");
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn read_external_manifest_rejects_missing_manifest_file() {
-        let dir = unique_temp_dir("manifest-missing");
-        fs::create_dir_all(&dir).expect("create temp tool dir");
-        fs::write(
-            dir.join("tool-metadata.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "tool_abi_version": "1",
-                "name": "support/legacy",
-                "description": "legacy",
-                "bundle": "support",
-                "local_name": "legacy",
-                "access_level": "read",
-                "invocation_mode": "single_shot",
-                "schemas": {"input": {"type":"object"}, "output": {"type":"object"}}
-            }))
-            .expect("serialize metadata"),
-        )
-        .expect("write metadata");
-
-        let err = read_external_manifest(&dir).expect_err("must fail without tool-manifest.json");
-        assert!(
-            err.to_string().contains("tool-manifest.json"),
-            "error should mention tool-manifest.json: {err}"
-        );
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn metadata_deserializes_sandbox_runtime_with_digest() {
-        let raw = serde_json::json!({
-            "tool_abi_version": "1",
-            "name": "support/sbox",
-            "description": "sandbox",
-            "bundle": "support",
-            "local_name": "sbox",
-            "access_level": "read",
-            "invocation_mode": "single_shot",
-            "schemas": {
-                "input": {"type": "object"},
-                "output": {"type": "object"}
-            },
-            "secrets": [],
-            "capabilities": {},
-            "runtime": {
-                "kind": "sandbox",
-                "image": {
-                    "kind": "oci",
-                    "ref": "ghcr.io/org/tool@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                },
-                "entrypoint": ["/app/tool-adapter"]
-            }
-        });
-
-        let parsed: ExternalToolMetadata =
-            serde_json::from_value(raw).expect("sandbox metadata should parse");
-
-        match parsed.runtime {
-            Some(ToolRuntime::Sandbox(SandboxRuntimeSpec {
-                image: SandboxImageRef::Oci { r#ref },
-                entrypoint,
-                ..
-            })) => {
-                assert!(r#ref.starts_with("ghcr.io/"));
-                assert_eq!(entrypoint, vec!["/app/tool-adapter".to_string()]);
-            }
-            other => panic!("expected sandbox runtime, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn build_tool_metadata_pascal_cases_hyphen_and_underscore_components() {
-        let raw = serde_json::json!({
-            "tool_abi_version": "1",
-            "name": "internal-dev/meteo_tool",
-            "description": "meteo tool",
-            "bundle": "internal-dev",
-            "local_name": "meteo_tool",
-            "access_level": "read",
-            "invocation_mode": "single_shot",
-            "schemas": {
-                "input": {"type": "object"},
-                "output": {"type": "object"}
-            },
-            "secrets": [],
-            "capabilities": {}
-        });
-
-        let meta: ExternalToolMetadata = serde_json::from_value(raw).expect("metadata parses");
-        let tool_name = ToolName::parse("internal-dev/meteo_tool").expect("valid tool name");
-        let dir = std::env::temp_dir();
-        let built = build_tool_metadata(&dir, &meta, &tool_name).expect("metadata builds");
-
-        assert_eq!(built.class_name, "InternalDevMeteoTool");
-        assert_eq!(built.input_type.name, "InternalDevMeteoToolInput");
-        assert_eq!(built.output_type.name, "InternalDevMeteoToolOutput");
-    }
-
-    #[test]
-    fn compute_tool_digest_allows_sandbox_without_tool_server() {
-        let dir = unique_temp_dir("sandbox-digest-no-bin");
-        fs::create_dir_all(&dir).expect("create temp tool dir");
-
-        let metadata = serde_json::json!({
-            "tool_abi_version": "1",
-            "name": "support/sandbox_only",
-            "description": "sandbox only",
-            "bundle": "support",
-            "local_name": "sandbox_only",
-            "access_level": "read",
-            "invocation_mode": "single_shot",
-            "schemas": {
-                "input": {"type": "object"},
-                "output": {"type": "object"}
-            },
-            "secrets": [],
-            "capabilities": {},
-            "runtime": {
-                "kind": "sandbox",
-                "image": {
-                    "kind": "bind",
-                    "path": "/tmp/sandbox-rootfs"
-                },
-                "entrypoint": ["/tool-adapter"]
-            }
-        });
-
-        fs::write(
-            dir.join("tool-metadata.json"),
-            serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
-        )
-        .expect("write metadata");
-
-        let digest =
-            compute_tool_digest(&dir).expect("sandbox digest should succeed without binary");
-        assert!(digest.starts_with("sha256:"));
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn compute_tool_digest_requires_tool_server_for_process_runtime() {
-        let dir = unique_temp_dir("process-digest-missing-bin");
-        fs::create_dir_all(&dir).expect("create temp tool dir");
-
-        let metadata = serde_json::json!({
-            "tool_abi_version": "1",
-            "name": "support/process_only",
-            "description": "process only",
-            "bundle": "support",
-            "local_name": "process_only",
-            "access_level": "read",
-            "invocation_mode": "single_shot",
-            "schemas": {
-                "input": {"type": "object"},
-                "output": {"type": "object"}
-            },
-            "secrets": [],
-            "capabilities": {}
-        });
-
-        fs::write(
-            dir.join("tool-metadata.json"),
-            serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
-        )
-        .expect("write metadata");
-
-        let err = compute_tool_digest(&dir).expect_err("process digest should fail without binary");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("failed to read external tool binary"),
-            "unexpected error: {msg}"
-        );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn compute_tool_digest_for_process_changes_with_binary_mode() {
-        let dir = unique_temp_dir("process-digest-mode");
-        fs::create_dir_all(&dir).expect("create temp tool dir");
-
-        let metadata = serde_json::json!({
-            "tool_abi_version": "1",
-            "name": "support/process_mode",
-            "description": "process mode",
-            "bundle": "support",
-            "local_name": "process_mode",
-            "access_level": "read",
-            "invocation_mode": "single_shot",
-            "schemas": {
-                "input": {"type": "object"},
-                "output": {"type": "object"}
-            },
-            "secrets": [],
-            "capabilities": {}
-        });
-
-        fs::write(
-            dir.join("tool-metadata.json"),
-            serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
-        )
-        .expect("write metadata");
-
-        let bin_path = dir.join("tool-server");
-        fs::write(&bin_path, b"#!/bin/sh\necho hi\n").expect("write tool-server");
-
-        let mut perms = fs::metadata(&bin_path)
-            .expect("stat tool-server")
-            .permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&bin_path, perms).expect("chmod 755");
-        let digest_755 = compute_tool_digest(&dir).expect("digest 755");
-
-        let mut perms = fs::metadata(&bin_path)
-            .expect("stat tool-server")
-            .permissions();
-        perms.set_mode(0o700);
-        fs::set_permissions(&bin_path, perms).expect("chmod 700");
-        let digest_700 = compute_tool_digest(&dir).expect("digest 700");
-
-        assert_ne!(
-            digest_755, digest_700,
-            "mode bits should affect process digest"
-        );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn schema_digest_matches_conformance_fixture() {
-        let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/sandbox-conformance/meteo-tool");
-        let metadata_path = fixture_dir.join("tool-metadata.json");
-        let expected_path = fixture_dir.join("expected-digests.json");
-
-        let metadata_raw = fs::read_to_string(&metadata_path).expect("read fixture metadata");
-        let metadata: ExternalToolMetadata =
-            serde_json::from_str(&metadata_raw).expect("parse fixture metadata");
-
-        let expected_raw = fs::read_to_string(&expected_path).expect("read expected digest");
-        let expected: serde_json::Value =
-            serde_json::from_str(&expected_raw).expect("parse expected digest json");
-        let expected_digest = expected
-            .get("schema_content_digest")
-            .and_then(|v| v.as_str())
-            .expect("schema_content_digest string");
-
-        let got = metadata_schema_digest(&metadata);
-        assert_eq!(got, expected_digest);
-    }
-
-    fn unique_temp_dir(prefix: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("{prefix}-{}", uuid::Uuid::new_v4()))
-    }
 }

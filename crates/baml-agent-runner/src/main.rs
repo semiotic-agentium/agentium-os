@@ -566,6 +566,8 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             webhook_intake_count = webhook_intakes.len(),
             "configured webhook intakes loaded for HTTP API"
         );
+        let external_tool_sandbox =
+            agent_package::build_sandbox_wiring(config.sandbox_bind_roots.clone())?;
         let api_config = baml_rt_api::ApiServerConfig {
             mermaid,
             context_metrics,
@@ -579,6 +581,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             deployment_manager: Some(runner.clone() as Arc<dyn DeploymentManager>),
             repository_url: Some(config.repository_url.clone()),
             repository_service: Some(repository_service.clone()),
+            external_tool_sandbox,
             runtime_secret_store,
             ready: readyz_for_http,
             runner_token,

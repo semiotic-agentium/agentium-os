@@ -12,9 +12,13 @@ use std::{
 use baml_rt_core::ids::{AgentId, ContextId, UuidId};
 use baml_rt_tools::{
     ManifestToolNames, ToolAccessPolicy, ToolRegistry,
+    approval::ApprovalState,
     external_tools::{
-        DevModeResolver,
+        ExternalRegistryResolver, ExternalToolDescribeSnapshot, ExternalToolManifest,
+        ExternalToolMetadata, ExternalToolSnapshot, MetadataSchemas, ToolRuntime, ToolSchemaResult,
+        compute_external_schema_digest,
         invoker::ExternalInvoker,
+        now_snapshot_timestamp,
         resolver::SandboxRuntimeWiring,
         sandbox::{MockSandboxProvider, SandboxCache, SandboxProvider, SandboxSpec},
         stdio::StdioSubprocessInvoker,
@@ -26,31 +30,67 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
 async fn external_tool_dev_mode_happy_path_registers_and_invokes() {
-    let fixture_dir = fixture_tool_dir("happy");
     let temp_root = unique_temp_dir("external-tools-e2e-happy");
     let temp_tool_dir = temp_root.join("tool");
     fs::create_dir_all(&temp_tool_dir).expect("create temp tool dir");
 
-    fs::copy(
-        fixture_dir.join("tool-metadata.json"),
-        temp_tool_dir.join("tool-metadata.json"),
+    let tool_server = temp_tool_dir.join("tool-server");
+    let manifest = ExternalToolManifest {
+        tool_abi_version: "1".to_string(),
+        name: "support/e2e_echo".to_string(),
+        description: "e2e echo".to_string(),
+        bundle: "support".to_string(),
+        local_name: "e2e_echo".to_string(),
+        access_level: baml_rt_tools::tools::ToolAccess::Read,
+        tags: vec![],
+        invocation_mode: baml_rt_tools::external_tools::InvocationMode::SingleShot,
+        session_policy: Default::default(),
+        secrets: vec![],
+        secret_scope: Default::default(),
+        capabilities: json!({}),
+        config_bundle: None,
+        runtime: Some(ToolRuntime::Process(
+            baml_rt_tools::external_tools::ProcessRuntimeSpec {
+                command: vec![tool_server.display().to_string()],
+                setup: vec![],
+            },
+        )),
+        coordination: None,
+    };
+    fs::write(
+        temp_tool_dir.join("tool-manifest.json"),
+        serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
     )
-    .expect("copy metadata fixture");
+    .expect("write manifest");
+    let schemas = MetadataSchemas {
+        input: json!({"type": "object"}),
+        output: json!({"type": "object"}),
+    };
+    let schema_digest = compute_external_schema_digest(&manifest.clone().into_metadata(schemas));
 
     write_tool_server(
-        &temp_tool_dir.join("tool-server"),
-        "#!/bin/sh\n\
+        &tool_server,
+        &format!(
+            "#!/bin/sh\n\
 IFS= read -r req\n\
 if printf '%s' \"$req\" | grep -q '\"method\":\"tool/describe\"'; then\n\
-  printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocol_version\":\"1\",\"tool_name\":\"support/e2e_echo\",\"supported_methods\":[\"tool/describe\",\"tool/invoke\"]}}'\n\
+  printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"support/e2e_echo\",\"supported_methods\":[\"tool/describe\",\"tool/invoke\",\"tool/schema\"],\"schema_digest\":\"{schema_digest}\"}}}}'\n\
+elif printf '%s' \"$req\" | grep -q '\"method\":\"tool/schema\"'; then\n\
+  printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"schema_version\":1,\"tool_name\":\"support/e2e_echo\",\"content_type\":\"application/schema+json\",\"content_digest\":\"{schema_digest}\",\"input\":{{\"type\":\"object\"}},\"output\":{{\"type\":\"object\"}}}}}}'\n\
 else\n\
-  printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"output\":{\"reply\":\"pong-from-external\"},\"done\":true}}'\n\
-fi\n",
+  printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"output\":{{\"reply\":\"pong-from-external\"}},\"done\":true}}}}'\n\
+fi\n"
+        ),
     );
 
-    let resolver = DevModeResolver::from_dirs(std::slice::from_ref(&temp_tool_dir))
-        .await
-        .expect("resolver should load fixture tool");
+    let resolver = ExternalRegistryResolver::from_allowed_dirs(
+        std::slice::from_ref(&temp_tool_dir),
+        &temp_root,
+        None,
+        None,
+    )
+    .await
+    .expect("resolver should load fixture tool");
 
     let registry = ToolRegistry::new();
     let manifest = ManifestToolNames::parse(&["support/e2e_echo".to_string()]).unwrap();
@@ -134,11 +174,8 @@ async fn external_sandbox_session_tool_resolver_path_supports_suspend_resume() {
         }
     });
 
-    fs::write(
-        temp_tool_dir.join("tool-metadata.json"),
-        serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
-    )
-    .expect("write metadata");
+    let metadata: ExternalToolMetadata =
+        serde_json::from_value(metadata).expect("metadata should parse");
 
     let adapter: baml_rt_tools::external_tools::sandbox::ScriptedAdapter = Arc::new(|stream| {
         tokio::spawn(async move {
@@ -258,18 +295,42 @@ async fn external_sandbox_session_tool_resolver_path_supports_suspend_resume() {
         )
     };
 
-    let resolver = DevModeResolver::from_dirs_with_sandbox(
-        std::slice::from_ref(&temp_tool_dir),
-        None,
-        baml_rt_tools::external_tools::ExternalLockfileMode::Off,
-        None,
-        SandboxRuntimeWiring {
+    let schema_digest = compute_external_schema_digest(&metadata);
+    let mut snapshot = ExternalToolSnapshot::from_parts(
+        &temp_tool_dir,
+        ExternalToolManifest::from(metadata.clone()),
+        ToolSchemaResult {
+            schema_version: 1,
+            tool_name: metadata.name.clone(),
+            content_type: "application/schema+json".to_string(),
+            content_digest: schema_digest.to_string(),
+            input: metadata.schemas.input.clone(),
+            output: metadata.schemas.output.clone(),
+        },
+        ExternalToolDescribeSnapshot {
+            protocol_version: "1".to_string(),
+            supported_methods: baml_sandbox_protocol::SUPPORTED_METHODS_SESSION
+                .iter()
+                .map(|m| m.to_string())
+                .collect(),
+            max_payload_bytes: None,
+            schema_digest: Some(schema_digest),
+        },
+        now_snapshot_timestamp(),
+    )
+    .expect("snapshot should build");
+    snapshot.approval.state = ApprovalState::Approved;
+    snapshot.approval.reviewed_at = Some(now_snapshot_timestamp());
+
+    let resolver = ExternalRegistryResolver::from_snapshots(
+        vec![snapshot],
+        Some(SandboxRuntimeWiring {
             provider,
             cache,
             spec_factory,
-        },
+        }),
+        None,
     )
-    .await
     .expect("resolver load should succeed");
 
     let registry = ToolRegistry::new();
@@ -324,14 +385,6 @@ async fn external_sandbox_session_tool_resolver_path_supports_suspend_resume() {
         .expect("finish session");
 
     let _ = fs::remove_dir_all(temp_root);
-}
-
-fn fixture_tool_dir(case: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("external-tools")
-        .join(case)
 }
 
 fn unique_temp_dir(prefix: &str) -> PathBuf {

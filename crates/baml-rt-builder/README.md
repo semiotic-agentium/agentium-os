@@ -36,7 +36,7 @@ Agent code uses `__chat_register({ run: async (ctx) => { ... } })` or `session(m
   - Default mode (no args): scan the two roots above.
   - Targeted mode: pass one or more explicit agent directories with `--path <agent-dir>`.
   Run after changing the generator, prelude, or agent BAML. **Pass `--all-features` (or at least `http-tools`)** so optional tool crates link and manifest tools resolve (e.g. `support/crm` / `support/slack`).
-  If an agent references external tools, also set `BAML_EXTERNAL_TOOLS_DIR` to the external tool directory (or a colon-separated list of tool directories containing `tool-metadata.json`).
+  If an agent references external tools, also set `BAML_EXTERNAL_TOOLS_DIR` to the external tool directory (or a colon-separated list of tool directories containing `tool-manifest.json`).
 
   ```bash
   cargo run -p baml-rt-builder --all-features --bin regen_fixtures

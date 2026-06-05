@@ -286,8 +286,13 @@ pub async fn mark_mcp_version_stale(
 }
 
 /// List external tools in the registry (GET /repository/external-tools).
-pub async fn list_external_tools(State(svc): State<RepoState>) -> HttpResult<ExternalToolsResponse> {
-    let tools = svc.list_external_tools().await.map_err(HttpApiProblem::from)?;
+pub async fn list_external_tools(
+    State(svc): State<RepoState>,
+) -> HttpResult<ExternalToolsResponse> {
+    let tools = svc
+        .list_external_tools()
+        .await
+        .map_err(HttpApiProblem::from)?;
     let total = tools.len();
     Ok(Json(ExternalToolsResponse { tools, total }))
 }

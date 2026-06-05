@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Materialize OCI sandbox sidecar bundle from `tool-metadata.json`.
+//! Materialize OCI sandbox sidecar bundle from `tool-manifest.json`.
 //!
 //! This command keeps OCI image preparation on the same shared bundle helper
 //! path as bind sync (`render_sidecar_bundle`), so sidecar contract generation
@@ -15,7 +15,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use baml_rt_tools::external_tools::{
-    SIDECAR_BUNDLE_REL_PATH, SandboxImageRef, ToolRuntime, read_runtime_external_metadata,
+    MetadataSchemas, SIDECAR_BUNDLE_REL_PATH, SandboxImageRef, ToolRuntime, read_external_manifest,
     render_sidecar_bundle,
 };
 use console::style;
@@ -33,7 +33,7 @@ pub struct SandboxOciPrepareRunArgs<'a> {
 #[derive(Debug, Serialize)]
 struct Summary {
     tool_dir: String,
-    metadata: String,
+    manifest: String,
     output: String,
     tool_name: String,
     image_ref: String,
@@ -49,12 +49,16 @@ pub fn run(args: SandboxOciPrepareRunArgs<'_>) -> Result<()> {
     let tool_dir = fs::canonicalize(tool_dir)
         .with_context(|| format!("failed to canonicalize tool dir {}", tool_dir.display()))?;
 
-    let metadata_path = tool_dir.join("tool-metadata.json");
-    if !metadata_path.exists() {
-        bail!("missing tool-metadata.json at {}", metadata_path.display());
+    let manifest_path = tool_dir.join("tool-manifest.json");
+    if !manifest_path.exists() {
+        bail!("missing tool-manifest.json at {}", manifest_path.display());
     }
 
-    let metadata = read_runtime_external_metadata(&tool_dir)?;
+    let manifest = read_external_manifest(&tool_dir)?;
+    let metadata = manifest.into_metadata(MetadataSchemas {
+        input: serde_json::json!({"type": "object"}),
+        output: serde_json::json!({"type": "object"}),
+    });
 
     let runtime = metadata.runtime.as_ref().ok_or_else(|| {
         anyhow!(
@@ -119,7 +123,7 @@ pub fn run(args: SandboxOciPrepareRunArgs<'_>) -> Result<()> {
 
     let summary = Summary {
         tool_dir: tool_dir.display().to_string(),
-        metadata: metadata_path.display().to_string(),
+        manifest: manifest_path.display().to_string(),
         output: output_path.display().to_string(),
         tool_name: metadata.name.clone(),
         image_ref: image_ref.to_string(),
@@ -136,7 +140,7 @@ pub fn run(args: SandboxOciPrepareRunArgs<'_>) -> Result<()> {
             if args.dry_run { "planned" } else { "written" }
         );
         println!("  tool:           {}", summary.tool_name);
-        println!("  metadata:       {}", summary.metadata);
+        println!("  manifest:       {}", summary.manifest);
         println!("  output:         {}", summary.output);
         println!("  image_ref:      {}", summary.image_ref);
         if args.check {
@@ -209,8 +213,8 @@ mod tests {
     #[ignore = "sandbox-lane-only"]
     fn run_writes_default_oci_sidecar_bundle() {
         let tmp = tempfile::tempdir().expect("tmp");
-        let metadata_path = tmp.path().join("tool-metadata.json");
-        write_metadata(&metadata_path, "oci");
+        let manifest_path = tmp.path().join("tool-manifest.json");
+        write_metadata(&manifest_path, "oci");
 
         run(SandboxOciPrepareRunArgs {
             tool_dir: tmp.path().to_str().expect("utf8"),
@@ -242,8 +246,8 @@ mod tests {
     #[ignore = "sandbox-lane-only"]
     fn run_rejects_non_oci_sandbox_image() {
         let tmp = tempfile::tempdir().expect("tmp");
-        let metadata_path = tmp.path().join("tool-metadata.json");
-        write_metadata(&metadata_path, "bind");
+        let manifest_path = tmp.path().join("tool-manifest.json");
+        write_metadata(&manifest_path, "bind");
 
         let err = run(SandboxOciPrepareRunArgs {
             tool_dir: tmp.path().to_str().expect("utf8"),

@@ -147,9 +147,7 @@ impl RepositoryService {
             .await
     }
 
-    pub async fn list_approved_external_tool_snapshots(
-        &self,
-    ) -> Result<Vec<ExternalToolSnapshot>> {
+    pub async fn list_approved_external_tool_snapshots(&self) -> Result<Vec<ExternalToolSnapshot>> {
         self.external_tool_registry
             .list_approved_external_tool_snapshots()
             .await

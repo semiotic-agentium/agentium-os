@@ -14,7 +14,9 @@ use baml_rt_tools::external_tools::{
     METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA, render_sidecar_bundle,
 };
 
-use super::{GeneratedFile, Language, STARTER_INPUT_KEY, ScaffoldContext, metadata_json};
+use super::{
+    GeneratedFile, Language, STARTER_INPUT_KEY, STARTER_OUTPUT_KEY, ScaffoldContext, manifest_json,
+};
 pub fn files(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
     if !ctx.generate_docker {
         return Vec::new();
@@ -753,9 +755,24 @@ if __name__ == "__main__":
 }
 
 fn scaffold_sidecar_bundle(ctx: &ScaffoldContext<'_>) -> String {
-    let meta = metadata_json::build_metadata(ctx);
+    let meta = manifest_json::build_manifest(ctx).into_metadata(
+        baml_rt_tools::external_tools::MetadataSchemas {
+            input: serde_json::json!({
+                "type": "object",
+                "properties": { STARTER_INPUT_KEY: { "type": "string" } },
+                "required": [STARTER_INPUT_KEY],
+                "additionalProperties": false
+            }),
+            output: serde_json::json!({
+                "type": "object",
+                "properties": { STARTER_OUTPUT_KEY: { "type": "string" } },
+                "required": [STARTER_OUTPUT_KEY],
+                "additionalProperties": false
+            }),
+        },
+    );
     let bundle =
-        render_sidecar_bundle(&meta).expect("render sidecar bundle from scaffold metadata");
+        render_sidecar_bundle(&meta).expect("render sidecar bundle from scaffold manifest");
     serde_json::to_string_pretty(&bundle).expect("serialize scaffold sidecar bundle") + "\n"
 }
 

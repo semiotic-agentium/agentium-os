@@ -29,11 +29,11 @@ use crate::{
         Timestamp,
     },
     error::{RepositoryError, Result},
+    external_tool::{ExternalToolRegistryTool, ExternalToolRegistryToolVersion},
     ids::{AgentName, ContentHash, Generation, LineageEdgeId, Version, VersionRef},
     lineage::{
         AncestryNode, EdgeDescription, LineageEdge, LineageKind, LineageSubgraph, Parentage,
     },
-    external_tool::{ExternalToolRegistryTool, ExternalToolRegistryToolVersion},
     mcp::{
         McpRegistryServer, McpRegistryServerVersion, McpRegistryToolVersion,
         compute_snapshot_digest,
@@ -1498,7 +1498,9 @@ impl ExternalToolRegistryStore for SurrealStore {
     async fn list_external_tools(&self) -> Result<Vec<ExternalToolRegistryTool>> {
         let mut resp = self
             .db
-            .query(format!("SELECT * FROM {TBL_EXT_TOOLS} ORDER BY tool_name ASC"))
+            .query(format!(
+                "SELECT * FROM {TBL_EXT_TOOLS} ORDER BY tool_name ASC"
+            ))
             .await
             .map_err(map_surreal_read)?;
         let rows: Vec<Value> = resp.take(0).map_err(map_surreal_read)?;
@@ -1579,10 +1581,19 @@ impl ExternalToolRegistryStore for SurrealStore {
             .bind(("tool_name", tool_name.clone()))
             .bind(("version", next_version as i64))
             .bind(("snapshot_digest", snapshot_digest.to_string()))
-            .bind(("manifest_digest", snapshot.digests.manifest_digest.to_string()))
+            .bind((
+                "manifest_digest",
+                snapshot.digests.manifest_digest.to_string(),
+            ))
             .bind(("schema_digest", snapshot.digests.schema_digest.to_string()))
-            .bind(("runtime_digest", snapshot.digests.runtime_digest.to_string()))
-            .bind(("protocol_version", snapshot.describe.protocol_version.clone()))
+            .bind((
+                "runtime_digest",
+                snapshot.digests.runtime_digest.to_string(),
+            ))
+            .bind((
+                "protocol_version",
+                snapshot.describe.protocol_version.clone(),
+            ))
             .bind(("runtime_json", encode_json(&runtime_json, "runtime_json")?))
             .bind(("secrets_json", encode_json(&secrets_json, "secrets_json")?))
             .bind((
@@ -1646,7 +1657,8 @@ impl ExternalToolRegistryStore for SurrealStore {
         // version row is the authoritative registry lifecycle state. Overlay it
         // so callers (and `mark_external_tool_version_stale`) never see drift.
         // `snapshot_digest` excludes `approval`, so this does not invalidate it.
-        snapshot.approval.state = parse_mcp_approval_state(get_required_str(row, "approval_state")?)?;
+        snapshot.approval.state =
+            parse_mcp_approval_state(get_required_str(row, "approval_state")?)?;
         snapshot.approval.owner = get_optional_str(row, "owner");
         snapshot.approval.reviewed_at = get_optional_str(row, "reviewed_at");
         snapshot.approval.expires_at = get_optional_str(row, "expires_at");
@@ -1670,18 +1682,25 @@ impl ExternalToolRegistryStore for SurrealStore {
             .await
             .map_err(map_surreal_read)?;
         let rows: Vec<Value> = resp.take(0).map_err(map_surreal_read)?;
-        let Some(version) = rows.first().and_then(|r| r.get("version")).and_then(Value::as_u64)
+        let Some(version) = rows
+            .first()
+            .and_then(|r| r.get("version"))
+            .and_then(Value::as_u64)
         else {
             return Ok(None);
         };
-        self.get_external_tool_snapshot(tool_name, version as u32).await
+        self.get_external_tool_snapshot(tool_name, version as u32)
+            .await
     }
 
     async fn list_approved_external_tool_snapshots(&self) -> Result<Vec<ExternalToolSnapshot>> {
         let tools = self.list_external_tools().await?;
         let mut snapshots = Vec::new();
         for tool in tools {
-            if let Some(snapshot) = self.get_latest_external_tool_snapshot(&tool.tool_name).await? {
+            if let Some(snapshot) = self
+                .get_latest_external_tool_snapshot(&tool.tool_name)
+                .await?
+            {
                 snapshots.push(snapshot);
             }
         }

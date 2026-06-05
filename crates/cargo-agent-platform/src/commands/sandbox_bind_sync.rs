@@ -5,12 +5,12 @@
 //! `sandbox-bind-sync` subcommand implementation.
 //!
 //! Materializes host-resolved bind state next to a hand-written
-//! `tool-metadata.json`:
-//! - writes a sibling `tool-metadata.lock.json` carrying the canonical
+//! `tool-manifest.json`:
+//! - writes a sibling `tool-manifest.lock.json` carrying the canonical
 //!   absolute rootfs path;
 //! - writes the in-rootfs sidecar bundle at `etc/agentium/tool-bundle.json`.
 //!
-//! The committed source `tool-metadata.json` is **never** mutated, so example
+//! The committed source `tool-manifest.json` is **never** mutated, so example
 //! tools stay portable across contributors. Optionally builds/exports the
 //! rootfs from a Docker image first.
 
@@ -22,15 +22,15 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use baml_rt_tools::external_tools::{
-    SIDECAR_BUNDLE_REL_PATH, SandboxImageRef, ToolRuntime, ToolRuntimeLock, read_external_metadata,
-    read_runtime_external_metadata, render_sidecar_bundle,
+    MetadataSchemas, SIDECAR_BUNDLE_REL_PATH, SandboxImageRef, ToolRuntime, ToolRuntimeLock,
+    read_external_manifest, render_sidecar_bundle,
 };
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
 struct SyncSummary {
     tool_dir: String,
-    metadata_path: String,
+    manifest_path: String,
     rootfs_path: String,
     docker_mode: bool,
     checked: bool,
@@ -62,7 +62,7 @@ pub fn run(args: SandboxBindSyncRunArgs<'_>) -> Result<()> {
     } = args;
 
     if dry_run && check {
-        bail!("--check cannot be combined with --dry-run (no metadata changes are written)");
+        bail!("--check cannot be combined with --dry-run (no manifest changes are written)");
     }
 
     if dockerfile.is_some() && image.is_none() {
@@ -80,13 +80,13 @@ pub fn run(args: SandboxBindSyncRunArgs<'_>) -> Result<()> {
     let tool_dir = fs::canonicalize(tool_dir)
         .with_context(|| format!("failed to canonicalize tool dir: {}", tool_dir.display()))?;
 
-    let metadata_path = tool_dir.join("tool-metadata.json");
-    if !metadata_path.exists() {
-        bail!("missing tool metadata: {}", metadata_path.display());
+    let manifest_path = tool_dir.join("tool-manifest.json");
+    if !manifest_path.exists() {
+        bail!("missing tool manifest: {}", manifest_path.display());
     }
 
     // Validate source portability up-front so `--dry-run` catches the same
-    // pollution a real run would reject. The returned metadata path also lets
+    // pollution a real run would reject. The returned manifest path also lets
     // --rootfs default to the authored bind path.
     let source_rootfs = validate_bind_source(&tool_dir)?;
     let source_rootfs_resolved = resolve_tool_relative_path(&tool_dir, &source_rootfs);
@@ -95,7 +95,7 @@ pub fn run(args: SandboxBindSyncRunArgs<'_>) -> Result<()> {
             let resolved = resolve_path_from_tool_dir(&tool_dir, raw);
             if lexical_normalize(&resolved) != lexical_normalize(&source_rootfs_resolved) {
                 eprintln!(
-                    "warning: --rootfs ({}) differs from source metadata runtime.image.path ({}); tool-metadata.lock.json will use --rootfs",
+                    "warning: --rootfs ({}) differs from source manifest runtime.image.path ({}); tool-manifest.lock.json will use --rootfs",
                     resolved.display(),
                     source_rootfs_resolved.display()
                 );
@@ -132,7 +132,7 @@ pub fn run(args: SandboxBindSyncRunArgs<'_>) -> Result<()> {
 
     if !dry_run {
         write_runtime_lock(&tool_dir, &canonical_rootfs)?;
-        write_runtime_sidecars(&metadata_path, &canonical_rootfs)?;
+        write_runtime_sidecars(&manifest_path, &canonical_rootfs)?;
     }
 
     if check {
@@ -145,7 +145,7 @@ pub fn run(args: SandboxBindSyncRunArgs<'_>) -> Result<()> {
 
     let summary = SyncSummary {
         tool_dir: tool_dir.display().to_string(),
-        metadata_path: metadata_path.display().to_string(),
+        manifest_path: manifest_path.display().to_string(),
         rootfs_path: canonical_rootfs.display().to_string(),
         docker_mode,
         checked: check,
@@ -158,10 +158,10 @@ pub fn run(args: SandboxBindSyncRunArgs<'_>) -> Result<()> {
         if dry_run {
             println!("Dry run successful (no files changed).");
         } else {
-            println!("Bind runtime lock written (tool-metadata.lock.json).");
+            println!("Bind runtime lock written (tool-manifest.lock.json).");
         }
         println!("  tool dir:       {}", summary.tool_dir);
-        println!("  metadata:       {}", summary.metadata_path);
+        println!("  manifest:       {}", summary.manifest_path);
         println!("  bind path:      {}", summary.rootfs_path);
         if docker_mode {
             println!("  mode:           docker-assisted");
@@ -292,49 +292,49 @@ fn build_and_export_rootfs(
     Ok(())
 }
 
-/// Validate that the source `tool-metadata.json` declares a portable bind
+/// Validate that the source `tool-manifest.json` declares a portable bind
 /// sandbox runtime: kind=sandbox, image.kind=bind, relative path. Run before
 /// any writes so `--dry-run` catches the same
 /// errors a real sync would, and return the authored bind path so callers can
 /// default `--rootfs` to it.
 fn validate_bind_source(tool_dir: &Path) -> Result<PathBuf> {
-    let source = read_external_metadata(tool_dir)
-        .with_context(|| format!("failed to read source metadata in {}", tool_dir.display()))?;
+    let source = read_external_manifest(tool_dir)
+        .with_context(|| format!("failed to read source manifest in {}", tool_dir.display()))?;
 
     let source_rootfs = match source.runtime.as_ref() {
         Some(ToolRuntime::Sandbox(spec)) => match &spec.image {
             SandboxImageRef::Bind { path } => {
                 if path.is_absolute() {
                     bail!(
-                        "source tool-metadata.json declares an absolute bind path ({}); \
+                        "source tool-manifest.json declares an absolute bind path ({}); \
                          use a relative path like \"./rootfs\" — host-resolved paths belong \
-                         in tool-metadata.lock.json",
+                         in tool-manifest.lock.json",
                         path.display()
                     );
                 }
                 path.clone()
             }
             other => bail!(
-                "sandbox-bind-sync requires runtime.image.kind = 'bind' in source metadata (got {other:?})"
+                "sandbox-bind-sync requires runtime.image.kind = 'bind' in source manifest (got {other:?})"
             ),
         },
         Some(other) => bail!(
-            "sandbox-bind-sync requires runtime.kind = 'sandbox' in source metadata (got '{}')",
+            "sandbox-bind-sync requires runtime.kind = 'sandbox' in source manifest (got '{}')",
             match other {
                 ToolRuntime::Process(_) => "process",
                 ToolRuntime::Sandbox(_) => unreachable!(),
             }
         ),
         None => bail!(
-            "source tool-metadata.json has no runtime declaration; declare a sandbox/bind runtime first"
+            "source tool-manifest.json has no runtime declaration; declare a sandbox/bind runtime first"
         ),
     };
 
     Ok(source_rootfs)
 }
 
-/// Write the per-tool runtime lock sidecar (`tool-metadata.lock.json`) next
-/// to the source `tool-metadata.json`. Pure writer — callers must invoke
+/// Write the per-tool runtime lock sidecar (`tool-manifest.lock.json`) next
+/// to the source `tool-manifest.json`. Pure writer — callers must invoke
 /// [`validate_bind_source`] first.
 fn write_runtime_lock(tool_dir: &Path, bind_path: &Path) -> Result<()> {
     let lock = ToolRuntimeLock::new_bind(bind_path.to_path_buf());
@@ -342,11 +342,15 @@ fn write_runtime_lock(tool_dir: &Path, bind_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn write_runtime_sidecars(metadata_path: &Path, rootfs: &Path) -> Result<()> {
-    let tool_dir = metadata_path
+fn write_runtime_sidecars(manifest_path: &Path, rootfs: &Path) -> Result<()> {
+    let tool_dir = manifest_path
         .parent()
-        .ok_or_else(|| anyhow!("metadata path has no parent: {}", metadata_path.display()))?;
-    let metadata = read_runtime_external_metadata(tool_dir)?;
+        .ok_or_else(|| anyhow!("manifest path has no parent: {}", manifest_path.display()))?;
+    let manifest = read_external_manifest(tool_dir)?;
+    let metadata = manifest.into_metadata(MetadataSchemas {
+        input: serde_json::json!({"type": "object"}),
+        output: serde_json::json!({"type": "object"}),
+    });
     let bundle = render_sidecar_bundle(&metadata)
         .map_err(|e| anyhow!("failed to render sidecar bundle: {e}"))?;
 
@@ -435,8 +439,8 @@ mod tests {
     #[test]
     fn write_runtime_lock_writes_sidecar_and_leaves_source_intact() {
         let tmp = tempfile::tempdir().expect("tmp");
-        let metadata_path = tmp.path().join("tool-metadata.json");
-        std::fs::write(&metadata_path, PORTABLE_SOURCE).expect("write source");
+        let manifest_path = tmp.path().join("tool-manifest.json");
+        std::fs::write(&manifest_path, PORTABLE_SOURCE).expect("write source");
 
         let bind_path = tmp.path().join("rootfs");
         std::fs::create_dir_all(&bind_path).expect("rootfs");
@@ -444,7 +448,7 @@ mod tests {
         write_runtime_lock(tmp.path(), &bind_path).expect("write lock");
 
         // Source file untouched.
-        let source_after = std::fs::read_to_string(&metadata_path).expect("read source");
+        let source_after = std::fs::read_to_string(&manifest_path).expect("read source");
         assert_eq!(source_after, PORTABLE_SOURCE);
 
         // Lock sidecar present and carries our values.
@@ -461,7 +465,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let polluted =
             PORTABLE_SOURCE.replace(r#""path":"./rootfs""#, r#""path":"/abs/leaked/path""#);
-        std::fs::write(tmp.path().join("tool-metadata.json"), polluted).expect("write");
+        std::fs::write(tmp.path().join("tool-manifest.json"), polluted).expect("write");
 
         let err = validate_bind_source(tmp.path()).expect_err("must reject");
         assert!(
@@ -473,14 +477,14 @@ mod tests {
     #[test]
     fn validate_bind_source_accepts_portable_source() {
         let tmp = tempfile::tempdir().expect("tmp");
-        std::fs::write(tmp.path().join("tool-metadata.json"), PORTABLE_SOURCE).expect("write");
+        std::fs::write(tmp.path().join("tool-manifest.json"), PORTABLE_SOURCE).expect("write");
         validate_bind_source(tmp.path()).expect("portable source must validate");
     }
 
     #[test]
-    fn rootfs_defaults_to_source_metadata_path() {
+    fn rootfs_defaults_to_source_manifest_path() {
         let tmp = tempfile::tempdir().expect("tmp");
-        std::fs::write(tmp.path().join("tool-metadata.json"), PORTABLE_SOURCE).expect("write");
+        std::fs::write(tmp.path().join("tool-manifest.json"), PORTABLE_SOURCE).expect("write");
         std::fs::create_dir_all(tmp.path().join("rootfs")).expect("rootfs");
 
         run(SandboxBindSyncRunArgs {
@@ -499,7 +503,7 @@ mod tests {
     #[test]
     fn dockerfile_without_image_is_rejected() {
         let tmp = tempfile::tempdir().expect("tmp");
-        std::fs::write(tmp.path().join("tool-metadata.json"), PORTABLE_SOURCE).expect("write");
+        std::fs::write(tmp.path().join("tool-manifest.json"), PORTABLE_SOURCE).expect("write");
 
         let err = run(SandboxBindSyncRunArgs {
             tool_dir: tmp.path().to_str().expect("utf8"),
@@ -519,7 +523,7 @@ mod tests {
     #[test]
     fn image_defaults_to_adapter_dockerfile_and_errors_when_missing() {
         let tmp = tempfile::tempdir().expect("tmp");
-        std::fs::write(tmp.path().join("tool-metadata.json"), PORTABLE_SOURCE).expect("write");
+        std::fs::write(tmp.path().join("tool-manifest.json"), PORTABLE_SOURCE).expect("write");
 
         let err = run(SandboxBindSyncRunArgs {
             tool_dir: tmp.path().to_str().expect("utf8"),
@@ -542,9 +546,9 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp");
         let tool_dir = tmp.path().join("tool");
         std::fs::create_dir_all(&tool_dir).expect("tool dir");
-        let metadata_path = tool_dir.join("tool-metadata.json");
+        let manifest_path = tool_dir.join("tool-manifest.json");
         std::fs::write(
-            &metadata_path,
+            &manifest_path,
             r#"{
   "tool_abi_version": "1",
   "name": "dev/meteo-tool",
@@ -577,7 +581,7 @@ mod tests {
         let rootfs = tmp.path().join("rootfs");
         std::fs::create_dir_all(&rootfs).expect("rootfs");
 
-        write_runtime_sidecars(&metadata_path, &rootfs).expect("write sidecars");
+        write_runtime_sidecars(&manifest_path, &rootfs).expect("write sidecars");
 
         let bundle_path = rootfs.join(SIDECAR_BUNDLE_REL_PATH);
         assert!(bundle_path.exists(), "sidecar bundle must exist");

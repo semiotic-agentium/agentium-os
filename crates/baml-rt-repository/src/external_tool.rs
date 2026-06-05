@@ -8,9 +8,7 @@
 //! snapshots: one row per tool id, one immutable row per version, and a
 //! content-addressed blob holding the full snapshot JSON.
 
-use baml_rt_tools::{
-    external_tools::ExternalApprovalState, mcp_snapshot::Digest,
-};
+use baml_rt_tools::{external_tools::ExternalApprovalState, mcp_snapshot::Digest};
 use serde::{Deserialize, Serialize};
 
 /// Registry row for one external-tool id (`bundle/local`).

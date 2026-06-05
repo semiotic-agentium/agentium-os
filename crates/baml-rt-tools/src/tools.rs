@@ -43,7 +43,7 @@ use crate::{
 };
 
 /// Access level a tool declares it needs. Serialized as lowercase
-/// (`"read"` / `"write"` / `"delete"`) so `tool-metadata.json` stays
+/// (`"read"` / `"write"` / `"delete"`) so `tool-manifest.json` stays
 /// human-readable and matches the canonical spelling used by the runtime,
 /// builder, and CLI scaffolder.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -61,7 +61,7 @@ impl ToolAccess {
     pub const ALL: &'static [ToolAccess] =
         &[ToolAccess::Read, ToolAccess::Write, ToolAccess::Delete];
 
-    /// Canonical lowercase spelling used in `tool-metadata.json` and
+    /// Canonical lowercase spelling used in `tool-manifest.json` and
     /// everywhere the access level is serialized as a string.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -975,7 +975,7 @@ pub struct ToolFunctionMetadata {
     /// generated prelude when an agent lists the tool in its manifest. Internal
     /// tools populate this via `inventory!` providers in `session_coordination.rs`;
     /// external tools populate it from a `coordination.baml_file` declared in
-    /// `tool-metadata.json`. `None` for tools that do not need coordination
+    /// `tool-manifest.json`. `None` for tools that do not need coordination
     /// (single-shot invokes, internal tools without a `Choose<X>Action` flow).
     pub coordination_baml: Option<String>,
 }

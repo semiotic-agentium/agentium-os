@@ -7,7 +7,7 @@ use std::{collections::HashMap, fs, path::Path};
 use baml_rt_core::{BamlRtError, Result};
 use serde::{Deserialize, Serialize};
 
-use super::metadata::{compute_tool_digest, read_external_metadata};
+use super::metadata::{compute_tool_digest, read_external_manifest};
 use crate::ToolName;
 
 pub const EXTERNAL_TOOLS_LOCKFILE_NAME: &str = "external_tools.lock.json";
@@ -100,20 +100,20 @@ impl ExternalToolsLockfile {
         let mut seen = HashMap::<String, std::path::PathBuf>::new();
 
         for dir in dirs {
-            let meta = read_external_metadata(dir)?;
+            let manifest = read_external_manifest(dir)?;
             let digest = compute_tool_digest(dir)?;
-            if let Some(prev) = seen.insert(meta.name.clone(), dir.clone()) {
+            if let Some(prev) = seen.insert(manifest.name.clone(), dir.clone()) {
                 return Err(BamlRtError::InvalidArgument(format!(
                     "duplicate external tool '{}' across lockfile sources: {} and {}",
-                    meta.name,
+                    manifest.name,
                     prev.display(),
                     dir.display()
                 )));
             }
             entries.push(ExternalToolLockEntry {
-                name: meta.name,
+                name: manifest.name,
                 digest,
-                abi_version: meta.tool_abi_version,
+                abi_version: manifest.tool_abi_version,
                 protocol_version: "1".to_string(),
                 oci_ref: None,
                 platform: None,
@@ -156,7 +156,7 @@ mod tests {
     fn lockfile_allows_sandbox_tool_without_tool_server() {
         let dir = unique_temp_dir("lockfile-sandbox-no-bin");
         fs::create_dir_all(&dir).expect("create temp tool dir");
-        let metadata = serde_json::json!({
+        let manifest = serde_json::json!({
             "tool_abi_version": "1",
             "name": "support/sbox_no_bin",
             "description": "sandbox",
@@ -177,10 +177,10 @@ mod tests {
             }
         });
         fs::write(
-            dir.join("tool-metadata.json"),
-            serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
+            dir.join("tool-manifest.json"),
+            serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
         )
-        .expect("write metadata");
+        .expect("write manifest");
 
         let lockfile = ExternalToolsLockfile::from_tool_dirs(std::slice::from_ref(&dir))
             .expect("sandbox lockfile should succeed without tool-server");
@@ -195,7 +195,7 @@ mod tests {
     fn lockfile_process_tool_without_tool_server_fails() {
         let dir = unique_temp_dir("lockfile-process-missing-bin");
         fs::create_dir_all(&dir).expect("create temp tool dir");
-        let metadata = serde_json::json!({
+        let manifest = serde_json::json!({
             "tool_abi_version": "1",
             "name": "support/proc_missing_bin",
             "description": "process",
@@ -211,10 +211,10 @@ mod tests {
             "capabilities": {}
         });
         fs::write(
-            dir.join("tool-metadata.json"),
-            serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
+            dir.join("tool-manifest.json"),
+            serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
         )
-        .expect("write metadata");
+        .expect("write manifest");
 
         let err = ExternalToolsLockfile::from_tool_dirs(std::slice::from_ref(&dir))
             .expect_err("process lockfile should fail when tool-server missing");

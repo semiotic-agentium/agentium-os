@@ -132,10 +132,7 @@ async fn active_snapshot_is_latest_approved_non_stale() {
     );
 
     // Builder source mirrors active selection: one approved snapshot (v1).
-    let approved = store
-        .list_approved_external_tool_snapshots()
-        .await
-        .unwrap();
+    let approved = store.list_approved_external_tool_snapshots().await.unwrap();
     assert_eq!(approved.len(), 1);
     assert_eq!(approved[0].snapshot_digest, v1_snap.snapshot_digest);
 

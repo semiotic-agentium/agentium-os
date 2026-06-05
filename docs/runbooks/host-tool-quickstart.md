@@ -26,7 +26,7 @@ cargo run -p cargo-agent-platform -- new-tool meteo-tool \
 
 ## 2. Implement tool logic + schema
 
-- Set `name` in `tool-metadata.json` (e.g. `dev/meteo`) to match the agent allowlist exactly
+- Set `name` in `tool-manifest.json` (e.g. `dev/meteo`) to match the agent allowlist exactly
 - Implement `tool/describe` and `tool/invoke` in `main.py`
 
 ## 3. Materialize bind rootfs
@@ -71,7 +71,7 @@ cargo run -p cargo-agent-platform -- chat --agent meteo-agent
 
 | Symptom | Fix |
 |---------|-----|
-| `Tool metadata missing for: dev/meteo` | Align agent allowlist and metadata `name` exactly |
-| `failed to read .../tool-metadata.json` | Fix `BAML_EXTERNAL_TOOLS_DIR` (colon-separated, no commas) |
+| `Tool manifest missing for: dev/meteo` | Align agent allowlist and manifest `name` exactly |
+| `failed to read .../tool-manifest.json` | Fix `BAML_EXTERNAL_TOOLS_DIR` (colon-separated, no commas) |
 | Stale behavior after tool changes | Re-run `sandbox-bind-sync --force`, restart runner |
 | Tool call hangs | Verify one JSON-RPC request → one response; logs on stderr only |

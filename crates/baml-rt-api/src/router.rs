@@ -45,7 +45,7 @@ use crate::{
     ClusterHeartbeatHealth, ContextIndexService, ContextMetricsService, ConversationHistoryService,
     EpisodeService, HeartbeatStatus, MermaidService, PlanningService, ProvenanceOpsService,
     RuntimeProgressMeter, cluster_agents, cluster_agents::ClusterDirectoryService, cluster_deploy,
-    config_handlers, handlers, metrics, otel_middleware, repository_publish,
+    config_handlers, external_tool_enable, handlers, metrics, otel_middleware, repository_publish,
 };
 
 /// Cluster-mode topology: either standalone (single runner, no peer awareness)
@@ -306,6 +306,8 @@ pub struct ApiServerConfig {
     pub deployment_manager: Option<Arc<dyn DeploymentManager>>,
     pub repository_url: Option<String>,
     pub repository_service: Option<Arc<baml_rt_repository::RepositoryService>>,
+    pub external_tool_sandbox:
+        Option<baml_rt_tools::external_tools::resolver::SandboxRuntimeWiring>,
     pub tool_catalog: Arc<dyn ToolCatalog>,
     pub config_service: Arc<dyn ConfigService>,
     pub secret_resolver: Arc<dyn SecretResolver>,
@@ -346,6 +348,7 @@ impl ApiServerConfig {
             deployment_manager: None,
             repository_url: None,
             repository_service: None,
+            external_tool_sandbox: None,
             tool_catalog,
             config_service,
             secret_resolver,
@@ -412,6 +415,7 @@ pub fn api_router_with_services_and_deploy(
         deployment_manager,
         repository_url,
         repository_service,
+        external_tool_sandbox,
         tool_catalog,
         config_service,
         secret_resolver,
@@ -678,8 +682,18 @@ pub fn api_router_with_services_and_deploy(
                 axum::routing::post(repository_publish::publish_with_build),
             )
             .with_state(repo_service.clone());
+        let enable_external_tool_router = axum::Router::new()
+            .route(
+                "/external-tools/enable",
+                axum::routing::post(external_tool_enable::enable_external_tool),
+            )
+            .with_state(external_tool_enable::ExternalToolEnableState {
+                repository: repo_service.clone(),
+                sandbox: external_tool_sandbox,
+            });
         let repo_mutations = baml_rt_repository::repository_mutation_router(repo_service)
             .merge(publish_router)
+            .merge(enable_external_tool_router)
             .route_layer(auth_layer.clone());
 
         let repo_router = repo_read
