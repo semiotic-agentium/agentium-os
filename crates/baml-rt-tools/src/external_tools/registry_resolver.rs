@@ -20,6 +20,7 @@ use super::{
     policy::{DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT},
     resolver::{SandboxRuntimeWiring, build_sandbox_tool_handler},
     runtime::{DEFAULT_PROCESS_COMMAND, ToolRuntime},
+    runtime_lock::read_runtime_lock,
     snapshot::{
         compute_manifest_digest, compute_runtime_digest, now_snapshot_timestamp,
         validate_external_tool_snapshot,
@@ -160,7 +161,8 @@ async fn discover_and_approve(
     dir: &Path,
     sandbox: Option<&SandboxRuntimeWiring>,
 ) -> Result<ExternalToolSnapshot> {
-    let mut snapshot = discover_snapshot(dir, None, sandbox).await?;
+    let sandbox_rootfs = read_runtime_lock(dir)?.and_then(|lock| lock.image_path_abs);
+    let mut snapshot = discover_snapshot(dir, sandbox_rootfs, sandbox).await?;
     snapshot.approval.state = ApprovalState::Approved;
     snapshot.approval.reviewed_at = Some(now_snapshot_timestamp());
     Ok(snapshot)

@@ -204,24 +204,10 @@ impl AgentPackage {
             }
         }
 
-        // Dev-mode external tools: BAML_EXTERNAL_TOOLS_DIR=/path/to/tool_a:/path/to/tool_b
-        // Each colon-separated entry is a tool package dir containing
-        // tool-manifest.json. Process-runtime tools also contain the host
-        // executable (default `tool-server`); sandbox-runtime tools resolve to
-        // `/tool-adapter` inside their image/rootfs instead. Production
-        // (Phase 2) uses the digest-pinned lockfile resolver instead.
         let lifecycle_writer: Arc<dyn ProvenanceWriter> = provenance_store.clone();
         let lifecycle_recorder = build_external_lifecycle_recorder(lifecycle_writer);
         let lockfile_path = self.extract_dir.join(EXTERNAL_TOOLS_LOCKFILE_NAME);
         let sandbox_wiring = build_sandbox_wiring(sandbox_bind_roots.to_vec())?;
-        let external_resolver = build_allowed_dirs_resolver(
-            Some(lifecycle_recorder.clone()),
-            &lockfile_path,
-            ExternalLockfileMode::from_env(),
-            sandbox_wiring.clone(),
-            external_tools_dirs.to_vec(),
-        )
-        .await?;
 
         // PR5 wiring: chain the dev-mode external resolver with the MCP
         // resolver via CompositeResolver so manifest entries like
@@ -246,7 +232,8 @@ impl AgentPackage {
             None
         };
         let package_external_root = self.extract_dir.join("external-tools");
-        let registry_external_resolver = if package_external_root.exists() {
+        let has_packaged_external_snapshots = package_external_root.exists();
+        let registry_external_resolver = if has_packaged_external_snapshots {
             match external_tool_cache::read_approved_snapshots(&self.extract_dir) {
                 Ok(snapshots) => {
                     info!(
@@ -305,6 +292,24 @@ impl AgentPackage {
             )?)
         } else {
             None
+        };
+
+        // Dev-mode external tools: BAML_EXTERNAL_TOOLS_DIR=/path/to/tool_a:/path/to/tool_b.
+        // Only use this fallback when the package does not already carry
+        // registry snapshots. Packaged snapshots are the runtime truth for
+        // deployed agents; adding allowed-dir discovery in parallel creates a
+        // duplicate resolver for the same tool and weakens package pinning.
+        let external_resolver = if has_packaged_external_snapshots {
+            None
+        } else {
+            build_allowed_dirs_resolver(
+                Some(lifecycle_recorder.clone()),
+                &lockfile_path,
+                ExternalLockfileMode::from_env(),
+                sandbox_wiring.clone(),
+                external_tools_dirs.to_vec(),
+            )
+            .await?
         };
         let mut composite = CompositeResolver::new();
         if let Some(registry) = registry_external_resolver {

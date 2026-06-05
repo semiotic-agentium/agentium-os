@@ -25,7 +25,8 @@ use baml_rt_tools::external_tools::{
     MetadataSchemas, SIDECAR_BUNDLE_REL_PATH, SandboxImageRef, ToolRuntime, ToolRuntimeLock,
     read_external_manifest, render_sidecar_bundle,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Serialize)]
 struct SyncSummary {
@@ -35,6 +36,12 @@ struct SyncSummary {
     docker_mode: bool,
     checked: bool,
     dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ToolSchemaFile {
+    input: Value,
+    output: Value,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -347,10 +354,8 @@ fn write_runtime_sidecars(manifest_path: &Path, rootfs: &Path) -> Result<()> {
         .parent()
         .ok_or_else(|| anyhow!("manifest path has no parent: {}", manifest_path.display()))?;
     let manifest = read_external_manifest(tool_dir)?;
-    let metadata = manifest.into_metadata(MetadataSchemas {
-        input: serde_json::json!({"type": "object"}),
-        output: serde_json::json!({"type": "object"}),
-    });
+    let schemas = read_source_tool_schema(tool_dir)?;
+    let metadata = manifest.into_metadata(schemas);
     let bundle = render_sidecar_bundle(&metadata)
         .map_err(|e| anyhow!("failed to render sidecar bundle: {e}"))?;
 
@@ -364,6 +369,24 @@ fn write_runtime_sidecars(manifest_path: &Path, rootfs: &Path) -> Result<()> {
         .with_context(|| format!("failed to write {}", bundle_path.display()))?;
 
     Ok(())
+}
+
+fn read_source_tool_schema(tool_dir: &Path) -> Result<MetadataSchemas> {
+    let schema_path = tool_dir.join("tool-schema.json");
+    if !schema_path.exists() {
+        bail!(
+            "sandbox-bind-sync requires {} so the sandbox sidecar can answer tool/schema during discovery",
+            schema_path.display()
+        );
+    }
+    let raw = fs::read_to_string(&schema_path)
+        .with_context(|| format!("failed to read {}", schema_path.display()))?;
+    let schema: ToolSchemaFile = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse {}", schema_path.display()))?;
+    Ok(MetadataSchemas {
+        input: schema.input,
+        output: schema.output,
+    })
 }
 
 fn run_command(cmd: &mut Command, label: &str) -> Result<()> {

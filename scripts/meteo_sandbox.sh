@@ -17,7 +17,10 @@ SANDBOX_IMAGE="dev-meteo-tool-sandbox:local"
 RUNNER_URL="${RUNNER_URL:-http://127.0.0.1:18080}"
 REPOSITORY_URL="${REPOSITORY_URL:-$RUNNER_URL/repository}"
 
-export BAML_EXTERNAL_TOOLS_DIR="$TOOL_DIR"
+# This demo uses registry-approved snapshots bundled into the agent package.
+# Do not export BAML_EXTERNAL_TOOLS_DIR here: that env is dev fallback only and
+# would duplicate the packaged resolver after publish/deploy.
+#
 # Allow bind/rootfs images materialized by `setup_bind_sandbox.sh`.
 # Keep allowlist narrow: rootfs only, not whole external-tool directory.
 export BAML_SANDBOX_BIND_ROOTS="$ROOTFS"
@@ -41,7 +44,6 @@ Typical flow:
   scripts/meteo_sandbox.sh chat
 
 Environment exported by this script:
-  BAML_EXTERNAL_TOOLS_DIR=$BAML_EXTERNAL_TOOLS_DIR
   BAML_SANDBOX_BIND_ROOTS=$BAML_SANDBOX_BIND_ROOTS
 
 Environment:
@@ -76,7 +78,8 @@ prepare() {
     rm -rf "$TOOL_TMP_DIR"
 
     log_step "Running setup_bind_sandbox.sh --force (builds/materializes sandbox rootfs)"
-    "$TOOL_DIR/setup_bind_sandbox.sh" \
+    AGENT_PLATFORM_CMD="cargo run -q -p cargo-agent-platform --" \
+        "$TOOL_DIR/setup_bind_sandbox.sh" \
         --image "$SANDBOX_IMAGE" \
         --rootfs "$ROOTFS" \
         --force
