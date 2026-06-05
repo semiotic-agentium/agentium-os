@@ -158,14 +158,17 @@ impl SandboxSessionInvoker {
     async fn remove_session(&self, session_id: &str) -> Option<Arc<LiveSession>> {
         self.sessions.lock().await.remove(session_id)
     }
-}
 
-#[async_trait]
-impl SessionToolInvoker for SandboxSessionInvoker {
-    async fn session_open(&self, req: SessionOpenRequest) -> Result<SessionOpenResponse> {
+    async fn session_open_once(&self, req: SessionOpenRequest) -> Result<SessionOpenResponse> {
         let key = self.key(&req.tool_name);
         let pooled = self.pool.checkout(&key).await?;
-        let mut channel = self.pool.provider().rpc_channel(pooled.handle()).await?;
+        let mut channel = match self.pool.provider().rpc_channel(pooled.handle()).await {
+            Ok(channel) => channel,
+            Err(err) => {
+                pooled.release_destroy().await;
+                return Err(err);
+            }
+        };
 
         let params = SessionOpenParams {
             invocation_id: req.invocation_id,
@@ -225,6 +228,26 @@ impl SessionToolInvoker for SandboxSessionInvoker {
             initial_step,
             initial_resume_token,
         })
+    }
+}
+
+#[async_trait]
+impl SessionToolInvoker for SandboxSessionInvoker {
+    async fn session_open(&self, req: SessionOpenRequest) -> Result<SessionOpenResponse> {
+        for attempt in 0..2 {
+            match self.session_open_once(req.clone()).await {
+                Ok(response) => return Ok(response),
+                Err(err) if attempt == 0 && is_sandbox_transport_error(&err) => {
+                    warn!(
+                        tool = %req.tool_name,
+                        error = %err,
+                        "sandbox session_open transport failed; destroying entry and retrying once"
+                    );
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        unreachable!("sandbox session_open retry loop has fixed bounds")
     }
 
     async fn session_send(&self, req: SessionSendRequest) -> Result<()> {
@@ -423,6 +446,16 @@ async fn run_reset_hook(
             false
         }
     }
+}
+
+fn is_sandbox_transport_error(err: &BamlRtError) -> bool {
+    let msg = err.to_string();
+    msg.contains("exec_stream")
+        || msg.contains("Broken pipe")
+        || msg.contains("failed to send TSRPC frame")
+        || msg.contains("failed to recv TSRPC frame")
+        || msg.contains("exec-to-channel adapter failed")
+        || msg.contains("has no live sandbox named")
 }
 
 fn unknown_session_error(session_id: &str) -> BamlRtError {

@@ -150,6 +150,12 @@ impl SandboxCache {
         self.entries.lock().unwrap().remove(key)
     }
 
+    pub fn touch(&self, key: &SandboxCacheKey) {
+        if let Some(handle) = self.entries.lock().unwrap().get_mut(key) {
+            handle.touch();
+        }
+    }
+
     /// Remove every cached entry. Caller is responsible for tearing down
     /// the returned handles via the provider.
     pub fn drain(&self) -> Vec<SandboxHandle> {
@@ -244,9 +250,49 @@ impl SandboxInvoker {
         timeout: Duration,
     ) -> Result<Value> {
         let key = self.key(tool);
+        let mut allow_reattach = true;
+        for attempt in 0..2 {
+            match self
+                .json_rpc_call_once(tool, method, params.clone(), timeout, &key, allow_reattach)
+                .await
+            {
+                Ok(value) => return Ok(value),
+                Err(err) if attempt == 0 && is_sandbox_transport_error(&err) => {
+                    warn!(
+                        tool = %tool,
+                        method,
+                        error = %err,
+                        "sandbox transport failed; evicting cached handle and retrying once"
+                    );
+                    if let Some(stale) = self.cache.evict(&key)
+                        && let Err(teardown_err) = self.provider.teardown(&stale).await
+                    {
+                        warn!(
+                            sandbox = %stale.name,
+                            error = %teardown_err,
+                            "stale sandbox teardown failed during retry"
+                        );
+                    }
+                    allow_reattach = false;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        unreachable!("sandbox retry loop has fixed bounds")
+    }
+
+    async fn json_rpc_call_once(
+        &self,
+        tool: &ToolName,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+        key: &SandboxCacheKey,
+        allow_reattach: bool,
+    ) -> Result<Value> {
         let handle = self
             .cache
-            .get_or_create(&*self.provider, &self.build_spec, &key, true)
+            .get_or_create(&*self.provider, &self.build_spec, key, allow_reattach)
             .await?;
         let mut channel = self.provider.rpc_channel(&handle).await?;
         let request = JsonRpcRequest::new(method, rand_id(), params);
@@ -290,10 +336,21 @@ impl SandboxInvoker {
                 tool, &err,
             ));
         }
+        self.cache.touch(key);
         response.result.ok_or_else(|| {
             BamlRtError::InvalidArgument("JSON-RPC response missing result".to_string())
         })
     }
+}
+
+fn is_sandbox_transport_error(err: &BamlRtError) -> bool {
+    let msg = err.to_string();
+    msg.contains("exec_stream")
+        || msg.contains("Broken pipe")
+        || msg.contains("failed to send TSRPC frame")
+        || msg.contains("failed to recv TSRPC frame")
+        || msg.contains("exec-to-channel adapter failed")
+        || msg.contains("has no live sandbox named")
 }
 
 fn sanitize_component(input: &str, max_len: usize) -> String {

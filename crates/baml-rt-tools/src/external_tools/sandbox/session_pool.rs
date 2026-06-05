@@ -234,6 +234,39 @@ impl SessionPool {
                 let mut guard = self.inner.lock().await;
                 let pool = guard.entry(key.clone()).or_default();
 
+                let mut expired_handles = Vec::new();
+                let mut idx = 0;
+                while idx < pool.entries.len() {
+                    let expired_idle = matches!(pool.entries[idx].state, EntryState::Idle)
+                        && pool.entries[idx]
+                            .handle
+                            .as_ref()
+                            .map(|h| h.is_expired())
+                            .unwrap_or(true);
+                    if expired_idle {
+                        let entry = pool.entries.swap_remove(idx);
+                        if let Some(handle) = entry.handle {
+                            expired_handles.push(handle);
+                        }
+                    } else {
+                        idx += 1;
+                    }
+                }
+                if !expired_handles.is_empty() {
+                    pool.notify_one_waiter();
+                    drop(guard);
+                    for handle in expired_handles {
+                        if let Err(err) = self.provider.teardown(&handle).await {
+                            warn!(
+                                sandbox = %handle.name,
+                                error = %err,
+                                "session pool: teardown of expired idle sandbox failed"
+                            );
+                        }
+                    }
+                    continue;
+                }
+
                 if let Some(idx) = pool.idle_index() {
                     let session = PooledSessionId::new();
                     let entry = &mut pool.entries[idx];
@@ -428,6 +461,9 @@ impl SessionPool {
                     let entry = &mut pool.entries[idx];
                     entry.state = EntryState::Idle;
                     entry.last_idle_at = Instant::now();
+                    if let Some(handle) = entry.handle.as_mut() {
+                        handle.touch();
+                    }
                     pool.notify_one_waiter();
                     None
                 }
