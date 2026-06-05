@@ -10,15 +10,20 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 TOOL_DIR="$ROOT/examples/external-tools/claude-ext"
 TOOL_TMP_DIR="$TOOL_DIR/.tmp"
+ROOTFS="$TOOL_TMP_DIR/dev-claude-ext-rootfs"
 AGENT_DIR="examples/agents/claude-agent"
 AGENT_NAME="claude-agent"
 SANDBOX_IMAGE="dev-claude-ext-sandbox:local"
+RUNNER_URL="${RUNNER_URL:-http://127.0.0.1:18080}"
+REPOSITORY_URL="${REPOSITORY_URL:-$RUNNER_URL/repository}"
 
-export BAML_EXTERNAL_TOOLS_DIR="$TOOL_DIR"
+# This demo uses registry-approved snapshots bundled into the agent package.
+# Do not export BAML_EXTERNAL_TOOLS_DIR here: that env is dev fallback only and
+# would duplicate the packaged resolver after publish/deploy.
+#
 # Allow bind/rootfs images materialized by `setup_bind_sandbox.sh`.
-# The generated sandbox rootfs lives under `$TOOL_DIR/.tmp`, so keep the
-# allowlist narrow instead of allowing the whole external-tool directory.
-export BAML_SANDBOX_BIND_ROOTS="$TOOL_TMP_DIR"
+# Keep allowlist narrow: rootfs only, not whole external-tool directory.
+export BAML_SANDBOX_BIND_ROOTS="$ROOTFS"
 
 # Claude-in-sandbox currently supports two launch strategies:
 #   1. a simple direct bash/script pipeline
@@ -33,8 +38,9 @@ Usage: scripts/claude_sandbox.sh <command>
 
 Commands:
   prepare   Rebuild the Claude sandbox bind/rootfs under examples/external-tools/claude-ext/.tmp
+  enable    Approve/import the Claude external-tool snapshot into the repository registry
   runner    Prepare the sandbox, then start baml-agent-runner on 127.0.0.1:18080
-  push      Publish and deploy examples/agents/claude-agent to the running runner
+  push      Enable registry snapshot, then publish/deploy examples/agents/claude-agent
   chat      Run push, then connect to claude-agent with cargo-agent-platform chat
 
 Typical flow:
@@ -45,9 +51,16 @@ Typical flow:
   scripts/claude_sandbox.sh chat
 
 Environment exported by this script:
-  BAML_EXTERNAL_TOOLS_DIR=$BAML_EXTERNAL_TOOLS_DIR
   BAML_SANDBOX_BIND_ROOTS=$BAML_SANDBOX_BIND_ROOTS
   CLAUDE_EXT_USE_SHELL_PIPELINE=$CLAUDE_EXT_USE_SHELL_PIPELINE
+
+Environment:
+  RUNNER_URL=$RUNNER_URL
+  REPOSITORY_URL=$REPOSITORY_URL
+
+Sandbox paths:
+  external BAML tool dir: $TOOL_DIR
+  bind rootfs:            $ROOTFS
 EOF
 }
 
@@ -76,14 +89,37 @@ prepare() {
     rm -rf "$TOOL_TMP_DIR"
 
     log_step "Running setup_bind_sandbox.sh --force (builds/materializes sandbox rootfs)"
-    "$TOOL_DIR/setup_bind_sandbox.sh" --force
+    AGENT_PLATFORM_CMD="cargo run -q -p cargo-agent-platform --" \
+        "$TOOL_DIR/setup_bind_sandbox.sh" \
+        --image "$SANDBOX_IMAGE" \
+        --rootfs "$ROOTFS" \
+        --force
 
     log_step "Sandbox bind rootfs ready"
 }
 
+enable_external_tool() {
+    if [[ ! -d "$ROOTFS" ]]; then
+        echo "missing sandbox rootfs: $ROOTFS" >&2
+        echo "run scripts/claude_sandbox.sh prepare first (or start scripts/claude_sandbox.sh runner)" >&2
+        exit 1
+    fi
+
+    log_step "Approving/importing Claude external-tool snapshot into $REPOSITORY_URL"
+    cargo run -q -p cargo-agent-platform -- external-tool enable \
+        "$TOOL_DIR" \
+        --sandbox-rootfs "$ROOTFS" \
+        --repository-url "$REPOSITORY_URL" \
+        --yes
+}
+
 push_agent() {
+    enable_external_tool
     log_step "Publishing and deploying $AGENT_DIR"
-    cargo run -q -p cargo-agent-platform -- push --agents "$AGENT_DIR"
+    cargo run -q -p cargo-agent-platform -- push \
+        --agents "$AGENT_DIR" \
+        --repository-url "$REPOSITORY_URL" \
+        --url "$RUNNER_URL"
 }
 
 cd "$ROOT"
@@ -92,6 +128,9 @@ cmd="${1:-runner}"
 case "$cmd" in
     prepare)
         prepare
+        ;;
+    enable)
+        enable_external_tool
         ;;
     runner)
         prepare

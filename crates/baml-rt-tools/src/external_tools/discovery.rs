@@ -17,8 +17,9 @@ use baml_rt_core::{
 
 use super::{
     ExternalToolManifest, METHOD_INVOKE, MetadataSchemas, PROTOCOL_VERSION, SandboxImageRef,
-    StdioSubprocessInvoker, ToolDescribeResult, ToolInvoker, ToolRuntime, now_snapshot_timestamp,
-    read_external_manifest,
+    StdioSubprocessInvoker, ToolDescribeResult, ToolInvoker, ToolRuntime,
+    metadata::InvocationMode,
+    now_snapshot_timestamp, read_external_manifest,
     resolver::SandboxRuntimeWiring,
     sandbox::{SandboxCacheKey, SandboxInvoker},
     snapshot::{ExternalToolSnapshot, validate_describe_schema_support},
@@ -118,7 +119,7 @@ async fn discover_via_invoker(
         .describe(tool_name, DEFAULT_DISCOVERY_TIMEOUT)
         .await?;
     let describe_result: ToolDescribeResult = describe.into();
-    validate_describe(&manifest.name, &describe_result)?;
+    validate_describe(&manifest.name, manifest.invocation_mode, &describe_result)?;
     let describe_snapshot = validate_describe_schema_support(&manifest.name, &describe_result)?;
     let schema = invoker.schema(tool_name, DEFAULT_DISCOVERY_TIMEOUT).await?;
     ExternalToolSnapshot::from_parts(
@@ -130,23 +131,47 @@ async fn discover_via_invoker(
     )
 }
 
-fn validate_describe(tool: &str, describe: &ToolDescribeResult) -> Result<()> {
+fn validate_describe(
+    tool: &str,
+    invocation_mode: InvocationMode,
+    describe: &ToolDescribeResult,
+) -> Result<()> {
     if describe.protocol_version != PROTOCOL_VERSION {
         return Err(BamlRtError::InvalidArgument(format!(
             "tool/describe protocol_version '{}' but expected '{}'",
             describe.protocol_version, PROTOCOL_VERSION
         )));
     }
-    if !describe
-        .supported_methods
-        .iter()
-        .any(|m| m == METHOD_INVOKE)
-    {
-        return Err(BamlRtError::InvalidArgument(format!(
-            "tool '{}' does not advertise {}",
-            tool, METHOD_INVOKE
-        )));
+
+    match invocation_mode {
+        InvocationMode::SingleShot => {
+            if !describe
+                .supported_methods
+                .iter()
+                .any(|m| m == METHOD_INVOKE)
+            {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "tool '{}' does not advertise {}",
+                    tool, METHOD_INVOKE
+                )));
+            }
+        }
+        InvocationMode::Session => {
+            for required in baml_sandbox_protocol::session::SUPPORTED_METHODS_SESSION {
+                if !describe
+                    .supported_methods
+                    .iter()
+                    .any(|method| method == required)
+                {
+                    return Err(BamlRtError::InvalidArgument(format!(
+                        "session tool '{}' does not advertise {}",
+                        tool, required
+                    )));
+                }
+            }
+        }
     }
+
     Ok(())
 }
 
