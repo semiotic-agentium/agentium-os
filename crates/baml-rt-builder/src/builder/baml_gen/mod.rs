@@ -78,4 +78,7 @@ pub use session_from_ir::{
     CATALOG_FUNCTION_NAME, CATALOG_SIDECAR_FILE, CatalogPlan, GeneratedSessionBaml,
     SessionPlanIrInspector, render_generated_session_baml_from_ir,
 };
-pub use tool_interfaces::{render_baml_tool_interfaces, render_baml_tool_interfaces_with_mcp_root};
+pub use tool_interfaces::{
+    render_baml_tool_interfaces, render_baml_tool_interfaces_with_mcp_root,
+    render_baml_tool_interfaces_with_roots,
+};
