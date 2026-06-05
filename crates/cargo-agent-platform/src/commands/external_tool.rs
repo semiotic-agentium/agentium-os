@@ -19,16 +19,31 @@ use inquire::Confirm;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-pub fn enable(
-    dir: &str,
-    cache_dir: Option<&str>,
-    repository_url: Option<&str>,
-    runner_token: Option<&str>,
-    sandbox_rootfs: Option<&str>,
-    approved_by: Option<&str>,
-    yes: bool,
-    json_output: bool,
-) -> Result<()> {
+/// Arguments for [`enable`], grouped to keep the call site (and clippy) happy.
+#[derive(Debug)]
+pub struct EnableParams<'a> {
+    pub dir: &'a str,
+    pub cache_dir: Option<&'a str>,
+    pub repository_url: Option<&'a str>,
+    pub runner_token: Option<&'a str>,
+    pub sandbox_rootfs: Option<&'a str>,
+    pub approved_by: Option<&'a str>,
+    pub yes: bool,
+    pub json_output: bool,
+}
+
+pub fn enable(params: EnableParams<'_>) -> Result<()> {
+    let EnableParams {
+        dir,
+        cache_dir,
+        repository_url,
+        runner_token,
+        sandbox_rootfs,
+        approved_by,
+        yes,
+        json_output,
+    } = params;
+
     let dir = PathBuf::from(dir);
     let cache_root = cache_root(cache_dir)?;
 
