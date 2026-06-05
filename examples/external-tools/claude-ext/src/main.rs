@@ -103,25 +103,157 @@ const INPUT_SCHEMA: &str = r#"{
 const OUTPUT_SCHEMA: &str = r#"{
   "type": "object",
   "properties": {
-    "events": { "type": "array", "items": { "type": "object" } },
-    "completion": { "type": "string", "enum": ["DONE", "INPUT_REQUIRED", "INTERRUPTED"] },
+    "events": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "assistant_text"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "assistant_thinking"
+              },
+              "thinking": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "thinking"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "system_notice"
+              },
+              "subtype": {
+                "type": "string"
+              },
+              "cwd": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "data": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "subtype",
+              "cwd",
+              "model"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "terminal_result"
+              },
+              "subtype": {
+                "type": "string"
+              },
+              "is_error": {
+                "type": "boolean"
+              },
+              "num_turns": {
+                "type": "integer"
+              },
+              "total_cost_usd": {
+                "type": "number"
+              },
+              "result": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "subtype",
+              "is_error",
+              "num_turns"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "completion": {
+      "type": "string",
+      "enum": [
+        "DONE",
+        "INPUT_REQUIRED",
+        "INTERRUPTED"
+      ]
+    },
     "historyContext": {
       "type": "object",
       "properties": {
-        "hop": { "type": "integer" },
-        "op": { "type": "string" },
-        "status": { "type": "string" },
-        "truncated": { "type": "boolean" },
-        "cursor": { "type": ["string", "null"] },
+        "hop": {
+          "type": "integer"
+        },
+        "op": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "payload": {
           "type": "object",
           "properties": {
-            "eventCount": { "type": "integer" },
-            "completion": { "type": ["string", "null"] }
+            "eventCount": {
+              "type": "integer"
+            },
+            "completion": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           },
           "additionalProperties": false
         }
       },
+      "required": [
+        "hop",
+        "op",
+        "status",
+        "truncated"
+      ],
       "additionalProperties": false
     }
   },
@@ -187,7 +319,7 @@ async fn handle_request(request: Value, sessions: Arc<SessionStore>) -> Value {
                 "protocol_version": PROTOCOL_VERSION,
                 "tool_name": TOOL_NAME,
                 "supported_methods": SUPPORTED_METHODS,
-                "schema_digest": "sha256:5bca5f9e64313cbcad5d89fb2907f466434e24f6203c6ffd2aa4f798ac7f086b",
+                "schema_digest": "sha256:5f6b960f2d2b0f9f78769b0c1f0d64ef654c68535d1084b1d4a45051b27538cc",
             }),
         ),
         METHOD_SCHEMA => {
@@ -201,7 +333,7 @@ async fn handle_request(request: Value, sessions: Arc<SessionStore>) -> Value {
                     "schema_version": 1,
                     "tool_name": TOOL_NAME,
                     "content_type": "application/schema+json",
-                    "content_digest": "sha256:5bca5f9e64313cbcad5d89fb2907f466434e24f6203c6ffd2aa4f798ac7f086b",
+                    "content_digest": "sha256:5f6b960f2d2b0f9f78769b0c1f0d64ef654c68535d1084b1d4a45051b27538cc",
                     "input": input,
                     "output": output,
                 }),
