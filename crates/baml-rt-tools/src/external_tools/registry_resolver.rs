@@ -354,6 +354,33 @@ mod tests {
     }
 
     #[test]
+    fn approved_snapshot_round_trips_through_cache_root() {
+        // Locks the build->boot contract: the builder writes approved snapshots
+        // under <root>/external-tools/tools/<slug>/tool-snapshot.json (the packager
+        // tars that dir verbatim), and the runner boots packaged tools via
+        // ExternalRegistryResolver::from_cache_root_with_sandbox(<root>). The write
+        // path and the read path must agree on layout.
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = snapshot("support/packaged_ok", None, InvocationMode::SingleShot);
+        external_tool_cache::write_approved_snapshot(tmp.path(), &snap).unwrap();
+
+        let expected =
+            external_tool_cache::approved_snapshot_path(tmp.path(), "support/packaged_ok").unwrap();
+        assert!(
+            expected.is_file(),
+            "snapshot must land where the packager scoops the external-tools/ dir"
+        );
+
+        let resolver =
+            ExternalRegistryResolver::from_cache_root_with_sandbox(tmp.path(), None, None).unwrap();
+        let name = ToolName::parse("support/packaged_ok").unwrap();
+        assert!(
+            resolver.resolve(&name).unwrap().is_some(),
+            "from_cache_root_with_sandbox resolves a packaged approved snapshot"
+        );
+    }
+
+    #[test]
     fn invalid_or_ambiguous_snapshots_reject() {
         let mut tampered = snapshot(
             "support/registry_tampered",
