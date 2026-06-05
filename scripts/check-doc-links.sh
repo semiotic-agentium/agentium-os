@@ -39,11 +39,10 @@ check_file() {
 }
 
 while IFS= read -r -d '' file; do
-  [[ "$file" == *"/.cursor/plans/"* ]] && continue
   check_file "$file"
 done < <(
   find . \
-    \( -path './docs' -o -path './deploy' -o -path './observability' -o -path './.cursor/agents' -o -path './.cursor/skills' -o -path './crates' -o -maxdepth 1 -name '*.md' -o -path './web/README.md' -o -path './examples' \) \
+    \( -path './docs' -o -path './deploy' -o -path './observability' -o -path './crates' -o -maxdepth 1 -name '*.md' -o -path './web/README.md' -o -path './examples' \) \
     -name '*.md' \
     -not -path './target/*' \
     -not -path '*/node_modules/*' \
