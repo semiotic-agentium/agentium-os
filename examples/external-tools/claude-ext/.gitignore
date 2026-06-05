@@ -1,3 +1,3 @@
 target/
 .tmp/
-tool-metadata.lock.json
+tool-manifest.lock.json

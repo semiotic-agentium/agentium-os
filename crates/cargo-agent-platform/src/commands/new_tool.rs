@@ -802,8 +802,8 @@ mod tests {
             gitignore
                 .content
                 .lines()
-                .any(|line| line.trim() == "tool-metadata.lock.json"),
-            ".gitignore should ignore tool-metadata.lock.json"
+                .any(|line| line.trim() == "tool-manifest.lock.json"),
+            ".gitignore should ignore tool-manifest.lock.json"
         );
     }
 
@@ -846,8 +846,8 @@ mod tests {
         let lines: Vec<&str> = gitignore.content.lines().collect();
         assert!(lines.contains(&".tmp/"), "expected .tmp/, got {lines:?}");
         assert!(
-            lines.contains(&"tool-metadata.lock.json"),
-            "expected tool-metadata.lock.json, got {lines:?}"
+            lines.contains(&"tool-manifest.lock.json"),
+            "expected tool-manifest.lock.json, got {lines:?}"
         );
     }
 }

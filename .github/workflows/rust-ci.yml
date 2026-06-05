@@ -96,7 +96,7 @@ jobs:
 
       - name: Workspace integrity check
         # `--warn-missing-catalog` downgrades unknown tool names to warnings so that agents
-        # referencing external/sandbox tools (declared via tool-metadata.json, not Rust inventory)
+        # referencing external/sandbox tools (declared via tool-manifest.json, not Rust inventory)
         # do not fail CI. Doctor discovery of external tool catalogs is tracked separately.
         run: cargo run -p cargo-agent-platform -- doctor --ci --warn-missing-catalog
         env:
@@ -438,7 +438,7 @@ jobs:
           import json
           from pathlib import Path
 
-          path = Path("crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/tool-metadata.json")
+          path = Path("crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/tool-manifest.json")
           doc = json.loads(path.read_text(encoding="utf-8"))
           expected = "sha256:" + "0" * 64
 
@@ -535,7 +535,7 @@ jobs:
           import os
           from pathlib import Path
 
-          src = Path("crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/tool-metadata.json")
+          src = Path("crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/tool-manifest.json")
           dst = Path(os.environ["RUNNER_TEMP"]) / "sandbox_echo.tool-metadata.ci.json"
 
           with src.open("r", encoding="utf-8") as f:

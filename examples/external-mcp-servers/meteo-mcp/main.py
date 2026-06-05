@@ -49,7 +49,7 @@ ERR_INVALID_PARAMS = -32602
 ERR_INTERNAL = -32603
 
 # Input schema kept *byte-for-byte equivalent* to the external meteo-tool's
-# tool-metadata.json#/schemas/input so the agent prompt logic can be reused.
+# tool-manifest.json#/schemas/input so the agent prompt logic can be reused.
 INPUT_SCHEMA = {
     "type": "object",
     "properties": {

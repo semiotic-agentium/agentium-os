@@ -71,7 +71,7 @@ and pools the connection for the agent's lifetime.
 | Tool name | `dev/meteo-tool` | `mcp/meteo/get_meteo` |
 | BAML class | `DevMeteoTool*` | `McpMeteoGetMeteo*` |
 | Transport | TSRPC-framed stdio sandbox | MCP line-delimited stdio |
-| Output schema validation | Yes (tool-metadata.json) | No — MCP 2025-06-18 has no output schema; runtime returns `ContentEnvelope` (`content[]` + `structuredContent`) |
+| Output schema validation | Yes (`tool/schema`) | No — MCP 2025-06-18 has no output schema; runtime returns `ContentEnvelope` (`content[]` + `structuredContent`) |
 | Tool registration | Inventory at compile time | MCP registry snapshot projected into package artifacts |
 
 Input schema is byte-for-byte identical so prompt logic transfers without

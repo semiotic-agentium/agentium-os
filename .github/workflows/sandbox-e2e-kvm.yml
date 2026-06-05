@@ -177,7 +177,7 @@ jobs:
           import os
           from pathlib import Path
 
-          src = Path("crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/tool-metadata.json")
+          src = Path("crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/tool-manifest.json")
           dst = Path(os.environ["RUNNER_TEMP"]) / "sandbox_echo.tool-metadata.ci.json"
           rootfs_dir = Path(os.environ["ROOTFS_DIR"]).resolve()
 

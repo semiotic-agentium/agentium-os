@@ -37,9 +37,8 @@ DEBUG = os.environ.get("METEO_TOOL_DEBUG", "1") not in ("0", "false", "False")
 
 
 def _schema_payload():
-    metadata_path = pathlib.Path(__file__).resolve().with_name("tool-metadata.json")
-    meta = json.loads(metadata_path.read_text(encoding="utf-8"))
-    schemas = meta["schemas"]
+    schema_path = pathlib.Path(__file__).resolve().with_name("tool-schema.json")
+    schemas = json.loads(schema_path.read_text(encoding="utf-8"))
     return {"input": schemas["input"], "output": schemas["output"]}
 
 

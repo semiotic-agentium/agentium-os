@@ -44,7 +44,7 @@ set -euo pipefail
 # This script delegates to `sandbox-bind-sync`, which:
 #   1) builds adapter image from adapter/Dockerfile
 #   2) exports image filesystem into a bind rootfs directory
-#   3) writes tool-metadata.lock.json (gitignored) with the host bind path
+#   3) writes tool-manifest.lock.json (gitignored) with the host bind path
 #   4) validates metadata via `check-external-tool` (with --check)
 
 run_agent_platform() {{
