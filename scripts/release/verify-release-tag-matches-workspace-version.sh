@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Fail if release tag vX.Y.Z does not match [workspace.package].version in Cargo.toml.
 set -euo pipefail
 
