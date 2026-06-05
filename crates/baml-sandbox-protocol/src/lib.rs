@@ -29,7 +29,7 @@ pub use protocol::{
     ERR_SIDECAR_MISSING, ERR_SIDECAR_SCHEMA_INVALID, ERR_SIDECAR_SIZE_EXCEEDED,
     ERR_UNSUPPORTED_PROTOCOL, ErrorClass, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
     METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA, PROTOCOL_VERSION, SUPPORTED_METHODS,
-    SUPPORTED_METHODS_V2, ToolDescribeResult, ToolInvokeParams, ToolInvokeResult, ToolSchemaResult,
+    ToolDescribeResult, ToolInvokeParams, ToolInvokeResult, ToolSchemaResult,
 };
 pub use session::{
     METHOD_SESSION_ABORT, METHOD_SESSION_FINISH, METHOD_SESSION_OPEN, METHOD_SESSION_READ,

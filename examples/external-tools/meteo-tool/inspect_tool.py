@@ -49,7 +49,7 @@ def _describe_from_bundle(bundle: dict) -> dict:
         "jsonrpc": "2.0",
         "id": 1,
         "result": {
-            "protocol_version": manifest.get("protocol_version", "2"),
+            "protocol_version": manifest.get("protocol_version", "1"),
             "tool_name": manifest.get("tool_name", runtime.get("tool_id", TOOL_ID)),
             "supported_methods": manifest.get(
                 "supported_methods", ["tool/describe", "tool/schema", "tool/invoke"]

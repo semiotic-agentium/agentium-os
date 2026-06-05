@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use super::{
     metadata::{ExternalToolMetadata, InvocationMode, metadata_schema_digest},
-    protocol::SUPPORTED_METHODS_V2,
+    protocol::{METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA, PROTOCOL_VERSION},
     runtime::ToolRuntime,
 };
 
@@ -86,9 +86,9 @@ pub fn render_sidecar_bundle(meta: &ExternalToolMetadata) -> Result<ToolSidecarB
         },
         manifest: ToolManifestSidecar {
             tool_name: meta.name.clone(),
-            protocol_version: "2".to_string(),
+            protocol_version: PROTOCOL_VERSION.to_string(),
             supported_methods: match meta.invocation_mode {
-                InvocationMode::SingleShot => SUPPORTED_METHODS_V2
+                InvocationMode::SingleShot => [METHOD_DESCRIBE, METHOD_SCHEMA, METHOD_INVOKE]
                     .iter()
                     .map(|m| (*m).to_string())
                     .collect(),

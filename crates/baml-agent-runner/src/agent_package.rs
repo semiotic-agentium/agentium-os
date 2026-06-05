@@ -33,11 +33,12 @@ use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, SecretResolverToLlmAdap
 use baml_rt_tools::external_tools::sandbox::MockSandboxProvider;
 use baml_rt_tools::{
     BundleRegistrar, ExternalToolResolver, ManifestToolNames, SharedContextRefStore,
-    ToolAccessPolicy, ToolRegistry,
+    ToolAccessPolicy, ToolRegistry, external_tool_cache,
     external_tools::{
         EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLifecycleEvent, ExternalLifecycleRecorder,
         ExternalLockfileMode, ExternalRegistryResolver, ExternalToolsLockfile,
         resolver::SandboxRuntimeWiring,
+        runtime::{SandboxImageRef, ToolRuntime},
     },
     register_manifest_tools_with_fallback,
 };
@@ -68,7 +69,7 @@ impl McpSecretResolver for LlmSecretResolverToMcpAdapter {
 use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
 use baml_tools_system::SystemBundle;
 use serde_json::Value;
-use tracing::{Instrument, error, info};
+use tracing::{Instrument, debug, error, info, warn};
 
 use crate::config::ProvenanceConfig;
 
@@ -246,6 +247,57 @@ impl AgentPackage {
         };
         let package_external_root = self.extract_dir.join("external-tools");
         let registry_external_resolver = if package_external_root.exists() {
+            match external_tool_cache::read_approved_snapshots(&self.extract_dir) {
+                Ok(snapshots) => {
+                    info!(
+                        agent = %self.manifest.name,
+                        source = "package",
+                        package_external_root = %package_external_root.display(),
+                        external_tool_snapshot_count = snapshots.len(),
+                        "loaded packaged external-tool snapshots"
+                    );
+                    for snapshot in snapshots {
+                        let runtime = snapshot.tool.runtime.as_ref().cloned().unwrap_or_default();
+                        match runtime {
+                            ToolRuntime::Process(_) => debug!(
+                                agent = %self.manifest.name,
+                                source = "package",
+                                tool = %snapshot.tool.name,
+                                snapshot_digest = %snapshot.snapshot_digest,
+                                schema_digest = %snapshot.digests.schema_digest,
+                                runtime_kind = "process",
+                                "packaged external-tool snapshot loaded"
+                            ),
+                            ToolRuntime::Sandbox(spec) => {
+                                let (sandbox_image_kind, sandbox_rootfs) = match spec.image {
+                                    SandboxImageRef::Bind { path } => {
+                                        ("bind", Some(path.display().to_string()))
+                                    }
+                                    SandboxImageRef::Oci { r#ref } => ("oci", Some(r#ref)),
+                                    _ => ("unknown", None),
+                                };
+                                debug!(
+                                    agent = %self.manifest.name,
+                                    source = "package",
+                                    tool = %snapshot.tool.name,
+                                    snapshot_digest = %snapshot.snapshot_digest,
+                                    schema_digest = %snapshot.digests.schema_digest,
+                                    runtime_kind = "sandbox",
+                                    sandbox_image_kind,
+                                    sandbox_rootfs,
+                                    "packaged external-tool snapshot loaded"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(err) => warn!(
+                    agent = %self.manifest.name,
+                    package_external_root = %package_external_root.display(),
+                    error = %err,
+                    "failed to read packaged external-tool snapshots for observability; resolver will validate package next"
+                ),
+            }
             Some(ExternalRegistryResolver::from_cache_root_with_sandbox(
                 &self.extract_dir,
                 sandbox_wiring.clone(),

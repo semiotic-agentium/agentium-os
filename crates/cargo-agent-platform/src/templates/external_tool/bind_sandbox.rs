@@ -212,7 +212,7 @@ def _describe_from_bundle(bundle: dict) -> dict:
         "jsonrpc": "2.0",
         "id": 1,
         "result": {
-            "protocol_version": manifest.get("protocol_version", "2"),
+            "protocol_version": manifest.get("protocol_version", "1"),
             "tool_name": manifest.get("tool_name", runtime.get("tool_id", TOOL_ID)),
             "supported_methods": manifest.get("supported_methods", ["tool/describe", "tool/schema", "tool/invoke"]),
             "schema_digest": schema.get("content_digest"),
@@ -678,7 +678,7 @@ def main() -> int:
             jsonrpc="2.0",
             id=req_id,
             result=dict(
-                protocol_version=manifest.get("protocol_version", "2"),
+                protocol_version=manifest.get("protocol_version", "1"),
                 tool_name=manifest.get("tool_name", runtime_spec.get("tool_id", TOOL_ID)),
                 supported_methods=manifest.get("supported_methods", SUPPORTED_METHODS),
                 schema_digest=schema.get("content_digest"),
