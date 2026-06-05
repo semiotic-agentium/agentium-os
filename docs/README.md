@@ -4,9 +4,9 @@ Agentium OS docs are split by purpose. **Assertions** are normative rules for ag
 reviewers. **Reference** describes current behavior. **Runbooks** cover install, test, demo, and
 operations.
 
-Assertions were validated against the codebase as of **2026-06-03**. When changing subsystems, use
-the [invariant-analysis skill](../.cursor/skills/invariant-analysis/SKILL.md) and update the
-relevant assertion doc in the same PR.
+Assertions were validated against the codebase as of **2026-06-03**. When changing
+subsystems, capture invariants in the relevant assertion doc (see
+[`testing-handbook.md`](assertions/testing-handbook.md)) and update it in the same PR.
 
 ## Assertions (`docs/assertions/`)
 
@@ -55,6 +55,7 @@ Install, test, demo, and operate.
 |-----|---------|
 | [k8s-pilot-operator-guide.md](runbooks/k8s-pilot-operator-guide.md) | Supported Helm install path |
 | [e2e-k8s.md](runbooks/e2e-k8s.md) | K8s validation harness |
+| [ci-security.md](runbooks/ci-security.md) | Public-repo CI trust model and GitHub settings |
 | [k8s-pilot-load-testing.md](runbooks/k8s-pilot-load-testing.md) | Load-test harness contract |
 | [task-daemon.md](runbooks/task-daemon.md) | Task-daemon user guide |
 | [host-tool-quickstart.md](runbooks/host-tool-quickstart.md) | Sandboxed external tool + agent checklist |
@@ -85,4 +86,4 @@ Co-located with implementation; linked from reference or assertions as needed.
 | Operator / K8s | [k8s-pilot-operator-guide.md](runbooks/k8s-pilot-operator-guide.md) → [agent-runner.md](reference/agent-runner.md) |
 | Observability | [metrics-inventory.md](reference/metrics-inventory.md) → OTel guides |
 | Testing | [testing-handbook.md](assertions/testing-handbook.md) → [e2e-k8s.md](runbooks/e2e-k8s.md) |
-| Operator UI | [.cursor/skills/agentium-ops-ux/](../.cursor/skills/agentium-ops-ux/SKILL.md) |
+| Operator UI | [`web/README.md`](../web/README.md) → provenance + chat views |
