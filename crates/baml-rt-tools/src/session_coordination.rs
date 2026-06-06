@@ -9,7 +9,7 @@
 //! 1. **Inventory providers** — internal tool crates register a render function
 //!    via `inventory!`. Compiled into the binary at build time.
 //! 2. **Bundle fragments** — external tool packages ship a `coordination.baml`
-//!    file alongside `tool-metadata.json`. The metadata catalog reads the file
+//!    file alongside `tool-manifest.json`. The snapshot catalog reads the file
 //!    into [`ToolFunctionMetadata::coordination_baml`] when the tool is loaded.
 //!
 //! Both paths converge in [`gather_coordination_fragments`]: the builder passes
@@ -75,7 +75,7 @@ fn render_inventory_fragment(tool_id: &str) -> Result<Option<String>> {
 /// For each tool, picks the fragment from:
 ///
 /// - the bundle (`metadata.coordination_baml`) — set by the external metadata
-///   catalog when `coordination.baml_file` is declared in `tool-metadata.json`;
+///   catalog when `coordination.baml_file` is declared in `tool-manifest.json`;
 /// - or the inventory provider — internal tool crates registering via `inventory!`.
 ///
 /// Declaring both sources for the same tool is a hard error: the tool author

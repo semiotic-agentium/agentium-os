@@ -8,7 +8,7 @@
 # and override the file values when set and non-empty.
 
 [external_tools]
-# Each entry is a tool package directory containing tool-metadata.json.
+# Each entry is a tool package directory containing tool-manifest.json.
 # Add one entry per tool you want the runner to load in dev mode.
 dirs = [
     "./examples/external-tools/claude-ext",

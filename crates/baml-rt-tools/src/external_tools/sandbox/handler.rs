@@ -25,6 +25,7 @@ use crate::{
     ToolName,
     external_tools::{
         ExternalLifecycleEvent, ExternalLifecycleRecorder,
+        drift::DriftGuard,
         invoker::{InvokeRequest, ToolInvoker},
         policy::{InvocationPolicy, PolicyError, QuarantineState, ToolQuota},
     },
@@ -45,6 +46,10 @@ pub struct SandboxToolHandler {
     lifecycle_recorder: Option<ExternalLifecycleRecorder>,
     secrets: serde_json::Map<String, Value>,
     capabilities: Value,
+    /// Snapshot-backed tools attach a drift guard: the first invoke verifies the
+    /// live `tool/schema` against the approved digest and fails closed on drift.
+    /// `None` for dev-mode tools.
+    drift_guard: Option<Arc<DriftGuard>>,
 }
 
 impl SandboxToolHandler {
@@ -68,6 +73,7 @@ impl SandboxToolHandler {
             lifecycle_recorder: None,
             secrets: serde_json::Map::new(),
             capabilities: Value::Null,
+            drift_guard: None,
         }
     }
 
@@ -83,6 +89,13 @@ impl SandboxToolHandler {
 
     pub fn with_lifecycle_recorder(mut self, recorder: ExternalLifecycleRecorder) -> Self {
         self.lifecycle_recorder = Some(recorder);
+        self
+    }
+
+    /// Attach a [`DriftGuard`] so the first invoke verifies the live tool schema
+    /// against the approved snapshot digest before materialising for real work.
+    pub fn with_drift_guard(mut self, guard: Arc<DriftGuard>) -> Self {
+        self.drift_guard = Some(guard);
         self
     }
 }
@@ -117,6 +130,7 @@ impl ToolHandler for SandboxToolHandler {
             secrets: self.secrets.clone(),
             capabilities: self.capabilities.clone(),
             pending_input: None,
+            drift_guard: self.drift_guard.clone(),
             _agent_id: ctx.agent_id,
         }))
     }
@@ -132,6 +146,9 @@ pub struct SandboxToolSession {
     secrets: serde_json::Map<String, Value>,
     capabilities: Value,
     pending_input: Option<Value>,
+    /// Shared with the parent handler so the live-schema check runs once per
+    /// handler lifetime, not once per session.
+    drift_guard: Option<Arc<DriftGuard>>,
     _agent_id: AgentId,
 }
 
@@ -147,6 +164,18 @@ impl ToolSession for SandboxToolSession {
             Some(v) => v,
             None => return Ok(ToolStep::Done { output: None }),
         };
+
+        // Lazy first-invoke drift check (snapshot-backed tools only): verify the
+        // live tool schema against the approved digest before the first real
+        // call, cache the verdict, fail closed on drift.
+        if let Some(guard) = &self.drift_guard {
+            let invoker = self.invoker.clone();
+            let tool = self.tool_name.clone();
+            let timeout = guard.schema_timeout();
+            guard
+                .ensure_verified(move || async move { invoker.schema(&tool, timeout).await })
+                .await?;
+        }
 
         let _permit = self
             .policy

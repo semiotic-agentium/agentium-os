@@ -4,8 +4,8 @@
 
 //! Runner-side wiring helpers (`tool_sandbox.md` Workstream Y).
 //!
-//! Turns a runner bootstrap into a full [`SandboxRuntimeWiring`] ready to
-//! hand to [`DevModeResolver::from_dirs_with_sandbox`](super::super::resolver::DevModeResolver::from_dirs_with_sandbox).
+//! Turns a runner bootstrap into a full [`SandboxRuntimeWiring`] ready for
+//! registry-backed external-tool loading.
 //!
 //! What's *stub* in this pass (Workstream D will tighten):
 //! - `NetworkPolicy` defaults to empty/deny-all — no allow rules compiled

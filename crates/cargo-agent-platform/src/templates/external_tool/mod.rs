@@ -10,7 +10,7 @@
 
 pub mod bind_sandbox;
 pub mod lang;
-pub mod metadata_json;
+pub mod manifest_json;
 pub mod readme_md;
 
 use baml_rt_tools::{ToolAccess, external_tools::SandboxImageRef};
@@ -53,8 +53,8 @@ pub const DEFAULT_BUNDLE: &str = "support";
 // The scaffold ships a trivial "echo" tool so the user can invoke and verify
 // the protocol end-to-end immediately. These constants are the *single source
 // of truth* for that contract. Rename them here and every template (plus the
-// JSON schema in tool-metadata.json and the README probe example) picks up
-// the change — no risk of divergence between the schema and the handler.
+// README probe example) picks up the change — no risk of divergence between
+// the generated schema response and the handler.
 
 /// Name of the starter input field. Handlers read it from `params.input.<KEY>`.
 ///
@@ -92,20 +92,20 @@ impl From<Access> for ToolAccess {
 
 impl Access {
     /// Delegates to [`ToolAccess::as_str`] so there is only one source of truth
-    /// for the canonical lowercase spelling used in `tool-metadata.json`.
+    /// for the canonical lowercase spelling used in `tool-manifest.json`.
     pub fn as_str(self) -> &'static str {
         ToolAccess::from(self).as_str()
     }
 }
 
-/// Runtime target encoded in scaffolded `tool-metadata.json`.
+/// Runtime target encoded in scaffolded `tool-manifest.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Runtime {
     Process,
     Sandbox,
 }
 
-/// Invocation mode encoded in scaffolded `tool-metadata.json`.
+/// Invocation mode encoded in scaffolded `tool-manifest.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum InvocationMode {
     SingleShot,
@@ -203,7 +203,7 @@ pub struct ScaffoldContext<'a> {
     pub access: Access,
     pub language: Language,
     pub description: &'a str,
-    /// Runtime metadata block to emit in `tool-metadata.json`.
+    /// Runtime manifest block to emit in `tool-manifest.json`.
     pub runtime: Runtime,
     /// Invocation mode to emit in metadata (`single_shot` or `session`).
     pub invocation_mode: InvocationMode,

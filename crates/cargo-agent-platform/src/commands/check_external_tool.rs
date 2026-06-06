@@ -4,21 +4,17 @@
 
 //! `check-external-tool` subcommand implementation.
 //!
-//! Validates `tool-metadata.json` against the canonical JSON schema and the
-//! runtime's typed parser. This catches drift between scaffolded metadata,
-//! schema rules, and runtime expectations.
+//! Validates `tool-manifest.json` with the runtime typed parser and
+//! runtime-specific invariants. Schemas are discovered from `tool/schema` by
+//! enable/allowed-dir discovery, not authored in this file.
 
 use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
 use baml_rt_tools::external_tools::{
-    SandboxImageRef, ToolRuntime, read_external_metadata, read_runtime_external_metadata,
+    InvocationMode, SandboxImageRef, ToolRuntime, read_external_manifest, read_runtime_lock,
 };
 use console::style;
-use jsonschema::JSONSchema;
-use serde_json::Value;
-
-use crate::workspace::find_workspace_root;
 
 pub fn run(path: &str) -> Result<()> {
     let tool_dir = Path::new(path);
@@ -26,64 +22,38 @@ pub fn run(path: &str) -> Result<()> {
         bail!("tool directory does not exist: {}", tool_dir.display());
     }
 
-    let metadata_path = tool_dir.join("tool-metadata.json");
-    let raw = fs::read_to_string(&metadata_path)
-        .with_context(|| format!("failed to read {}", metadata_path.display()))?;
-    let instance: Value = serde_json::from_str(&raw)
-        .with_context(|| format!("failed to parse {} as JSON", metadata_path.display()))?;
+    let manifest = read_external_manifest(tool_dir)?;
 
-    let workspace_root = find_workspace_root()?;
-    let schema_path = workspace_root.join("schemas/external_tool_metadata.schema.json");
-    let schema_raw = fs::read_to_string(&schema_path)
-        .with_context(|| format!("failed to read schema at {}", schema_path.display()))?;
-    let schema_json: Value = serde_json::from_str(&schema_raw)
-        .with_context(|| format!("failed to parse schema at {}", schema_path.display()))?;
-
-    let compiled = JSONSchema::compile(&schema_json)
-        .map_err(|e| anyhow::anyhow!("failed to compile schema {}: {e}", schema_path.display()))?;
-
-    if let Err(errors) = compiled.validate(&instance) {
-        println!("{} schema validation failed:", style("✗").red());
-        for err in errors {
-            println!("  - {err}");
-        }
-        bail!("external tool metadata failed schema validation");
-    }
-
-    // Source-pollution lint: catch contributors who hand-edited absolute bind
-    // paths into the committed `tool-metadata.json`. Host-resolved bind paths
-    // belong in the gitignored `tool-metadata.lock.json` written by
-    // `sandbox-bind-sync`. Run against the unmerged source — the resolved view
-    // would mask abs paths that the lock happened to override.
-    let source = read_external_metadata(tool_dir)?;
-    if let Some(ToolRuntime::Sandbox(spec)) = &source.runtime
+    // Source-pollution lint: catch absolute bind paths in committed source.
+    // Host-resolved bind paths belong in gitignored `tool-manifest.lock.json`.
+    if let Some(ToolRuntime::Sandbox(spec)) = &manifest.runtime
         && let SandboxImageRef::Bind { path } = &spec.image
         && path.is_absolute()
     {
         bail!(
-            "source tool-metadata.json declares an absolute bind path ({}); use a relative path \
-             like \"./.tmp/<rootfs>\" — host-resolved paths belong in tool-metadata.lock.json",
+            "source tool-manifest.json declares an absolute bind path ({}); use a relative path \
+             like \"./.tmp/<rootfs>\" — host-resolved paths belong in tool-manifest.lock.json",
             path.display()
         );
     }
-    let typed = read_runtime_external_metadata(tool_dir)?;
-    if let Some(ToolRuntime::Sandbox(runtime)) = &typed.runtime {
+
+    if let Some(ToolRuntime::Sandbox(runtime)) = &manifest.runtime {
         let adapter = runtime.adapter.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "sandbox runtime requires runtime.adapter with command/protocol (tool: {})",
-                typed.name
+                manifest.name
             )
         })?;
         if adapter.command.is_empty() {
             bail!(
                 "sandbox runtime.adapter.command must contain at least one argv token (tool: {})",
-                typed.name
+                manifest.name
             );
         }
         if adapter.protocol != "jsonrpc-stdio" {
             bail!(
                 "sandbox runtime.adapter.protocol must be 'jsonrpc-stdio' (tool: {}, got: {})",
-                typed.name,
+                manifest.name,
                 adapter.protocol
             );
         }
@@ -98,8 +68,19 @@ pub fn run(path: &str) -> Result<()> {
                 }
             }
             SandboxImageRef::Bind { path } => {
-                let canonical = std::fs::canonicalize(path)
-                    .with_context(|| format!("bind path does not resolve: {}", path.display()))?;
+                let lock = read_runtime_lock(tool_dir)?;
+                let resolved = lock
+                    .and_then(|lock| lock.image_path_abs)
+                    .unwrap_or_else(|| {
+                        if path.is_relative() {
+                            tool_dir.join(path)
+                        } else {
+                            path.clone()
+                        }
+                    });
+                let canonical = std::fs::canonicalize(&resolved).with_context(|| {
+                    format!("bind path does not resolve: {}", resolved.display())
+                })?;
                 if !canonical.is_dir() {
                     bail!("bind path is not a directory: {}", canonical.display());
                 }
@@ -120,14 +101,14 @@ pub fn run(path: &str) -> Result<()> {
             }
             _ => {
                 bail!(
-                    "unsupported sandbox image kind in metadata for tool {}",
-                    typed.name
+                    "unsupported sandbox image kind in manifest for tool {}",
+                    manifest.name
                 );
             }
         }
     }
 
-    let runtime_kind = typed
+    let runtime_kind = manifest
         .runtime
         .as_ref()
         .map(|rt| rt.kind())
@@ -138,29 +119,26 @@ pub fn run(path: &str) -> Result<()> {
         .unwrap_or("process(default)");
 
     println!(
-        "{} metadata valid for {} ({runtime_kind})",
+        "{} manifest valid for {} ({runtime_kind})",
         style("✓").green(),
-        style(&typed.name).cyan()
+        style(&manifest.name).cyan()
     );
 
-    if let Some(spec) = &typed.coordination {
-        if matches!(
-            typed.invocation_mode,
-            baml_rt_tools::external_tools::InvocationMode::SingleShot
-        ) {
+    if let Some(spec) = &manifest.coordination {
+        if matches!(manifest.invocation_mode, InvocationMode::SingleShot) {
             bail!(
                 "tool '{}' declares coordination.baml_file but invocation_mode is single_shot; coordination is only valid for session tools",
-                typed.name
+                manifest.name
             );
         }
         if spec.baml_file.is_empty() {
-            bail!("tool '{}' has empty coordination.baml_file", typed.name);
+            bail!("tool '{}' has empty coordination.baml_file", manifest.name);
         }
         let coord_path = tool_dir.join(&spec.baml_file);
         if !coord_path.is_file() {
             bail!(
                 "tool '{}': coordination file not found at {}",
-                typed.name,
+                manifest.name,
                 coord_path.display()
             );
         }
@@ -173,7 +151,7 @@ pub fn run(path: &str) -> Result<()> {
         if coord_body.trim().is_empty() {
             bail!(
                 "tool '{}': coordination file is empty: {}",
-                typed.name,
+                manifest.name,
                 coord_path.display()
             );
         }
@@ -198,7 +176,7 @@ mod tests {
     };
 
     #[test]
-    fn scaffolded_metadata_passes_runtime_validator() {
+    fn scaffolded_manifest_passes_runtime_validator() {
         let ctx = ScaffoldContext {
             name: "echo",
             bundle: "dev",
@@ -217,9 +195,9 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmp dir");
 
         for file in files {
-            if file.relative_path == "tool-metadata.json" {
+            if file.relative_path == "tool-manifest.json" {
                 std::fs::write(tmp.path().join(file.relative_path), file.content.as_bytes())
-                    .expect("write metadata");
+                    .expect("write manifest");
                 break;
             }
         }

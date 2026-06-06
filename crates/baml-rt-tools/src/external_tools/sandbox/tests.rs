@@ -29,7 +29,10 @@ use super::{
 };
 use crate::{
     ToolName,
-    external_tools::invoker::{InvokeRequest, ToolInvoker},
+    external_tools::{
+        invoker::{InvokeRequest, ToolInvoker},
+        protocol::METHOD_SCHEMA,
+    },
 };
 
 #[tokio::test]
@@ -126,4 +129,92 @@ async fn sandbox_invoker_happy_path_round_trips_through_mock_provider() {
     // list/reattach wiring, not the cache's.
     let reattached = provider.reattach(&expected_name).await.unwrap();
     assert_eq!(reattached.name, expected_name);
+}
+
+#[tokio::test]
+async fn sandbox_invoker_schema_routes_through_mock_provider() {
+    let adapter: ScriptedAdapter = Arc::new(|stream| {
+        tokio::spawn(async move {
+            let (mut r, mut w) = tokio::io::split(stream);
+            loop {
+                let mut len_buf = [0u8; 4];
+                if r.read_exact(&mut len_buf).await.is_err() {
+                    break;
+                }
+                let len = u32::from_be_bytes(len_buf) as usize;
+                let mut body = vec![0u8; len];
+                if r.read_exact(&mut body).await.is_err() {
+                    break;
+                }
+                let req: Value = match serde_json::from_slice(&body) {
+                    Ok(v) => v,
+                    Err(_) => break,
+                };
+                let id = req.get("id").and_then(Value::as_u64).unwrap_or(1);
+                let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+                let response = if method == METHOD_SCHEMA {
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "schema_version": 1,
+                            "tool_name": "support/echo",
+                            "content_type": "application/schema+json",
+                            "content_digest": "sha256:deadbeef",
+                            "input": {"type": "object"},
+                            "output": {"type": "object"}
+                        }
+                    })
+                } else {
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {"code": -32601, "message": "method not found"}
+                    })
+                };
+                let out = serde_json::to_vec(&response).unwrap();
+                if w.write_all(&(out.len() as u32).to_be_bytes())
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                if w.write_all(&out).await.is_err() {
+                    break;
+                }
+                if w.flush().await.is_err() {
+                    break;
+                }
+            }
+        })
+    });
+
+    let provider: Arc<dyn SandboxProvider> = Arc::new(MockSandboxProvider::new(adapter));
+    let cache = Arc::new(SandboxCache::new("runner-schema-test"));
+
+    let agent = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
+    let ctx = ContextId::new(2, 1);
+    let tool = ToolName::parse("support/echo").unwrap();
+    let expected_name = cache.encode_name(&SandboxCacheKey {
+        agent_id: agent.clone(),
+        context_id: ctx.clone(),
+        tool_name: tool.clone(),
+    });
+
+    let build_spec: SandboxSpecBuilder = Arc::new(move |_key| {
+        Ok(SandboxSpec::for_test(
+            expected_name.clone(),
+            "ghcr.io/test/echo@sha256:deadbeef",
+        ))
+    });
+
+    let invoker = SandboxInvoker::new(provider, cache, build_spec, agent, ctx);
+    let result = invoker
+        .schema(&tool, Duration::from_secs(5))
+        .await
+        .expect("schema() should succeed through sandbox provider");
+
+    assert_eq!(result.tool_name, "support/echo");
+    assert_eq!(result.content_digest, "sha256:deadbeef");
+    assert_eq!(result.input, json!({"type": "object"}));
 }

@@ -113,6 +113,7 @@ impl SandboxProvider for MockSandboxProvider {
         let mut handle = SandboxHandle::new(&spec.name, spec.max_duration);
         handle.guest_workdir = spec.guest_workdir.clone();
         handle.policy_hash = spec.policy_hash.clone();
+        handle.idle_timeout = spec.idle_timeout;
         let mut inner = self.inner.lock().unwrap();
         inner.sandboxes.insert(
             spec.name.clone(),

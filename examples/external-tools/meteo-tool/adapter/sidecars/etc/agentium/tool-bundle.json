@@ -11,7 +11,7 @@
   },
   "manifest": {
     "tool_name": "dev/meteo-tool",
-    "protocol_version": "2",
+    "protocol_version": "1",
     "supported_methods": [
       "tool/describe",
       "tool/schema",

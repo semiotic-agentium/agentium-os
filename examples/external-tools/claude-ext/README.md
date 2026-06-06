@@ -68,7 +68,7 @@ Then reference this tool in an agent manifest as:
 These notes apply to both bind modes:
 
 - metadata uses a portable tool-relative bind path,
-- local absolute bind paths live in gitignored `tool-metadata.lock.json`,
+- local absolute bind paths live in gitignored `tool-manifest.lock.json`,
 - `check-external-tool` should pass before running the runner,
 - sandbox adapters should support TSRPC-framed JSON-RPC for parity with sandbox execution.
 

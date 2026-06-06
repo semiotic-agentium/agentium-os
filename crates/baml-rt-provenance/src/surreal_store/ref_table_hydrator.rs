@@ -4,7 +4,7 @@
 
 //! Rebuild a session [`RefTable`] from durable provenance (graph-backed refs).
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use baml_rt_conversation::view::{ConversationItemContent, ProvenanceConversationContextItem};
 use baml_rt_core::ids::ContextId;
@@ -67,46 +67,56 @@ async fn hydrate_archive_bodies(
     Ok(())
 }
 
-/// Rebuild [`RefTable`] from Surreal history registry + archive bodies + optional live text.
+/// Rebuild [`RefTable`] from Surreal history registry + archive bodies.
+///
+/// `known_text` maps `activity_anchor -> text` for anchors the caller already has
+/// in hand (the prompt projection it just built). Only registry anchors **absent**
+/// from `known_text` — history that fell outside the projection cap — force a
+/// conversation re-read. In the common case (conversation within the cap) the read
+/// is skipped entirely. Pass `&HashMap::new()` for a cold rebuild (e.g. restart),
+/// which falls back to reading the full conversation once.
 pub async fn hydrate_ref_table(
     store: &SurrealProvenanceStore,
     context_id: &ContextId,
+    known_text: &HashMap<String, String>,
 ) -> Result<Arc<RefTable>> {
     let table = Arc::new(RefTable::new());
     let rows = store.history_ref_list_for_context(context_id).await?;
-    for (anchor, source, n) in rows {
-        let entry = HistoryEntry::new(anchor.clone(), source);
-        if let Some(text) = store
-            .history_text_for_activity_anchor(context_id, anchor.as_str())
-            .await?
-        {
-            table.insert_virtual_history(n, entry, text);
-        } else {
-            table.insert_virtual_history(n, entry, "");
+
+    // The caller already fetched text for every in-projection anchor. Only read
+    // the conversation when some registry anchor is *not* covered — i.e. history
+    // beyond the projection cap. When everything is covered, skip the (O(N), and
+    // growing) read altogether. When a read is needed it is a single indexed pass
+    // (first-wins on duplicate anchors), never one-read-per-row (was O(N²)).
+    let needs_read = rows
+        .iter()
+        .any(|(anchor, _, _)| !known_text.contains_key(anchor.as_str()));
+
+    let fallback_text: HashMap<String, String> = if needs_read {
+        let items = store.conversation_context(context_id, None).await?;
+        let mut map: HashMap<String, String> = HashMap::with_capacity(items.len());
+        for item in &items {
+            if let Some(text) = conversation_item_history_text(item) {
+                map.entry(item.activity_anchor.as_str().to_owned())
+                    .or_insert(text);
+            }
         }
+        map
+    } else {
+        HashMap::new()
+    };
+
+    for (anchor, source, n) in rows {
+        let text = known_text
+            .get(anchor.as_str())
+            .or_else(|| fallback_text.get(anchor.as_str()))
+            .cloned()
+            .unwrap_or_default();
+        table.insert_virtual_history(n, HistoryEntry::new(anchor, source), text);
     }
+
     hydrate_archive_bodies(store, context_id, table.as_ref()).await?;
     Ok(table)
-}
-
-impl SurrealProvenanceStore {
-    /// Best-effort prompt text for a history line from graph conversation rows.
-    pub async fn history_text_for_activity_anchor(
-        &self,
-        context_id: &ContextId,
-        activity_anchor: &str,
-    ) -> Result<Option<String>> {
-        let items = self.conversation_context(context_id, None).await?;
-        for item in items {
-            if item.activity_anchor.as_str() != activity_anchor {
-                continue;
-            }
-            if let Some(text) = conversation_item_history_text(&item) {
-                return Ok(Some(text));
-            }
-        }
-        Ok(None)
-    }
 }
 
 fn conversation_item_history_text(item: &ProvenanceConversationContextItem) -> Option<String> {
@@ -167,7 +177,16 @@ pub async fn prepare_ref_table_for_projection(
         .sync_history_refs_for_projection(context_id, &sync_pairs)
         .await?;
 
-    let table = hydrate_ref_table(store, context_id).await?;
+    // Text the caller already has for every in-projection anchor; lets
+    // `hydrate_ref_table` skip the conversation re-read unless older (capped-out)
+    // history needs hydrating. The overlay loop below re-asserts these anyway, so
+    // last-wins on duplicate anchors is fine here.
+    let known_text: HashMap<String, String> = history_entries
+        .iter()
+        .map(|(anchor, _source, content)| (anchor.as_str().to_owned(), content.clone()))
+        .collect();
+
+    let table = hydrate_ref_table(store, context_id, &known_text).await?;
     for (anchor, source, content) in history_entries {
         let n = store
             .history_ref_ensure(context_id, anchor.as_str(), source.as_str())

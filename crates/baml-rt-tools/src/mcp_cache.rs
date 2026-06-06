@@ -7,7 +7,7 @@
 //! ```text
 //! <root>/
 //!   servers/<server_id>/server.json     <- transport, digest, secret refs, approval
-//!   tools/<platform_slug>/tool-metadata.json   <- per-tool snapshot
+//!   tools/<platform_slug>/tool-snapshot.json   <- per-tool snapshot
 //! ```
 //!
 //! `<platform_slug>` is the platform tool name with `/` replaced by `__`.
@@ -27,7 +27,7 @@ use crate::mcp_snapshot::{McpImportedTool, McpServerSnapshot};
 const SERVERS_DIR: &str = "servers";
 const TOOLS_DIR: &str = "tools";
 const SERVER_FILE: &str = "server.json";
-const TOOL_METADATA_FILE: &str = "tool-metadata.json";
+const TOOL_METADATA_FILE: &str = "tool-snapshot.json";
 
 /// Persisted on-disk shape of a server entry. Mirrors `McpServerSnapshot`
 /// minus the embedded `tools` list — tools are stored as separate per-tool

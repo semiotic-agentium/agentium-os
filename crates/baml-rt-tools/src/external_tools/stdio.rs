@@ -31,8 +31,8 @@ use tracing::{debug, warn};
 use super::{
     invoker::{ExternalInvoker, InvokeRequest, InvokeResponse, ToolDescribe, map_jsonrpc_error},
     protocol::{
-        JsonRpcRequest, JsonRpcResponse, METHOD_DESCRIBE, METHOD_INVOKE, ToolDescribeResult,
-        ToolInvokeParams, ToolInvokeResult,
+        JsonRpcRequest, JsonRpcResponse, METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA,
+        ToolDescribeResult, ToolInvokeParams, ToolInvokeResult, ToolSchemaResult,
     },
 };
 use crate::ToolName;
@@ -40,6 +40,7 @@ use crate::ToolName;
 /// V1 default invoker: spawn subprocess per call, talk JSON-RPC over stdio.
 pub struct StdioSubprocessInvoker {
     executable: PathBuf,
+    args: Vec<String>,
     /// Environment variables passed to the child process. Secrets are NOT
     /// inherited from the runner's ambient env — only values placed here
     /// (typically by the resolver at load time) are visible to the tool.
@@ -54,10 +55,25 @@ impl StdioSubprocessInvoker {
     pub fn new(executable: PathBuf) -> Self {
         Self {
             executable,
+            args: Vec::new(),
             env: HashMap::new(),
             working_dir: None,
             next_id: AtomicU64::new(1),
         }
+    }
+
+    pub fn from_command(command: Vec<String>) -> Result<Self> {
+        let mut parts = command.into_iter();
+        let executable = parts.next().ok_or_else(|| {
+            BamlRtError::InvalidArgument("external tool process command is empty".to_string())
+        })?;
+        Ok(Self {
+            executable: PathBuf::from(executable),
+            args: parts.collect(),
+            env: HashMap::new(),
+            working_dir: None,
+            next_id: AtomicU64::new(1),
+        })
     }
 
     pub fn with_env(mut self, env: HashMap<String, String>) -> Self {
@@ -81,7 +97,8 @@ impl StdioSubprocessInvoker {
         call_timeout: Duration,
     ) -> Result<JsonRpcResponse> {
         let mut cmd = Command::new(&self.executable);
-        cmd.stdin(Stdio::piped())
+        cmd.args(&self.args)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             // Kill the child if we drop the Child handle (timeout or error path).
@@ -130,21 +147,18 @@ impl StdioSubprocessInvoker {
             let mut stdout_buf = Vec::new();
             stdout.read_to_end(&mut stdout_buf).await?;
 
-            // Drain stderr → tracing.
+            let mut stderr_buf = Vec::new();
             if let Some(mut stderr) = stderr_opt {
-                let mut stderr_buf = Vec::new();
                 let _ = stderr.read_to_end(&mut stderr_buf).await;
-                if !stderr_buf.is_empty() {
-                    let log = String::from_utf8_lossy(&stderr_buf);
-                    debug!(tool_stderr = %log, "external tool stderr");
-                }
             }
 
             let status = child.wait().await?;
-            Ok::<(std::process::ExitStatus, Vec<u8>), std::io::Error>((status, stdout_buf))
+            Ok::<(std::process::ExitStatus, Vec<u8>, Vec<u8>), std::io::Error>((
+                status, stdout_buf, stderr_buf,
+            ))
         };
 
-        let (status, stdout_buf) = match timeout(call_timeout, interaction).await {
+        let (status, stdout_buf, stderr_buf) = match timeout(call_timeout, interaction).await {
             Ok(Ok(pair)) => pair,
             Ok(Err(io_err)) => {
                 return Err(BamlRtError::InvalidArgumentWithSource {
@@ -160,6 +174,15 @@ impl StdioSubprocessInvoker {
                 )));
             }
         };
+
+        if !stderr_buf.is_empty() {
+            let log = String::from_utf8_lossy(&stderr_buf);
+            if status.success() {
+                debug!(tool_stderr = %log, "external tool stderr");
+            } else {
+                warn!(tool_stderr = %log, "external tool stderr");
+            }
+        }
 
         if !status.success() {
             warn!(exit = ?status, "external tool exited with non-zero status");
@@ -208,6 +231,23 @@ impl ExternalInvoker for StdioSubprocessInvoker {
             }
         })?;
         Ok(describe.into())
+    }
+
+    async fn schema(&self, tool: &ToolName, call_timeout: Duration) -> Result<ToolSchemaResult> {
+        let params = serde_json::json!({ "tool_name": tool.to_string() });
+        let request = JsonRpcRequest::new(METHOD_SCHEMA, self.next_request_id(), params);
+        let response = self.call_once(&request, call_timeout).await?;
+
+        if let Some(err) = response.error {
+            return Err(map_jsonrpc_error(tool, &err));
+        }
+        let result_value = response.result.ok_or_else(|| {
+            BamlRtError::InvalidArgument("tool/schema: missing result field".into())
+        })?;
+        serde_json::from_value(result_value).map_err(|e| BamlRtError::InvalidArgumentWithSource {
+            message: "tool/schema: result did not match schema".into(),
+            source: Box::new(e),
+        })
     }
 
     async fn invoke(&self, req: InvokeRequest) -> Result<InvokeResponse> {

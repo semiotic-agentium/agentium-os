@@ -11,7 +11,10 @@ use std::{
 
 use baml_rt_tools::{
     OPAQUE_JSON_BAML_TYPE, OPAQUE_JSON_SCHEMA_MARKER_KEY,
-    external_tools::{build_builder_catalog, build_builder_catalog_with_mcp_root},
+    external_tools::{
+        build_builder_catalog, build_builder_catalog_with_mcp_root,
+        build_builder_catalog_with_roots,
+    },
     schema_allows_empty_or_optional_open_input,
     tool_catalog::resolve_manifest_tools_with_catalog,
     tools::ToolFunctionMetadata,
@@ -34,6 +37,14 @@ pub fn render_baml_tool_interfaces_with_mcp_root(
     tool_names: &[String],
     mcp_root: Option<&Path>,
 ) -> Result<String> {
+    render_baml_tool_interfaces_with_roots(tool_names, mcp_root, None)
+}
+
+pub fn render_baml_tool_interfaces_with_roots(
+    tool_names: &[String],
+    mcp_root: Option<&Path>,
+    external_cache_root: Option<&Path>,
+) -> Result<String> {
     // Force link so inventory sees these metadata registrations (regen_fixtures + builder).
     let _ = baml_tools_calculator::support_calculate_metadata;
     let _ = baml_rt_tools_claude::metadata::claude_dev_metadata;
@@ -45,9 +56,10 @@ pub fn render_baml_tool_interfaces_with_mcp_root(
     #[cfg(feature = "slack")]
     let _ = baml_tools_slack::SlackTool::new;
 
-    let builder_catalog = match mcp_root {
-        Some(root) => build_builder_catalog_with_mcp_root(Some(root))?,
-        None => build_builder_catalog()?,
+    let builder_catalog = match (mcp_root, external_cache_root) {
+        (_, Some(_)) => build_builder_catalog_with_roots(mcp_root, external_cache_root)?,
+        (Some(root), None) => build_builder_catalog_with_mcp_root(Some(root))?,
+        (None, None) => build_builder_catalog()?,
     };
     let tool_metadata = resolve_manifest_tools_with_catalog(&builder_catalog, tool_names)?;
     let mut w = BamlWriter::new();

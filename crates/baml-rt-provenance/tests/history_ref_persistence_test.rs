@@ -50,7 +50,7 @@ async fn history_ref_registry_survives_hydrate_after_drop_cache() {
         .await
         .expect("ensure");
 
-    let table_a = hydrate_ref_table(&store, &context_id)
+    let table_a = hydrate_ref_table(&store, &context_id, &std::collections::HashMap::new())
         .await
         .expect("hydrate a");
     let parsed = ParsedCitation::parse(&format!("#{n1}")).expect("parse");
@@ -58,7 +58,7 @@ async fn history_ref_registry_survives_hydrate_after_drop_cache() {
     assert!(matches!(resolved_a.kind, CitationKind::History));
     assert_eq!(resolved_a.n, n1);
 
-    let table_b = hydrate_ref_table(&store, &context_id)
+    let table_b = hydrate_ref_table(&store, &context_id, &std::collections::HashMap::new())
         .await
         .expect("hydrate b");
     let resolved_b = ResolvedCitation::resolve(&parsed, &table_b).expect("resolve b");

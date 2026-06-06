@@ -6,7 +6,7 @@
 //! [`ToolFunctionMetadata`].
 //!
 //! The cache layout produced by the importer (`mcp_cache`) is read here:
-//! `<root>/servers/<id>/server.json` plus `<root>/tools/<slug>/tool-metadata.json`.
+//! `<root>/servers/<id>/server.json` plus `<root>/tools/<slug>/tool-snapshot.json`.
 //! Only servers and tools whose approval state is `Approved` are projected.
 //! Pending, rejected, and stale entries are skipped so a builder cannot
 //! silently emit a contract against unapproved schemas.
@@ -58,7 +58,7 @@ impl McpSnapshotCatalog {
         let mut tools = Vec::new();
         for entry in entries {
             let entry = entry.map_err(|err| io_err(&tools_dir, err))?;
-            let path = entry.path().join("tool-metadata.json");
+            let path = entry.path().join("tool-snapshot.json");
             if !path.is_file() {
                 continue;
             }

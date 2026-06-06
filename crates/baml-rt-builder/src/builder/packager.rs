@@ -141,6 +141,12 @@ fn package_blocking(agent_dir: &Path, build_dir: &Path, output: &Path) -> Result
         add_directory_to_tar(&mut tar, &mcp_dir, "mcp")?;
     }
 
+    // Add external-tool registry snapshots resolved during build, if any.
+    let external_tools_dir = build_dir.join("external-tools");
+    if external_tools_dir.exists() {
+        add_directory_to_tar(&mut tar, &external_tools_dir, "external-tools")?;
+    }
+
     let unified_manifest = build_dir.join("unified_step_executor_functions.json");
     if unified_manifest.exists() {
         let content = fs::read_to_string(&unified_manifest)?;

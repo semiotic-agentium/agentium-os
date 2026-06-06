@@ -33,7 +33,8 @@ fn repository_service(store: Arc<SurrealStore>) -> Arc<RepositoryService> {
         store.clone() as Arc<dyn MetadataStore>,
         store.clone() as Arc<dyn LineageStore>,
         store.clone() as Arc<dyn SearchStore>,
-        store as Arc<dyn McpRegistryStore>,
+        store.clone() as Arc<dyn McpRegistryStore>,
+        store as Arc<dyn baml_rt_repository::ExternalToolRegistryStore>,
     ))
 }
 

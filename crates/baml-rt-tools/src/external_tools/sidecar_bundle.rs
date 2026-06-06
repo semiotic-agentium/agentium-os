@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    metadata::{ExternalToolMetadata, InvocationMode, metadata_schema_digest},
-    protocol::SUPPORTED_METHODS_V2,
+    metadata::{ExternalToolMetadata, InvocationMode},
+    protocol::{METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA, PROTOCOL_VERSION},
     runtime::ToolRuntime,
 };
 
@@ -23,7 +23,6 @@ pub const DEFAULT_SCHEMA_CONTENT_TYPE: &str = "application/schema+json";
 pub struct ToolSidecarBundle {
     pub runtime: ToolRuntimeSidecar,
     pub manifest: ToolManifestSidecar,
-    pub schema: ToolSchemaSidecar,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,8 +73,6 @@ pub fn render_sidecar_bundle(meta: &ExternalToolMetadata) -> Result<ToolSidecarB
         ))
     })?;
 
-    let content_digest = metadata_schema_digest(meta);
-
     Ok(ToolSidecarBundle {
         runtime: ToolRuntimeSidecar {
             schema_version: adapter.schema_version,
@@ -86,9 +83,9 @@ pub fn render_sidecar_bundle(meta: &ExternalToolMetadata) -> Result<ToolSidecarB
         },
         manifest: ToolManifestSidecar {
             tool_name: meta.name.clone(),
-            protocol_version: "2".to_string(),
+            protocol_version: PROTOCOL_VERSION.to_string(),
             supported_methods: match meta.invocation_mode {
-                InvocationMode::SingleShot => SUPPORTED_METHODS_V2
+                InvocationMode::SingleShot => [METHOD_DESCRIBE, METHOD_SCHEMA, METHOD_INVOKE]
                     .iter()
                     .map(|m| (*m).to_string())
                     .collect(),
@@ -99,14 +96,6 @@ pub fn render_sidecar_bundle(meta: &ExternalToolMetadata) -> Result<ToolSidecarB
                         .collect()
                 }
             },
-        },
-        schema: ToolSchemaSidecar {
-            schema_version: 1,
-            tool_name: meta.name.clone(),
-            content_type: DEFAULT_SCHEMA_CONTENT_TYPE.to_string(),
-            content_digest,
-            input: meta.schemas.input.clone(),
-            output: meta.schemas.output.clone(),
         },
     })
 }

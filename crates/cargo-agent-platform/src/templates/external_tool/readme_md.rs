@@ -173,7 +173,7 @@ fn bind_setup_section(ctx: &ScaffoldContext<'_>) -> String {
 These notes apply to both bind modes:
 
 - metadata starts with a portable tool-relative bind path,
-- host-resolved bind path lives in gitignored `tool-metadata.lock.json` after sync,
+- host-resolved bind path lives in gitignored `tool-manifest.lock.json` after sync,
 - `check-external-tool` should pass before running the runner,
 - sandbox adapters should support TSRPC-framed JSON-RPC for parity with sandbox execution.
 
@@ -201,7 +201,7 @@ Helper scripts are scaffolded at:
 ```
 
 This script wraps `sandbox-bind-sync` to build `adapter/Dockerfile`, export bind
-rootfs, write `tool-metadata.lock.json`, materialize adapter sidecar bundle
+rootfs, write `tool-manifest.lock.json`, materialize adapter sidecar bundle
 (`/etc/agentium/tool-bundle.json`), and run `check-external-tool`.
 
 > Bind rootfs mode copies filesystem contents only. Docker image config

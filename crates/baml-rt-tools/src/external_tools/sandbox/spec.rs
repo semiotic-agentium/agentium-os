@@ -197,11 +197,17 @@ impl SandboxSpec {
 pub struct SandboxHandle {
     pub name: String,
     pub created_at: SystemTime,
+    /// Last successful host-side use. Used with `idle_timeout` so the runtime
+    /// does not hand out handles microsandbox may already have reaped.
+    pub last_used_at: SystemTime,
     /// Guest-side working directory used when (re)launching `/tool-adapter`.
     pub guest_workdir: String,
     /// Snapshot of the policy hash at create time — used by the
     /// reattach checklist to detect drift (§9.4).
     pub policy_hash: Option<String>,
+    /// Idle timeout configured for this sandbox. Microsandbox may stop the VM
+    /// after this much inactivity even when `max_duration` has not elapsed.
+    pub idle_timeout: Duration,
     /// The `max_duration` that was set on this sandbox — used for the reattach
     /// age check so the runtime can reason about remaining lifetime without
     /// a second trip to the provider.
@@ -210,22 +216,37 @@ pub struct SandboxHandle {
 
 impl SandboxHandle {
     pub fn new(name: impl Into<String>, max_duration: Duration) -> Self {
+        let now = SystemTime::now();
         Self {
             name: name.into(),
-            created_at: SystemTime::now(),
+            created_at: now,
+            last_used_at: now,
             guest_workdir: "/".to_string(),
             policy_hash: None,
+            idle_timeout: max_duration,
             max_duration,
         }
     }
 
-    /// True when `now - created_at >= max_duration`. Used by the reattach
-    /// age check (§9.4) to skip sandboxes that microsandbox will soon reap.
+    pub fn touch(&mut self) {
+        self.last_used_at = SystemTime::now();
+    }
+
+    /// True when either lifetime bound has elapsed:
+    /// - `created_at + max_duration` absolute cap.
+    /// - `last_used_at + idle_timeout` idle reap window.
     pub fn is_expired(&self) -> bool {
-        self.created_at
+        let max_expired = self
+            .created_at
             .elapsed()
             .map(|elapsed| elapsed >= self.max_duration)
-            .unwrap_or(false)
+            .unwrap_or(false);
+        let idle_expired = self
+            .last_used_at
+            .elapsed()
+            .map(|elapsed| elapsed >= self.idle_timeout)
+            .unwrap_or(false);
+        max_expired || idle_expired
     }
 }
 

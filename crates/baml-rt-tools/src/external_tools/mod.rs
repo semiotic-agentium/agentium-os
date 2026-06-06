@@ -10,6 +10,8 @@
 //! Phase 1 scope: stateless, single-shot subprocess invocation. Later phases
 //! extend the same protocol to Wasm or keep-alive transports.
 
+pub mod discovery;
+pub mod drift;
 pub mod handler;
 pub mod invoker;
 pub mod lockfile;
@@ -17,6 +19,7 @@ pub mod metadata;
 pub mod metadata_catalog;
 pub mod policy;
 pub mod protocol;
+pub mod registry_resolver;
 pub mod resolver;
 pub mod runtime;
 pub mod runtime_lock;
@@ -24,10 +27,14 @@ pub mod sandbox;
 pub mod session_handler;
 pub mod session_invoker;
 pub mod sidecar_bundle;
+pub mod snapshot;
+pub mod snapshot_catalog;
 pub mod stdio;
 
 use std::sync::Arc;
 
+pub use discovery::{DEFAULT_DISCOVERY_TIMEOUT, discover_snapshot};
+pub use drift::DriftGuard;
 pub use handler::{ProcessToolHandler, ProcessToolSession};
 pub use invoker::{
     ExternalInvoker, InvokeRequest, InvokeResponse, ToolDescribe, ToolInvoker, map_jsonrpc_error,
@@ -37,13 +44,13 @@ pub use lockfile::{
     ExternalToolsLockfile,
 };
 pub use metadata::{
-    CoordinationSpec, ExternalSecretScope, ExternalSessionPolicy, ExternalToolMetadata,
-    InvocationMode, MetadataSchemas, compute_tool_digest, read_external_metadata,
-    read_runtime_external_metadata,
+    CoordinationSpec, ExternalSecretScope, ExternalSessionPolicy, ExternalToolManifest,
+    ExternalToolMetadata, InvocationMode, MetadataSchemas, compute_tool_digest,
+    read_external_manifest,
 };
 pub use metadata_catalog::{
-    BUILDER_EXTERNAL_TOOLS_ENV, ExternalMetadataCatalog, build_builder_catalog,
-    build_builder_catalog_with_mcp_root, external_dirs_from_env,
+    BUILDER_EXTERNAL_TOOLS_ENV, build_builder_catalog, build_builder_catalog_with_mcp_root,
+    build_builder_catalog_with_roots, external_dirs_from_env,
 };
 pub use policy::{
     BACKOFF_SCHEDULE_MS, DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT, DEFAULT_MAX_CONCURRENT,
@@ -55,9 +62,9 @@ pub use protocol::{
     ERR_SIDECAR_MISSING, ERR_SIDECAR_SCHEMA_INVALID, ERR_SIDECAR_SIZE_EXCEEDED,
     ERR_UNSUPPORTED_PROTOCOL, ErrorClass, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
     METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA, PROTOCOL_VERSION, SUPPORTED_METHODS,
-    SUPPORTED_METHODS_V2, ToolDescribeResult, ToolInvokeParams, ToolInvokeResult, ToolSchemaResult,
+    ToolDescribeResult, ToolInvokeParams, ToolInvokeResult, ToolSchemaResult,
 };
-pub use resolver::DevModeResolver;
+pub use registry_resolver::ExternalRegistryResolver;
 pub use runtime::{
     DEFAULT_PROCESS_COMMAND, ProcessRuntimeSpec, SandboxAdapterRuntimeSpec, SandboxImageRef,
     SandboxRuntimeSpec, ToolRuntime, ToolRuntimeKind,
@@ -74,6 +81,16 @@ pub use sidecar_bundle::{
     DEFAULT_SCHEMA_CONTENT_TYPE, SIDECAR_BUNDLE_ABS_PATH, SIDECAR_BUNDLE_REL_PATH, SIDECAR_DIR_ABS,
     ToolManifestSidecar, ToolRuntimeSidecar, ToolSchemaSidecar, ToolSidecarBundle,
     read_sidecar_bundle, render_sidecar_bundle,
+};
+pub use snapshot::{
+    EXTERNAL_TOOL_SNAPSHOT_SCHEMA_VERSION, EXTERNAL_TOOL_SOURCE, ExternalApprovalState,
+    ExternalToolDescribeSnapshot, ExternalToolSnapshot, ExternalToolSnapshotDigests,
+    compute_external_schema_digest, compute_manifest_digest, compute_runtime_digest,
+    compute_snapshot_digest, format_unix_rfc3339_utc, now_snapshot_timestamp,
+    validate_describe_schema_support, validate_external_tool_snapshot,
+};
+pub use snapshot_catalog::{
+    BUILDER_EXTERNAL_TOOL_CACHE_ENV, ExternalToolRegistryCatalog, ExternalToolSnapshotCatalog,
 };
 pub use stdio::StdioSubprocessInvoker;
 
@@ -106,6 +123,14 @@ pub enum ExternalLifecycleEvent {
         tool_name: String,
         lifted_by: String,
         lifted_at_ms: u64,
+    },
+    /// The live tool's `tool/schema` no longer matches its approved snapshot
+    /// digest, detected lazily on first invoke by [`drift::DriftGuard`]. The
+    /// invoke fails closed; this event records the drift for provenance/audit.
+    SchemaDrift {
+        tool_name: String,
+        expected_schema_digest: String,
+        observed_schema_digest: String,
     },
 }
 

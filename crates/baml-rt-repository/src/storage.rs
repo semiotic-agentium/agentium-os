@@ -16,11 +16,12 @@
 //! and future evolution.
 
 use async_trait::async_trait;
-use baml_rt_tools::mcp_snapshot::McpServerSnapshot;
+use baml_rt_tools::{external_tools::ExternalToolSnapshot, mcp_snapshot::McpServerSnapshot};
 
 use crate::{
     entry::{NewEntry, RepositoryEntry, RepositoryEntryHeader, Tag},
     error::Result,
+    external_tool::{ExternalToolRegistryTool, ExternalToolRegistryToolVersion},
     ids::{AgentName, ContentHash, Version, VersionRef},
     lineage::{AncestryNode, LineageEdge, LineageSubgraph},
     mcp::{McpRegistryServer, McpRegistryServerVersion, McpRegistryToolVersion},
@@ -199,4 +200,49 @@ pub trait McpRegistryStore: Send + Sync {
 
     /// Mark a server version stale.
     async fn mark_mcp_version_stale(&self, server_id: &str, version: u32) -> Result<()>;
+}
+
+// ---------------------------------------------------------------------------
+// ExternalToolRegistryStore — external-tool snapshot catalog
+// ---------------------------------------------------------------------------
+
+/// Stores immutable external-tool snapshot versions, mirroring [`McpRegistryStore`].
+#[async_trait]
+pub trait ExternalToolRegistryStore: Send + Sync {
+    /// List known external tools ordered by tool name.
+    async fn list_external_tools(&self) -> Result<Vec<ExternalToolRegistryTool>>;
+
+    /// Insert a full external-tool snapshot as a new immutable version.
+    async fn put_external_tool_snapshot(
+        &self,
+        snapshot: &ExternalToolSnapshot,
+    ) -> Result<ExternalToolRegistryToolVersion>;
+
+    /// Retrieve a full snapshot by tool name and registry version.
+    async fn get_external_tool_snapshot(
+        &self,
+        tool_name: &str,
+        version: u32,
+    ) -> Result<Option<ExternalToolSnapshot>>;
+
+    /// Retrieve the latest approved snapshot for a tool name.
+    ///
+    /// Stale/pending/rejected latest versions are not returned as approved
+    /// build inputs; callers should re-import and re-approve.
+    async fn get_latest_external_tool_snapshot(
+        &self,
+        tool_name: &str,
+    ) -> Result<Option<ExternalToolSnapshot>>;
+
+    /// All latest-approved snapshots across every tool (builder catalog source).
+    async fn list_approved_external_tool_snapshots(&self) -> Result<Vec<ExternalToolSnapshot>>;
+
+    /// List registry versions for one tool name, newest first.
+    async fn list_external_tool_versions(
+        &self,
+        tool_name: &str,
+    ) -> Result<Vec<ExternalToolRegistryToolVersion>>;
+
+    /// Mark a tool version stale.
+    async fn mark_external_tool_version_stale(&self, tool_name: &str, version: u32) -> Result<()>;
 }

@@ -79,7 +79,7 @@ const ERR_METHOD_NOT_FOUND = {err_method_not_found};
 const ERR_PARSE_ERROR = {err_parse_error};
 const ERR_INTERNAL = {err_internal};
 
-// Starter-contract field names — schema in tool-metadata.json and this
+// Starter-contract field names — schema in tool-manifest.json and this
 // handler must agree, so both come from the scaffold generator.
 const INPUT_KEY = "{input_key}";
 const OUTPUT_KEY = "{output_key}";

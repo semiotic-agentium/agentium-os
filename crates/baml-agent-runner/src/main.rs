@@ -184,16 +184,9 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             )
         }
         ProvenanceDb::File(path) => Arc::new(
-            baml_rt_config::SurrealConfigStore::open(
-                path.parent()
-                    .unwrap_or_else(|| {
-                        tracing::debug!(path = %path.display(), "no parent, using path as config base");
-                        path.as_ref()
-                    })
-                    .join("config.db"),
-            )
-            .await
-            .context("Failed to open config store (config.db)")?,
+            baml_rt_config::SurrealConfigStore::open(path.join("config.db"))
+                .await
+                .context("Failed to open config store (config.db)")?,
         ),
     };
     let fnox_resolver = Arc::new(FnoxFileSecretResolver::default_path_resolver());
@@ -262,7 +255,8 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         repository_store.clone() as Arc<dyn MetadataStore>,
         repository_store.clone() as Arc<dyn LineageStore>,
         repository_store.clone() as Arc<dyn SearchStore>,
-        repository_store as Arc<dyn baml_rt_repository::McpRegistryStore>,
+        repository_store.clone() as Arc<dyn baml_rt_repository::McpRegistryStore>,
+        repository_store as Arc<dyn baml_rt_repository::ExternalToolRegistryStore>,
     ));
     let raw_deployments = deployment_state
         .list_deployments()
@@ -565,6 +559,8 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             webhook_intake_count = webhook_intakes.len(),
             "configured webhook intakes loaded for HTTP API"
         );
+        let external_tool_sandbox =
+            agent_package::build_sandbox_wiring(config.sandbox_bind_roots.clone())?;
         let api_config = baml_rt_api::ApiServerConfig {
             mermaid,
             context_metrics,
@@ -578,6 +574,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             deployment_manager: Some(runner.clone() as Arc<dyn DeploymentManager>),
             repository_url: Some(config.repository_url.clone()),
             repository_service: Some(repository_service.clone()),
+            external_tool_sandbox,
             runtime_secret_store,
             ready: readyz_for_http,
             runner_token,

@@ -70,43 +70,8 @@ pub struct McpImportedTool {
     pub annotations: Value,
 }
 
-/// Approval lifecycle for a server or imported tool entry.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum McpApprovalState {
-    Pending,
-    Approved,
-    Rejected,
-    Stale,
-}
-
-impl McpApprovalState {
-    pub fn is_approved(self) -> bool {
-        matches!(self, McpApprovalState::Approved)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ApprovalRecord {
-    pub state: McpApprovalState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reviewed_at: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<String>,
-}
-
-impl ApprovalRecord {
-    pub fn pending() -> Self {
-        Self {
-            state: McpApprovalState::Pending,
-            owner: None,
-            reviewed_at: None,
-            expires_at: None,
-        }
-    }
-}
+pub type McpApprovalState = crate::approval::ApprovalState;
+pub type ApprovalRecord = crate::approval::ApprovalRecord<McpApprovalState>;
 
 /// Output shape selected at import time.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

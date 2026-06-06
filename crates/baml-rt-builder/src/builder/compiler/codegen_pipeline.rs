@@ -23,11 +23,18 @@
 //! 7. Manifests + TypeScript declarations are written off the same final state.
 //! 8. Async tail writes the rendered stable catalog sidecar when present.
 
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::{Path, PathBuf},
+};
 
 use baml_rt_tools::{
-    SessionPlanFunctionsMap, UnifiedStepExecutorFunctionsMap,
-    external_tools::{EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalToolsLockfile, external_dirs_from_env},
+    SessionPlanFunctionsMap, UnifiedStepExecutorFunctionsMap, external_tool_cache,
+    external_tools::{
+        EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalToolLockEntry, ExternalToolsLockfile,
+        external_dirs_from_env,
+    },
     gather_coordination_fragments,
     tools::ToolFunctionMetadata,
 };
@@ -41,7 +48,7 @@ use super::{
 use crate::builder::{
     baml_gen::{
         CATALOG_SIDECAR_FILE, GENERATED_BAML_PRELUDE_FILE, GeneratedSessionBaml,
-        purge_managed_generated_baml_files, render_baml_tool_interfaces_with_mcp_root,
+        purge_managed_generated_baml_files, render_baml_tool_interfaces_with_roots,
         render_generated_session_baml_from_ir,
     },
     baml_signature_gen::{extract_baml_signatures, session_plan_functions_map},
@@ -106,9 +113,20 @@ impl WorkspaceReady {
         } else {
             None
         };
+        let external_cache_dir = paths.build_dir.join("external-tools");
+        let external_cache_root = if external_cache_dir.exists() {
+            tracing::info!(
+                external_cache_root = %external_cache_dir.display(),
+                "using packaged external-tool registry snapshots during type generation"
+            );
+            Some(paths.build_dir.as_path().to_path_buf())
+        } else {
+            None
+        };
         let tool_metadata = if !tool_names.is_empty() {
-            let catalog = baml_rt_tools::external_tools::build_builder_catalog_with_mcp_root(
+            let catalog = baml_rt_tools::external_tools::build_builder_catalog_with_roots(
                 mcp_root.as_deref(),
+                external_cache_root.as_deref(),
             )?;
             baml_rt_tools::tool_catalog::resolve_manifest_tools_with_catalog(&catalog, &tool_names)?
         } else {
@@ -127,8 +145,15 @@ impl WorkspaceReady {
     pub(super) fn emit_tool_interfaces_prelude(self) -> Result<PreludeWritten> {
         let mcp_root = self.paths.build_dir.join("mcp");
         let mcp_root = mcp_root.exists().then_some(mcp_root);
-        let mut generated_baml =
-            render_baml_tool_interfaces_with_mcp_root(&self.tool_names, mcp_root.as_deref())?;
+        let external_cache_root = self.paths.build_dir.join("external-tools");
+        let external_cache_root = external_cache_root
+            .exists()
+            .then_some(self.paths.build_dir.as_path().to_path_buf());
+        let mut generated_baml = render_baml_tool_interfaces_with_roots(
+            &self.tool_names,
+            mcp_root.as_deref(),
+            external_cache_root.as_deref(),
+        )?;
         if !self.tool_metadata.is_empty()
             && let Some(coord_baml) = gather_coordination_fragments(&self.tool_metadata)?
         {
@@ -401,7 +426,8 @@ impl RuntimeFinalized {
             atomic_write(&executors_path, json.as_bytes())?;
         }
 
-        let lockfile = build_external_tools_lockfile(&self.tool_metadata)?;
+        let lockfile =
+            build_external_tools_lockfile(&self.tool_metadata, self.paths.build_dir.as_path())?;
         let lockfile_json =
             serde_json::to_string_pretty(&lockfile).map_err(BamlBuilderError::Json)?;
         let lockfile_path = self.paths.build_dir.join(EXTERNAL_TOOLS_LOCKFILE_NAME);
@@ -525,17 +551,44 @@ fn build_tool_step_executors_map(
 
 fn build_external_tools_lockfile(
     tool_metadata: &[ToolFunctionMetadata],
+    build_dir: &Path,
 ) -> Result<ExternalToolsLockfile> {
-    let external_tool_count = tool_metadata
+    let external_tool_names: HashSet<String> = tool_metadata
         .iter()
         .filter(|meta| matches!(meta.backend, baml_rt_tools::ToolBackend::External))
-        .count();
-    if external_tool_count == 0 {
+        .map(|meta| meta.name.to_string())
+        .collect();
+    if external_tool_names.is_empty() {
         return Ok(ExternalToolsLockfile::empty());
     }
+
+    let cached_snapshots =
+        external_tool_cache::read_approved_snapshots(build_dir).map_err(BamlBuilderError::from)?;
+    let mut cached_entries: Vec<ExternalToolLockEntry> = cached_snapshots
+        .into_iter()
+        .filter(|snapshot| external_tool_names.contains(&snapshot.tool.name))
+        .map(|snapshot| ExternalToolLockEntry {
+            name: snapshot.tool.name,
+            digest: snapshot.snapshot_digest.to_string(),
+            abi_version: snapshot.tool.tool_abi_version,
+            protocol_version: snapshot.describe.protocol_version,
+            oci_ref: None,
+            platform: None,
+            signer: None,
+            capabilities: Some(snapshot.tool.capabilities),
+        })
+        .collect();
+    if cached_entries.len() == external_tool_names.len() {
+        cached_entries.sort_by(|a, b| a.name.cmp(&b.name));
+        return Ok(ExternalToolsLockfile {
+            version: "1".to_string(),
+            tools: cached_entries,
+        });
+    }
+
     let dirs = external_dirs_from_env().ok_or_else(|| {
         BamlBuilderError::InvalidArgument(
-            "manifest uses external tools, but BAML_EXTERNAL_TOOLS_DIR is not set; builder must hash local tool artifacts to produce external_tools.lock.json"
+            "manifest uses external tools, but no approved registry snapshot was cached and BAML_EXTERNAL_TOOLS_DIR is not set; builder must pin external tools in external_tools.lock.json"
                 .to_string(),
         )
     })?;

@@ -4,7 +4,7 @@
 // every agent prelude that lists "dev/claude-ext" in `manifest.json`. The
 // builder generates `DevClaudeExtSessionPlan` (and the Open/Send/SearchRead/
 // PageRead/Finish/Abort step classes) from the JSON schema in
-// `tool-metadata.json`. This file declares the per-tool `Choose<Tool>Action`
+// `tool-manifest.json`. This file declares the per-tool `Choose<Tool>Action`
 // step-executor function only; final user-facing presentation is the agent's
 // responsibility (see meteo-agent for the canonical pattern).
 

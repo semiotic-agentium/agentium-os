@@ -44,7 +44,7 @@ impl std::fmt::Display for AccessOption {
     }
 }
 
-/// Runtime options for external tool metadata scaffold.
+/// Runtime options for external tool manifest scaffold.
 #[derive(Debug, Clone)]
 pub struct ExternalToolRuntimeOption {
     pub value: &'static str,
@@ -211,7 +211,7 @@ pub fn prompt_external_tool_runtime() -> Result<String> {
     ];
 
     let selected = Select::new("Runtime:", options)
-        .with_help_message("Choose runtime declaration written into tool-metadata.json")
+        .with_help_message("Choose runtime declaration written into tool-manifest.json")
         .prompt()?;
 
     Ok(selected.value.to_string())

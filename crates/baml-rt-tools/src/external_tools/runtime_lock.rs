@@ -2,10 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Per-tool runtime lock sidecar (`tool-metadata.lock.json`).
+//! Per-tool runtime lock sidecar (`tool-manifest.lock.json`).
 //!
 //! Carries host-resolved fields that must NOT live in the committed
-//! `tool-metadata.json` source: the canonical absolute bind rootfs path. This
+//! `tool-manifest.json` source: the canonical absolute bind rootfs path. This
 //! value is local to whoever ran `sandbox-bind-sync`, so committing it would
 //! force every contributor's checkout to drift.
 //!
@@ -15,14 +15,13 @@
 //!
 //! Lifecycle:
 //! - written by the `sandbox-bind-sync` CLI command;
-//! - merged into [`super::ExternalToolMetadata`] at runtime read time
-//!   (transparent to callers) by [`super::metadata::read_runtime_external_metadata`];
-//! - never required by the builder/codegen path — schemas/types live in the
-//!   source file.
+//! - read by CLI/runtime helpers when a bind sandbox needs host-local path
+//!   resolution;
+//! - never required by builder/codegen; schemas/types live in approved snapshots.
 //!
 //! No version field: the lock is a regenerable per-host cache, not a stable
 //! wire contract. If the layout ever needs to change incompatibly, users
-//! re-run `sandbox-bind-sync` to regenerate it. The source `tool-metadata.json`
+//! re-run `sandbox-bind-sync` to regenerate it. The source `tool-manifest.json`
 //! already carries `tool_abi_version` for the contract surface.
 
 use std::{
@@ -33,8 +32,8 @@ use std::{
 use baml_rt_core::{BamlRtError, Result};
 use serde::{Deserialize, Serialize};
 
-/// Sibling file name; lives next to `tool-metadata.json`.
-pub const RUNTIME_LOCK_FILE_NAME: &str = "tool-metadata.lock.json";
+/// Sibling file name; lives next to `tool-manifest.json`.
+pub const RUNTIME_LOCK_FILE_NAME: &str = "tool-manifest.lock.json";
 
 /// On-disk shape for the per-tool runtime lock.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

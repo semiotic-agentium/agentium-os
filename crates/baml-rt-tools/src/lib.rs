@@ -11,6 +11,7 @@
 //! in this crate for generalisation ideas (derive helpers, normalise layer, contract tests).
 
 pub mod access;
+pub mod approval;
 pub mod archive_read;
 pub mod archive_refs;
 pub mod bundles;
@@ -18,6 +19,7 @@ pub mod citations;
 pub mod config_resolver;
 pub mod event_producer;
 pub mod event_source_type;
+pub mod external_tool_cache;
 pub mod external_tools;
 pub mod host_registration;
 pub mod ingress_store;
@@ -49,6 +51,7 @@ pub use access::{
     ACCESS_ALLOWLIST_ENV, ToolAccessPolicy, enforce_tool_access, parse_access_allowlist,
     parse_access_allowlist_from,
 };
+pub use approval::{ApprovalRecord, ApprovalState};
 pub use archive_refs::SharedContextRefStore;
 /// Re-export the `#[baml_tool]` attribute macro so tool crates can use
 /// `use baml_rt_tools::baml_tool;` as a single import path.
@@ -76,8 +79,8 @@ pub use llm_request_display::{
     message_content_char_count, prompt_message_char_count,
 };
 pub use mcp_snapshot::{
-    ApprovalRecord, Digest as McpDigest, MCP_SNAPSHOT_SCHEMA_VERSION, McpApprovalState,
-    McpImportedTool, McpOutputMode, McpServerSnapshot, McpTransportRef, SecretRef,
+    Digest as McpDigest, MCP_SNAPSHOT_SCHEMA_VERSION, McpApprovalState, McpImportedTool,
+    McpOutputMode, McpServerSnapshot, McpTransportRef, SecretRef,
     approved_tools as approved_mcp_tools, is_tool_projectable as is_mcp_tool_projectable,
 };
 pub use opaque_json::{

@@ -21,13 +21,16 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
-use baml_rt_tools::{BundleName, external_tools::SandboxImageRef};
+use baml_rt_tools::{
+    BundleName,
+    external_tools::{RUNTIME_LOCK_FILE_NAME, SandboxImageRef},
+};
 use console::style;
 
 use crate::{
     templates::external_tool::{
         Access, GeneratedFile, InvocationMode, Language, Runtime, SandboxSource, ScaffoldContext,
-        metadata_json, readme_md,
+        manifest_json, readme_md,
     },
     transaction::TransactionalWriter,
 };
@@ -87,7 +90,7 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
 
     validate_tool_name(name)?;
     // Reuse the runtime's BundleName rule (non-empty, no '/') so the scaffolder
-    // can't produce a tool-metadata.json the runner would later reject.
+    // can't produce a tool-manifest.json the runner would later reject.
     BundleName::new(bundle).map_err(|e| {
         anyhow!("Error: invalid bundle '{bundle}': {e}\nHint: use a non-empty name without '/'.")
     })?;
@@ -251,7 +254,7 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
 /// Exposed so tests can snapshot-check the scaffold without touching the CLI.
 pub fn build_file_set(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
     let mut files = vec![
-        GeneratedFile::new("tool-metadata.json", metadata_json::generate(ctx)),
+        GeneratedFile::new("tool-manifest.json", manifest_json::generate(ctx)),
         GeneratedFile::new("README.md", readme_md::generate(ctx)),
     ];
     let mut language_files = ctx.language.files(ctx);
@@ -271,7 +274,7 @@ pub fn build_file_set(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
         // per-machine and must never be committed. Keeping the rule next to
         // the tool means it travels with the tool if the package is moved or
         // published, instead of relying on a workspace-level wildcard.
-        ensure_gitignore_entry(&mut files, "tool-metadata.lock.json");
+        ensure_gitignore_entry(&mut files, RUNTIME_LOCK_FILE_NAME);
     }
     files
 }
@@ -451,9 +454,7 @@ fn set_executable_bits(output_dir: &Path, files: &[GeneratedFile]) -> Result<()>
 
 #[cfg(test)]
 mod tests {
-    use baml_rt_tools::external_tools::{
-        SandboxImageRef, ToolRuntime, metadata_catalog::ExternalMetadataCatalog,
-    };
+    use baml_rt_tools::external_tools::{ExternalToolManifest, SandboxImageRef, ToolRuntime};
 
     use super::*;
 
@@ -494,14 +495,14 @@ mod tests {
     #[test]
     fn scaffold_contains_expected_files() {
         let rust_files = build_file_set(&ctx(Language::Rust));
-        assert_scaffold_has(&rust_files, "tool-metadata.json");
+        assert_scaffold_has(&rust_files, "tool-manifest.json");
         assert_scaffold_has(&rust_files, "README.md");
         assert_scaffold_has(&rust_files, "Cargo.toml");
         assert_scaffold_has(&rust_files, "src/main.rs");
         assert_scaffold_has(&rust_files, "tool-server");
 
         let bash_files = build_file_set(&ctx(Language::Bash));
-        assert_scaffold_has(&bash_files, "tool-metadata.json");
+        assert_scaffold_has(&bash_files, "tool-manifest.json");
         assert_scaffold_has(&bash_files, "tool-server");
 
         let py_files = build_file_set(&ctx(Language::Python));
@@ -541,11 +542,9 @@ mod tests {
         assert_scaffold_has(&bash_files, "tool-server");
     }
 
-    /// `tool-metadata.json` must round-trip through the runtime's catalog
-    /// loader — this is the hard invariant that prevents silent drift between
-    /// scaffold output and the runtime's `RawToolMetadata` parser.
+    /// `tool-manifest.json` must round-trip through runtime manifest parser.
     #[test]
-    fn scaffolded_metadata_is_loadable_by_runtime_catalog() {
+    fn scaffolded_manifest_is_loadable_by_runtime_parser() {
         for lang in [
             Language::Rust,
             Language::Bash,
@@ -553,29 +552,13 @@ mod tests {
             Language::Typescript,
         ] {
             let ctx = ctx(lang);
-            let files = build_file_set(&ctx);
-
-            let tmp = tempfile::tempdir().expect("tmp dir");
-            for file in &files {
-                // Only metadata + server matter for this check; skip README.
-                if file.relative_path == "tool-metadata.json" {
-                    std::fs::write(
-                        tmp.path().join(&file.relative_path),
-                        file.content.as_bytes(),
-                    )
-                    .unwrap();
-                }
-            }
-
-            let catalog = ExternalMetadataCatalog::from_dirs(&[tmp.path().to_path_buf()])
-                .unwrap_or_else(|e| {
-                    panic!("{lang:?} metadata should load via catalog: {e}");
-                });
-            assert_eq!(catalog.len(), 1, "{lang:?} catalog should have one tool");
+            let raw = manifest_json::generate(&ctx);
+            serde_json::from_str::<ExternalToolManifest>(&raw)
+                .unwrap_or_else(|e| panic!("{lang:?} manifest should parse: {e}"));
         }
     }
 
-    /// Generated metadata JSON parses as valid JSON (no bad escapes from
+    /// Generated manifest JSON parses as valid JSON (no bad escapes from
     /// control chars, quotes, etc.).
     #[test]
     fn scaffolded_metadata_is_valid_json() {
@@ -599,17 +582,16 @@ mod tests {
             generate_docker: false,
         };
 
-        let raw = metadata_json::generate(&ctx);
+        let raw = manifest_json::generate(&ctx);
         serde_json::from_str::<serde_json::Value>(&raw)
-            .expect("metadata must round-trip through serde_json regardless of description chars");
+            .expect("manifest must round-trip through serde_json regardless of description chars");
     }
 
     #[test]
     fn scaffolded_metadata_emits_explicit_process_runtime_block() {
         let ctx = ctx(Language::Rust);
-        let raw = metadata_json::generate(&ctx);
-        let parsed: baml_rt_tools::external_tools::ExternalToolMetadata =
-            serde_json::from_str(&raw).expect("metadata parses");
+        let raw = manifest_json::generate(&ctx);
+        let parsed: ExternalToolManifest = serde_json::from_str(&raw).expect("manifest parses");
 
         match parsed.runtime {
             Some(ToolRuntime::Process(spec)) => {
@@ -631,9 +613,8 @@ mod tests {
         });
         ctx.sandbox_entrypoint = vec!["/app/tool-adapter".to_string()];
 
-        let raw = metadata_json::generate(&ctx);
-        let parsed: baml_rt_tools::external_tools::ExternalToolMetadata =
-            serde_json::from_str(&raw).expect("metadata parses");
+        let raw = manifest_json::generate(&ctx);
+        let parsed: ExternalToolManifest = serde_json::from_str(&raw).expect("manifest parses");
 
         match parsed.runtime {
             Some(ToolRuntime::Sandbox(spec)) => {
@@ -824,8 +805,8 @@ mod tests {
             gitignore
                 .content
                 .lines()
-                .any(|line| line.trim() == "tool-metadata.lock.json"),
-            ".gitignore should ignore tool-metadata.lock.json"
+                .any(|line| line.trim() == "tool-manifest.lock.json"),
+            ".gitignore should ignore tool-manifest.lock.json"
         );
     }
 
@@ -868,8 +849,8 @@ mod tests {
         let lines: Vec<&str> = gitignore.content.lines().collect();
         assert!(lines.contains(&".tmp/"), "expected .tmp/, got {lines:?}");
         assert!(
-            lines.contains(&"tool-metadata.lock.json"),
-            "expected tool-metadata.lock.json, got {lines:?}"
+            lines.contains(&"tool-manifest.lock.json"),
+            "expected tool-manifest.lock.json, got {lines:?}"
         );
     }
 }

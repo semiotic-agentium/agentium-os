@@ -7,13 +7,14 @@
 //! Request and response types for the REST API surface, plus RFC 7807
 //! error mapping from `RepositoryError`.
 
-use baml_rt_tools::mcp_snapshot::McpServerSnapshot;
+use baml_rt_tools::{external_tools::ExternalToolSnapshot, mcp_snapshot::McpServerSnapshot};
 use http_api_problem::{HttpApiProblem, StatusCode as ProblemStatusCode};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     entry::RepositoryEntryHeader,
     error::RepositoryError,
+    external_tool::{ExternalToolRegistryTool, ExternalToolRegistryToolVersion},
     ids::{AgentName, ContentHash, Version},
     lineage::LineageSubgraph,
     mcp::{McpRegistryServer, McpRegistryServerVersion, McpRegistryToolVersion},
@@ -252,6 +253,22 @@ pub struct ImportMcpSnapshotRequest {
     pub snapshot: McpServerSnapshot,
 }
 
+/// GET /external-tools/versions?tool_name=...
+/// GET /external-tools/latest?tool_name=...
+/// POST /external-tools/snapshots/mark-stale?tool_name=...&version=...
+#[derive(Debug, Deserialize)]
+pub struct ExternalToolNameQuery {
+    pub tool_name: String,
+    #[serde(default)]
+    pub version: Option<u32>,
+}
+
+/// POST /external-tools/snapshots/import
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ImportExternalToolSnapshotRequest {
+    pub snapshot: ExternalToolSnapshot,
+}
+
 // ---------------------------------------------------------------------------
 // Response types
 // ---------------------------------------------------------------------------
@@ -321,4 +338,31 @@ pub struct McpToolLookupResponse {
 #[derive(Debug, Serialize)]
 pub struct ImportMcpSnapshotResponse {
     pub version: McpRegistryServerVersion,
+}
+
+/// Response for external-tool listing.
+#[derive(Debug, Serialize)]
+pub struct ExternalToolsResponse {
+    pub tools: Vec<ExternalToolRegistryTool>,
+    pub total: usize,
+}
+
+/// Response for external-tool version listing.
+#[derive(Debug, Serialize)]
+pub struct ExternalToolVersionsResponse {
+    pub tool_name: String,
+    pub versions: Vec<ExternalToolRegistryToolVersion>,
+}
+
+/// Response for the approved-snapshot listing consumed by the builder.
+#[derive(Debug, Serialize)]
+pub struct ExternalToolSnapshotsResponse {
+    pub snapshots: Vec<ExternalToolSnapshot>,
+    pub total: usize,
+}
+
+/// Response for an imported external-tool snapshot.
+#[derive(Debug, Serialize)]
+pub struct ImportExternalToolSnapshotResponse {
+    pub version: ExternalToolRegistryToolVersion,
 }

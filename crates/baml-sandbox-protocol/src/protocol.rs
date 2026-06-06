@@ -28,13 +28,9 @@ pub const METHOD_SCHEMA: &str = "tool/schema";
 /// Method name for invoking the tool.
 pub const METHOD_INVOKE: &str = "tool/invoke";
 
-/// Method names a V1 tool is expected to declare in its `tool/describe`
+/// Minimum method names a tool is expected to declare in its `tool/describe`
 /// response under `supported_methods`.
 pub const SUPPORTED_METHODS: &[&str] = &[METHOD_DESCRIBE, METHOD_INVOKE];
-
-/// Method names for protocol V2 tools that expose static schema via
-/// `tool/schema`.
-pub const SUPPORTED_METHODS_V2: &[&str] = &[METHOD_DESCRIBE, METHOD_SCHEMA, METHOD_INVOKE];
 
 /// JSON-RPC 2.0 "Method not found" error code. Mirrors the spec constant.
 pub const ERR_METHOD_NOT_FOUND: i32 = -32601;
