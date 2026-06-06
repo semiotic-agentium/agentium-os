@@ -25,8 +25,7 @@ use baml_rt_tools::external_tools::{
     MetadataSchemas, SIDECAR_BUNDLE_REL_PATH, SandboxImageRef, ToolRuntime, ToolRuntimeLock,
     read_external_manifest, render_sidecar_bundle,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::Serialize;
 
 #[derive(Debug, Serialize)]
 struct SyncSummary {
@@ -36,12 +35,6 @@ struct SyncSummary {
     docker_mode: bool,
     checked: bool,
     dry_run: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct ToolSchemaFile {
-    input: Value,
-    output: Value,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -354,8 +347,10 @@ fn write_runtime_sidecars(manifest_path: &Path, rootfs: &Path) -> Result<()> {
         .parent()
         .ok_or_else(|| anyhow!("manifest path has no parent: {}", manifest_path.display()))?;
     let manifest = read_external_manifest(tool_dir)?;
-    let schemas = read_source_tool_schema(tool_dir)?;
-    let metadata = manifest.into_metadata(schemas);
+    let metadata = manifest.into_metadata(MetadataSchemas {
+        input: serde_json::json!({"type": "object"}),
+        output: serde_json::json!({"type": "object"}),
+    });
     let bundle = render_sidecar_bundle(&metadata)
         .map_err(|e| anyhow!("failed to render sidecar bundle: {e}"))?;
 
@@ -369,24 +364,6 @@ fn write_runtime_sidecars(manifest_path: &Path, rootfs: &Path) -> Result<()> {
         .with_context(|| format!("failed to write {}", bundle_path.display()))?;
 
     Ok(())
-}
-
-fn read_source_tool_schema(tool_dir: &Path) -> Result<MetadataSchemas> {
-    let schema_path = tool_dir.join("tool-schema.json");
-    if !schema_path.exists() {
-        bail!(
-            "sandbox-bind-sync requires {} so the sandbox sidecar can answer tool/schema during discovery",
-            schema_path.display()
-        );
-    }
-    let raw = fs::read_to_string(&schema_path)
-        .with_context(|| format!("failed to read {}", schema_path.display()))?;
-    let schema: ToolSchemaFile = serde_json::from_str(&raw)
-        .with_context(|| format!("failed to parse {}", schema_path.display()))?;
-    Ok(MetadataSchemas {
-        input: schema.input,
-        output: schema.output,
-    })
 }
 
 fn run_command(cmd: &mut Command, label: &str) -> Result<()> {
@@ -442,7 +419,6 @@ mod tests {
   "tags": [],
   "invocation_mode": "single_shot",
   "session_policy": "strict",
-  "schemas": {"input": {"type":"object"}, "output": {"type":"object"}},
   "secrets": [],
   "capabilities": {},
   "runtime": {
@@ -582,7 +558,6 @@ mod tests {
   "tags": [],
   "invocation_mode": "single_shot",
   "session_policy": "strict",
-  "schemas": {"input": {"type":"object"}, "output": {"type":"object"}},
   "secrets": [],
   "capabilities": {},
   "runtime": {
@@ -652,23 +627,6 @@ mod tests {
         assert!(method_strs.contains(&"tool/describe"));
         assert!(method_strs.contains(&"tool/schema"));
         assert!(method_strs.contains(&"tool/invoke"));
-
-        let schema_json = bundle_json.get("schema").expect("schema section");
-        assert_eq!(
-            schema_json.get("tool_name").and_then(Value::as_str),
-            Some("dev/meteo-tool")
-        );
-        assert_eq!(
-            schema_json.get("content_type").and_then(Value::as_str),
-            Some("application/schema+json")
-        );
-        assert!(
-            schema_json
-                .get("content_digest")
-                .and_then(Value::as_str)
-                .is_some(),
-            "schema.content_digest must exist"
-        );
     }
 
     #[test]
