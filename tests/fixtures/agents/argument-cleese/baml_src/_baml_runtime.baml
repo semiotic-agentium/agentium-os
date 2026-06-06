@@ -269,6 +269,27 @@ On Send, the message body must be exactly the Cleese line above, character for c
 
 One round trip only: send Cleese’s line once; when Chapman’s reply appears in session history (or after paging the delegated archive if needed), Finish — do not Send again to Chapman in the same planner turn.
 
+Current FSM state from the host:
+- status: {{ session_context.status }}
+- session_open: {{ session_context.session_open }}
+- last_step_op: {{ session_context.last_step_op }}
+- last_step_status: {{ session_context.last_step_status }}
+- last_archive_ref: {{ session_context.last_archive_ref }}
+- last_output_header: {{ session_context.last_output_header }}
+- last_completion: {{ session_context.last_completion }}
+
+Deterministic overrides:
+- If status == "just_opened" and last_step_op == "open":
+  emit Send. input/message body must be exactly "{{ first_line }}".
+  Never emit Finish in this state.
+- If status == "done" and last_step_op == "send":
+  emit Finish. The delegated reply has already been returned by Send chunks.
+  Do not Send again.
+- If status == "done" and last_step_op == "read":
+  emit Finish.
+- If last_completion == "INTERRUPTED":
+  emit Abort if Abort is legal.
+
 Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SystemInternalA2aOpenStep`.
 
 Use `op` as the discriminator: "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
@@ -311,6 +332,27 @@ Cleese line — this is the only text you may send to Chapman on Send (copy it e
 On Send, the message body must be exactly the Cleese line above, character for character. Do not improvise dialogue.
 
 One round trip only: send Cleese’s line once; when Chapman’s reply appears in session history (or after paging the delegated archive if needed), Finish — do not Send again to Chapman in the same planner turn.
+
+Current FSM state from the host:
+- status: {{ session_context.status }}
+- session_open: {{ session_context.session_open }}
+- last_step_op: {{ session_context.last_step_op }}
+- last_step_status: {{ session_context.last_step_status }}
+- last_archive_ref: {{ session_context.last_archive_ref }}
+- last_output_header: {{ session_context.last_output_header }}
+- last_completion: {{ session_context.last_completion }}
+
+Deterministic overrides:
+- If status == "just_opened" and last_step_op == "open":
+  emit Send. input/message body must be exactly "{{ first_line }}".
+  Never emit Finish in this state.
+- If status == "done" and last_step_op == "send":
+  emit Finish. The delegated reply has already been returned by Send chunks.
+  Do not Send again.
+- If status == "done" and last_step_op == "read":
+  emit Finish.
+- If last_completion == "INTERRUPTED":
+  emit Abort if Abort is legal.
 
 Return exactly one JSON object of type `SystemInternalA2aAbortStep | SystemInternalA2aFinishStep | SystemInternalA2aPageReadStep | SystemInternalA2aSearchReadStep | SystemInternalA2aSendStep`.
 

@@ -103,7 +103,7 @@ impl RunningRunnerProcess {
             .arg("--state-dir")
             .arg(&state_dir)
             .arg("--provenance-db")
-            .arg(&provenance_dir)
+            .arg(":memory:")
             .arg("--runner-token")
             .arg(TEST_RUNNER_TOKEN)
             .arg("--event-poll-interval-secs")
