@@ -7,7 +7,7 @@
 //! [`IngressItem`] per alert for the producer to drain.
 
 use baml_rt_core::{
-    BamlRtError, Result,
+    BamlRtError, EventSourceKind, Result,
     event_subscription::EventSourceKey,
     ingress_store::{IngressId, IngressItem, IngressStore},
 };
@@ -15,7 +15,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
-use crate::mapping::{AlertIdentity, AlertStatus, MappingStore};
+use crate::{
+    GRAFANA_SOURCE_KIND,
+    mapping::{AlertIdentity, AlertStatus, MappingStore},
+};
 
 /// One alert from a Grafana / Alertmanager webhook.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,6 +166,8 @@ pub async fn enqueue_webhook(
         let ingress_id = ingress_id_for(&message_id);
         let item = IngressItem {
             ingress_id: ingress_id.clone(),
+            source_kind: EventSourceKind::parse(GRAFANA_SOURCE_KIND)
+                .expect("valid grafana source kind"),
             source_key: source_key.clone(),
             payload_json,
             enqueued_at_unix_ms: now_ms,

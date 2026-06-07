@@ -11,7 +11,7 @@ use baml_rt_core::{
         StoredCallback,
     },
     clock_events,
-    event_subscription::EventSourceKey,
+    event_subscription::{EventSourceKey, EventSourceKind},
     ingress_store::{IngressId, IngressItem, IngressStore},
     now_unix_ms,
 };
@@ -301,6 +301,7 @@ impl DeploymentStateStore {
             .query(format!(
                 "CREATE {TBL_INGRESS_INBOX} SET \
                     ingress_id = $ingress_id, \
+                    source_kind = $source_kind, \
                     source_key = $source_key, \
                     payload_json = $payload_json, \
                     status = 'pending', \
@@ -309,6 +310,7 @@ impl DeploymentStateStore {
                     delivered_at_unix_ms = NONE"
             ))
             .bind(("ingress_id", item.ingress_id.to_string()))
+            .bind(("source_kind", item.source_kind.to_string()))
             .bind(("source_key", item.source_key.to_string()))
             .bind(("payload_json", item.payload_json.clone()))
             .bind((
@@ -322,15 +324,25 @@ impl DeploymentStateStore {
 
     /// Lock-free read: callers must tolerate stale results because
     /// `mark_ingress_emitted` does the authoritative claim under `ingress_lock`.
-    pub async fn list_pending_ingress_items(&self, limit: usize) -> Result<Vec<IngressItem>> {
+    pub async fn list_pending_ingress_items(
+        &self,
+        source_kinds: &[EventSourceKind],
+        limit: usize,
+    ) -> Result<Vec<IngressItem>> {
+        let source_kinds = source_kinds
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
         let mut resp = self
             .db
             .query(format!(
-                "SELECT ingress_id,source_key,payload_json,enqueued_at_unix_ms \
+                "SELECT ingress_id,source_kind,source_key,payload_json,enqueued_at_unix_ms \
                  FROM {TBL_INGRESS_INBOX} \
                  WHERE status = 'pending' AND emitted_at_unix_ms = NONE \
+                   AND source_kind INSIDE $source_kinds \
                  ORDER BY enqueued_at_unix_ms ASC, ingress_id ASC LIMIT $limit"
             ))
+            .bind(("source_kinds", source_kinds))
             .bind(("limit", limit as i64))
             .await
             .map_err(to_read_err)?;
@@ -941,6 +953,7 @@ fn parse_ingress_row(row: serde_json::Value) -> Result<IngressItem> {
     #[derive(Deserialize)]
     struct IngressRow {
         ingress_id: IngressId,
+        source_kind: Option<EventSourceKind>,
         source_key: EventSourceKey,
         payload_json: String,
         enqueued_at_unix_ms: i64,
@@ -952,6 +965,16 @@ fn parse_ingress_row(row: serde_json::Value) -> Result<IngressItem> {
 
     Ok(IngressItem {
         ingress_id: parsed.ingress_id,
+        source_kind: parsed.source_kind.unwrap_or_else(|| {
+            let raw = parsed
+                .source_key
+                .as_str()
+                .split(':')
+                .next()
+                .unwrap_or("unknown");
+            EventSourceKind::parse(raw)
+                .unwrap_or_else(|| EventSourceKind::parse("unknown").unwrap())
+        }),
         source_key: parsed.source_key,
         payload_json: parsed.payload_json,
         enqueued_at_unix_ms: u64::try_from(parsed.enqueued_at_unix_ms).map_err(|_| {
@@ -1039,8 +1062,12 @@ impl IngressStore for DeploymentStateStore {
         DeploymentStateStore::enqueue_ingress_item(self, item).await
     }
 
-    async fn list_pending(&self, limit: usize) -> Result<Vec<IngressItem>> {
-        DeploymentStateStore::list_pending_ingress_items(self, limit).await
+    async fn list_pending(
+        &self,
+        source_kinds: &[EventSourceKind],
+        limit: usize,
+    ) -> Result<Vec<IngressItem>> {
+        DeploymentStateStore::list_pending_ingress_items(self, source_kinds, limit).await
     }
 
     async fn requeue_stale(&self, emitted_before_unix_ms: u64) -> Result<usize> {
@@ -1373,6 +1400,7 @@ mod tests {
     fn sample_ingress_item(ingress_id: &str) -> IngressItem {
         IngressItem {
             ingress_id: IngressId::parse(ingress_id).expect("valid ingress id"),
+            source_kind: EventSourceKind::parse("slack").expect("valid source kind"),
             source_key: EventSourceKey::parse("slack:C123ABC456").expect("valid source key"),
             payload_json: r#"{"message":"hello"}"#.to_string(),
             enqueued_at_unix_ms: 1_775_512_000_000,
@@ -1391,7 +1419,10 @@ mod tests {
         drop(store);
 
         let reopened = retry_open(&path).await;
-        let items = reopened.list_pending_ingress_items(10).await.unwrap();
+        let items = reopened
+            .list_pending_ingress_items(&[EventSourceKind::parse("slack").unwrap()], 10)
+            .await
+            .unwrap();
         assert_eq!(items, vec![item]);
     }
 
@@ -1407,7 +1438,10 @@ mod tests {
             .unwrap();
         assert_eq!(emitted, vec![item.ingress_id.clone()]);
 
-        let pending = store.list_pending_ingress_items(10).await.unwrap();
+        let pending = store
+            .list_pending_ingress_items(&[EventSourceKind::parse("slack").unwrap()], 10)
+            .await
+            .unwrap();
         assert!(
             pending.is_empty(),
             "emitted ingress should not remain claimable until it is requeued or delivered"
@@ -1417,7 +1451,10 @@ mod tests {
             .mark_ingress_delivered(std::slice::from_ref(&item.ingress_id), 20)
             .await
             .unwrap();
-        let pending = store.list_pending_ingress_items(10).await.unwrap();
+        let pending = store
+            .list_pending_ingress_items(&[EventSourceKind::parse("slack").unwrap()], 10)
+            .await
+            .unwrap();
         assert!(pending.is_empty());
     }
 
@@ -1435,7 +1472,7 @@ mod tests {
 
         assert!(
             store
-                .list_pending_ingress_items(10)
+                .list_pending_ingress_items(&[EventSourceKind::parse("slack").unwrap()], 10)
                 .await
                 .unwrap()
                 .is_empty(),
@@ -1446,7 +1483,7 @@ mod tests {
         assert_eq!(reclaimed, 0);
         assert!(
             store
-                .list_pending_ingress_items(10)
+                .list_pending_ingress_items(&[EventSourceKind::parse("slack").unwrap()], 10)
                 .await
                 .unwrap()
                 .is_empty(),
@@ -1455,7 +1492,10 @@ mod tests {
 
         let reclaimed = store.requeue_stale_ingress(15).await.unwrap();
         assert_eq!(reclaimed, 1);
-        let pending = store.list_pending_ingress_items(10).await.unwrap();
+        let pending = store
+            .list_pending_ingress_items(&[EventSourceKind::parse("slack").unwrap()], 10)
+            .await
+            .unwrap();
         assert_eq!(pending, vec![item.clone()]);
     }
 }

@@ -10,6 +10,7 @@
 //! deployments keep working without changes.
 
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -24,6 +25,7 @@ pub const SANDBOX_BIND_ROOTS_ENV: &str = "BAML_SANDBOX_BIND_ROOTS";
 #[serde(default, deny_unknown_fields)]
 pub struct FileConfig {
     pub external_tools: ExternalToolsSection,
+    pub external_datasources: HashMap<String, HashMap<String, DatasourceActivation>>,
     pub sandbox: SandboxSection,
 }
 
@@ -31,6 +33,12 @@ pub struct FileConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct ExternalToolsSection {
     pub dirs: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DatasourceActivation {
+    pub source_key: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -221,6 +229,7 @@ unknown = true
             external_tools: ExternalToolsSection {
                 dirs: vec![PathBuf::from("/from-file")],
             },
+            external_datasources: HashMap::new(),
             sandbox: SandboxSection::default(),
         };
         set_env(EXTERNAL_TOOLS_DIR_ENV, "/from-env-a:/from-env-b");
@@ -245,6 +254,7 @@ unknown = true
             external_tools: ExternalToolsSection {
                 dirs: vec![PathBuf::from("/from-file")],
             },
+            external_datasources: HashMap::new(),
             sandbox: SandboxSection {
                 bind: SandboxBindSection {
                     roots: vec![PathBuf::from("/bind-from-file")],
@@ -288,6 +298,7 @@ unknown = true
             external_tools: ExternalToolsSection {
                 dirs: vec![PathBuf::from("/from-file")],
             },
+            external_datasources: HashMap::new(),
             sandbox: SandboxSection::default(),
         };
         set_env(EXTERNAL_TOOLS_DIR_ENV, "   ");

@@ -98,13 +98,21 @@ pub mod test_support {
             Ok(true)
         }
 
-        async fn list_pending(&self, limit: usize) -> Result<Vec<IngressItem>> {
+        async fn list_pending(
+            &self,
+            source_kinds: &[baml_rt_core::EventSourceKind],
+            limit: usize,
+        ) -> Result<Vec<IngressItem>> {
             let mut rows = self
                 .rows
                 .lock()
                 .await
                 .values()
-                .filter(|row| !row.delivered && row.emitted_at_unix_ms.is_none())
+                .filter(|row| {
+                    !row.delivered
+                        && row.emitted_at_unix_ms.is_none()
+                        && source_kinds.contains(&row.item.source_kind)
+                })
                 .cloned()
                 .collect::<Vec<_>>();
             rows.sort_by(|left, right| {

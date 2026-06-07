@@ -260,9 +260,13 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status, StatusCode::ACCEPTED);
-            let pending = baml_rt_core::IngressStore::list_pending(store.as_ref(), 100)
-                .await
-                .unwrap();
+            let pending = baml_rt_core::IngressStore::list_pending(
+                store.as_ref(),
+                &[baml_rt_core::EventSourceKind::parse("grafana").unwrap()],
+                100,
+            )
+            .await
+            .unwrap();
             assert_eq!(pending.len(), 1);
         });
     }

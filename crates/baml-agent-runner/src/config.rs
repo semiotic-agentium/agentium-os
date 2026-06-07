@@ -11,7 +11,7 @@ use baml_rt_provenance::{RemoteConfig, RemoteCredentials, SurrealStoreBuilder};
 use clap::Parser;
 use tracing::info;
 
-use crate::runner_config_file::{self, FileConfig};
+use crate::runner_config_file::{self, DatasourceActivation, FileConfig};
 
 /// Provenance store backend selection.
 #[derive(Debug, Clone)]
@@ -67,6 +67,9 @@ pub(crate) struct RunnerConfig {
     pub(crate) placement_ttl_ms: u64,
     /// Resolved external tool package directories (file → env precedence).
     pub(crate) external_tools_dirs: Vec<PathBuf>,
+    /// Datasource activation map from runner.toml.
+    pub(crate) external_datasources:
+        std::collections::HashMap<String, std::collections::HashMap<String, DatasourceActivation>>,
     /// Resolved sandbox bind allowlist roots (file → env precedence).
     pub(crate) sandbox_bind_roots: Vec<PathBuf>,
 }
@@ -234,6 +237,7 @@ impl Cli {
             runner_endpoint: self.runner_endpoint,
             placement_ttl_ms: self.placement_ttl_ms,
             external_tools_dirs: resolved.external_tools_dirs,
+            external_datasources: file_config.external_datasources,
             sandbox_bind_roots: resolved.sandbox_bind_roots,
         })
     }

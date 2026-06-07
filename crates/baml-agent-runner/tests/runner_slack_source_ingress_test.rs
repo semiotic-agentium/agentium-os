@@ -146,6 +146,7 @@ async fn enqueue_slack_inbox_source_records(
     store
         .enqueue(&IngressItem {
             ingress_id: IngressId::parse(ingress_id).expect("valid ingress id"),
+            source_kind: baml_rt_core::EventSourceKind::parse("slack").expect("valid source kind"),
             source_key,
             payload_json: serde_json::to_string(&payload).expect("serialize inbox payload"),
             enqueued_at_unix_ms: 1_735_720_511_000,

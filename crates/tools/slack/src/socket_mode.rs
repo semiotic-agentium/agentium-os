@@ -12,7 +12,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use baml_rt_core::{
-    BamlRtError, ExponentialBackoff, Result, clock_events,
+    BamlRtError, EventSourceKind, ExponentialBackoff, Result, clock_events,
     event_subscription::EventSourceKey,
     ingress_store::{IngressId, IngressItem, IngressStore},
     time::{now_unix_ms, now_unix_secs},
@@ -390,6 +390,7 @@ impl SocketModeReceiver {
             .store
             .enqueue(&IngressItem {
                 ingress_id: ingress_id.clone(),
+                source_kind: EventSourceKind::parse("slack").expect("valid slack source kind"),
                 source_key: channel_meta.source_key.clone(),
                 payload_json,
                 enqueued_at_unix_ms: now_unix_ms(clock_events::SOCKET_MODE_ENQUEUE),
@@ -718,7 +719,10 @@ mod tests {
             .unwrap();
 
         // Verify enqueue
-        let pending = store.list_pending(10).await.unwrap();
+        let pending = store
+            .list_pending(&[EventSourceKind::parse("slack").unwrap()], 10)
+            .await
+            .unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].ingress_id.as_str(), "support/slack:socket:Ev100");
         assert_eq!(pending[0].source_key.as_str(), "slack:C123TEST");
@@ -772,7 +776,10 @@ mod tests {
             .unwrap();
 
         // Only one item in store
-        let pending = store.list_pending(10).await.unwrap();
+        let pending = store
+            .list_pending(&[EventSourceKind::parse("slack").unwrap()], 10)
+            .await
+            .unwrap();
         assert_eq!(pending.len(), 1);
 
         // Both envelopes were acked
@@ -806,7 +813,10 @@ mod tests {
             .unwrap();
 
         // Nothing enqueued
-        let pending = store.list_pending(10).await.unwrap();
+        let pending = store
+            .list_pending(&[EventSourceKind::parse("slack").unwrap()], 10)
+            .await
+            .unwrap();
         assert!(pending.is_empty());
 
         // Ack was still sent
@@ -839,7 +849,10 @@ mod tests {
             .await
             .unwrap();
 
-        let pending = store.list_pending(10).await.unwrap();
+        let pending = store
+            .list_pending(&[EventSourceKind::parse("slack").unwrap()], 10)
+            .await
+            .unwrap();
         assert!(pending.is_empty());
 
         let acked = acks.lock().unwrap();
@@ -870,7 +883,10 @@ mod tests {
             .await
             .unwrap();
 
-        let pending = store.list_pending(10).await.unwrap();
+        let pending = store
+            .list_pending(&[EventSourceKind::parse("slack").unwrap()], 10)
+            .await
+            .unwrap();
         assert!(pending.is_empty());
 
         let acked = acks.lock().unwrap();
@@ -911,7 +927,10 @@ mod tests {
             assert_eq!(&*acked, &["env-txt-001"]);
         }
 
-        let pending = store.list_pending(10).await.unwrap();
+        let pending = store
+            .list_pending(&[EventSourceKind::parse("slack").unwrap()], 10)
+            .await
+            .unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(
             pending[0].ingress_id.as_str(),
@@ -930,7 +949,13 @@ mod tests {
         let result = receiver.handle_text_message(text, &mut sink).await.unwrap();
         assert!(result.is_none());
         assert!(acks.lock().unwrap().is_empty(), "hello should not ack");
-        assert!(store.list_pending(10).await.unwrap().is_empty());
+        assert!(
+            store
+                .list_pending(&[EventSourceKind::parse("slack").unwrap()], 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

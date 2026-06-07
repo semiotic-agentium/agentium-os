@@ -45,9 +45,11 @@ use baml_rt_repository::{
     BlobStore, LineageStore, MetadataStore, RepositoryService, SearchStore, SurrealStore,
 };
 use baml_rt_tools::{
-    ACCESS_ALLOWLIST_ENV, InventoryCatalog, ProducerCheckpoint,
+    ACCESS_ALLOWLIST_ENV, EventProducer, InventoryCatalog, ProducerCheckpoint, RawDatasourceIntake,
+    RawDatasourceProducer, WebhookIntake,
+    external_tools::{discover_snapshot, read_external_manifest},
     load_configured_event_producers_with_checkpoints, load_configured_webhook_intakes,
-    parse_access_allowlist,
+    parse_access_allowlist, raw_datasource_spec,
 };
 use baml_tools_calculator as _;
 #[cfg(feature = "clickup")]
@@ -548,13 +550,21 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
             },
             _ => baml_rt_api::ClusterTopology::Standalone,
         };
-        let webhook_intakes = load_configured_webhook_intakes(
+        let mut webhook_intakes = load_configured_webhook_intakes(
             &InventoryCatalog::new(),
             Some(runner.provenance_config().config_service()),
             Some(Arc::clone(&ingress_store)),
         )
         .await
         .context("loading configured webhook intakes")?;
+        let (external_webhook_intakes, _) = load_external_raw_datasources(
+            &config.external_tools_dirs,
+            &config.external_datasources,
+            Arc::clone(&ingress_store) as Arc<dyn baml_rt_core::IngressStore>,
+        )
+        .await
+        .context("loading external raw datasource webhook intakes")?;
+        webhook_intakes.extend(external_webhook_intakes);
         info!(
             webhook_intake_count = webhook_intakes.len(),
             "configured webhook intakes loaded for HTTP API"
@@ -619,7 +629,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
                 })
                 .collect();
 
-        let configured_producers = load_configured_event_producers_with_checkpoints(
+        let mut configured_producers = load_configured_event_producers_with_checkpoints(
             &InventoryCatalog::new(),
             Some(runner.provenance_config().config_service()),
             persisted_checkpoints.clone(),
@@ -627,6 +637,14 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         )
         .await
         .context("loading configured event producers")?;
+        let (_, external_producers) = load_external_raw_datasources(
+            &config.external_tools_dirs,
+            &config.external_datasources,
+            Arc::clone(&ingress_store) as Arc<dyn baml_rt_core::IngressStore>,
+        )
+        .await
+        .context("loading external raw datasource event producers")?;
+        configured_producers.extend(external_producers);
         info!(
             producer_count = configured_producers.len(),
             "configured event producers loaded for poll loop"
@@ -960,6 +978,81 @@ async fn run_event_poll_cycle(
             }
         }
     }
+}
+
+async fn load_external_raw_datasources(
+    dirs: &[std::path::PathBuf],
+    activations: &std::collections::HashMap<
+        String,
+        std::collections::HashMap<String, runner_config_file::DatasourceActivation>,
+    >,
+    store: Arc<dyn baml_rt_core::IngressStore>,
+) -> anyhow::Result<(Vec<Arc<dyn WebhookIntake>>, Vec<Arc<dyn EventProducer>>)> {
+    if activations.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    let mut intakes: Vec<Arc<dyn WebhookIntake>> = Vec::new();
+    let mut producers: Vec<Arc<dyn EventProducer>> = Vec::new();
+    let mut seen_sources = std::collections::HashMap::<String, String>::new();
+    let mut consumed = std::collections::HashSet::<(String, String)>::new();
+
+    for dir in dirs {
+        let manifest = read_external_manifest(dir)
+            .with_context(|| format!("read external datasource manifest at {}", dir.display()))?;
+        let Some(tool_activations) = activations.get(&manifest.name) else {
+            continue;
+        };
+        let snapshot = discover_snapshot(dir, None, None)
+            .await
+            .with_context(|| format!("discover external datasource tool at {}", dir.display()))?;
+        let tool = snapshot.tool;
+        for datasource in &tool.datasources {
+            let Some(activation) = tool_activations.get(&datasource.key) else {
+                continue;
+            };
+            let spec = raw_datasource_spec(
+                &tool,
+                datasource,
+                &baml_rt_tools::DatasourceActivation {
+                    source_key: activation.source_key.clone(),
+                },
+            )?;
+            let source = spec.source_kind.to_string();
+            let owner = format!("{}.{}", tool.name, datasource.key);
+            if let Some(existing) = seen_sources.insert(source.clone(), owner.clone()) {
+                anyhow::bail!(
+                    "duplicate external datasource source_kind '{}' owned by '{}' and '{}'",
+                    source,
+                    existing,
+                    owner
+                );
+            }
+            consumed.insert((tool.name.clone(), datasource.key.clone()));
+            intakes.push(Arc::new(RawDatasourceIntake::new(
+                spec.clone(),
+                Arc::clone(&store),
+            )));
+            producers.push(Arc::new(RawDatasourceProducer::new(
+                spec,
+                Arc::clone(&store),
+            )));
+        }
+    }
+
+    for (tool_name, datasources) in activations {
+        for key in datasources.keys() {
+            if !consumed.contains(&(tool_name.clone(), key.clone())) {
+                anyhow::bail!(
+                    "external datasource activation '{}.{}' did not match an approved datasource tool",
+                    tool_name,
+                    key
+                );
+            }
+        }
+    }
+
+    Ok((intakes, producers))
 }
 
 #[cfg(test)]

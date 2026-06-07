@@ -23,7 +23,10 @@ use std::fmt;
 use async_trait::async_trait;
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::{BamlRtError, Result, event_subscription::EventSourceKey};
+use crate::{
+    BamlRtError, Result,
+    event_subscription::{EventSourceKey, EventSourceKind},
+};
 
 /// Opaque, content-derived identifier for a single ingress batch.
 ///
@@ -67,6 +70,7 @@ impl<'de> Deserialize<'de> for IngressId {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IngressItem {
     pub ingress_id: IngressId,
+    pub source_kind: EventSourceKind,
     pub source_key: EventSourceKey,
     pub payload_json: String,
     pub enqueued_at_unix_ms: u64,
@@ -87,7 +91,11 @@ pub struct IngressItem {
 pub trait IngressStore: Send + Sync {
     async fn enqueue(&self, item: &IngressItem) -> Result<bool>;
 
-    async fn list_pending(&self, limit: usize) -> Result<Vec<IngressItem>>;
+    async fn list_pending(
+        &self,
+        source_kinds: &[EventSourceKind],
+        limit: usize,
+    ) -> Result<Vec<IngressItem>>;
 
     async fn requeue_stale(&self, emitted_before_unix_ms: u64) -> Result<usize>;
 
