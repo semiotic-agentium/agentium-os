@@ -48,6 +48,8 @@ async fn external_tool_dev_mode_happy_path_registers_and_invokes() {
         local_name: "e2e_echo".to_string(),
         access_level: baml_rt_tools::tools::ToolAccess::Read,
         tags: vec![],
+        event_sources: vec![],
+        datasources: vec![],
         invocation_mode: baml_rt_tools::external_tools::InvocationMode::SingleShot,
         session_policy: Default::default(),
         secrets: vec![],
@@ -70,6 +72,7 @@ async fn external_tool_dev_mode_happy_path_registers_and_invokes() {
     let schemas = MetadataSchemas {
         input: json!({"type": "object"}),
         output: json!({"type": "object"}),
+        events: Vec::new(),
     };
     let schema_digest = compute_external_schema_digest(&manifest.clone().into_metadata(schemas));
 
@@ -311,6 +314,7 @@ async fn external_sandbox_session_tool_resolver_path_supports_suspend_resume() {
             content_digest: schema_digest.to_string(),
             input: metadata.schemas.input.clone(),
             output: metadata.schemas.output.clone(),
+            events: Vec::new(),
         },
         ExternalToolDescribeSnapshot {
             protocol_version: "1".to_string(),
@@ -519,6 +523,8 @@ fn process_manifest(tool_server: &Path, name: &str, description: &str) -> Extern
         local_name: local.to_string(),
         access_level: baml_rt_tools::tools::ToolAccess::Read,
         tags: vec![],
+        event_sources: vec![],
+        datasources: vec![],
         invocation_mode: InvocationMode::SingleShot,
         session_policy: Default::default(),
         secrets: vec![],
@@ -548,6 +554,7 @@ fn schema_digest_for(manifest: &ExternalToolManifest) -> String {
     compute_external_schema_digest(&manifest.clone().into_metadata(MetadataSchemas {
         input: json!({"type": "object"}),
         output: json!({"type": "object"}),
+        events: Vec::new(),
     }))
     .to_string()
 }
@@ -765,6 +772,8 @@ async fn from_allowed_dirs_sandbox_bind_rootfs_discovers_with_mock_wiring() {
         local_name: "sandbox_echo".to_string(),
         access_level: baml_rt_tools::tools::ToolAccess::Read,
         tags: vec![],
+        event_sources: vec![],
+        datasources: vec![],
         invocation_mode: InvocationMode::SingleShot,
         session_policy: Default::default(),
         secrets: vec![],

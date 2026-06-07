@@ -769,6 +769,7 @@ fn scaffold_sidecar_bundle(ctx: &ScaffoldContext<'_>) -> String {
                 "required": [STARTER_OUTPUT_KEY],
                 "additionalProperties": false
             }),
+            events: Vec::new(),
         },
     );
     let bundle =

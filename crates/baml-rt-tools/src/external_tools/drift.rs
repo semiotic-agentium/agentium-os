@@ -169,6 +169,7 @@ mod tests {
             content_digest: "sha256:bogus".to_string(),
             input,
             output,
+            events: Vec::new(),
         }
     }
 

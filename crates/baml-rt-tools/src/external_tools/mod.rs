@@ -44,9 +44,9 @@ pub use lockfile::{
     ExternalToolsLockfile,
 };
 pub use metadata::{
-    CoordinationSpec, ExternalSecretScope, ExternalSessionPolicy, ExternalToolManifest,
-    ExternalToolMetadata, InvocationMode, MetadataSchemas, compute_tool_digest,
-    read_external_manifest,
+    CoordinationSpec, ExternalDatasourceManifest, ExternalDatasourceMode, ExternalSecretScope,
+    ExternalSessionPolicy, ExternalToolManifest, ExternalToolMetadata, InvocationMode,
+    MetadataSchemas, compute_tool_digest, read_external_manifest,
 };
 pub use metadata_catalog::{
     BUILDER_EXTERNAL_TOOLS_ENV, build_builder_catalog, build_builder_catalog_with_mcp_root,
@@ -60,9 +60,9 @@ pub use protocol::{
     ERR_INTERNAL, ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, ERR_PARSE_ERROR,
     ERR_PAYLOAD_LIMIT_EXCEEDED, ERR_SCHEMA_DIGEST_MISMATCH, ERR_SIDECAR_MALFORMED,
     ERR_SIDECAR_MISSING, ERR_SIDECAR_SCHEMA_INVALID, ERR_SIDECAR_SIZE_EXCEEDED,
-    ERR_UNSUPPORTED_PROTOCOL, ErrorClass, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
-    METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA, PROTOCOL_VERSION, SUPPORTED_METHODS,
-    ToolDescribeResult, ToolInvokeParams, ToolInvokeResult, ToolSchemaResult,
+    ERR_UNSUPPORTED_PROTOCOL, ErrorClass, EventSchema, JsonRpcError, JsonRpcRequest,
+    JsonRpcResponse, METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA, PROTOCOL_VERSION,
+    SUPPORTED_METHODS, ToolDescribeResult, ToolInvokeParams, ToolInvokeResult, ToolSchemaResult,
 };
 pub use registry_resolver::ExternalRegistryResolver;
 pub use runtime::{

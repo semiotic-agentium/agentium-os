@@ -75,6 +75,7 @@ pub async fn discover_snapshot(
             let metadata = manifest.clone().into_metadata(MetadataSchemas {
                 input: serde_json::json!({}),
                 output: serde_json::json!({}),
+                events: Vec::new(),
             });
             let spec_builder = (wiring.spec_factory)(&tool_name, &metadata)?;
             // Sentinel scope — discovery is not a real agent/context. Bind ids

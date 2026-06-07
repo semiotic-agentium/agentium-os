@@ -145,8 +145,21 @@ pub struct ToolSchemaResult {
     #[serde(default = "default_schema_content_type")]
     pub content_type: String,
     pub content_digest: String,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
     pub input: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
     pub output: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<EventSchema>,
+}
+
+/// JSON Schema contract for one datasource event payload.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventSchema {
+    pub schema_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub schema: Value,
 }
 
 fn default_schema_content_type() -> String {
