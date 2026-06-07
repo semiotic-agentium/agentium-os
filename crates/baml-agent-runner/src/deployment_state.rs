@@ -82,6 +82,12 @@ const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE INDEX IF NOT EXISTS idx_scheduled_callback_dedupe_unemitted ON scheduled_callbacks FIELDS source_key, dedupe_key, status, emitted_at_unix_ms",
     "DEFINE TABLE IF NOT EXISTS ingress_inbox SCHEMAFULL",
     "DEFINE FIELD IF NOT EXISTS ingress_id ON ingress_inbox TYPE string",
+    // Source-scoped inbox: `source_kind` is written by `enqueue_ingress_item`
+    // and filtered by `list_pending_ingress_items`. On a SCHEMAFULL table the
+    // field MUST be defined or SurrealDB rejects the whole record on write,
+    // silently dropping every enqueue. `option<string>` so rows persisted
+    // before this field existed still read back (parse_ingress_row backfills).
+    "DEFINE FIELD IF NOT EXISTS source_kind ON ingress_inbox TYPE option<string>",
     "DEFINE FIELD IF NOT EXISTS source_key ON ingress_inbox TYPE string",
     "DEFINE FIELD IF NOT EXISTS payload_json ON ingress_inbox TYPE string",
     "DEFINE FIELD IF NOT EXISTS status ON ingress_inbox TYPE string",
@@ -91,6 +97,7 @@ const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE INDEX IF NOT EXISTS idx_ingress_id ON ingress_inbox FIELDS ingress_id UNIQUE",
     "DEFINE INDEX IF NOT EXISTS idx_ingress_pending ON ingress_inbox FIELDS status, enqueued_at_unix_ms",
     "DEFINE INDEX IF NOT EXISTS idx_ingress_emitted ON ingress_inbox FIELDS status, emitted_at_unix_ms",
+    "DEFINE INDEX IF NOT EXISTS idx_ingress_source ON ingress_inbox FIELDS source_kind, status, enqueued_at_unix_ms",
 ];
 
 pub struct DeploymentStateStore {
