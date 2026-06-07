@@ -47,7 +47,7 @@ use baml_rt_repository::{
 use baml_rt_tools::{
     ACCESS_ALLOWLIST_ENV, EventProducer, InventoryCatalog, ProducerCheckpoint, RawDatasourceIntake,
     RawDatasourceProducer, WebhookIntake,
-    external_tools::{discover_snapshot, read_external_manifest},
+    external_tools::{load_approved_snapshots_from_dirs, validate_external_tool_snapshot},
     load_configured_event_producers_with_checkpoints, load_configured_webhook_intakes,
     parse_access_allowlist, raw_datasource_spec,
 };
@@ -496,6 +496,18 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         Some(runner.clone() as Arc<dyn baml_rt_core::DeployedAgentLookup>),
     ));
 
+    // Build raw external-datasource intakes + producers once and reuse them in
+    // both the HTTP webhook mount and the event poll loop. Discovering per call
+    // site would spawn each datasource tool twice at boot.
+    let (external_webhook_intakes, external_producers) = load_external_raw_datasources(
+        &config.external_tools_dirs,
+        &config.state_dir,
+        &config.external_datasources,
+        Arc::clone(&ingress_store) as Arc<dyn baml_rt_core::IngressStore>,
+    )
+    .await
+    .context("loading external raw datasources")?;
+
     let http_handle = if let Some(bind) = config.serve_http.clone() {
         let runner = ready.runner();
         let prov_config = runner.provenance_config();
@@ -557,13 +569,6 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         )
         .await
         .context("loading configured webhook intakes")?;
-        let (external_webhook_intakes, _) = load_external_raw_datasources(
-            &config.external_tools_dirs,
-            &config.external_datasources,
-            Arc::clone(&ingress_store) as Arc<dyn baml_rt_core::IngressStore>,
-        )
-        .await
-        .context("loading external raw datasource webhook intakes")?;
         webhook_intakes.extend(external_webhook_intakes);
         info!(
             webhook_intake_count = webhook_intakes.len(),
@@ -637,13 +642,6 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         )
         .await
         .context("loading configured event producers")?;
-        let (_, external_producers) = load_external_raw_datasources(
-            &config.external_tools_dirs,
-            &config.external_datasources,
-            Arc::clone(&ingress_store) as Arc<dyn baml_rt_core::IngressStore>,
-        )
-        .await
-        .context("loading external raw datasource event producers")?;
         configured_producers.extend(external_producers);
         info!(
             producer_count = configured_producers.len(),
@@ -982,6 +980,7 @@ async fn run_event_poll_cycle(
 
 async fn load_external_raw_datasources(
     dirs: &[std::path::PathBuf],
+    snapshot_root: &std::path::Path,
     activations: &std::collections::HashMap<
         String,
         std::collections::HashMap<String, runner_config_file::DatasourceActivation>,
@@ -992,27 +991,45 @@ async fn load_external_raw_datasources(
         return Ok((Vec::new(), Vec::new()));
     }
 
+    // Datasources ARE external tools, so load them through the same trusted
+    // snapshot path tools use (reuse approved snapshot / discover+approve+
+    // persist), never raw `discover_snapshot`. Auto-approval from a configured
+    // dir is the intended dev/config model, but `validate_external_tool_snapshot`
+    // + digest pinning still apply before any webhook gets mounted.
+    let snapshots = load_approved_snapshots_from_dirs(dirs, snapshot_root, None)
+        .await
+        .context("loading approved external datasource snapshots")?;
+
     let mut intakes: Vec<Arc<dyn WebhookIntake>> = Vec::new();
     let mut producers: Vec<Arc<dyn EventProducer>> = Vec::new();
     let mut seen_sources = std::collections::HashMap::<String, String>::new();
     let mut consumed = std::collections::HashSet::<(String, String)>::new();
 
-    for dir in dirs {
-        let manifest = read_external_manifest(dir)
-            .with_context(|| format!("read external datasource manifest at {}", dir.display()))?;
-        let Some(tool_activations) = activations.get(&manifest.name) else {
+    for snapshot in &snapshots {
+        let Some(tool_activations) = activations.get(&snapshot.tool.name) else {
             continue;
         };
-        let snapshot = discover_snapshot(dir, None, None)
-            .await
-            .with_context(|| format!("discover external datasource tool at {}", dir.display()))?;
-        let tool = snapshot.tool;
+        // Same gate `from_snapshots` applies to registry-backed tools: reject
+        // structurally invalid or unapproved snapshots before mounting a route.
+        validate_external_tool_snapshot(snapshot).with_context(|| {
+            format!(
+                "validating external datasource snapshot '{}'",
+                snapshot.tool.name
+            )
+        })?;
+        if !snapshot.approval.state.is_approved() {
+            anyhow::bail!(
+                "external datasource tool '{}' snapshot is not approved",
+                snapshot.tool.name
+            );
+        }
+        let tool = &snapshot.tool;
         for datasource in &tool.datasources {
             let Some(activation) = tool_activations.get(&datasource.key) else {
                 continue;
             };
             let spec = raw_datasource_spec(
-                &tool,
+                tool,
                 datasource,
                 &baml_rt_tools::DatasourceActivation {
                     source_key: activation.source_key.clone(),
