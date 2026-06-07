@@ -1,0 +1,26 @@
+{
+  "version": "1.0.0",
+  "name": "deploy-health-consumer",
+  "entry_point": "src/index.ts",
+  "signature": "deploy-health-consumer@1.0.0",
+  "tools": [],
+  "tags": [
+    "examples",
+    "datasource",
+    "deploy-health",
+    "demo"
+  ],
+  "discovery": {
+    "description": "Consumes raw deploy-health datasource events and summarizes deploy incidents in-process (no inter-agent calls).",
+    "subscriptions": [
+      {
+        "schema_versions": [
+          "deploy-health.v1"
+        ],
+        "source_kinds": [
+          "deploy-health"
+        ]
+      }
+    ]
+  }
+}
