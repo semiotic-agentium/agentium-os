@@ -64,7 +64,7 @@ pub use protocol::{
     JsonRpcResponse, METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA, PROTOCOL_VERSION,
     SUPPORTED_METHODS, ToolDescribeResult, ToolInvokeParams, ToolInvokeResult, ToolSchemaResult,
 };
-pub use registry_resolver::ExternalRegistryResolver;
+pub use registry_resolver::{ExternalRegistryResolver, load_approved_snapshots_from_dirs};
 pub use runtime::{
     DEFAULT_PROCESS_COMMAND, ProcessRuntimeSpec, SandboxAdapterRuntimeSpec, SandboxImageRef,
     SandboxRuntimeSpec, ToolRuntime, ToolRuntimeKind,

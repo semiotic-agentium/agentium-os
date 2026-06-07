@@ -120,7 +120,12 @@ async fn discover_via_invoker(
         .describe(tool_name, DEFAULT_DISCOVERY_TIMEOUT)
         .await?;
     let describe_result: ToolDescribeResult = describe.into();
-    validate_describe(&manifest.name, manifest.invocation_mode, &describe_result)?;
+    validate_describe(
+        &manifest.name,
+        manifest.invocation_mode,
+        !manifest.datasources.is_empty(),
+        &describe_result,
+    )?;
     let describe_snapshot = validate_describe_schema_support(&manifest.name, &describe_result)?;
     let schema = invoker.schema(tool_name, DEFAULT_DISCOVERY_TIMEOUT).await?;
     ExternalToolSnapshot::from_parts(
@@ -135,6 +140,7 @@ async fn discover_via_invoker(
 fn validate_describe(
     tool: &str,
     invocation_mode: InvocationMode,
+    is_datasource: bool,
     describe: &ToolDescribeResult,
 ) -> Result<()> {
     if describe.protocol_version != PROTOCOL_VERSION {
@@ -142,6 +148,13 @@ fn validate_describe(
             "tool/describe protocol_version '{}' but expected '{}'",
             describe.protocol_version, PROTOCOL_VERSION
         )));
+    }
+
+    // Datasource tools are never invoked — they advertise only tool/describe +
+    // tool/schema (the event contract, validated separately). So skip the
+    // invoke/session method requirements that apply to callable tools.
+    if is_datasource {
+        return Ok(());
     }
 
     match invocation_mode {
@@ -193,16 +206,14 @@ pub(super) fn normalize_process_runtime(dir: &Path, manifest: &mut ExternalToolM
 }
 
 fn process_invoker(dir: &Path, command: Vec<String>) -> Result<StdioSubprocessInvoker> {
-    let mut command = if command.is_empty() {
+    // `command[0]` is already resolved against `dir` by `normalize_process_runtime`,
+    // which always runs first in `discover_snapshot`. Re-joining here double-prefixes
+    // the path (`<dir>/<dir>/cmd`) whenever `dir` is relative, so only default an
+    // empty command and let `with_working_dir` anchor any residual relative path.
+    let command = if command.is_empty() {
         vec![super::DEFAULT_PROCESS_COMMAND.to_string()]
     } else {
         command
     };
-    if let Some(first) = command.first_mut() {
-        let path = std::path::PathBuf::from(&first);
-        if path.is_relative() {
-            *first = dir.join(path).to_string_lossy().to_string();
-        }
-    }
     Ok(StdioSubprocessInvoker::from_command(command)?.with_working_dir(dir.to_path_buf()))
 }
