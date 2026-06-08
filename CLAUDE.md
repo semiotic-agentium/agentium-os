@@ -10,7 +10,10 @@ just test               # CI-like nextest (workspace, all features)
 just clippy && just fmt # lint + format
 pre-commit run --all-files
 cargo test test_name    # single test
-just e2e-k8s            # k3d cluster harness
+just up                 # local k3d + Argo CD pilot stack
+just verify-k8s-pilot-package  # authoritative k8s package validation
+just e2e-k8s            # k3d scenario harness
+just publish-release vX.Y.Z   # semver git tag (see RELEASING.md)
 ```
 
 Linux local release builds need `libdbus-1-dev`, `libcap-ng-dev`, `pkg-config`, and `typescript@6` on PATH — run `just check-host`.

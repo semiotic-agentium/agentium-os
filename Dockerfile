@@ -38,6 +38,9 @@ RUN cargo build --release -p baml-agent-runner --features http-tools \
 # TypeScript when agents are published via POST /deploy.
 FROM debian:bookworm-slim AS runtime
 
+ARG VERSION=dev
+LABEL org.opencontainers.image.version="${VERSION}"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libssl3 curl \
     && rm -rf /var/lib/apt/lists/*

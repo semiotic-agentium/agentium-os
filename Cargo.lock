@@ -1446,12 +1446,12 @@ dependencies = [
 
 [[package]]
 name = "baml-agent-runner"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
  "axum 0.8.8",
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "baml-rt",
  "baml-rt-a2a",
@@ -1521,7 +1521,7 @@ dependencies = [
 
 [[package]]
 name = "baml-derive"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1540,7 +1540,7 @@ dependencies = [
 
 [[package]]
 name = "baml-derive-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "insta",
  "inventory",
@@ -1549,9 +1549,9 @@ dependencies = [
 
 [[package]]
 name = "baml-derive-tests"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "insta",
  "serde_json",
@@ -1627,11 +1627,11 @@ dependencies = [
 
 [[package]]
 name = "baml-rt"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "baml-rt-a2a",
  "baml-rt-builder",
@@ -1659,12 +1659,12 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-a2a"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-channel 2.5.0",
  "async-stream",
  "async-trait",
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "baml-rt",
  "baml-rt-conversation",
@@ -1694,7 +1694,7 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1743,7 +1743,7 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-builder"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1788,7 +1788,7 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-citation"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -1796,7 +1796,7 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-config"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "baml-rt-core",
@@ -1813,7 +1813,7 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-conversation"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "baml-rt-core",
  "baml-rt-embedding",
@@ -1827,7 +1827,7 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",
@@ -1850,7 +1850,7 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-embedding"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "fastembed",
@@ -1864,7 +1864,7 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-hash"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "insta",
  "serde",
@@ -1875,14 +1875,14 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-id"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "uuid",
 ]
 
 [[package]]
 name = "baml-rt-interceptor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "baml-rt",
@@ -1895,7 +1895,7 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-llm-config"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1913,7 +1913,7 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "axum 0.8.8",
@@ -1942,7 +1942,7 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-observability"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "baml-rt-core",
  "opentelemetry 0.26.0",
@@ -1958,7 +1958,7 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-provenance"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "baml-rt-conversation",
@@ -1988,12 +1988,12 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-quickjs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",
  "async-trait",
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "baml-rt",
  "baml-rt-core",
@@ -2026,7 +2026,7 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-repository"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "axum 0.8.8",
@@ -2055,7 +2055,7 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-router"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum 0.8.8",
  "baml-rt-core",
@@ -2079,10 +2079,10 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-tools"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "baml-rt",
  "baml-rt-citation",
@@ -2122,11 +2122,11 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-tools-claude"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-channel 2.5.0",
  "async-trait",
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "baml-rt-core",
  "baml-rt-tools",
@@ -2142,7 +2142,7 @@ dependencies = [
 
 [[package]]
 name = "baml-rt-vocabulary"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "serde_json",
@@ -2243,7 +2243,7 @@ dependencies = [
 
 [[package]]
 name = "baml-sandbox-adapter"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "baml-sandbox-protocol",
@@ -2258,7 +2258,7 @@ dependencies = [
 
 [[package]]
 name = "baml-sandbox-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2268,7 +2268,7 @@ dependencies = [
 
 [[package]]
 name = "baml-task-daemon"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2298,7 +2298,7 @@ dependencies = [
 
 [[package]]
 name = "baml-tool-derive"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2307,7 +2307,7 @@ dependencies = [
 
 [[package]]
 name = "baml-tool-links"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "baml-rt-tools-claude",
  "baml-tools-calculator",
@@ -2325,10 +2325,10 @@ dependencies = [
 
 [[package]]
 name = "baml-tools-calculator"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "baml-rt-core",
  "baml-rt-tools",
@@ -2339,11 +2339,11 @@ dependencies = [
 
 [[package]]
 name = "baml-tools-clickup"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "baml-rt-core",
  "baml-rt-tools",
@@ -2359,10 +2359,10 @@ dependencies = [
 
 [[package]]
 name = "baml-tools-github"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "baml-rt-core",
  "baml-rt-tools",
@@ -2375,10 +2375,10 @@ dependencies = [
 
 [[package]]
 name = "baml-tools-grafana-alerts"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "baml-rt-core",
  "baml-rt-tools",
@@ -2397,10 +2397,10 @@ dependencies = [
 
 [[package]]
 name = "baml-tools-internal-dev"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "baml-rt-core",
  "baml-rt-tools",
@@ -2413,11 +2413,11 @@ dependencies = [
 
 [[package]]
 name = "baml-tools-memory"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "agentic-memory",
  "async-trait",
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "baml-rt-core",
  "baml-rt-tools",
@@ -2434,10 +2434,10 @@ dependencies = [
 
 [[package]]
 name = "baml-tools-notion"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "baml-rt-core",
  "baml-rt-tools",
@@ -2454,10 +2454,10 @@ dependencies = [
 
 [[package]]
 name = "baml-tools-security-eval"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "baml-rt-core",
  "baml-rt-tools",
@@ -2468,12 +2468,12 @@ dependencies = [
 
 [[package]]
 name = "baml-tools-slack"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
  "axum 0.8.8",
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "baml-rt-core",
  "baml-rt-tools",
@@ -2495,11 +2495,11 @@ dependencies = [
 
 [[package]]
 name = "baml-tools-slack-notify"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "axum 0.8.8",
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "baml-rt-core",
  "baml-rt-llm-config",
@@ -2514,11 +2514,11 @@ dependencies = [
 
 [[package]]
 name = "baml-tools-system"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-channel 2.5.0",
  "async-trait",
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "baml-rt",
  "baml-rt-core",
@@ -3119,7 +3119,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-agent-platform"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
@@ -7117,7 +7117,7 @@ checksum = "14c00403deb17c3221a1fe4fb571b9ed0370b3dcd116553c77fa294a3d918699"
 
 [[package]]
 name = "integrations-clickup-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "baml-rt-llm-config",
  "reqwest 0.12.26",
@@ -7128,7 +7128,7 @@ dependencies = [
 
 [[package]]
 name = "integrations-github-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "baml-rt-llm-config",
  "reqwest 0.12.26",
@@ -7139,7 +7139,7 @@ dependencies = [
 
 [[package]]
 name = "integrations-notion-read"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "baml-rt-core",
  "baml-rt-llm-config",
@@ -7152,7 +7152,7 @@ dependencies = [
 
 [[package]]
 name = "integrations-slack-read"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "baml-rt-core",
  "baml-rt-llm-config",
@@ -11350,7 +11350,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox-echo-adapter"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "baml-sandbox-adapter",
@@ -13099,11 +13099,11 @@ dependencies = [
 
 [[package]]
 name = "test-support"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "axum 0.8.8",
- "baml-derive 0.1.0",
+ "baml-derive 0.1.1",
  "baml-derive-core",
  "baml-rt",
  "baml-rt-builder",

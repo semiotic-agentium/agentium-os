@@ -37,46 +37,18 @@ helm upgrade --install agentium deploy/helm/agentium-os/ \
   -f deploy/helm/agentium-os/examples/design-partner-values.yaml
 ```
 
-### Local k3d (k3d-managed registry)
+### Local k3d (Argo CD + local registry)
 
-`scripts/verify-k8s-pilot-package.sh --image-strategy registry` exercises
-the same kubelet pull contract as a real registry-backed install by
-pushing the runner image to a k3d-managed local registry encoded in
-`deploy/k3d/cluster.yaml`:
+In-repo local validation uses Argo CD and a nonce image tag:
 
 ```bash
-docker build -t agentium-runner:demo .
-./scripts/verify-k8s-pilot-package.sh \
-  --image-strategy registry \
-  --image-repository agentium-runner --image-tag demo
+just up
+# or: just verify-k8s-pilot-package
 ```
 
-The host pushes to `localhost:5400` and the cluster pulls from
-`k3d-agentium-registry:5000`. No external registry is required. The
-chart is installed with
-[`examples/k3d-registry-values.yaml`](examples/k3d-registry-values.yaml),
-which sets `runner.image.pullPolicy: Always` so that rebuilding under
-the same tag and running `kubectl rollout restart` pulls the new digest
-instead of silently reusing the layer already cached on the node.
+Values: [`deploy/values/local/defaults.yaml`](../../values/local/defaults.yaml) plus generated [`deploy/values/generated/images.yaml`](../../values/generated/images.yaml). See [`deploy/argocd/README.md`](../../argocd/README.md) and [`RELEASING.md`](../../../RELEASING.md).
 
-### Local k3d (image import — fast dev fallback)
-
-For quick iteration without exercising the kubelet pull path, build the
-runner image and import it into the k3d cluster, then install with the
-k3d example values:
-
-```bash
-# Build the runner image (from repo root)
-docker build -t agentium-runner:demo .
-
-# Import into k3d (assumes cluster name "agentium")
-k3d image import agentium-runner:demo -c agentium
-
-# Install
-helm upgrade --install agentium deploy/helm/agentium-os/ \
-  --namespace agentium --create-namespace \
-  -f deploy/helm/agentium-os/examples/k3d-values.yaml
-```
+The host pushes to `localhost:5400`; the cluster pulls from `k3d-agentium-registry:5000` (`deploy/k3d/cluster.yaml`).
 
 ## Verify
 

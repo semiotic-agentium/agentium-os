@@ -650,13 +650,68 @@ list-tools:
 list-agents:
     cargo run --release -p cargo-agent-platform -- list-agents
 
-# Run E2E k8s tests against a real k3d cluster.
-# Prerequisites: docker/podman, k3d, kubectl, jq, curl, Rust toolchain, Node.js.
-# First run builds the Docker image (~5 min) and agent builder binary.
+# Run E2E k8s tests against a real k3d cluster (Argo CD + local registry).
 e2e-k8s:
     ./scripts/e2e-k8s/run.sh
 
-# Run the Kubernetes pilot first-run smoke against an installed Helm release.
+# Local k3d dev stack: cluster + registry + build/push + Argo sync.
+up:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    # shellcheck source=scripts/e2e-k8s/lib.sh
+    source "${root}/scripts/e2e-k8s/lib.sh"
+    REPO_ROOT="${root}"
+    preflight_container_runtime
+    ensure_k3d_cluster
+    ensure_image_tag_or_nonce
+    docker build --build-arg "VERSION=$(bash "${root}/scripts/release/workspace-version.sh")" \
+      -t "${IMAGE_NAME}:${IMAGE_TAG}" "${root}"
+    bringup_pilot_stack
+    log_info "Pilot stack ready (tag=${IMAGE_TAG})"
+
+# Rebuild runner image and re-sync Argo after code changes.
+sync:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    # shellcheck source=scripts/e2e-k8s/lib.sh
+    source "${root}/scripts/e2e-k8s/lib.sh"
+    REPO_ROOT="${root}"
+    bash "${root}/scripts/e2e-k8s/image-tag-nonce.sh"
+    resolve_image_tag
+    docker build --build-arg "VERSION=$(bash "${root}/scripts/release/workspace-version.sh")" \
+      -t "${IMAGE_NAME}:${IMAGE_TAG}" "${root}"
+    ensure_k3d_registry
+    connect_registry_to_cluster
+    ensure_runner_image_available
+    bash "${root}/scripts/e2e-k8s/render-values.sh"
+    bash "${root}/scripts/e2e-k8s/sync-argocd.sh"
+    resolve_chart_names
+    wait_for_runner_readyz
+
+workspace-version:
+    bash scripts/release/workspace-version.sh
+
+bump-version kind:
+    bash scripts/release/bump-workspace-version.sh {{kind}}
+
+image-tag-nonce:
+    bash scripts/e2e-k8s/image-tag-nonce.sh
+
+render-values:
+    bash scripts/e2e-k8s/render-values.sh
+
+sync-argocd:
+    bash scripts/e2e-k8s/sync-argocd.sh
+
+release *ARGS:
+    bash scripts/release/set-deploy-ref.sh {{ARGS}}
+
+publish-release *ARGS:
+    bash scripts/release/publish-deploy-release.sh {{ARGS}}
+
+# Run the Kubernetes pilot first-run smoke against an installed release.
 # Prerequisites: a running chart install (see docs/k8s-pilot-operator-guide.md)
 # and an open port-forward, or pass `--port-forward` to have the script manage it.
 k8s-pilot-smoke *args='':
@@ -702,7 +757,7 @@ demo-rehearsal: demo-rehearsal-no-llm
 
 # verify + smoke only; no LLM required.
 demo-rehearsal-no-llm:
-    just verify-k8s-pilot-package --image-strategy registry --keep-cluster --smoke-keep-deployed
+    just verify-k8s-pilot-package --keep-cluster --smoke-keep-deployed
     just demo-rehearsal-assert
 
 # Customer-facing cluster-health checks (issue #391):

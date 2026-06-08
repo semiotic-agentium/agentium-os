@@ -1,0 +1,8 @@
+# Minimal Argo CD values for local k3d (Traefik disabled in deploy/k3d/cluster.yaml).
+configs:
+  params:
+    server.insecure: "true"
+
+server:
+  ingress:
+    enabled: false

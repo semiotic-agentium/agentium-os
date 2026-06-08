@@ -14,7 +14,7 @@ The pilot packages one topology:
 - Operator access over `kubectl port-forward`. Ingress and TLS termination are out of scope for the pilot.
 - LLM credentials come from a file-mounted `fnox.toml` (`BAML_FNOX_CONFIG=/config/fnox.toml`). Runners do not read LLM API keys from environment variables.
 
-The supported install surface is the Helm chart at [`deploy/helm/agentium-os/`](../deploy/helm/agentium-os/). The raw manifests under `deploy/k8s/` and `deploy/demo/run-demo.sh` are internal development assets; do not use them as the operator path.
+The supported install surface is the Helm chart at [`deploy/helm/agentium-os/`](../deploy/helm/agentium-os/). Local k3d uses Argo CD (`just up`). Raw manifests under `deploy/k8s/` are legacy only.
 
 ## Prerequisites
 
@@ -26,7 +26,7 @@ The supported install surface is the Helm chart at [`deploy/helm/agentium-os/`](
 
 The Agentium runner image is not published to a public registry. Operators build and push their own image.
 
-For any real design-partner or shared-cluster install, that means supplying a cluster-reachable OCI image reference, typically via a private registry. The `k3d image import` path below is a fast dev fallback for local iteration; it is not the long-term pilot install contract. For end-to-end validation of the registry-backed path on a local k3d cluster, use `scripts/verify-k8s-pilot-package.sh --image-strategy registry` (see [`docs/runbooks/e2e-k8s.md`](../runbooks/e2e-k8s.md#image-strategies)).
+For local k3d development use `just up`. See [`RELEASING.md`](../../RELEASING.md) and [`deploy/argocd/README.md`](../../deploy/argocd/README.md).
 
 ## Step 1 — Build and push the runner image
 
@@ -38,37 +38,19 @@ docker build -t your-registry.example.com/agentium-runner:0.1.0 .
 docker push your-registry.example.com/agentium-runner:0.1.0
 ```
 
-For local k3d development you can either:
+For local k3d development:
 
-- **Push to the cluster's k3d-managed local registry** (mirrors the real
-  install contract; requires `deploy/k3d/cluster.yaml` cluster bring-up,
-  which `scripts/verify-k8s-pilot-package.sh --image-strategy registry`
-  handles end-to-end), or
-- **Skip the push and import the image directly into the cluster** as a
-  fast dev fallback:
+```bash
+just up
+```
 
-  ```bash
-  docker build -t agentium-runner:demo .
-  k3d image import agentium-runner:demo -c <your-k3d-cluster-name>
-  ```
+This creates the k3d cluster, pushes the runner image to `k3d-agentium-registry:5000`, and installs via Argo CD. After code changes: `just sync`.
 
 ### Re-pushing the same tag
 
-If you override `runner.image.pullPolicy` to `IfNotPresent` in your own
-values, kubelet reuses whatever layer is cached on the node after a
-same-tag rebuild + `kubectl rollout restart` — the StatefulSet reports
-rollout complete and the pods still run the old code. The chart
-default of `Always` avoids this; see
-[`deploy/helm/agentium-os/README.md`](../deploy/helm/agentium-os/README.md#image-pull-policy)
-for the rationale and the rare cases where overriding makes sense. The
-`k3d image import` flow above is unaffected because it bypasses the
-kubelet pull path entirely.
+The local flow uses `pullPolicy: Always` and registry-backed pulls. After a rebuild under the same nonce tag, run `just sync` so Argo rolls out the new digest.
 
-`scripts/verify-k8s-pilot-package.sh --image-strategy registry`
-catches this automatically: after rollout it compares each runner
-pod's `containerStatuses[].imageID` against the digest just pushed and
-fails with `Pod <name> imageID does not match pushed registry digest`
-(exit 4). To verify manually after a rebuild + restart:
+`scripts/verify-k8s-pilot-package.sh` compares each runner pod's `containerStatuses[].imageID` against the digest just pushed (exit 4 on mismatch). To verify manually after a rebuild + restart:
 
 ```bash
 kubectl -n agentium get pod -l app.kubernetes.io/component=runner \
@@ -304,7 +286,7 @@ If `observability.enabled` is `true` and `observability.otlpEndpoint` points at 
 |---|---|---|
 | Pods stuck in `Pending` with `pod has unbound immediate PersistentVolumeClaims` event | `kubectl -n agentium describe pod <name>` | Default `StorageClass` missing, or PVC cannot be satisfied. Set `runner.persistence.storageClass` / `surrealdb.persistence.storageClass`. |
 | Pods stuck in `Pending` with `0/N nodes are available: N Insufficient memory` event | `kubectl -n agentium describe pod <name>` | Cluster host doesn't have enough schedulable memory. Two runner replicas (2Gi request each) plus SurrealDB (256Mi request) account for 4.25Gi of requests; kube-system pods consume more on top. On local k3d, raise Docker Desktop / colima allocation to ≥6 GiB. Distinct from `OOMKilled` below — this happens before scheduling. |
-| Pods in `ImagePullBackOff` | `kubectl -n agentium describe pod <name>` | `runner.image.repository`/`tag` wrong for the cluster's registry reachability. For local k3d image-import flows, confirm `pullPolicy: Never` and that `k3d image import` succeeded. For local k3d-managed-registry flows, confirm the push reached the registry: `docker logs k3d-agentium-registry`. |
+| Pods in `ImagePullBackOff` | `kubectl -n agentium describe pod <name>` | Wrong `runner.image.repository`/`tag` or registry unreachable. Local k3d: confirm push via `just sync` and `docker logs k3d-agentium-registry`. |
 | Same-tag rebuild + `rollout restart` reports complete but pods still run the old code | `kubectl -n agentium get pod -l app.kubernetes.io/component=runner -o jsonpath='{.items[*].status.containerStatuses[?(@.name=="runner")].imageID}'` | `runner.image.pullPolicy` is `IfNotPresent` in the values you installed with. Either set it to `Always` (chart default) or use a unique tag per build. See [Re-pushing the same tag](#re-pushing-the-same-tag). |
 | `POST /deploy` returns `connection closed before message completed`, or pods show `Reason: OOMKilled` / exit code 137 | `kubectl -n agentium describe pod <name>` | Runner exceeded its memory limit during deploy (tar extract + BAML IL load + QuickJS init + tool registration on top of resident fastembed ONNX, SurrealDB client, and provenance backend). The chart default is 5Gi, which fits the documented multi-agent fixtures; raise `runner.resources.limits.memory` if a heavier workload still OOMs. |
 | `readyz` returns 503 for more than a minute | `kubectl -n agentium logs statefulset/agentium-agentium-os-runner` | SurrealDB not up, or runner cannot reach it. Verify `surrealdb-credentials` keys match `values.yaml` (`username`/`password`). |
@@ -337,7 +319,7 @@ Deferred to follow-on pilot issues:
 
 - Authoritative package validation on top of this smoke flow — [#225](https://github.com/semiotic-agentium/agent-platform/issues/225).
 - Load-test baseline and performance SLOs — [#226](https://github.com/semiotic-agentium/agent-platform/issues/226).
-- Published runner image. Until then, operators build and push their own cluster-reachable image, typically via a private registry. `k3d image import` is a local-development fast-path; the equivalent registry-backed path on a local k3d cluster is exercised by `scripts/verify-k8s-pilot-package.sh --image-strategy registry`.
+- Published runner image. Until then, operators build and push their own cluster-reachable image. Local k3d validation: `just verify-k8s-pilot-package` or `just up`.
 - Ingress / TLS termination. Operators front the API service with their own ingress controller if needed.
 - Multi-node SurrealDB HA. The pilot ships a single SurrealDB replica.
 - Deterministic conversational smoke coverage on the pilot path. The dispatch smoke remains the stable first-run check; the Cleese/Chapman validation above is supported, but still intentionally depends on a live LLM call.

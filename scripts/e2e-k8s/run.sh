@@ -94,6 +94,7 @@ build_phase() {
   (cd "$REPO_ROOT" && cargo build --release -p baml-rt-builder --bin baml-agent-builder --all-features)
 
   log_step "Building Docker image"
+  ensure_image_tag_or_nonce
   docker build -t "${IMAGE_NAME}:${IMAGE_TAG}" "$REPO_ROOT"
 }
 
@@ -102,7 +103,7 @@ build_phase() {
 #
 # The harness installs the supported Helm chart via the shared bringup
 # helpers in lib.sh (ensure_runner_image_available, create_pilot_objects,
-# install_pilot_chart, resolve_chart_names, wait_for_runner_readyz), not
+# install_pilot_via_argo, resolve_chart_names, wait_for_runner_readyz), not
 # raw manifests under deploy/k8s/. Scenarios exercise the Helm-installed
 # topology so a chart-level regression (wrong env name, wrong mount path,
 # wrong secret key) surfaces here rather than being masked by kubectl
@@ -121,9 +122,8 @@ setup_cluster() {
 
   ensure_runner_image_available
   create_pilot_objects
-  install_pilot_chart $(rustlog_override "info,baml_rt_router=debug")
-  resolve_chart_names
-  wait_for_runner_readyz
+  rustlog_override "info,baml_rt_router=debug"
+  install_pilot_release
 
   log_step "Starting port-forwards"
   start_port_forward "$RUNNER_POD_0" "$RUNNER0_PORT" "$REMOTE_PORT"

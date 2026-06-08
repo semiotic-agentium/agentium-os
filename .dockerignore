@@ -8,7 +8,9 @@ tmp/
 observability/
 tests/
 scripts/
-deploy/
+deploy/*
+!deploy/helm/
+!deploy/values/
 docs/
 *.md
 !README.md
