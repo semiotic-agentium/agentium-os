@@ -129,7 +129,7 @@ async fn build_artifact_inner(
         let output = build_dir.join("package.tar.gz");
         let builder = BuilderService::new(
             TscCompiler::new(),
-            RuntimeTypeGenerator::with_mcp_registry_service(svc),
+            RuntimeTypeGenerator::with_registry_service(svc),
             StdPackager::new(),
         );
         builder

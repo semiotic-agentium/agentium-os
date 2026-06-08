@@ -4,17 +4,13 @@
 
 //! Builder-level codegen tests for MCP-imported tools.
 //!
-//! Writes an approved snapshot into a temp cache, points the builder at it
-//! via `BAML_MCP_CACHE_DIR`, then runs `render_baml_tool_interfaces` and
-//! verifies the generated BAML mentions the projected types.
+//! Writes an approved snapshot into a temp registry projection, passes that
+//! root explicitly to codegen, and verifies generated BAML mentions projected types.
 
 #![recursion_limit = "256"]
 
-use std::sync::Mutex;
-
-use baml_rt_builder::builder::baml_gen::render_baml_tool_interfaces;
+use baml_rt_builder::builder::baml_gen::render_baml_tool_interfaces_with_mcp_root;
 use baml_rt_tools::{
-    mcp_builder_catalog::BUILDER_MCP_CACHE_ENV,
     mcp_cache::write_snapshot,
     mcp_snapshot::{
         ApprovalRecord, Digest, MCP_SNAPSHOT_SCHEMA_VERSION, McpApprovalState, McpImportedTool,
@@ -23,37 +19,6 @@ use baml_rt_tools::{
     tools::ToolAccess,
 };
 use serde_json::{Value, json};
-
-/// Serializes env-mutating tests across this file so concurrent runs do not
-/// race on `BAML_MCP_CACHE_DIR`.
-static ENV_GUARD: Mutex<()> = Mutex::new(());
-
-struct CacheEnvScope {
-    previous: Option<String>,
-}
-
-impl CacheEnvScope {
-    fn set(path: &std::path::Path) -> Self {
-        let previous = std::env::var(BUILDER_MCP_CACHE_ENV).ok();
-        // SAFETY: tests in this file serialize through ENV_GUARD before
-        // touching the env, and the scope guard restores the prior value on
-        // drop. No other code in the workspace reads BUILDER_MCP_CACHE_ENV.
-        unsafe { std::env::set_var(BUILDER_MCP_CACHE_ENV, path) };
-        Self { previous }
-    }
-}
-
-impl Drop for CacheEnvScope {
-    fn drop(&mut self) {
-        // SAFETY: see set().
-        unsafe {
-            match &self.previous {
-                Some(value) => std::env::set_var(BUILDER_MCP_CACHE_ENV, value),
-                None => std::env::remove_var(BUILDER_MCP_CACHE_ENV),
-            }
-        }
-    }
-}
 
 fn approved_tool(name: &str, schema: Value, fallback: Option<&str>) -> McpImportedTool {
     McpImportedTool {
@@ -110,7 +75,6 @@ fn approved_snapshot(tools: Vec<McpImportedTool>) -> McpServerSnapshot {
 
 #[test]
 fn renders_typed_input_for_supported_schema() {
-    let _guard = ENV_GUARD.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     write_snapshot(
         dir.path(),
@@ -125,10 +89,11 @@ fn renders_typed_input_for_supported_schema() {
         )]),
     )
     .unwrap();
-    let _scope = CacheEnvScope::set(dir.path());
-
-    let output =
-        render_baml_tool_interfaces(&["mcp/grafana/search_dashboards".to_string()]).unwrap();
+    let output = render_baml_tool_interfaces_with_mcp_root(
+        &["mcp/grafana/search_dashboards".to_string()],
+        Some(dir.path()),
+    )
+    .unwrap();
 
     assert!(
         output.contains("McpGrafanaSearchDashboardsInput"),
@@ -146,7 +111,6 @@ fn renders_typed_input_for_supported_schema() {
 
 #[test]
 fn renders_opaque_input_for_unsupported_schema() {
-    let _guard = ENV_GUARD.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     write_snapshot(
         dir.path(),
@@ -160,10 +124,11 @@ fn renders_opaque_input_for_unsupported_schema() {
         )]),
     )
     .unwrap();
-    let _scope = CacheEnvScope::set(dir.path());
-
-    let output =
-        render_baml_tool_interfaces(&["mcp/grafana/search_dashboards".to_string()]).unwrap();
+    let output = render_baml_tool_interfaces_with_mcp_root(
+        &["mcp/grafana/search_dashboards".to_string()],
+        Some(dir.path()),
+    )
+    .unwrap();
 
     assert!(
         output.contains("OpaqueJson"),
@@ -173,7 +138,6 @@ fn renders_opaque_input_for_unsupported_schema() {
 
 #[test]
 fn pending_snapshot_is_invisible_to_builder() {
-    let _guard = ENV_GUARD.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let mut snap = approved_snapshot(vec![approved_tool(
         "search_dashboards",
@@ -182,10 +146,11 @@ fn pending_snapshot_is_invisible_to_builder() {
     )]);
     snap.tools[0].approval.state = McpApprovalState::Pending;
     write_snapshot(dir.path(), &snap).unwrap();
-    let _scope = CacheEnvScope::set(dir.path());
-
-    let err = render_baml_tool_interfaces(&["mcp/grafana/search_dashboards".to_string()])
-        .expect_err("pending tool should not be resolvable");
+    let err = render_baml_tool_interfaces_with_mcp_root(
+        &["mcp/grafana/search_dashboards".to_string()],
+        Some(dir.path()),
+    )
+    .expect_err("pending tool should not be resolvable");
     let msg = err.to_string();
     assert!(
         msg.contains("Tool metadata missing for"),

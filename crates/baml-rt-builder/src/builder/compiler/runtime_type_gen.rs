@@ -6,9 +6,10 @@
 //! [`super::codegen_pipeline`]; this file contains only the [`TypeGenerator`] impl that wires
 //! the named phases together and bridges between blocking and async halves.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
 use baml_rt_repository::RepositoryService;
+use baml_rt_tools::{ToolName, tool_catalog::ToolCatalog};
 use tokio::task;
 
 use super::codegen_pipeline::WorkspaceReady;
@@ -27,39 +28,46 @@ use crate::builder::{
 /// lockfile, and the rendered tool-schema catalog sidecar) land under `build_dir/`.
 #[derive(Clone, Default)]
 pub struct RuntimeTypeGenerator {
-    mcp_registry_service: Option<Arc<RepositoryService>>,
-    mcp_registry_url: Option<String>,
-    external_tool_registry_url: Option<String>,
+    registry_service: Option<Arc<RepositoryService>>,
+    /// Single repository registry that serves both MCP and external-tool
+    /// approved snapshots (one runner, one URL). Only [`new`](Self::new) reads it
+    /// from the `BAML_REGISTRY_URL` env var; explicit constructors set it directly.
+    registry_url: Option<String>,
+    snapshot_cache_root: Option<PathBuf>,
 }
 
 impl RuntimeTypeGenerator {
     pub fn new() -> Self {
         Self {
-            mcp_registry_service: None,
-            mcp_registry_url: std::env::var("BAML_MCP_REGISTRY_URL")
+            registry_service: None,
+            registry_url: std::env::var("BAML_REGISTRY_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
-            external_tool_registry_url: std::env::var("BAML_EXTERNAL_TOOL_REGISTRY_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
+            snapshot_cache_root: None,
         }
     }
 
-    pub fn with_mcp_registry_service(service: Arc<RepositoryService>) -> Self {
+    pub fn with_registry_service(service: Arc<RepositoryService>) -> Self {
         Self {
-            mcp_registry_service: Some(service),
-            mcp_registry_url: None,
-            external_tool_registry_url: None,
+            registry_service: Some(service),
+            registry_url: None,
+            snapshot_cache_root: None,
         }
     }
 
-    pub fn with_mcp_registry_url(url: impl Into<String>) -> Self {
+    pub fn with_registry_url(url: impl Into<String>) -> Self {
         Self {
-            mcp_registry_service: None,
-            mcp_registry_url: Some(url.into()),
-            external_tool_registry_url: std::env::var("BAML_EXTERNAL_TOOL_REGISTRY_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty()),
+            registry_service: None,
+            registry_url: Some(url.into()),
+            snapshot_cache_root: None,
+        }
+    }
+
+    pub fn with_snapshot_cache(root: impl Into<PathBuf>) -> Self {
+        Self {
+            registry_service: None,
+            registry_url: None,
+            snapshot_cache_root: Some(root.into()),
         }
     }
 }
@@ -67,8 +75,8 @@ impl RuntimeTypeGenerator {
 #[async_trait::async_trait]
 impl TypeGenerator for RuntimeTypeGenerator {
     async fn generate(&self, agent_dir: &AgentDir, build_dir: &BuildDir) -> Result<()> {
-        prepare_mcp_registry_cache(agent_dir, build_dir, self).await?;
-        prepare_external_tool_registry_cache(agent_dir, build_dir, self).await?;
+        prepare_mcp_snapshots(agent_dir, build_dir, self).await?;
+        prepare_external_tool_snapshots(agent_dir, build_dir, self).await?;
 
         let agent_dir = agent_dir.clone();
         let build_dir = build_dir.clone();
@@ -99,19 +107,19 @@ impl TypeGenerator for RuntimeTypeGenerator {
     }
 }
 
-async fn prepare_external_tool_registry_cache(
+async fn prepare_external_tool_snapshots(
     agent_dir: &AgentDir,
     build_dir: &BuildDir,
     generator: &RuntimeTypeGenerator,
 ) -> Result<()> {
-    let tool_names = load_manifest_tools(&agent_dir.baml_src())?;
-    if tool_names.is_empty() {
+    let required_external_tools = manifest_external_tool_names(agent_dir)?;
+    if required_external_tools.is_empty() {
         return Ok(());
     }
-    let manifest_tool_names: HashSet<String> = tool_names.iter().map(ToString::to_string).collect();
 
     let root = build_dir.as_path();
-    if let Some(service) = &generator.mcp_registry_service {
+    let mut resolved = HashSet::new();
+    if let Some(service) = &generator.registry_service {
         let snapshots = service
             .list_approved_external_tool_snapshots()
             .await
@@ -121,8 +129,9 @@ async fn prepare_external_tool_registry_cache(
             })?;
         for snapshot in snapshots
             .into_iter()
-            .filter(|snapshot| manifest_tool_names.contains(&snapshot.tool.name))
+            .filter(|snapshot| required_external_tools.contains(&snapshot.tool.name))
         {
+            resolved.insert(snapshot.tool.name.clone());
             tracing::info!(
                 external_tool = %snapshot.tool.name,
                 external_tool_schema_digest = %snapshot.digests.schema_digest,
@@ -133,10 +142,36 @@ async fn prepare_external_tool_registry_cache(
             baml_rt_tools::external_tool_cache::write_approved_snapshot(root, &snapshot)
                 .map_err(BamlBuilderError::Io)?;
         }
+        ensure_external_snapshots_resolved(&required_external_tools, &resolved)?;
         return Ok(());
     }
 
-    let Some(registry_url) = &generator.external_tool_registry_url else {
+    if let Some(snapshot_cache_root) = &generator.snapshot_cache_root {
+        let cache_root =
+            baml_rt_tools::external_tool_cache::resolve_cache_root(snapshot_cache_root);
+        let snapshots = baml_rt_tools::external_tool_cache::read_approved_snapshots(&cache_root)
+            .map_err(BamlBuilderError::from)?;
+        for snapshot in snapshots
+            .into_iter()
+            .filter(|snapshot| required_external_tools.contains(&snapshot.tool.name))
+        {
+            resolved.insert(snapshot.tool.name.clone());
+            tracing::info!(
+                external_tool = %snapshot.tool.name,
+                external_tool_schema_digest = %snapshot.digests.schema_digest,
+                external_tool_runtime_digest = %snapshot.digests.runtime_digest,
+                external_tool_registry_source = %cache_root.display(),
+                "resolved manifest-referenced external-tool snapshot from explicit snapshot cache"
+            );
+            baml_rt_tools::external_tool_cache::write_approved_snapshot(root, &snapshot)
+                .map_err(BamlBuilderError::Io)?;
+        }
+        ensure_external_snapshots_resolved(&required_external_tools, &resolved)?;
+        return Ok(());
+    }
+
+    let Some(registry_url) = &generator.registry_url else {
+        ensure_external_snapshots_resolved(&required_external_tools, &resolved)?;
         return Ok(());
     };
     let url = format!(
@@ -176,8 +211,9 @@ async fn prepare_external_tool_registry_cache(
         })?;
     for snapshot in snapshots
         .into_iter()
-        .filter(|snapshot| manifest_tool_names.contains(&snapshot.tool.name))
+        .filter(|snapshot| required_external_tools.contains(&snapshot.tool.name))
     {
+        resolved.insert(snapshot.tool.name.clone());
         tracing::info!(
             external_tool = %snapshot.tool.name,
             external_tool_schema_digest = %snapshot.digests.schema_digest,
@@ -188,10 +224,48 @@ async fn prepare_external_tool_registry_cache(
         baml_rt_tools::external_tool_cache::write_approved_snapshot(root, &snapshot)
             .map_err(BamlBuilderError::Io)?;
     }
+    ensure_external_snapshots_resolved(&required_external_tools, &resolved)
+}
+
+fn manifest_external_tool_names(agent_dir: &AgentDir) -> Result<HashSet<String>> {
+    let tool_names = load_manifest_tools(&agent_dir.baml_src())?;
+    if tool_names.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let inventory = baml_rt_tools::tool_catalog::InventoryCatalog::new();
+    let inventory_names: HashSet<String> =
+        inventory.iter().map(|tool| tool.name.to_string()).collect();
+
+    let mut external_tools = HashSet::new();
+    for name in tool_names {
+        if name.starts_with("mcp/") || inventory_names.contains(&name) {
+            continue;
+        }
+        ToolName::parse(&name).map_err(BamlBuilderError::from)?;
+        external_tools.insert(name);
+    }
+    Ok(external_tools)
+}
+
+fn ensure_external_snapshots_resolved(
+    required: &HashSet<String>,
+    resolved: &HashSet<String>,
+) -> Result<()> {
+    let mut missing: Vec<&String> = required
+        .iter()
+        .filter(|name| !resolved.contains(*name))
+        .collect();
+    missing.sort();
+    if let Some(name) = missing.first() {
+        return Err(BamlBuilderError::InvalidArgument(format!(
+            "manifest uses external tool {name}, but no approved registry snapshot was found"
+        )));
+    }
     Ok(())
 }
 
-async fn prepare_mcp_registry_cache(
+async fn prepare_mcp_snapshots(
     agent_dir: &AgentDir,
     build_dir: &BuildDir,
     generator: &RuntimeTypeGenerator,
@@ -211,7 +285,7 @@ async fn prepare_mcp_registry_cache(
     }
 
     let root = build_dir.join("mcp");
-    if let Some(service) = &generator.mcp_registry_service {
+    if let Some(service) = &generator.registry_service {
         for server_id in &server_ids {
             let snapshot = service
                 .get_latest_mcp_snapshot(server_id)
@@ -222,7 +296,7 @@ async fn prepare_mcp_registry_cache(
                 })?
                 .ok_or_else(|| {
                     BamlBuilderError::InvalidArgument(format!(
-                        "manifest uses MCP server `{server_id}`, but no approved registry snapshot was found; if the latest snapshot is stale, re-import and approve a new version"
+                        "manifest uses MCP server {server_id}, but no approved registry snapshot was found"
                     ))
                 })?;
             tracing::info!(
@@ -238,8 +312,39 @@ async fn prepare_mcp_registry_cache(
         return Ok(());
     }
 
-    let Some(registry_url) = &generator.mcp_registry_url else {
+    if let Some(snapshot_cache_root) = &generator.snapshot_cache_root {
+        let cache_root = baml_rt_tools::mcp_cache::resolve_cache_root(snapshot_cache_root);
+        for server_id in &server_ids {
+            let snapshot = baml_rt_tools::mcp_cache::read_snapshot(&cache_root, server_id).map_err(
+                |_| {
+                    BamlBuilderError::InvalidArgument(format!(
+                        "manifest uses MCP server {server_id}, but no approved registry snapshot was found"
+                    ))
+                },
+            )?;
+            if !snapshot.approval.state.is_approved() {
+                return Err(BamlBuilderError::InvalidArgument(format!(
+                    "manifest uses MCP server {server_id}, but no approved registry snapshot was found"
+                )));
+            }
+            tracing::info!(
+                mcp_server_id = %server_id,
+                mcp_tools = snapshot.tools.len(),
+                mcp_tools_digest = %snapshot.tools_digest,
+                mcp_registry_source = %cache_root.display(),
+                "resolved MCP snapshot from explicit snapshot cache for agent build"
+            );
+            baml_rt_tools::mcp_cache::write_snapshot(&root, &snapshot)
+                .map_err(BamlBuilderError::Io)?;
+        }
         return Ok(());
+    }
+
+    let Some(registry_url) = &generator.registry_url else {
+        return Err(BamlBuilderError::InvalidArgument(format!(
+            "manifest uses MCP server {}, but no approved registry snapshot was found",
+            server_ids[0]
+        )));
     };
     let http = reqwest::Client::new();
     for server_id in &server_ids {
@@ -257,7 +362,7 @@ async fn prepare_mcp_registry_cache(
         let body = response.text().await.unwrap_or_default();
         if !status.is_success() {
             return Err(BamlBuilderError::InvalidArgument(format!(
-                "failed to fetch MCP snapshot `{server_id}` from registry ({status}): {body}"
+                "manifest uses MCP server {server_id}, but no approved registry snapshot was found"
             )));
         }
         let snapshot: baml_rt_tools::mcp_snapshot::McpServerSnapshot = serde_json::from_str(&body)
