@@ -106,6 +106,7 @@ fn load_sandbox_metadata() -> Result<ExternalToolMetadata, Box<dyn std::error::E
     Ok(parsed.into_metadata(MetadataSchemas {
         input: json!({"type": "object"}),
         output: json!({"type": "object"}),
+        events: Vec::new(),
     }))
 }
 

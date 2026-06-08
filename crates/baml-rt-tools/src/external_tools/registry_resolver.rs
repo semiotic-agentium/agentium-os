@@ -79,7 +79,8 @@ impl ExternalRegistryResolver {
         sandbox: Option<SandboxRuntimeWiring>,
         recorder: Option<ExternalLifecycleRecorder>,
     ) -> Result<Self> {
-        let snapshots = load_approved_snapshots_from_dirs(dirs, snapshot_root, sandbox.as_ref()).await?;
+        let snapshots =
+            load_approved_snapshots_from_dirs(dirs, snapshot_root, sandbox.as_ref()).await?;
         Self::from_snapshots(snapshots, sandbox, recorder)
     }
 
