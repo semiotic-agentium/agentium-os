@@ -30,6 +30,8 @@ pub fn generate(ctx: &ScaffoldContext<'_>) -> String {
         r#"# {tool_id} external tool
 
 This scaffold implements the Agent Platform external tool protocol (JSON-RPC over stdio).
+Input/output schemas live in this source tree and are served via `tool/schema`; they are
+not written into `tool-manifest.json` or `tool-bundle.json`.
 
 ## Wire contract
 
@@ -98,12 +100,14 @@ fn manual_probe_section(ctx: &ScaffoldContext<'_>, tool_id: &str) -> String {
 
 {preface}```bash
 printf '{{"jsonrpc":"2.0","id":1,"method":"{method_describe}","params":{{"tool_name":"{tool_id}"}}}}\n' | {probe_command}
-printf '{{"jsonrpc":"2.0","id":2,"method":"{method_invoke}","params":{{"invocation_id":"demo","tool_name":"{tool_id}","input":{{"{input_key}":"hello"}}}}}}\n' | {probe_command}
+printf '{{"jsonrpc":"2.0","id":2,"method":"{method_schema}","params":{{"tool_name":"{tool_id}"}}}}\n' | {probe_command}
+printf '{{"jsonrpc":"2.0","id":3,"method":"{method_invoke}","params":{{"invocation_id":"demo","tool_name":"{tool_id}","input":{{"{input_key}":"hello"}}}}}}\n' | {probe_command}
 ```
 "#,
             heading = heading,
             preface = preface,
             method_describe = METHOD_DESCRIBE,
+            method_schema = METHOD_SCHEMA,
             method_invoke = METHOD_INVOKE,
             tool_id = tool_id,
             input_key = STARTER_INPUT_KEY,
@@ -150,7 +154,7 @@ fn local_probe_command(ctx: &ScaffoldContext<'_>) -> &'static str {
 
 fn supported_methods_for(ctx: &ScaffoldContext<'_>) -> Vec<&'static str> {
     match ctx.invocation_mode {
-        InvocationMode::SingleShot => vec![METHOD_DESCRIBE, METHOD_INVOKE],
+        InvocationMode::SingleShot => vec![METHOD_DESCRIBE, METHOD_SCHEMA, METHOD_INVOKE],
         InvocationMode::Session => vec![
             METHOD_DESCRIBE,
             METHOD_SCHEMA,
@@ -218,17 +222,19 @@ cargo run -q -p cargo-agent-platform -- sandbox-bind-sync \
   --check
 ```
 
-`adapter/tool-adapter` is a generated transport shim (TSRPC <-> raw stdio).
-You usually only edit the scaffolded language source (`main.py`, `src/main.rs`, etc.).
+`adapter/tool-adapter` is a generated transport shim (TSRPC framing on the outside,
+raw JSON-RPC to the child on the inside). It forwards `tool/describe`, `tool/schema`,
+and `tool/invoke` to your language source, which owns the live schema. Edit
+`main.py` / `src/main.rs` / etc., not the shim, when changing contract.
 
-Example probes:
+`tool-bundle.json` (materialized at `/etc/agentium/tool-bundle.json`) tells the shim
+which child command to launch. It does not contain schema.
+
+Example probes (all modes exercise the framed adapter end-to-end):
 
 ```bash
-# Reads bind artifact sidecar from .tmp/<tool>-rootfs by default.
-./inspect_tool.py describe
-./inspect_tool.py schema
-
-# invoke requires a runnable adapter command
+./inspect_tool.py describe -- docker run --rm -i local-sandbox:latest /tool-adapter
+./inspect_tool.py schema -- docker run --rm -i local-sandbox:latest /tool-adapter
 ./inspect_tool.py invoke --input '{"message":"hello"}' -- docker run --rm -i local-sandbox:latest /tool-adapter
 ```
 "#

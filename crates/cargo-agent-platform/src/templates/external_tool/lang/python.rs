@@ -4,15 +4,20 @@
 
 use baml_rt_tools::external_tools::{
     ERR_INTERNAL, ERR_METHOD_NOT_FOUND, ERR_PARSE_ERROR, METHOD_DESCRIBE, METHOD_INVOKE,
-    PROTOCOL_VERSION, SUPPORTED_METHODS,
+    METHOD_SCHEMA, PROTOCOL_VERSION, SUPPORTED_METHODS,
 };
 
 use super::super::{
-    GeneratedFile, STARTER_INPUT_KEY, STARTER_OUTPUT_KEY, ScaffoldContext, tool_server_wrapper,
+    GeneratedFile, STARTER_INPUT_KEY, STARTER_OUTPUT_KEY, ScaffoldContext, bind_sandbox,
+    tool_server_wrapper,
 };
 
 pub fn generate(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
     let tool_id = ctx.tool_id();
+    // Tool-owned schema + a digest computed with the runner's canonicalization,
+    // so the scaffolded tool's `tool/schema` response validates at discovery.
+    let (schema_input, schema_output, schema_content_digest) =
+        bind_sandbox::starter_schema_parts(ctx);
     // `SUPPORTED_METHODS` is a Rust `&[&str]`; render as a Python list literal
     // so the scaffold stays faithful to the V1 contract without re-typing the
     // method name inside the generated code.
@@ -35,8 +40,10 @@ import sys
 
 PROTOCOL_VERSION = "{protocol_version}"
 METHOD_DESCRIBE = "{method_describe}"
+METHOD_SCHEMA = "{method_schema}"
 METHOD_INVOKE = "{method_invoke}"
 SUPPORTED_METHODS = [{supported_methods_py}]
+DEFAULT_SCHEMA_CONTENT_TYPE = "application/schema+json"
 ERR_METHOD_NOT_FOUND = {err_method_not_found}
 ERR_PARSE_ERROR = {err_parse_error}
 ERR_INTERNAL = {err_internal}
@@ -45,6 +52,14 @@ ERR_INTERNAL = {err_internal}
 # handler must stay in lockstep, so both come from the scaffold generator.
 INPUT_KEY = "{input_key}"
 OUTPUT_KEY = "{output_key}"
+
+# Tool-owned schema. This tool is the single source of truth for its own
+# contract; the runner discovers it via `tool/schema` and never reads a schema
+# file. `content_digest` is baked at scaffold time with the runner's
+# canonicalization, so the runner's discovery-time recomputation matches.
+SCHEMA_INPUT = json.loads('{schema_input}')
+SCHEMA_OUTPUT = json.loads('{schema_output}')
+SCHEMA_CONTENT_DIGEST = "{schema_content_digest}"
 
 
 def write_result(req_id, result):
@@ -66,6 +81,17 @@ def write_error(req_id, code, message, error_class="execution"):
         )
         + "\n"
     )
+
+
+def schema_result():
+    return {{
+        "schema_version": 1,
+        "tool_name": "{tool_id}",
+        "content_type": DEFAULT_SCHEMA_CONTENT_TYPE,
+        "content_digest": SCHEMA_CONTENT_DIGEST,
+        "input": SCHEMA_INPUT,
+        "output": SCHEMA_OUTPUT,
+    }}
 
 
 def main():
@@ -90,8 +116,13 @@ def main():
                 "protocol_version": PROTOCOL_VERSION,
                 "tool_name": "{tool_id}",
                 "supported_methods": SUPPORTED_METHODS,
+                "schema_digest": SCHEMA_CONTENT_DIGEST,
             }},
         )
+        return
+
+    if method == METHOD_SCHEMA:
+        write_result(req_id, schema_result())
         return
 
     if method == METHOD_INVOKE:
@@ -112,6 +143,7 @@ if __name__ == "__main__":
 "#,
         protocol_version = PROTOCOL_VERSION,
         method_describe = METHOD_DESCRIBE,
+        method_schema = METHOD_SCHEMA,
         method_invoke = METHOD_INVOKE,
         supported_methods_py = supported_methods_py,
         err_method_not_found = ERR_METHOD_NOT_FOUND,

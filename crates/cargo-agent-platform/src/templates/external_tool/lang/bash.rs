@@ -3,14 +3,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use baml_rt_tools::external_tools::{
-    ERR_METHOD_NOT_FOUND, ERR_PARSE_ERROR, METHOD_DESCRIBE, METHOD_INVOKE, PROTOCOL_VERSION,
-    SUPPORTED_METHODS,
+    ERR_METHOD_NOT_FOUND, ERR_PARSE_ERROR, METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA,
+    PROTOCOL_VERSION, SUPPORTED_METHODS,
 };
 
-use super::super::{GeneratedFile, STARTER_INPUT_KEY, STARTER_OUTPUT_KEY, ScaffoldContext};
+use super::super::{
+    GeneratedFile, STARTER_INPUT_KEY, STARTER_OUTPUT_KEY, ScaffoldContext, bind_sandbox,
+};
 
 pub fn generate(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
     let tool_id = ctx.tool_id();
+    // Tool-owned schema + a digest computed with the runner's canonicalization,
+    // so the scaffolded tool's `tool/schema` response validates at discovery.
+    let (schema_input, schema_output, schema_content_digest) =
+        bind_sandbox::starter_schema_parts(ctx);
     // Inline the methods array as a JSON literal so jq can splat it into the
     // describe response without a second parse hop.
     let supported_methods_json = serde_json::to_string(SUPPORTED_METHODS)
@@ -78,6 +84,7 @@ case "$method" in
       --argjson id "$id" \
       --arg tool_name "{tool_id}" \
       --arg protocol_version "{protocol_version}" \
+      --arg schema_digest "{schema_content_digest}" \
       --argjson supported_methods '{supported_methods_json}' \
       '{{
         jsonrpc: "2.0",
@@ -85,7 +92,31 @@ case "$method" in
         result: {{
           protocol_version: $protocol_version,
           tool_name: $tool_name,
-          supported_methods: $supported_methods
+          supported_methods: $supported_methods,
+          schema_digest: $schema_digest
+        }}
+      }}'
+    ;;
+
+  "{method_schema}")
+    # Tool-owned schema. Discovered via tool/schema; never read from a file.
+    # content_digest baked at scaffold time with the runner's canonicalization.
+    jq -nc \
+      --argjson id "$id" \
+      --arg tool_name "{tool_id}" \
+      --arg content_digest "{schema_content_digest}" \
+      --argjson schema_input '{schema_input}' \
+      --argjson schema_output '{schema_output}' \
+      '{{
+        jsonrpc: "2.0",
+        id: $id,
+        result: {{
+          schema_version: 1,
+          tool_name: $tool_name,
+          content_type: "application/schema+json",
+          content_digest: $content_digest,
+          input: $schema_input,
+          output: $schema_output
         }}
       }}'
     ;;
@@ -113,6 +144,7 @@ case "$method" in
 esac
 "#,
         method_describe = METHOD_DESCRIBE,
+        method_schema = METHOD_SCHEMA,
         method_invoke = METHOD_INVOKE,
         protocol_version = PROTOCOL_VERSION,
         err_method_not_found = ERR_METHOD_NOT_FOUND,

@@ -4,15 +4,21 @@
 
 use baml_rt_tools::external_tools::{
     ERR_INTERNAL, ERR_METHOD_NOT_FOUND, ERR_PARSE_ERROR, METHOD_DESCRIBE, METHOD_INVOKE,
-    PROTOCOL_VERSION, SUPPORTED_METHODS,
+    METHOD_SCHEMA, PROTOCOL_VERSION, SUPPORTED_METHODS,
 };
 
 use super::super::{
-    GeneratedFile, STARTER_INPUT_KEY, STARTER_OUTPUT_KEY, ScaffoldContext, tool_server_wrapper,
+    GeneratedFile, STARTER_INPUT_KEY, STARTER_OUTPUT_KEY, ScaffoldContext, bind_sandbox,
+    tool_server_wrapper,
 };
 
 pub fn generate(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
     let tool_id = ctx.tool_id();
+    // Tool-owned schema + a digest computed with the runner's canonicalization,
+    // so the scaffolded tool's `tool/schema` response validates at discovery.
+    // The compact JSON is valid `json!` syntax, so it embeds without escaping.
+    let (schema_input, schema_output, schema_content_digest) =
+        bind_sandbox::starter_schema_parts(ctx);
     // Render SUPPORTED_METHODS as an inline Rust slice literal (e.g.
     // `["tool/invoke"]`). Keeps the source of truth in `templates/mod.rs`
     // instead of re-declaring method names inside generated code.
@@ -51,6 +57,7 @@ use serde_json::json;
 
 const PROTOCOL_VERSION: &str = "{protocol_version}";
 const METHOD_DESCRIBE: &str = "{method_describe}";
+const METHOD_SCHEMA: &str = "{method_schema}";
 const METHOD_INVOKE: &str = "{method_invoke}";
 // Matches scaffold's `SUPPORTED_METHODS`. Describe response echoes this
 // so a caller knows which methods the tool handles.
@@ -63,6 +70,23 @@ const ERR_INTERNAL: i32 = {err_internal};
 // handler must agree, so both come from the scaffold generator.
 const INPUT_KEY: &str = "{input_key}";
 const OUTPUT_KEY: &str = "{output_key}";
+
+// Tool-owned schema. This tool is the single source of truth for its own
+// contract; the runner discovers it via `tool/schema` and never reads a schema
+// file. `content_digest` is baked at scaffold time with the runner's
+// canonicalization, so the runner's discovery-time recomputation matches.
+const SCHEMA_CONTENT_DIGEST: &str = "{schema_content_digest}";
+
+fn schema_result() -> serde_json::Value {{
+    json!({{
+        "schema_version": 1,
+        "tool_name": "{tool_id}",
+        "content_type": "application/schema+json",
+        "content_digest": SCHEMA_CONTENT_DIGEST,
+        "input": {schema_input},
+        "output": {schema_output}
+    }})
+}}
 
 fn write_result(id: serde_json::Value, result: serde_json::Value) {{
     let response = json!({{ "jsonrpc": "2.0", "id": id, "result": result }});
@@ -120,9 +144,13 @@ fn main() {{
                 json!({{
                     "protocol_version": PROTOCOL_VERSION,
                     "tool_name": "{tool_id}",
-                    "supported_methods": SUPPORTED_METHODS
+                    "supported_methods": SUPPORTED_METHODS,
+                    "schema_digest": SCHEMA_CONTENT_DIGEST
                 }}),
             );
+        }}
+        m if m == METHOD_SCHEMA => {{
+            write_result(id, schema_result());
         }}
         m if m == METHOD_INVOKE => {{
             let message = request
@@ -145,6 +173,7 @@ fn main() {{
 "#,
         protocol_version = PROTOCOL_VERSION,
         method_describe = METHOD_DESCRIBE,
+        method_schema = METHOD_SCHEMA,
         method_invoke = METHOD_INVOKE,
         supported_methods_rs = supported_methods_rs,
         err_method_not_found = ERR_METHOD_NOT_FOUND,

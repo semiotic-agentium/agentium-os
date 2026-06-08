@@ -79,8 +79,8 @@ pub use session_invoker::{
 };
 pub use sidecar_bundle::{
     DEFAULT_SCHEMA_CONTENT_TYPE, SIDECAR_BUNDLE_ABS_PATH, SIDECAR_BUNDLE_REL_PATH, SIDECAR_DIR_ABS,
-    ToolManifestSidecar, ToolRuntimeSidecar, ToolSchemaSidecar, ToolSidecarBundle,
-    read_sidecar_bundle, render_sidecar_bundle,
+    ToolManifestSidecar, ToolRuntimeSidecar, ToolSidecarBundle, read_sidecar_bundle,
+    render_sidecar_bundle,
 };
 pub use snapshot::{
     EXTERNAL_TOOL_SNAPSHOT_SCHEMA_VERSION, EXTERNAL_TOOL_SOURCE, ExternalApprovalState,
