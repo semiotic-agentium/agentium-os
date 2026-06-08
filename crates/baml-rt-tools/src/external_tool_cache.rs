@@ -29,6 +29,23 @@ pub fn external_tools_dir(root: &Path) -> PathBuf {
     root.join(EXTERNAL_TOOLS_DIR)
 }
 
+/// Resolve an explicit snapshot-cache path to the directory that directly
+/// contains the `external-tools/` layout, so it can be passed to
+/// [`read_approved_snapshots`]. Accepts a cache root that nests the layout under
+/// `external-tools/`, or a path that already points at the `external-tools` dir
+/// itself (its parent is used). Falls back to the path as-given.
+pub fn resolve_cache_root(root: &Path) -> PathBuf {
+    if root.join(EXTERNAL_TOOLS_DIR).exists() {
+        root.to_path_buf()
+    } else if root.file_name().and_then(|name| name.to_str()) == Some(EXTERNAL_TOOLS_DIR) {
+        root.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| root.to_path_buf())
+    } else {
+        root.to_path_buf()
+    }
+}
+
 pub fn tool_slug(tool_name: &str) -> Result<String> {
     let parsed = ToolName::parse(tool_name)?;
     let bundle = parsed.bundle().as_str();

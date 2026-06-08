@@ -89,9 +89,7 @@ pub use snapshot::{
     compute_snapshot_digest, format_unix_rfc3339_utc, now_snapshot_timestamp,
     validate_describe_schema_support, validate_external_tool_snapshot,
 };
-pub use snapshot_catalog::{
-    BUILDER_EXTERNAL_TOOL_CACHE_ENV, ExternalToolRegistryCatalog, ExternalToolSnapshotCatalog,
-};
+pub use snapshot_catalog::{ExternalToolRegistryCatalog, ExternalToolSnapshotCatalog};
 pub use stdio::StdioSubprocessInvoker;
 
 #[derive(Debug, Clone)]

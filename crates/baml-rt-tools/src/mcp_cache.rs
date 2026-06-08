@@ -60,6 +60,19 @@ pub struct ToolRecord {
     pub tool: McpImportedTool,
 }
 
+/// Resolve an explicit snapshot-cache path to the directory that directly
+/// contains the MCP `servers/`/`tools/` layout. Accepts a cache root that nests
+/// the layout under `mcp/`, or one that already points at the layout. Falls
+/// back to the path as-given.
+pub fn resolve_cache_root(root: &Path) -> PathBuf {
+    let nested = root.join("mcp");
+    if nested.exists() {
+        nested
+    } else {
+        root.to_path_buf()
+    }
+}
+
 /// Returns the directory where the per-server record lives.
 pub fn server_dir(root: &Path, server_id: &str) -> PathBuf {
     root.join(SERVERS_DIR).join(server_id)
