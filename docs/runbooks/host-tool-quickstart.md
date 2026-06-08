@@ -27,7 +27,9 @@ cargo run -p cargo-agent-platform -- new-tool meteo-tool \
 ## 2. Implement tool logic + schema
 
 - Set `name` in `tool-manifest.json` (e.g. `dev/meteo`) to match the agent allowlist exactly
-- Implement `tool/describe` and `tool/invoke` in `main.py`
+- Implement `tool/describe`, `tool/schema`, and `tool/invoke` in your language source (`main.py`, etc.)
+- Keep `tool/describe.schema_digest` aligned with the `content_digest` your `tool/schema` handler returns
+- Starters embed a working echo schema in source; edit those constants/handlers rather than expecting a generated `tool-schema.json` (optional author files like meteo's `tool-schema.json` are fine if your tool reads them inside `tool/schema`)
 
 ## 3. Materialize bind rootfs
 

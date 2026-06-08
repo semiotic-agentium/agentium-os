@@ -120,9 +120,9 @@ Tool naming rules:
 
 `new-tool` creates a standalone tool directory with at least:
 
-- `tool-manifest.json` (runtime / access / schema contract)
+- `tool-manifest.json` (identity, access, runtime, invocation metadata — **no** input/output schemas)
 - `README.md`
-- language-specific source files
+- language-specific source files that implement the wire protocol, including `tool/schema`
 
 Runtime-specific emissions:
 
@@ -135,12 +135,26 @@ If `runtime.adapter.workdir` is set in `tool-manifest.json`, the runner uses it 
 
 This field is the authoritative runtime contract across sandbox image sources: Bind, OCI, and future sandbox backends such as Disk. Do not rely on an OCI image's Dockerfile `WORKDIR` being discovered automatically by the runner — if your tool expects a non-`/` cwd, declare the same path explicitly in `runtime.adapter.workdir`.
 
+### Schema ownership
+
+The platform never reads schema from `tool-manifest.json`, `tool-bundle.json`, or a generated `tool-schema.json` file.
+
+| Source | Role |
+|--------|------|
+| `tool-manifest.json` | Author metadata only (name, bundle, access, runtime, secrets, capabilities) |
+| Language source (`main.py`, `src/main.rs`, etc.) | **Live schema authority** — starters embed a trivial echo schema and implement `tool/schema`; `tool/describe` must report a matching `schema_digest` |
+| `tool/schema` RPC | What the runner calls at discovery; digest is recomputed and checked against `describe.schema_digest` |
+| Approved snapshots / registry | Where discovered schema is stored for builder projection (`external-tool enable`, agent `regen`) |
+| Optional author file (e.g. `tool-schema.json`) | Allowed if **your** tool reads it inside `tool/schema`; not emitted by `new-tool` |
+
+After you change schema, re-run discovery/approval (`external-tool enable` or `refresh`) and `regen` affected agents.
+
 ## 1.3 Process-runtime shortcut (non-sandboxed)
 
 If you chose `--runtime process` (the default), most of the sandbox sections below do not apply. Minimum path:
 
 1. §1.1 scaffold → §1.2 understand the emitted `tool-server` launcher
-2. Implement the launcher for your language — it reads length-prefixed JSON on stdin, writes replies on stdout
+2. Implement the launcher for your language — it reads length-prefixed JSON on stdin, writes replies on stdout, and serves `tool/describe`, `tool/schema`, and `tool/invoke`
 3. §5 validate metadata (`check-external-tool`)
 4. §6 configure runner with `BAML_EXTERNAL_TOOLS_DIR` (`BAML_SANDBOX_*` env vars not needed)
 5. §7 agent wiring + publish + deploy + chat
@@ -253,7 +267,7 @@ Sandbox runtime identity is source-specific:
 
 ### Bind sync command
 
-Use `sandbox-bind-sync` to write the local `tool-manifest.lock.json` with the resolved bind path, generate the adapter sidecar bundle (`/etc/agentium/tool-bundle.json`), and optionally validate manifest. It never mutates committed `tool-manifest.json`. Relative `--rootfs` and `--dockerfile` paths resolve against `--tool-dir`; if `--rootfs` is omitted, it defaults to the source manifest `runtime.image.path`.
+Use `sandbox-bind-sync` to write the local `tool-manifest.lock.json` with the resolved bind path, generate the adapter sidecar bundle (`/etc/agentium/tool-bundle.json`), and optionally validate manifest. The sidecar carries `runtime` + `manifest` only (no schema). It never mutates committed `tool-manifest.json`. Relative `--rootfs` and `--dockerfile` paths resolve against `--tool-dir`; if `--rootfs` is omitted, it defaults to the source manifest `runtime.image.path`.
 
 ```bash
 cargo agent-platform sandbox-bind-sync \
@@ -273,7 +287,9 @@ cargo agent-platform sandbox-bind-sync \
 
 ### OCI sidecar preparation (compatibility only)
 
-`tool-manifest.json` is the builder/runtime source of truth. `sandbox-oci-prepare` can still render a compatibility `tool-bundle.json` next to tool sources for adapters that explicitly need that file, but OCI identity remains the digest-pinned image ref and the bundle is not part of image identity.
+`tool-manifest.json` is the builder/runtime source of truth. `sandbox-oci-prepare` can still render a compatibility `tool-bundle.json` next to tool sources for adapters that need the guest sidecar file, but OCI identity remains the digest-pinned image ref and the bundle is not part of image identity.
+
+The sidecar contains only `runtime` + `manifest` (how the shim launches the child and which methods are advertised). It does **not** include schema; adapters forward `tool/describe` / `tool/schema` to the tool process.
 
 ```bash
 cargo agent-platform sandbox-oci-prepare \
@@ -281,7 +297,7 @@ cargo agent-platform sandbox-oci-prepare \
   --check
 ```
 
-Default output: `adapter/sidecars/etc/agentium/tool-bundle.json`.
+Default output: `adapter/sidecars/etc/agentium/tool-bundle.json` (copy into the image at `/etc/agentium/tool-bundle.json` when your Dockerfile uses the generated bind shim).
 
 ## 5) Validate metadata before deploy
 
@@ -291,7 +307,7 @@ cargo agent-platform check-external-tool --path ./examples/external-tools/my_too
 
 This validates:
 
-1. schema compliance,
+1. manifest structure and runtime invariants (not live input/output schemas — those come from `tool/schema` at discovery),
 2. runtime typed parse,
 3. sandbox source consistency:
    - OCI image refs are digest-pinned (`repo@sha256:...`),
