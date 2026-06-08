@@ -22,12 +22,13 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 | `check-external-tool --path <dir>` | Validate external tool manifest against schema + runtime parser |
 | `sandbox-bind-sync --tool-dir <dir> [--rootfs <path>] [--image <tag>]` | Generate local bind dev runtime lock + sidecar bundle; can build/export rootfs from Docker |
 | `sandbox-oci-prepare --tool-dir <dir>` | Materialize OCI sidecar bundle from metadata (no registry pull required) |
-| `external-tool enable <dir>` | Discover, approve, and store an external-tool snapshot in local cache |
-| `external-tool inspect <name>` | Inspect approved and pending external-tool snapshots in local cache |
-| `external-tool refresh <name> --dir <dir>` | Re-discover an external tool and approve a changed cache snapshot |
+| `external-tool enable <dir>` | Discover, approve, and import an external-tool snapshot into repository registry |
+| `external-tool inspect <name>` | Inspect legacy local external-tool snapshots |
+| `external-tool refresh <name> --dir <dir>` | Re-discover an external tool and import an approved changed snapshot into repository registry |
 | `mcp list` | List MCP servers imported into the repository registry |
 | `mcp enable <server-id>` | Discover, approve, and store an MCP server snapshot in the repository registry |
 | `mcp server|versions|tool ...` | Inspect MCP registry snapshots, versions, and platform tool entries |
+| `snapshot-report --snapshot-cache <dir>` | Report contents of an exported snapshot cache used by offline CI |
 | `chat --agent <name>` | Interactive terminal chat with a deployed agent |
 
 ## Installation
@@ -261,6 +262,8 @@ cargo agent-platform build [names]... [options]
 | `[names]...` | *(current dir)* | Agent names to look up in `agents/` |
 | `--path <path>` | — | Explicit agent directory path (single agent only) |
 | `-o, --output <dir>` | `.` | Output directory for tar.gz files |
+| `--repository-url <url>` | `http://127.0.0.1:18080/repository` | Repository registry used to resolve approved MCP/external-tool snapshots |
+| `--snapshot-cache <dir>` | — | Explicit read-only exported snapshot cache for offline CI/test builds |
 
 ```bash
 cargo agent-platform build clickup-agent notion-agent -o ./dist/
@@ -269,12 +272,14 @@ cargo agent-platform build --path agents/clickup-agent
 
 Output: `<agent-name>-<version>.tar.gz`
 
-If the agent manifest includes MCP tools (`mcp/<server>/<tool>`), set `BAML_MCP_REGISTRY_URL` to a repository URL so the builder resolves approved registry snapshots during type generation/package assembly:
+If the agent manifest includes MCP or snapshot-backed external tools, `build` resolves approved snapshots from the repository registry and packages the exact snapshots used under `mcp/` and `external-tools/`:
 
 ```bash
-BAML_MCP_REGISTRY_URL=http://127.0.0.1:18080/repository \
-  cargo agent-platform build --path examples/agents/meteo-mcp-agent
+cargo agent-platform build --path examples/agents/meteo-mcp-agent \
+  --repository-url http://127.0.0.1:18080/repository
 ```
+
+> **Snapshot resolution (build & regen):** `--snapshot-cache` (offline, read-only) takes precedence over `--repository-url`; passing both prints a note and ignores the URL. A single registry serves both MCP and external-tool snapshots. SDK callers that build via `RuntimeTypeGenerator::new()` read the registry base from the `BAML_REGISTRY_URL` environment variable; the explicit constructors (`with_registry_url`, `with_snapshot_cache`, `with_registry_service`) ignore it and stay deterministic.
 
 ---
 
@@ -467,11 +472,12 @@ cargo agent-platform regen [names]... [--path <agent-dir>]
 |-------------------|-------------|
 | `[names]...` | Agent names to regenerate (omit for all in `agents/` + `tests/fixtures/agents/`) |
 | `--path <agent-dir>` | Explicit agent directory path (repeat flag for multiple paths) |
+| `--repository-url <url>` | Repository registry used to resolve approved MCP/external-tool snapshots |
+| `--snapshot-cache <dir>` | Explicit read-only exported snapshot cache for offline CI/test regen |
 
 Notes:
 - `--path` cannot be combined with agent names.
-- If the agent uses external tools, set `BAML_EXTERNAL_TOOLS_DIR` to one or more tool directories containing `tool-manifest.json` (colon-separated).
-- If the agent uses MCP tools, set `BAML_MCP_REGISTRY_URL` to the repository URL so generated BAML/TypeScript uses approved registry snapshots.
+- If the agent uses MCP or snapshot-backed external tools, import/approve snapshots in the repository registry and pass `--repository-url`. Offline CI may instead pass `--snapshot-cache <dir>` with exported registry snapshots.
 
 Run after adding/modifying tools or BAML schemas, and before committing.
 
@@ -545,33 +551,27 @@ cargo agent-platform external-tool <command> [options]
 
 | Subcommand | Description |
 |------------|-------------|
-| `enable <dir>` | Read `tool-manifest.json`, call `tool/describe` + `tool/schema`, prompt for approval, write approved snapshot to cache, and (with `--repository-url`) import it into the repository registry |
-| `inspect <name>` | Show approved and pending snapshots for a tool name such as `support/weather` |
-| `refresh <name> --dir <dir>` | Re-discover from a source directory, compare digests with approved cache snapshot, approve changed snapshot, and (with `--repository-url`) import into the registry |
+| `enable <dir>` | Read `tool-manifest.json`, call `tool/describe` + `tool/schema`, prompt for approval, and import the approved snapshot into the repository registry |
+| `inspect <name>` | Show legacy local snapshots for a tool name such as `support/weather` |
+| `refresh <name> --dir <dir>` | Re-discover from a source directory, compare digests, approve changed snapshot, and import into the registry |
 
 Common options:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--cache-dir <dir>` | `BAML_EXTERNAL_TOOL_CACHE_DIR`, else `./.baml-external-tool-cache` | External-tool snapshot cache root |
-| `--repository-url <url>` | none (cache-only) | When set on `enable`/`refresh`, also POST the approved snapshot to the registry at `<url>/external-tools/snapshots/import` |
+| `--cache-dir <dir>` | none | Legacy local snapshot cache root for `inspect` only |
+| `--repository-url <url>` | required for `enable`/`refresh` | POST the approved snapshot to the registry at `<url>/external-tools/snapshots/import` |
 | `--runner-token <token>` | `RUNNER_TOKEN` env | Operator token for the registry import (sent as `X-Runner-Token`) |
 | `--json` | off | Emit raw JSON for command output |
 | `--yes` | off | Skip interactive approval prompt (`enable`, `refresh`) |
 
-Cache-path CLI discovery supports process-runtime external tools. The cache write always happens; the registry import is an additional sink enabled by `--repository-url`. Sandbox discovery is a later phase.
+Registry-backed CLI discovery supports process-runtime external tools. `enable` and `refresh` write repository registry only; build/typegen reads repository registry snapshots or an explicit read-only `--snapshot-cache` CI artifact, never host env cache paths.
 
-Example cache flow:
+Example registry flow:
 
 ```bash
-# Discover and approve snapshot into local cache.
+# Discover, approve, and import into the repository registry.
 cargo agent-platform external-tool enable ./weather-tool \
-  --cache-dir ./.baml-external-tool-cache \
-  --yes
-
-# Discover, approve, and import into the repository registry (cache + registry).
-cargo agent-platform external-tool enable ./weather-tool \
-  --cache-dir ./.baml-external-tool-cache \
   --repository-url http://127.0.0.1:18080/repository \
   --runner-token "$RUNNER_TOKEN" \
   --yes
@@ -583,17 +583,10 @@ cargo agent-platform external-tool inspect support/weather \
 # Re-discover after tool implementation/schema changes.
 cargo agent-platform external-tool refresh support/weather \
   --dir ./weather-tool \
-  --cache-dir ./.baml-external-tool-cache
+  --repository-url http://127.0.0.1:18080/repository
 ```
 
 Registry endpoints (mounted under the repository router): `GET /external-tools`, `GET /external-tools/snapshots` (latest-approved, builder source), `GET /external-tools/snapshot?tool_name=&version=`, `GET /external-tools/versions?tool_name=`, `POST /external-tools/snapshots/import`, `POST /external-tools/snapshots/mark-stale?tool_name=&version=`. Active selection is the highest **approved, non-stale** version, so a pending refresh or a stale-marked version falls back to the previous approved snapshot.
-
-Builder/runner cache lookup uses `BAML_EXTERNAL_TOOL_CACHE_DIR`:
-
-```bash
-BAML_EXTERNAL_TOOL_CACHE_DIR=$PWD/.baml-external-tool-cache \
-  cargo agent-platform build --path agents/weather-agent
-```
 
 The command uses shared `baml-rt-tools` protocol/snapshot code directly; it does not shell out to a builder binary.
 
@@ -644,11 +637,10 @@ cargo agent-platform mcp server meteo
 cargo agent-platform mcp tool mcp/meteo/get_meteo
 ```
 
-Build/regen note: when an agent manifest includes `mcp/<server>/<tool>` entries, type generation resolves the server snapshot from the registry when `BAML_MCP_REGISTRY_URL` is set. Registry snapshots resolved during build are packaged under `mcp/` for runtime compatibility.
+Build/regen note: when an agent manifest includes `mcp/<server>/<tool>` entries, type generation resolves the server snapshot from the repository registry selected by `--repository-url`, or from explicit `--snapshot-cache` for offline CI. Registry snapshots resolved during build are packaged under `mcp/` for runtime compatibility.
 
 ```bash
-BAML_MCP_REGISTRY_URL=http://127.0.0.1:18080/repository \
-  cargo agent-platform build --path examples/agents/meteo-mcp-agent
+cargo agent-platform build --repository-url http://127.0.0.1:18080/repository --path examples/agents/meteo-mcp-agent
 ```
 
 The `cargo agent-platform mcp enable` command uses the builder library directly. It does not require a separate `baml-agent-builder` binary.
@@ -660,6 +652,19 @@ baml-agent-builder mcp-registry-enable <server-id> [--config <path>] [--reposito
 ```
 
 The repository registry is the source of truth. Packaged MCP snapshot files are build artifacts derived from registry versions, not an operator-managed `~/.agentium-os/mcp` cache.
+
+---
+
+### `snapshot-report`
+
+Reports approved MCP and external-tool snapshots present in an explicit exported snapshot cache for offline CI.
+
+```bash
+cargo agent-platform snapshot-report --snapshot-cache tests/fixtures/snapshots
+cargo agent-platform snapshot-report --snapshot-cache tests/fixtures/snapshots --json
+```
+
+The report is read-only. It does not discover, approve, refresh, or import snapshots.
 
 ---
 

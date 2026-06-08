@@ -13,7 +13,7 @@ For external and sandbox host tools, see [Host tool guide](host-tool-guide.md). 
 | Resolver binding snapshots to handlers | `crates/baml-rt-mcp` (`resolver`) | Loads approved cache entries, checks approvals, verifies **live operator config matches** sealed `server_config_digest`, resolves secrets, pools `McpConnection`. |
 | Operator config schema | `crates/baml-rt-tools` (`mcp_config`) | Parses and validates `mcp-servers.json` (stdio + `streamable_http`). |
 | Snapshots & digests | `crates/baml-rt-tools` (`mcp_snapshot`) | Immutable server/tool records, approval states, digest types. |
-| On-disk cache layout | `crates/baml-rt-tools` (`mcp_cache`) | `servers/<id>/`, `tools/<slug>/` under the MCP cache root used by runner and builder. |
+| Packaged snapshot layout | `crates/baml-rt-tools` (`mcp_cache`) | `servers/<id>/`, `tools/<slug>/` under `build_dir/mcp/` and package `mcp/`, populated from repository registry. |
 | Builder projection | `crates/baml-rt-tools` (`mcp_builder_catalog`) | Maps approved MCP tools to `ToolFunctionMetadata` (**same projection** the resolver uses via `project_tool`). |
 | Type generation orchestration | `crates/baml-rt-builder` (`runtime_type_gen`) | Fetches snapshots from registry, writes `<build>/mcp/`, merges MCP tools into the external-tool catalog for BAML/TS generation. |
 
@@ -27,7 +27,7 @@ Operator workflow:
 2. **Import** by connecting to that server (today: **stdio only** for import — see §5), capturing normalized tool schemas and digests into the **repository registry**.
 3. **Approve** snapshots in the registry (via `mcp enable` / builder path); only **approved** server + tool entries participate in codegen and runtime binding.
 4. **Allowlist** concrete platform tools in the agent **`manifest.json`**, for example `"mcp/meteo/get_meteo"`.
-5. **Build** with registry access (`BAML_MCP_REGISTRY_URL` or embedded registry service) so the builder materializes snapshots under **`mcp/`** in the artifact and generates BAML/TypeScript surfaces.
+5. **Build** with registry access (`--repository-url` or embedded registry service) so the builder materializes snapshots under **`mcp/`** in the artifact and generates BAML/TypeScript surfaces.
 6. **Run** with the **same shape** of `mcp-servers.json` (and resolved secrets): the resolver recomputes `server_config_digest` and **refuses** to bind if operator config drifted away from what was sealed at approval time.
 
 Agents should list **individual** `mcp/<server>/<tool>` names, not a generic dynamic gateway tool.
@@ -256,9 +256,9 @@ Reference example: `examples/agents/meteo-mcp-agent/manifest.json`.
 
 ## 8. Build process: snapshots → cache → `ToolFunctionMetadata` → BAML/TS
 
-1. **`prepare_mcp_registry_cache`** (`runtime_type_gen.rs`): From manifest `"tools"` it collects **`mcp/` server ids**, then:
+1. **`prepare_mcp_snapshots`** (`runtime_type_gen.rs`): From manifest `"tools"` it collects **`mcp/` server ids**, then:
    - **Embedded path:** pulls latest approved snapshot via `RepositoryService::get_latest_mcp_snapshot(server_id)` (publisher/builder with in-process registry).
-   - **Remote path:** **`BAML_MCP_REGISTRY_URL`** set → GET `{url}/mcp/servers/{server_id}` JSON into `build_dir/mcp/` via `mcp_cache::write_snapshot`.
+   - **Remote path:** `cargo-agent-platform --repository-url` path → GET `{url}/mcp/servers/{server_id}` JSON into `build_dir/mcp/` via `mcp_cache::write_snapshot`.
 
 2. **Catalog merge:** `build_builder_catalog_with_mcp_root(Some(build_dir.join("mcp")))` merges MCP-derived tools into the same catalog used for ordinary external/host tools (`mcp_builder_catalog::project_tool`).
 
@@ -269,14 +269,12 @@ Reference example: `examples/agents/meteo-mcp-agent/manifest.json`.
 Developer commands (when using HTTP repository):
 
 ```bash
-BAML_MCP_REGISTRY_URL=http://127.0.0.1:18080/repository \
-  cargo agent-platform build --path examples/agents/meteo-mcp-agent
+cargo agent-platform build --repository-url http://127.0.0.1:18080/repository --path examples/agents/meteo-mcp-agent
 
-BAML_MCP_REGISTRY_URL=http://127.0.0.1:18080/repository \
-  cargo agent-platform regen --path examples/agents/meteo-mcp-agent
+cargo agent-platform regen --repository-url http://127.0.0.1:18080/repository --path examples/agents/meteo-mcp-agent
 ```
 
-Advanced: **`BAML_MCP_CACHE_DIR`** points the builder/tests at an explicit MCP cache root (`mcp_builder_catalog::BUILDER_MCP_CACHE_ENV`).
+No build/typegen path reads host-local MCP cache env vars; approved snapshots come from repository registry and are projected into `build_dir/mcp/`.
 
 Demo script: **`scripts/meteo_mcp.sh`** (`runner` / `chat` / `review`).
 

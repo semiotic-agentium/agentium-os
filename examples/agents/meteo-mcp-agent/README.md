@@ -39,10 +39,18 @@ resolver wiring, and live `tools/call` over stdio.
 ## Build
 
 ```bash
-BAML_MCP_REGISTRY_URL=http://127.0.0.1:18080/repository \
+BAML_REGISTRY_URL=http://127.0.0.1:18080/repository \
   baml-agent-builder package \
     --agent-dir examples/agents/meteo-mcp-agent \
     --output /tmp/meteo-mcp-agent.tar.gz
+```
+
+With `cargo agent-platform`:
+
+```bash
+cargo agent-platform build \
+  --path examples/agents/meteo-mcp-agent \
+  --repository-url http://127.0.0.1:18080/repository
 ```
 
 The builder regenerates `baml_src/_baml_runtime.baml` and

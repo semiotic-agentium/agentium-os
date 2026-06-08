@@ -52,7 +52,7 @@ Use this sequence for a new sandboxed external tool:
 7. Publish + deploy agent
 8. Verify with chat
 
-For MCP-backed tools, use the shorter registry flow in §11: declare the MCP server config, run `cargo agent-platform mcp enable <server-id>`, allowlist concrete `mcp/<server>/<tool>` names in the agent manifest, then build/regen locally with `BAML_MCP_REGISTRY_URL` or publish through the repository-backed builder.
+For MCP-backed tools, use the shorter registry flow in §11: declare the MCP server config, run `cargo agent-platform mcp enable <server-id>`, allowlist concrete `mcp/<server>/<tool>` names in the agent manifest, then build/regen locally with `--repository-url` or publish through the repository-backed builder.
 
 ---
 
@@ -511,7 +511,7 @@ Richer hardening (runtime write-probe, copy-on-write staging, overlayfs snapshot
 
 MCP integration is registry/snapshot-first: declare servers in `mcp-servers.json`, import via
 `cargo agent-platform mcp enable`, allowlist concrete `mcp/<server>/<tool>` names in the agent
-manifest, and build with `BAML_MCP_REGISTRY_URL` set.
+manifest, and build with `--repository-url`.
 
 **Canonical reference:** [Agentium MCP support](agentium-mcp-support.md) — configuration, registry
 import, build/type generation, runtime execution, pooling, drift, and security.
