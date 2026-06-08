@@ -165,7 +165,9 @@ impl EventProducer for GrafanaAlertEventProducer {
             );
         }
 
-        let pending = store.list_pending(MAX_ITEMS_PER_POLL).await?;
+        let pending = store
+            .list_pending(&self.source_kinds, MAX_ITEMS_PER_POLL)
+            .await?;
         let pending_ids = pending
             .iter()
             .map(|item| item.ingress_id.clone())
@@ -192,8 +194,11 @@ impl EventProducer for GrafanaAlertEventProducer {
                     warn!(
                         ingress_id = %item.ingress_id,
                         error = %err,
-                        "grafana-alerts skipping malformed ingress item"
+                        "grafana-alerts dropping malformed ingress item"
                     );
+                    store
+                        .mark_delivered(std::slice::from_ref(&item.ingress_id), now_ms)
+                        .await?;
                 }
             }
         }

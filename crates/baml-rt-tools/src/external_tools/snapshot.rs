@@ -116,10 +116,12 @@ impl ExternalToolSnapshot {
                 schema.tool_name, schema.content_type
             )));
         }
+        validate_datasource_event_contract(&manifest, &schema)?;
 
         let schemas = MetadataSchemas {
             input: schema.input,
             output: schema.output,
+            events: schema.events,
         };
         let mut tool = manifest.clone().into_metadata(schemas);
         inline_coordination_baml(tool_dir, &mut tool)?;
@@ -169,6 +171,36 @@ impl ExternalToolSnapshot {
         snapshot.digests.snapshot_digest = snapshot_digest;
         Ok(snapshot)
     }
+}
+
+fn validate_datasource_event_contract(
+    manifest: &ExternalToolManifest,
+    schema: &ToolSchemaResult,
+) -> Result<()> {
+    if manifest.datasources.is_empty() {
+        return Ok(());
+    }
+    if schema.events.is_empty() {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "tool/schema for datasource tool '{}' must return at least one events[] schema",
+            manifest.name
+        )));
+    }
+
+    for datasource in &manifest.datasources {
+        if let Some(schema_version) = &datasource.schema_version
+            && !schema
+                .events
+                .iter()
+                .any(|event| &event.schema_version == schema_version)
+        {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "datasource '{}.{}' declares schema_version '{}' but tool/schema returned no matching events[] schema",
+                manifest.name, datasource.key, schema_version
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub fn compute_external_schema_digest(tool: &ExternalToolMetadata) -> Digest {
@@ -339,7 +371,11 @@ mod tests {
     use super::*;
     use crate::{
         ToolAccess,
-        external_tools::{InvocationMode, ToolDescribeResult},
+        external_tools::{
+            EventSchema, ExternalDatasourceManifest, ExternalDatasourceMode, InvocationMode,
+            ToolDescribeResult,
+            metadata::{schema_digest_from_events, schema_digest_from_io},
+        },
     };
 
     fn manifest() -> ExternalToolManifest {
@@ -351,6 +387,8 @@ mod tests {
             local_name: "echo".to_string(),
             access_level: ToolAccess::Read,
             tags: vec![],
+            event_sources: vec![],
+            datasources: vec![],
             invocation_mode: InvocationMode::SingleShot,
             session_policy: Default::default(),
             secrets: vec![],
@@ -366,6 +404,7 @@ mod tests {
         let meta = manifest().into_metadata(MetadataSchemas {
             input: input.clone(),
             output: output.clone(),
+            events: Vec::new(),
         });
         let content_digest = compute_external_schema_digest(&meta).to_string();
         ToolSchemaResult {
@@ -375,6 +414,35 @@ mod tests {
             content_digest,
             input,
             output,
+            events: Vec::new(),
+        }
+    }
+
+    fn datasource_manifest() -> ExternalToolManifest {
+        let mut manifest = manifest();
+        manifest.event_sources = vec!["echo".to_string()];
+        manifest.datasources = vec![ExternalDatasourceManifest {
+            key: "echo-webhook".to_string(),
+            kind: "webhook".to_string(),
+            mode: ExternalDatasourceMode::Raw,
+            source_kind: None,
+            schema_version: Some("echo.v1".to_string()),
+            source_key: Some("echo:local".to_string()),
+            response_status: None,
+            dedupe_header: None,
+            max_body_bytes: None,
+            timeout_ms: None,
+            methods: Vec::new(),
+            handler: None,
+        }];
+        manifest
+    }
+
+    fn echo_event_schema() -> EventSchema {
+        EventSchema {
+            schema_version: "echo.v1".to_string(),
+            name: Some("EchoEvent".to_string()),
+            schema: json!({"type": "object", "additionalProperties": true}),
         }
     }
 
@@ -399,6 +467,59 @@ mod tests {
         snap.approval.state = ApprovalState::Approved;
         snap.approval.owner = Some("ops".to_string());
         assert_eq!(before, compute_snapshot_digest(&snap).unwrap());
+    }
+
+    #[test]
+    fn normal_tool_schema_digest_stays_input_output_only() {
+        let input = json!({"type": "object", "properties": {"q": {"type": "string"}}});
+        let output = json!({"type": "object", "properties": {"ok": {"type": "boolean"}}});
+        let meta = manifest().into_metadata(MetadataSchemas {
+            input: input.clone(),
+            output: output.clone(),
+            events: vec![echo_event_schema()],
+        });
+
+        assert_eq!(
+            compute_external_schema_digest(&meta).to_string(),
+            schema_digest_from_io(&input, &output)
+        );
+    }
+
+    #[test]
+    fn datasource_schema_digest_uses_event_contract() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = datasource_manifest();
+        let events = vec![echo_event_schema()];
+        let schema = ToolSchemaResult {
+            schema_version: 1,
+            tool_name: "support/echo".to_string(),
+            content_type: "application/schema+json".to_string(),
+            content_digest: schema_digest_from_events(&events),
+            input: Value::Null,
+            output: Value::Null,
+            events: events.clone(),
+        };
+        let describe = ExternalToolDescribeSnapshot {
+            protocol_version: "1".to_string(),
+            supported_methods: vec![super::super::METHOD_SCHEMA.to_string()],
+            max_payload_bytes: None,
+            schema_digest: None,
+        };
+
+        let snapshot = ExternalToolSnapshot::from_parts(
+            tmp.path(),
+            manifest,
+            schema,
+            describe,
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.tool.schemas.events, events);
+        assert_eq!(
+            snapshot.digests.schema_digest.to_string(),
+            schema_digest_from_events(&snapshot.tool.schemas.events)
+        );
     }
 
     #[test]

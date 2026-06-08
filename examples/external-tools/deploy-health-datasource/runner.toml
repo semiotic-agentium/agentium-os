@@ -1,0 +1,20 @@
+# Runner config for the raw external-datasource demo.
+#
+# `[external_tools].dirs` puts the tool dir on the runner's allowed list, so it
+# is discovered + auto-approved at boot (same path normal dev-mode external
+# tools take — no separate `enable` step required for a configured dir).
+#
+# Paths here are resolved relative to THIS file's directory, and this file lives
+# inside the tool dir, so the entry is ".".
+[external_tools]
+dirs = ["."]
+
+# Presence of an entry = ACTIVATION. Approval (above) is necessary but not
+# sufficient: the datasource is only mounted when it is also activated here.
+# Delete this section and the webhook route disappears on next boot.
+#
+# Keyed by "<tool name>"."<datasource key>". `source_key` is omitted, so it
+# falls back to the manifest default ("deploy-health:local"); set it here to
+# override per deployment (prod vs staging) without re-approving the snapshot.
+[external_datasources."examples/deploy-health-datasource"."events"]
+# source_key = "deploy-health:prod"

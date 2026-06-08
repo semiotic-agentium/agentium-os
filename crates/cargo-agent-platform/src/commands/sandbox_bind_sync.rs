@@ -350,6 +350,7 @@ fn write_runtime_sidecars(manifest_path: &Path, rootfs: &Path) -> Result<()> {
     let metadata = manifest.into_metadata(MetadataSchemas {
         input: serde_json::json!({"type": "object"}),
         output: serde_json::json!({"type": "object"}),
+        events: Vec::new(),
     });
     let bundle = render_sidecar_bundle(&metadata)
         .map_err(|e| anyhow!("failed to render sidecar bundle: {e}"))?;

@@ -58,6 +58,7 @@ pub fn run(args: SandboxOciPrepareRunArgs<'_>) -> Result<()> {
     let metadata = manifest.into_metadata(MetadataSchemas {
         input: serde_json::json!({"type": "object"}),
         output: serde_json::json!({"type": "object"}),
+        events: Vec::new(),
     });
 
     let runtime = metadata.runtime.as_ref().ok_or_else(|| {

@@ -28,6 +28,8 @@ fn snapshot(name: &str, description: &str, state: ApprovalState) -> ExternalTool
         local_name: local_name.to_string(),
         access_level: ToolAccess::Read,
         tags: vec![],
+        event_sources: vec![],
+        datasources: vec![],
         invocation_mode: InvocationMode::SingleShot,
         session_policy: Default::default(),
         secrets: vec!["API_KEY".to_string()],
@@ -42,6 +44,7 @@ fn snapshot(name: &str, description: &str, state: ApprovalState) -> ExternalTool
     let metadata = manifest.clone().into_metadata(MetadataSchemas {
         input: input.clone(),
         output: output.clone(),
+        events: Vec::new(),
     });
     let schema = ToolSchemaResult {
         schema_version: 1,
@@ -50,6 +53,7 @@ fn snapshot(name: &str, description: &str, state: ApprovalState) -> ExternalTool
         content_digest: compute_external_schema_digest(&metadata).to_string(),
         input,
         output,
+        events: Vec::new(),
     };
     let describe = ExternalToolDescribeSnapshot {
         protocol_version: "1".to_string(),

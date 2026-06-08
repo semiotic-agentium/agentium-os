@@ -153,6 +153,8 @@ mod tests {
             local_name: local_name.to_string(),
             access_level: ToolAccess::Read,
             tags: vec!["snapshot".to_string()],
+            event_sources: vec![],
+            datasources: vec![],
             invocation_mode: crate::external_tools::InvocationMode::SingleShot,
             session_policy: Default::default(),
             secrets: vec![],
@@ -171,6 +173,7 @@ mod tests {
         let metadata = manifest.clone().into_metadata(MetadataSchemas {
             input: input.clone(),
             output: output.clone(),
+            events: Vec::new(),
         });
         let schema = ToolSchemaResult {
             schema_version: 1,
@@ -180,6 +183,7 @@ mod tests {
                 .to_string(),
             input,
             output,
+            events: Vec::new(),
         };
         let describe = ExternalToolDescribeSnapshot {
             protocol_version: "1".to_string(),

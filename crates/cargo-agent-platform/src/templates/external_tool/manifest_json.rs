@@ -54,6 +54,8 @@ pub fn build_manifest(ctx: &ScaffoldContext<'_>) -> ExternalToolManifest {
             ctx.name.to_string(),
             "external".to_string(),
         ],
+        event_sources: vec![],
+        datasources: vec![],
         invocation_mode: match ctx.invocation_mode {
             InvocationMode::SingleShot => RtInvocationMode::SingleShot,
             InvocationMode::Session => RtInvocationMode::Session,

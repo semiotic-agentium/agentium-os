@@ -207,7 +207,9 @@ impl EventProducer for SlackInboxEventProducer {
             );
         }
 
-        let pending_items = store.list_pending(MAX_SLACK_INBOX_ITEMS_PER_POLL).await?;
+        let pending_items = store
+            .list_pending(&self.source_kinds, MAX_SLACK_INBOX_ITEMS_PER_POLL)
+            .await?;
         let pending_ids = pending_items
             .iter()
             .map(|item| item.ingress_id.clone())
@@ -426,6 +428,7 @@ mod tests {
         );
         let ingress_item = IngressItem {
             ingress_id: IngressId::parse("support/slack:test-inbox-001").expect("valid ingress id"),
+            source_kind: slack_source_kind().expect("valid slack source kind"),
             source_key: source_key.clone(),
             payload_json: serde_json::to_string(&normalized_batch).expect("serialize batch"),
             enqueued_at_unix_ms: 1_700_000_100_000,
@@ -503,6 +506,7 @@ mod tests {
         );
         let ingress_item = IngressItem {
             ingress_id: IngressId::parse("support/slack:test-inbox-001").expect("valid ingress id"),
+            source_kind: slack_source_kind().expect("valid slack source kind"),
             source_key: source_key.clone(),
             payload_json: serde_json::to_string(&normalized_batch).expect("serialize batch"),
             enqueued_at_unix_ms: 1_700_000_100_000,

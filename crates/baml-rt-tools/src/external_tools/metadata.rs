@@ -14,12 +14,12 @@
 
 use std::{fs, path::Path};
 
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{BamlRtError, EventSourceKind, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::{protocol::PROTOCOL_VERSION, runtime::ToolRuntime};
+use super::{EventSchema, protocol::PROTOCOL_VERSION, runtime::ToolRuntime};
 use crate::{
     ToolName,
     tools::{
@@ -53,8 +53,14 @@ pub struct ExternalToolMetadata {
     /// FSM scheduling policy. Defaults to `Strict`.
     #[serde(default)]
     pub session_policy: ExternalSessionPolicy,
-    /// Input and output JSON Schemas.
+    /// Input/output JSON Schemas for callable tools, plus event contracts for datasources.
     pub schemas: MetadataSchemas,
+    /// Event kinds this tool may produce through datasource entries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_sources: Vec<String>,
+    /// Operational datasource declarations from the authored manifest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub datasources: Vec<ExternalDatasourceManifest>,
     /// Secret names the runtime must resolve for this tool.
     #[serde(default)]
     pub secrets: Vec<String>,
@@ -122,11 +128,14 @@ impl ExternalToolMetadata {
             local_name: local_name.into(),
             access_level,
             tags: Vec::new(),
+            event_sources: Vec::new(),
+            datasources: Vec::new(),
             invocation_mode: InvocationMode::SingleShot,
             session_policy: ExternalSessionPolicy::default(),
             schemas: MetadataSchemas {
                 input: input_schema,
                 output: output_schema,
+                events: Vec::new(),
             },
             secrets: Vec::new(),
             secret_scope: ExternalSecretScope::default(),
@@ -199,11 +208,47 @@ impl ExternalSessionPolicy {
     }
 }
 
-/// Input/output JSON Schemas carried in the metadata file.
+/// Input/output JSON Schemas plus datasource event contracts carried in snapshots.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetadataSchemas {
+    #[serde(default)]
     pub input: Value,
+    #[serde(default)]
     pub output: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<EventSchema>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalDatasourceMode {
+    Raw,
+    Handler,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalDatasourceManifest {
+    pub key: String,
+    pub kind: String,
+    pub mode: ExternalDatasourceMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedupe_header: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_body_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub methods: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handler: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,6 +261,10 @@ pub struct ExternalToolManifest {
     pub access_level: ToolAccess,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_sources: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub datasources: Vec<ExternalDatasourceManifest>,
     pub invocation_mode: InvocationMode,
     #[serde(default)]
     pub session_policy: ExternalSessionPolicy,
@@ -244,6 +293,8 @@ impl ExternalToolManifest {
             access_level: self.access_level,
             tags: self.tags,
             invocation_mode: self.invocation_mode,
+            event_sources: self.event_sources,
+            datasources: self.datasources,
             session_policy: self.session_policy,
             schemas,
             secrets: self.secrets,
@@ -267,6 +318,8 @@ impl From<ExternalToolMetadata> for ExternalToolManifest {
             local_name: meta.local_name,
             access_level: meta.access_level,
             tags: meta.tags,
+            event_sources: meta.event_sources,
+            datasources: meta.datasources,
             invocation_mode: meta.invocation_mode,
             session_policy: meta.session_policy,
             secrets: meta.secrets,
@@ -277,6 +330,20 @@ impl From<ExternalToolMetadata> for ExternalToolManifest {
             coordination: meta.coordination,
         }
     }
+}
+
+fn parse_event_sources(tool_name: &str, values: &[String]) -> Result<Vec<EventSourceKind>> {
+    values
+        .iter()
+        .map(|value| {
+            EventSourceKind::parse(value).ok_or_else(|| {
+                BamlRtError::InvalidArgument(format!(
+                    "external tool '{}' declares invalid event source kind '{}'",
+                    tool_name, value
+                ))
+            })
+        })
+        .collect()
 }
 
 /// Read the tool manifest from `<dir>/tool-manifest.json`.
@@ -410,7 +477,7 @@ pub(crate) fn build_tool_metadata(
         digest: None,
         projection_semantics: None,
         session_policy: meta.session_policy.to_session_policy(),
-        event_sources: Vec::new(),
+        event_sources: parse_event_sources(&meta.name, &meta.event_sources)?,
         coordination_baml,
     })
 }
@@ -420,7 +487,11 @@ pub(crate) fn build_tool_metadata(
 /// Both runner and tool author must compute this identically for
 /// describe-mismatch detection to work.
 pub(crate) fn metadata_schema_digest(meta: &ExternalToolMetadata) -> String {
-    schema_digest_from_io(&meta.schemas.input, &meta.schemas.output)
+    if meta.datasources.is_empty() {
+        schema_digest_from_io(&meta.schemas.input, &meta.schemas.output)
+    } else {
+        schema_digest_from_events(&meta.schemas.events)
+    }
 }
 
 /// JCS-canonical SHA-256 over a raw `{input, output}` schema pair.
@@ -437,7 +508,19 @@ pub(crate) fn schema_digest_from_io(
         "input": input,
         "output": output,
     });
-    let canonical = serde_jcs::to_vec(&payload)
+    digest_canonical_payload(&payload)
+}
+
+/// JCS-canonical SHA-256 over datasource event contracts.
+pub(crate) fn schema_digest_from_events(events: &[EventSchema]) -> String {
+    let payload = serde_json::json!({
+        "events": events,
+    });
+    digest_canonical_payload(&payload)
+}
+
+fn digest_canonical_payload(payload: &serde_json::Value) -> String {
+    let canonical = serde_jcs::to_vec(payload)
         .expect("serializing canonical tool schema payload should not fail");
     let mut hasher = Sha256::new();
     hasher.update(&canonical);

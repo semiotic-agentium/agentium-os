@@ -79,38 +79,8 @@ impl ExternalRegistryResolver {
         sandbox: Option<SandboxRuntimeWiring>,
         recorder: Option<ExternalLifecycleRecorder>,
     ) -> Result<Self> {
-        let mut snapshots = Vec::new();
-        for dir in dirs {
-            let mut manifest = read_external_manifest(dir)?;
-            normalize_process_runtime(dir, &mut manifest);
-            let tool_name = ToolName::parse(&manifest.name)?;
-            let manifest_digest = compute_manifest_digest(&manifest);
-            let runtime_digest = compute_runtime_digest(manifest.runtime.as_ref())?;
-            let snapshot_path =
-                external_tool_cache::approved_snapshot_path(snapshot_root, &manifest.name)?;
-
-            let snapshot = if snapshot_path.is_file() {
-                let existing = external_tool_cache::read_snapshot(&snapshot_path)?;
-                if existing.tool.name == manifest.name
-                    && existing.digests.manifest_digest == manifest_digest
-                    && existing.digests.runtime_digest == runtime_digest
-                    && existing.approval.state.is_approved()
-                {
-                    tracing::info!(tool = %tool_name, dir = %dir.display(), snapshot = %existing.snapshot_digest, "using approved external-tool snapshot from allowed dir");
-                    existing
-                } else {
-                    tracing::info!(tool = %tool_name, dir = %dir.display(), "approved external-tool snapshot missing or stale; rediscovering");
-                    discover_and_approve(dir, sandbox.as_ref()).await?
-                }
-            } else {
-                tracing::info!(tool = %tool_name, dir = %dir.display(), "approved external-tool snapshot missing; discovering");
-                discover_and_approve(dir, sandbox.as_ref()).await?
-            };
-
-            external_tool_cache::write_approved_snapshot(snapshot_root, &snapshot)?;
-            snapshots.push(snapshot);
-        }
-        tracing::info!(count = snapshots.len(), root = %snapshot_root.display(), "loaded allowed external tool dirs");
+        let snapshots =
+            load_approved_snapshots_from_dirs(dirs, snapshot_root, sandbox.as_ref()).await?;
         Self::from_snapshots(snapshots, sandbox, recorder)
     }
 
@@ -155,6 +125,65 @@ impl ExternalToolResolver for ExternalRegistryResolver {
         };
         Ok(Some((entry.metadata.clone(), entry.handler.clone())))
     }
+}
+
+/// Load approved external-tool snapshots from trusted source directories.
+///
+/// Each directory must contain `tool-manifest.json`. If an approved snapshot
+/// with matching manifest/runtime digests already exists under `snapshot_root`,
+/// it is reused without discovery; otherwise the tool is discovered, approved,
+/// and persisted. This is the shared trust path for both registry-backed tool
+/// resolution ([`ExternalRegistryResolver::from_allowed_dirs`]) and runner-level
+/// external datasources — neither should call `discover_snapshot` directly.
+pub async fn load_approved_snapshots_from_dirs(
+    dirs: &[PathBuf],
+    snapshot_root: &Path,
+    sandbox: Option<&SandboxRuntimeWiring>,
+) -> Result<Vec<ExternalToolSnapshot>> {
+    let mut snapshots = Vec::new();
+    for dir in dirs {
+        // Resolve to an absolute path so `normalize_process_runtime` produces an
+        // absolute `command[0]`. A relative program path combined with the
+        // child's working dir would otherwise be re-anchored at spawn time
+        // (`<dir>/<dir>/cmd`), which fails for process-runtime tools.
+        let dir = std::fs::canonicalize(dir).map_err(|err| {
+            BamlRtError::InvalidArgument(format!(
+                "external tool dir '{}' could not be resolved: {err}",
+                dir.display()
+            ))
+        })?;
+        let dir = dir.as_path();
+        let mut manifest = read_external_manifest(dir)?;
+        normalize_process_runtime(dir, &mut manifest);
+        let tool_name = ToolName::parse(&manifest.name)?;
+        let manifest_digest = compute_manifest_digest(&manifest);
+        let runtime_digest = compute_runtime_digest(manifest.runtime.as_ref())?;
+        let snapshot_path =
+            external_tool_cache::approved_snapshot_path(snapshot_root, &manifest.name)?;
+
+        let snapshot = if snapshot_path.is_file() {
+            let existing = external_tool_cache::read_snapshot(&snapshot_path)?;
+            if existing.tool.name == manifest.name
+                && existing.digests.manifest_digest == manifest_digest
+                && existing.digests.runtime_digest == runtime_digest
+                && existing.approval.state.is_approved()
+            {
+                tracing::info!(tool = %tool_name, dir = %dir.display(), snapshot = %existing.snapshot_digest, "using approved external-tool snapshot from allowed dir");
+                existing
+            } else {
+                tracing::info!(tool = %tool_name, dir = %dir.display(), "approved external-tool snapshot missing or stale; rediscovering");
+                discover_and_approve(dir, sandbox).await?
+            }
+        } else {
+            tracing::info!(tool = %tool_name, dir = %dir.display(), "approved external-tool snapshot missing; discovering");
+            discover_and_approve(dir, sandbox).await?
+        };
+
+        external_tool_cache::write_approved_snapshot(snapshot_root, &snapshot)?;
+        snapshots.push(snapshot);
+    }
+    tracing::info!(count = snapshots.len(), root = %snapshot_root.display(), "loaded allowed external tool dirs");
+    Ok(snapshots)
 }
 
 async fn discover_and_approve(
@@ -268,6 +297,8 @@ mod tests {
             local_name: local_name.to_string(),
             access_level: ToolAccess::Read,
             tags: vec!["registry-test".to_string()],
+            event_sources: vec![],
+            datasources: vec![],
             invocation_mode: mode,
             session_policy: Default::default(),
             secrets: vec![],
@@ -290,6 +321,7 @@ mod tests {
         let metadata = manifest.clone().into_metadata(MetadataSchemas {
             input: input.clone(),
             output: output.clone(),
+            events: Vec::new(),
         });
         let schema = ToolSchemaResult {
             schema_version: 1,
@@ -299,6 +331,7 @@ mod tests {
                 .to_string(),
             input,
             output,
+            events: Vec::new(),
         };
         let describe = ExternalToolDescribeSnapshot {
             protocol_version: "1".to_string(),

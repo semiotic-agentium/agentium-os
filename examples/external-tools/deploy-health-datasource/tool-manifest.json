@@ -1,0 +1,36 @@
+{
+  "tool_abi_version": "1",
+  "name": "examples/deploy-health-datasource",
+  "description": "Raw external datasource: deploy-health webhook events become messages[0] in-process.",
+  "bundle": "examples",
+  "local_name": "deploy-health-datasource",
+  "access_level": "read",
+  "tags": [
+    "examples",
+    "datasource",
+    "external",
+    "webhook"
+  ],
+  "event_sources": [
+    "deploy-health"
+  ],
+  "datasources": [
+    {
+      "key": "events",
+      "kind": "webhook",
+      "mode": "raw",
+      "schema_version": "deploy-health.v1",
+      "source_key": "deploy-health:local"
+    }
+  ],
+  "invocation_mode": "single_shot",
+  "session_policy": "strict",
+  "secrets": [],
+  "capabilities": {},
+  "runtime": {
+    "kind": "process",
+    "command": [
+      "main.py"
+    ]
+  }
+}
