@@ -131,7 +131,7 @@ jobs:
           - JSON object mapping relative file paths to full file contents for ONLY changed files, e.g.
             {"CLAUDE.md":"...", "docs/reference/agent-runner.md":"..."}
           - If no updates needed, output exactly: NO_CHANGES_NEEDED
-          - Do not wrap JSON in markdown fences.
+          - Output ONLY that JSON object or NO_CHANGES_NEEDED — no preamble, no markdown fences, no commentary.
           SYSPROMPT
 
           {
@@ -176,6 +176,7 @@ jobs:
           fi
 
           RESPONSE=$(jq -r '.choices[0].message.content // empty' /tmp/api_response.json)
+          FINISH_REASON=$(jq -r '.choices[0].finish_reason // empty' /tmp/api_response.json)
 
           if [ -z "$RESPONSE" ]; then
             echo "::error::Empty or malformed API response"
@@ -183,16 +184,25 @@ jobs:
             exit 1
           fi
 
-          if [ "$RESPONSE" = "NO_CHANGES_NEEDED" ]; then
-            echo "::notice::No doc changes needed for this merge"
-            exit 0
+          if [ "$FINISH_REASON" = "length" ]; then
+            echo "::error::Model response truncated (finish_reason=length); narrow the diff or raise max_tokens"
+            printf '%s\n' "$RESPONSE" | tail -c 2000
+            exit 1
           fi
 
-          if ! printf '%s' "$RESPONSE" | jq -e 'type == "object"' >/dev/null 2>&1; then
+          if ! PARSED=$(printf '%s' "$RESPONSE" | python3 scripts/ci/parse-doc-sync-response.py); then
             echo "::error::Expected JSON object or NO_CHANGES_NEEDED"
             printf '%s\n' "$RESPONSE" | head -c 2000
             exit 1
           fi
+
+          if [ "$PARSED" = "NO_CHANGES_NEEDED" ]; then
+            echo "::notice::No doc changes needed for this merge"
+            exit 0
+          fi
+
+          printf '%s' "$PARSED" > /tmp/doc_sync_parsed.json
+          RESPONSE="$PARSED"
 
           CHANGED=0
           while IFS= read -r path; do
