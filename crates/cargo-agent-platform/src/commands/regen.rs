@@ -19,13 +19,26 @@ use crate::{generated_baml::sync_generated_baml_files, workspace::find_workspace
 /// If `paths` is provided, regenerates exactly those agent directories.
 /// Otherwise, if `names` is provided, regenerates matching agents under workspace roots.
 /// With neither `paths` nor `names`, regenerates all discovered agents.
-pub fn run(names: &[String], paths: &[String]) -> Result<()> {
+pub fn run(
+    names: &[String],
+    paths: &[String],
+    repository_url: &str,
+    snapshot_cache: Option<&str>,
+) -> Result<()> {
     if !paths.is_empty() && !names.is_empty() {
         bail!("--path cannot be combined with agent names");
     }
 
+    if let Some(cache) = snapshot_cache {
+        println!(
+            "{} Resolving snapshots from offline cache {} (registry not contacted).",
+            style("Note:").yellow(),
+            style(cache).dim()
+        );
+    }
+
     if !paths.is_empty() {
-        return run_explicit_paths(paths);
+        return run_explicit_paths(paths, repository_url, snapshot_cache);
     }
 
     let workspace_root = find_workspace_root()?;
@@ -101,7 +114,7 @@ pub fn run(names: &[String], paths: &[String]) -> Result<()> {
             let mut stdout = std::io::stdout();
             let _ = std::io::Write::flush(&mut stdout);
 
-            match regen_agent(&entry.path()) {
+            match regen_agent(&entry.path(), repository_url, snapshot_cache) {
                 Ok(()) => {
                     println!("{}", style("ok").green());
                     total_count += 1;
@@ -143,7 +156,11 @@ pub fn run(names: &[String], paths: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn run_explicit_paths(paths: &[String]) -> Result<()> {
+fn run_explicit_paths(
+    paths: &[String],
+    repository_url: &str,
+    snapshot_cache: Option<&str>,
+) -> Result<()> {
     let mut unique_paths = HashSet::new();
     for raw in paths {
         let canonical = PathBuf::from(raw)
@@ -180,7 +197,7 @@ fn run_explicit_paths(paths: &[String]) -> Result<()> {
         let mut stdout = std::io::stdout();
         let _ = std::io::Write::flush(&mut stdout);
 
-        match regen_agent(path) {
+        match regen_agent(path, repository_url, snapshot_cache) {
             Ok(()) => {
                 println!("{}", style("ok").green());
                 total_count += 1;
@@ -224,7 +241,7 @@ fn validate_agent_dir(path: &Path) -> Result<()> {
 }
 
 /// Regenerate types for a single agent.
-fn regen_agent(root: &Path) -> Result<()> {
+fn regen_agent(root: &Path, repository_url: &str, snapshot_cache: Option<&str>) -> Result<()> {
     use baml_rt_builder::builder::{
         AgentDir, BuildDir, RuntimeTypeGenerator, compiler::write_canonical_tsconfig,
         traits::TypeGenerator,
@@ -238,7 +255,10 @@ fn regen_agent(root: &Path) -> Result<()> {
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let generator = RuntimeTypeGenerator::new();
+        let generator = match snapshot_cache {
+            Some(root) => RuntimeTypeGenerator::with_snapshot_cache(root),
+            None => RuntimeTypeGenerator::with_registry_url(repository_url),
+        };
         // generate() writes src/baml-runtime.d.ts directly into the agent's source tree
         generator
             .generate(&agent_dir, &build_dir)
@@ -255,23 +275,8 @@ fn regen_agent(root: &Path) -> Result<()> {
                     s
                 };
                 if msg.contains("Tool metadata missing for:") {
-                    let external_dir = std::env::var("BAML_EXTERNAL_TOOLS_DIR")
-                        .ok()
-                        .filter(|v| !v.trim().is_empty())
-                        .unwrap_or_else(|| "(not set)".to_string());
-                    let mcp_registry_url = std::env::var("BAML_MCP_REGISTRY_URL")
-                        .ok()
-                        .filter(|v| !v.trim().is_empty())
-                        .unwrap_or_else(|| "(not set)".to_string());
-                    let mcp_hint = if msg.contains("mcp/") {
-                        format!(
-                            "\nHint: missing tools include MCP tools. Set BAML_MCP_REGISTRY_URL to the runner repository URL that has the approved MCP server snapshot, e.g. BAML_MCP_REGISTRY_URL=http://127.0.0.1:18080/repository (current: {mcp_registry_url})."
-                        )
-                    } else {
-                        String::new()
-                    };
                     anyhow::anyhow!(
-                        "Type generation failed: {msg}{mcp_hint}\nHint: if the agent uses external tools, set BAML_EXTERNAL_TOOLS_DIR to the external tool directory (current: {external_dir}).\nHint: run the workspace binary to avoid stale installed subcommands: cargo run -p cargo-agent-platform -- regen <agent>."
+                        "Type generation failed: {msg}\nHint: import/approve required MCP or external-tool snapshots in repository registry, then run with --repository-url {repository_url}.\nHint: run the workspace binary to avoid stale installed subcommands: cargo run -p cargo-agent-platform -- regen <agent>."
                     )
                 } else {
                     anyhow::anyhow!("Type generation failed: {msg}")

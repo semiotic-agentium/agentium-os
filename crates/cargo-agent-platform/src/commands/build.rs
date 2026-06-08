@@ -25,10 +25,24 @@ use crate::workspace::find_workspace_root;
 /// 1. `--path <path>` if provided (only valid when names is empty or single)
 /// 2. `<names>` looks in `agents/<name>/` for each
 /// 3. Current directory if neither provided
-pub fn run(names: &[String], path: Option<&str>, output: Option<&str>) -> Result<()> {
+pub fn run(
+    names: &[String],
+    path: Option<&str>,
+    output: Option<&str>,
+    repository_url: &str,
+    snapshot_cache: Option<&str>,
+) -> Result<()> {
     // If --path is used with multiple names, that's an error
     if path.is_some() && names.len() > 1 {
         bail!("--path cannot be used with multiple agent names");
+    }
+
+    if let Some(cache) = snapshot_cache {
+        println!(
+            "{} Resolving snapshots from offline cache {} (registry not contacted).",
+            style("Note:").yellow(),
+            style(cache).dim()
+        );
     }
 
     // Collect agents to build
@@ -68,7 +82,9 @@ pub fn run(names: &[String], path: Option<&str>, output: Option<&str>) -> Result
         println!("      Source: {}", style(agent_dir.display()).dim());
         println!("      Output: {}", style(output_path.display()).dim());
 
-        rt.block_on(async { build_agent(agent_dir, &output_path).await })?;
+        rt.block_on(async {
+            build_agent(agent_dir, &output_path, repository_url, snapshot_cache).await
+        })?;
 
         println!();
         println!("{}", style("Agent packaged successfully!").green().bold());
@@ -153,7 +169,12 @@ fn read_manifest(agent_dir: &Path) -> Result<AgentManifest> {
 }
 
 /// Build the agent package using the builder service.
-async fn build_agent(agent_dir: &Path, output: &Path) -> Result<()> {
+async fn build_agent(
+    agent_dir: &Path,
+    output: &Path,
+    repository_url: &str,
+    snapshot_cache: Option<&str>,
+) -> Result<()> {
     let agent_dir = AgentDir::new(agent_dir.to_path_buf()).context("Failed to create AgentDir")?;
     let build_dir = BuildDir::new().context("Failed to create build directory")?;
 
@@ -168,7 +189,10 @@ async fn build_agent(agent_dir: &Path, output: &Path) -> Result<()> {
 
     // Initialize services
     let ts_compiler = TscCompiler::new();
-    let type_generator = RuntimeTypeGenerator::new();
+    let type_generator = match snapshot_cache {
+        Some(root) => RuntimeTypeGenerator::with_snapshot_cache(root),
+        None => RuntimeTypeGenerator::with_registry_url(repository_url),
+    };
     let packager = StdPackager::new();
 
     let builder_service = BuilderService::new(ts_compiler, type_generator, packager);
