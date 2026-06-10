@@ -25,7 +25,6 @@ use super::{
         compute_manifest_digest, compute_runtime_digest, now_snapshot_timestamp,
         validate_external_tool_snapshot,
     },
-    snapshot_catalog::BUILDER_EXTERNAL_TOOL_CACHE_ENV,
     stdio::StdioSubprocessInvoker,
 };
 use crate::{
@@ -47,15 +46,6 @@ struct RegistryToolEntry {
 impl ExternalRegistryResolver {
     pub fn from_cache_root(root: &Path) -> Result<Self> {
         Self::from_cache_root_with_sandbox(root, None, None)
-    }
-
-    pub fn from_env() -> Result<Option<Self>> {
-        match std::env::var(BUILDER_EXTERNAL_TOOL_CACHE_ENV) {
-            Ok(value) if !value.trim().is_empty() => {
-                Self::from_cache_root(Path::new(&value)).map(Some)
-            }
-            _ => Ok(None),
-        }
     }
 
     pub fn from_cache_root_with_sandbox(

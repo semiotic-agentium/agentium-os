@@ -4,7 +4,7 @@
 
 //! Build-time catalog source for approved external-tool snapshots.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use baml_rt_core::{BamlRtError, Result};
 
@@ -14,9 +14,6 @@ use super::{
 use crate::{
     ToolName, external_tool_cache, tool_catalog::ToolCatalog, tools::ToolFunctionMetadata,
 };
-
-/// Env var that points builder/runner at an external-tool snapshot cache root.
-pub const BUILDER_EXTERNAL_TOOL_CACHE_ENV: &str = "BAML_EXTERNAL_TOOL_CACHE_DIR";
 
 /// Validate and project a set of approved external-tool snapshots into builder
 /// tool metadata. Non-approved snapshots are skipped; duplicate tool names are a
@@ -62,15 +59,6 @@ impl ExternalToolSnapshotCatalog {
         let snapshots = external_tool_cache::read_approved_snapshots(root)?;
         let tools = project_approved_snapshots(snapshots, &root.display().to_string())?;
         Ok(Self { tools })
-    }
-
-    pub fn from_env() -> Result<Option<Self>> {
-        match std::env::var(BUILDER_EXTERNAL_TOOL_CACHE_ENV) {
-            Ok(value) if !value.trim().is_empty() => {
-                Self::from_root(&PathBuf::from(value)).map(Some)
-            }
-            _ => Ok(None),
-        }
     }
 
     pub fn len(&self) -> usize {

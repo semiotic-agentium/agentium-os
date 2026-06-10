@@ -6,7 +6,6 @@ use std::{fs, path::Path};
 
 use baml_rt_core::{BamlRtError, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use super::{
     metadata::{ExternalToolMetadata, InvocationMode},
@@ -40,16 +39,6 @@ pub struct ToolManifestSidecar {
     pub tool_name: String,
     pub protocol_version: String,
     pub supported_methods: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolSchemaSidecar {
-    pub schema_version: u64,
-    pub tool_name: String,
-    pub content_type: String,
-    pub content_digest: String,
-    pub input: Value,
-    pub output: Value,
 }
 
 pub fn render_sidecar_bundle(meta: &ExternalToolMetadata) -> Result<ToolSidecarBundle> {

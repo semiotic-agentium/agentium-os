@@ -214,6 +214,14 @@ enum Commands {
         /// Output directory for tar.gz files (default: current directory)
         #[arg(short, long)]
         output: Option<String>,
+
+        /// Repository URL used to resolve approved MCP/external-tool snapshots
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
+        repository_url: String,
+
+        /// Explicit read-only snapshot cache for offline CI/test builds
+        #[arg(long)]
+        snapshot_cache: Option<String>,
     },
 
     /// Publish an agent source bundle to repository
@@ -316,6 +324,14 @@ enum Commands {
         /// Explicit agent directory path (repeat for multiple paths)
         #[arg(long = "path", value_name = "AGENT_DIR")]
         paths: Vec<String>,
+
+        /// Repository URL used to resolve approved MCP/external-tool snapshots
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
+        repository_url: String,
+
+        /// Explicit read-only snapshot cache for offline CI/test regen
+        #[arg(long)]
+        snapshot_cache: Option<String>,
     },
 
     /// Validate standalone external tool manifest against runtime parser
@@ -395,6 +411,17 @@ enum Commands {
         json: bool,
     },
 
+    /// Report contents of an explicit exported snapshot cache for offline CI
+    SnapshotReport {
+        /// Snapshot cache root (may contain mcp/ and external-tools/)
+        #[arg(long)]
+        snapshot_cache: String,
+
+        /// Emit raw JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Validate workspace integrity
     Doctor {
         /// Exit non-zero on any issue (for CI)
@@ -440,14 +467,11 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum ExternalToolCommands {
-    /// Discover, approve, and store an external-tool snapshot in cache.
+    /// Discover, approve, and import an external-tool snapshot into registry.
     Enable {
         /// Path to external tool directory (contains tool-manifest.json).
         dir: String,
-        /// Snapshot cache root. Falls back to BAML_EXTERNAL_TOOL_CACHE_DIR.
-        #[arg(long)]
-        cache_dir: Option<String>,
-        /// Repository URL to import the approved snapshot into (optional).
+        /// Repository URL to import the approved snapshot into.
         #[arg(long)]
         repository_url: Option<String>,
         /// Operator token for registry import. Falls back to RUNNER_TOKEN.
@@ -470,7 +494,7 @@ enum ExternalToolCommands {
     Inspect {
         /// Tool name, e.g. support/weather.
         name: String,
-        /// Snapshot cache root. Falls back to BAML_EXTERNAL_TOOL_CACHE_DIR.
+        /// Legacy local snapshot cache root for inspect/offline workflows.
         #[arg(long)]
         cache_dir: Option<String>,
         /// Emit raw JSON.
@@ -484,10 +508,7 @@ enum ExternalToolCommands {
         /// Path to external tool directory (contains tool-manifest.json).
         #[arg(long)]
         dir: String,
-        /// Snapshot cache root. Falls back to BAML_EXTERNAL_TOOL_CACHE_DIR.
-        #[arg(long)]
-        cache_dir: Option<String>,
-        /// Repository URL to import the approved snapshot into (optional).
+        /// Repository URL to import the approved snapshot into.
         #[arg(long)]
         repository_url: Option<String>,
         /// Operator token for registry import. Falls back to RUNNER_TOKEN.
@@ -858,7 +879,15 @@ fn main() -> anyhow::Result<()> {
             names,
             path,
             output,
-        } => commands::build::run(&names, path.as_deref(), output.as_deref()),
+            repository_url,
+            snapshot_cache,
+        } => commands::build::run(
+            &names,
+            path.as_deref(),
+            output.as_deref(),
+            &repository_url,
+            snapshot_cache.as_deref(),
+        ),
 
         Commands::Publish {
             agent_dir,
@@ -903,7 +932,12 @@ fn main() -> anyhow::Result<()> {
 
         Commands::ListDeployedInstances { url } => commands::list_deployed_instances::run(&url),
 
-        Commands::Regen { names, paths } => commands::regen::run(&names, &paths),
+        Commands::Regen {
+            names,
+            paths,
+            repository_url,
+            snapshot_cache,
+        } => commands::regen::run(&names, &paths, &repository_url, snapshot_cache.as_deref()),
 
         Commands::CheckExternalTool { path } => commands::check_external_tool::run(&path),
 
@@ -945,6 +979,11 @@ fn main() -> anyhow::Result<()> {
             },
         ),
 
+        Commands::SnapshotReport {
+            snapshot_cache,
+            json,
+        } => commands::snapshot_report::run(&snapshot_cache, json),
+
         Commands::Doctor {
             ci,
             warn_missing_catalog,
@@ -953,7 +992,6 @@ fn main() -> anyhow::Result<()> {
         Commands::ExternalTool { command } => match command {
             ExternalToolCommands::Enable {
                 dir,
-                cache_dir,
                 repository_url,
                 runner_token,
                 sandbox_rootfs,
@@ -962,7 +1000,6 @@ fn main() -> anyhow::Result<()> {
                 json,
             } => commands::external_tool::enable(commands::external_tool::EnableParams {
                 dir: &dir,
-                cache_dir: cache_dir.as_deref(),
                 repository_url: repository_url.as_deref(),
                 runner_token: runner_token.as_deref(),
                 sandbox_rootfs: sandbox_rootfs.as_deref(),
@@ -978,7 +1015,6 @@ fn main() -> anyhow::Result<()> {
             ExternalToolCommands::Refresh {
                 name,
                 dir,
-                cache_dir,
                 repository_url,
                 runner_token,
                 yes,
@@ -986,7 +1022,6 @@ fn main() -> anyhow::Result<()> {
             } => commands::external_tool::refresh(
                 &name,
                 &dir,
-                cache_dir.as_deref(),
                 repository_url.as_deref(),
                 runner_token.as_deref(),
                 yes,

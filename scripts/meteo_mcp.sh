@@ -95,7 +95,7 @@ enable_registry() {
 
 package_agent() {
     log_step "Packaging $AGENT_DIR using MCP registry $REPOSITORY_URL"
-    BAML_MCP_REGISTRY_URL="$REPOSITORY_URL" \
+    BAML_REGISTRY_URL="$REPOSITORY_URL" \
         builder package --agent-dir "$AGENT_DIR" --output "$PACKAGE_OUT"
 
     log_step "Generated MCP BAML types"

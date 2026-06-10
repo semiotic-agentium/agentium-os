@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! External-tool snapshot cache operator commands.
+//! External-tool registry operator commands.
 
 use std::path::{Path, PathBuf};
 
@@ -23,7 +23,6 @@ use serde_json::json;
 #[derive(Debug)]
 pub struct EnableParams<'a> {
     pub dir: &'a str,
-    pub cache_dir: Option<&'a str>,
     pub repository_url: Option<&'a str>,
     pub runner_token: Option<&'a str>,
     pub sandbox_rootfs: Option<&'a str>,
@@ -35,7 +34,6 @@ pub struct EnableParams<'a> {
 pub fn enable(params: EnableParams<'_>) -> Result<()> {
     let EnableParams {
         dir,
-        cache_dir,
         repository_url,
         runner_token,
         sandbox_rootfs,
@@ -45,59 +43,32 @@ pub fn enable(params: EnableParams<'_>) -> Result<()> {
     } = params;
 
     let dir = PathBuf::from(dir);
-    let cache_root = cache_root(cache_dir)?;
+    let Some(repository_url) = repository_url else {
+        bail!("external-tool enable requires --repository-url");
+    };
 
-    if let Some(repository_url) = repository_url {
-        if !approve(
-            yes,
-            "Ask runner to discover, approve, and import external tool snapshot?",
-        )? {
-            println!("approval declined; cache unchanged");
-            return Ok(());
-        }
-        let body = enable_via_runner(
-            &dir,
-            repository_url,
-            runner_token,
-            sandbox_rootfs,
-            approved_by,
-        )?;
-        external_tool_cache::write_approved_snapshot(&cache_root, &body.snapshot)
-            .with_context(|| format!("writing approved snapshot to {}", cache_root.display()))?;
-        if json_output {
-            println!("{}", serde_json::to_string_pretty(&body)?);
-        } else {
-            print_snapshot_summary("External tool discovery", &body.snapshot);
-            let version = body.version.version;
-            println!(
-                "imported {} into registry as version {version}",
-                style(&body.snapshot.tool.name).cyan()
-            );
-        }
-        return Ok(());
-    }
-
-    let snapshot = discover_process_snapshot(&dir)?;
-
-    if json_output {
-        println!("{}", serde_json::to_string_pretty(&snapshot)?);
-    } else {
-        print_snapshot_summary("External tool discovery", &snapshot);
-    }
-
-    if !approve(yes, "Approve external tool snapshot?")? {
+    if !approve(
+        yes,
+        "Ask runner to discover, approve, and import external tool snapshot?",
+    )? {
         println!("approval declined; cache unchanged");
         return Ok(());
     }
-
-    let approved = approved(snapshot);
-    external_tool_cache::write_approved_snapshot(&cache_root, &approved)
-        .with_context(|| format!("writing approved snapshot to {}", cache_root.display()))?;
-    if !json_output {
+    let body = enable_via_runner(
+        &dir,
+        repository_url,
+        runner_token,
+        sandbox_rootfs,
+        approved_by,
+    )?;
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&body)?);
+    } else {
+        print_snapshot_summary("External tool discovery", &body.snapshot);
+        let version = body.version.version;
         println!(
-            "approved {} snapshot={}",
-            style(&approved.tool.name).cyan(),
-            approved.snapshot_digest
+            "imported {} into registry as version {version}",
+            style(&body.snapshot.tool.name).cyan()
         );
     }
     Ok(())
@@ -151,19 +122,15 @@ pub fn inspect(name: &str, cache_dir: Option<&str>, json_output: bool) -> Result
 pub fn refresh(
     name: &str,
     dir: &str,
-    cache_dir: Option<&str>,
     repository_url: Option<&str>,
     runner_token: Option<&str>,
     yes: bool,
     json_output: bool,
 ) -> Result<()> {
-    let cache_root = cache_root(cache_dir)?;
-    let approved_path = external_tool_cache::approved_snapshot_path(&cache_root, name)?;
-    let old = if approved_path.exists() {
-        Some(external_tool_cache::read_snapshot(&approved_path)?)
-    } else {
-        None
+    let Some(repository_url) = repository_url else {
+        bail!("external-tool refresh requires --repository-url");
     };
+    let old: Option<ExternalToolSnapshot> = None;
     let new_snapshot = discover_process_snapshot(&PathBuf::from(dir))?;
     if new_snapshot.tool.name != name {
         bail!(
@@ -213,8 +180,7 @@ pub fn refresh(
     }
 
     let approved = approved(new_snapshot);
-    external_tool_cache::write_approved_snapshot(&cache_root, &approved)
-        .with_context(|| format!("writing approved snapshot to {}", cache_root.display()))?;
+    post_to_registry(&approved, Some(repository_url), runner_token, json_output)?;
     if !json_output {
         println!(
             "approved {} snapshot={}",
@@ -222,7 +188,6 @@ pub fn refresh(
             approved.snapshot_digest
         );
     }
-    post_to_registry(&approved, repository_url, runner_token, json_output)?;
     Ok(())
 }
 
@@ -339,9 +304,6 @@ fn approve(yes: bool, prompt: &str) -> Result<bool> {
 
 fn cache_root(cache_dir: Option<&str>) -> Result<PathBuf> {
     if let Some(dir) = cache_dir {
-        return Ok(PathBuf::from(dir));
-    }
-    if let Ok(dir) = std::env::var("BAML_EXTERNAL_TOOL_CACHE_DIR") {
         return Ok(PathBuf::from(dir));
     }
     Ok(std::env::current_dir()?.join(".baml-external-tool-cache"))

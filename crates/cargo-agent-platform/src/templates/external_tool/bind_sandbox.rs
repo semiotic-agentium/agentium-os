@@ -169,65 +169,40 @@ fn inspect_tsrpc_script(ctx: &ScaffoldContext<'_>) -> String {
     let template = r#"#!/usr/bin/env python3
 """Inspect tool adapter contract.
 
-For `describe` and `schema`, this script reads the bind runtime artifact:
-  <rootfs>/etc/agentium/tool-bundle.json
-
-For `invoke`, it sends framed TSRPC JSON-RPC to an adapter command you provide
-after `--`.
+All modes send framed TSRPC JSON-RPC to an adapter command you provide after
+`--`. The adapter forwards `tool/describe`, `tool/schema`, and `tool/invoke`
+to the child tool, which is the live schema source. `tool-bundle.json` only
+tells the shim which child to launch; it does not carry schema.
 
 Examples:
-  ./inspect_tool.py describe
-  ./inspect_tool.py schema --rootfs ./.tmp/__ROOTFS_DIR__
+  ./inspect_tool.py describe -- docker run --rm -i __DEFAULT_IMAGE__ /tool-adapter
+  ./inspect_tool.py schema -- docker run --rm -i __DEFAULT_IMAGE__ /tool-adapter
   ./inspect_tool.py invoke --input '{"__STARTER_INPUT_KEY__":"hello"}' -- docker run --rm -i __DEFAULT_IMAGE__ /tool-adapter
 """
 
 import argparse
 import json
-import pathlib
 import struct
 import subprocess
 
 TOOL_ID = __TOOL_ID__
-DEFAULT_ROOTFS = pathlib.Path(__file__).resolve().parent / ".tmp" / __ROOTFS_DIR_PY__
 
 
-def _read_bundle(rootfs: pathlib.Path) -> dict:
-    bundle_path = rootfs / "etc" / "agentium" / "tool-bundle.json"
-    if not bundle_path.exists():
-        raise SystemExit(
-            f"missing sidecar bundle at {bundle_path}\n"
-            "Hint: run ./setup_bind_sandbox.sh --force or sandbox-bind-sync first."
-        )
-    try:
-        return json.loads(bundle_path.read_text(encoding="utf-8"))
-    except Exception as exc:  # noqa: BLE001
-        raise SystemExit(f"failed to parse {bundle_path}: {exc}")
-
-
-def _describe_from_bundle(bundle: dict) -> dict:
-    manifest = bundle.get("manifest") or {}
-    schema = bundle.get("schema") or {}
-    runtime = bundle.get("runtime") or {}
+def _build_describe_request() -> dict:
     return {
         "jsonrpc": "2.0",
         "id": 1,
-        "result": {
-            "protocol_version": manifest.get("protocol_version", "1"),
-            "tool_name": manifest.get("tool_name", runtime.get("tool_id", TOOL_ID)),
-            "supported_methods": manifest.get("supported_methods", ["tool/describe", "tool/schema", "tool/invoke"]),
-            "schema_digest": schema.get("content_digest"),
-        },
+        "method": "tool/describe",
+        "params": {"tool_name": TOOL_ID},
     }
 
 
-def _schema_from_bundle(bundle: dict) -> dict:
-    schema = bundle.get("schema")
-    if not isinstance(schema, dict):
-        raise SystemExit("sidecar bundle missing schema object")
+def _build_schema_request() -> dict:
     return {
         "jsonrpc": "2.0",
         "id": 1,
-        "result": schema,
+        "method": "tool/schema",
+        "params": {"tool_name": TOOL_ID},
     }
 
 
@@ -286,11 +261,6 @@ def _parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", choices=["describe", "schema", "invoke"])
     parser.add_argument(
-        "--rootfs",
-        default=str(DEFAULT_ROOTFS),
-        help="bind rootfs path for describe/schema artifact inspection",
-    )
-    parser.add_argument(
         "--input",
         default='{"__STARTER_INPUT_KEY__":"hello"}',
         help="invoke input JSON (used only for mode=invoke)",
@@ -298,7 +268,7 @@ def _parse_args():
     parser.add_argument(
         "cmd",
         nargs=argparse.REMAINDER,
-        help="adapter command for mode=invoke (pass after --)",
+        help="adapter command (pass after --)",
     )
     args = parser.parse_args()
 
@@ -312,16 +282,19 @@ def _parse_args():
 def main() -> int:
     args, cmd = _parse_args()
 
-    if args.mode in ("describe", "schema"):
-        bundle = _read_bundle(pathlib.Path(args.rootfs))
-        resp = _describe_from_bundle(bundle) if args.mode == "describe" else _schema_from_bundle(bundle)
-        print(json.dumps(resp, indent=2, ensure_ascii=False))
-        return 0
-
     if not cmd:
-        raise SystemExit("mode=invoke requires adapter command after '--' (e.g. docker run ... /tool-adapter)")
+        raise SystemExit(
+            "all modes require adapter command after '--' "
+            "(e.g. docker run --rm -i __DEFAULT_IMAGE__ /tool-adapter)"
+        )
 
-    req = _build_invoke_request(args.input)
+    if args.mode == "describe":
+        req = _build_describe_request()
+    elif args.mode == "schema":
+        req = _build_schema_request()
+    else:
+        req = _build_invoke_request(args.input)
+
     resp = _invoke_via_adapter(req, cmd)
     print(json.dumps(resp, indent=2, ensure_ascii=False))
     return 0
@@ -447,12 +420,12 @@ fn adapter_script(ctx: &ScaffoldContext<'_>) -> String {
 
 Reads one framed JSON-RPC request from stdin and returns one framed response.
 
-- `tool/describe` is handled directly in this adapter (manifest-aware)
-- `tool/invoke` delegates to the child command declared in
-  `/etc/agentium/tool-bundle.json` (`runtime.command`)
+All methods (`tool/describe`, `tool/schema`, `tool/invoke`) are delegated to the
+child command declared in `/etc/agentium/tool-bundle.json` (`runtime.command`).
+The child tool is the sole source of truth for its own schema; this shim never
+reads or serves a schema from the sidecar bundle.
 """
 
-import hashlib
 import json
 import os
 import stat
@@ -567,52 +540,6 @@ def load_runtime_spec(bundle: dict) -> dict:
     return spec
 
 
-def load_describe_manifest(bundle: dict, runtime_spec: dict) -> dict:
-    manifest = bundle.get("manifest") if isinstance(bundle, dict) else None
-    if not isinstance(manifest, dict):
-        raise SidecarError(ERR_SIDECAR_SCHEMA_INVALID, "sidecar bundle missing manifest object")
-    return manifest
-
-
-def load_schema(bundle: dict, runtime_spec: dict) -> dict:
-    schema = bundle.get("schema") if isinstance(bundle, dict) else None
-    if not isinstance(schema, dict):
-        raise SidecarError(ERR_SIDECAR_SCHEMA_INVALID, "sidecar bundle missing schema object")
-    if schema.get("content_type") is None:
-        schema["content_type"] = DEFAULT_SCHEMA_CONTENT_TYPE
-    return schema
-
-
-def compute_schema_digest(schema: dict) -> str:
-    payload = dict(input=schema.get("input"), output=schema.get("output"))
-    # NOTE: this is compact deterministic JSON canonicalization for startup
-    # validation in the shim. Host-side digest generation is authoritative.
-    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return "sha256:" + hashlib.sha256(canonical).hexdigest()
-
-
-def validate_bundle(bundle: dict, runtime_spec: dict, schema: dict) -> None:
-    declared = schema.get("content_digest")
-    if not isinstance(declared, str) or not declared.startswith("sha256:"):
-        raise SidecarError(ERR_SIDECAR_SCHEMA_INVALID, "schema sidecar missing valid content_digest")
-
-    computed = compute_schema_digest(schema)
-    if computed != declared:
-        raise SidecarError(
-            ERR_SCHEMA_DIGEST_MISMATCH,
-            f"schema digest mismatch: expected {{declared}} got {{computed}}",
-        )
-
-    manifest = bundle.get("manifest") if isinstance(bundle, dict) else None
-    if isinstance(manifest, dict):
-        methods = manifest.get("supported_methods")
-        if not isinstance(methods, list) or METHOD_INVOKE not in methods:
-            raise SidecarError(
-                ERR_SIDECAR_SCHEMA_INVALID,
-                f"manifest sidecar missing required supported_methods entry '{{METHOD_INVOKE}}'",
-            )
-
-
 def error_response(req_id, code: int, message: str) -> dict:
     return dict(
         jsonrpc="2.0",
@@ -631,14 +558,37 @@ def write_framed_response(response: dict, enforce_static_limit: bool = False) ->
     return True
 
 
-def load_snapshot() -> tuple[dict, dict, dict]:
-    """Load immutable startup snapshot from sidecar bundle."""
+def load_runtime() -> dict:
+    """Load and validate the child command from the sidecar bundle."""
     bundle = load_sidecar_bundle()
-    runtime_spec = load_runtime_spec(bundle)
-    schema = load_schema(bundle, runtime_spec)
-    manifest = load_describe_manifest(bundle, runtime_spec)
-    validate_bundle(bundle, runtime_spec, schema)
-    return runtime_spec, manifest, schema
+    return load_runtime_spec(bundle)
+
+
+def forward_request(req: dict, runtime_spec: dict) -> dict:
+    """Delegate a request to the child tool and return its JSON response.
+
+    The child is the single source of truth for `tool/describe`, `tool/schema`,
+    and `tool/invoke`. This shim only frames I/O and launches the child.
+    """
+    raw_req = (json.dumps(req, separators=(",", ":")) + "\n").encode("utf-8")
+    proc = subprocess.run(
+        runtime_spec["command"],
+        input=raw_req,
+        stdout=subprocess.PIPE,
+        stderr=None,
+        cwd=runtime_spec.get("workdir") or None,
+        shell=False,
+        check=False,
+    )
+
+    raw_out = proc.stdout.decode("utf-8", errors="replace").strip()
+    if not raw_out:
+        fail("tool process returned empty stdout")
+
+    try:
+        return json.loads(raw_out)
+    except Exception as exc:  # noqa: BLE001
+        fail(f"tool process returned invalid JSON: {{exc}}")
 
 
 def main() -> int:
@@ -668,69 +618,22 @@ def main() -> int:
         return 0
 
     try:
-        runtime_spec, manifest, schema = load_snapshot()
+        runtime_spec = load_runtime()
     except SidecarError as exc:
         write_framed_response(error_response(req_id or 0, exc.code, str(exc)))
         return 0
 
-    if method == METHOD_DESCRIBE:
-        response = dict(
-            jsonrpc="2.0",
-            id=req_id,
-            result=dict(
-                protocol_version=manifest.get("protocol_version", "1"),
-                tool_name=manifest.get("tool_name", runtime_spec.get("tool_id", TOOL_ID)),
-                supported_methods=manifest.get("supported_methods", SUPPORTED_METHODS),
-                schema_digest=schema.get("content_digest"),
-            ),
-        )
-        if not write_framed_response(response, enforce_static_limit=True):
-            write_framed_response(
-                error_response(req_id, ERR_PAYLOAD_LIMIT_EXCEEDED, "static response payload limit exceeded")
-            )
+    if method not in SUPPORTED_METHODS:
+        write_framed_response(error_response(req_id, ERR_METHOD_NOT_FOUND, f"unknown method '{{method}}'"))
         return 0
 
-    if method == METHOD_SCHEMA:
-        response = dict(jsonrpc="2.0", id=req_id, result=schema)
-        if not write_framed_response(response, enforce_static_limit=True):
-            write_framed_response(
-                error_response(req_id, ERR_PAYLOAD_LIMIT_EXCEEDED, "static response payload limit exceeded")
-            )
-        return 0
+    if method == METHOD_INVOKE:
+        params = req.get("params")
+        if params is not None and not isinstance(params, dict):
+            write_framed_response(error_response(req_id, ERR_INVALID_PARAMS, "invalid params: expected object"))
+            return 0
 
-    if method != METHOD_INVOKE:
-        write_framed_response(
-            error_response(req_id, ERR_METHOD_NOT_FOUND, f"unknown method '{{method}}'"),
-            enforce_static_limit=False,
-        )
-        return 0
-
-    params = req.get("params")
-    if params is not None and not isinstance(params, dict):
-        write_framed_response(error_response(req_id, ERR_INVALID_PARAMS, "invalid params: expected object"))
-        return 0
-
-    raw_req = (json.dumps(req, separators=(",", ":")) + "\n").encode("utf-8")
-
-    proc = subprocess.run(
-        runtime_spec["command"],
-        input=raw_req,
-        stdout=subprocess.PIPE,
-        stderr=None,
-        cwd=runtime_spec.get("workdir") or None,
-        shell=False,
-        check=False,
-    )
-
-    raw_out = proc.stdout.decode("utf-8", errors="replace").strip()
-    if not raw_out:
-        fail("tool process returned empty stdout")
-
-    try:
-        response = json.loads(raw_out)
-    except Exception as exc:  # noqa: BLE001
-        fail(f"tool process returned invalid JSON: {{exc}}")
-
+    response = forward_request(req, runtime_spec)
     write_framed_response(response, enforce_static_limit=False)
     return 0
 
@@ -754,24 +657,49 @@ if __name__ == "__main__":
     )
 }
 
+/// Starter echo-tool input/output JSON schemas.
+///
+/// Single source of truth shared by the sidecar bundle and every language
+/// starter's `tool/schema` handler — keeps the declared contract and the
+/// served schema in lockstep.
+pub(crate) fn starter_schemas() -> baml_rt_tools::external_tools::MetadataSchemas {
+    baml_rt_tools::external_tools::MetadataSchemas {
+        input: serde_json::json!({
+            "type": "object",
+            "properties": { STARTER_INPUT_KEY: { "type": "string" } },
+            "required": [STARTER_INPUT_KEY],
+            "additionalProperties": false
+        }),
+        output: serde_json::json!({
+            "type": "object",
+            "properties": { STARTER_OUTPUT_KEY: { "type": "string" } },
+            "required": [STARTER_OUTPUT_KEY],
+            "additionalProperties": false
+        }),
+        events: Vec::new(),
+    }
+}
+
+/// `(input_compact_json, output_compact_json, content_digest)` for the starter
+/// schema.
+///
+/// The digest is computed with the SAME function the runner uses at discovery
+/// ([`compute_external_schema_digest`]), so a freshly scaffolded tool's
+/// self-reported `tool/schema` digest matches the runner's recomputation by
+/// construction — no per-language JCS reimplementation required.
+///
+/// [`compute_external_schema_digest`]: baml_rt_tools::external_tools::compute_external_schema_digest
+pub(crate) fn starter_schema_parts(ctx: &ScaffoldContext<'_>) -> (String, String, String) {
+    let schemas = starter_schemas();
+    let input = serde_json::to_string(&schemas.input).expect("serialize starter input schema");
+    let output = serde_json::to_string(&schemas.output).expect("serialize starter output schema");
+    let meta = manifest_json::build_manifest(ctx).into_metadata(schemas);
+    let digest = baml_rt_tools::external_tools::compute_external_schema_digest(&meta).to_string();
+    (input, output, digest)
+}
+
 fn scaffold_sidecar_bundle(ctx: &ScaffoldContext<'_>) -> String {
-    let meta = manifest_json::build_manifest(ctx).into_metadata(
-        baml_rt_tools::external_tools::MetadataSchemas {
-            input: serde_json::json!({
-                "type": "object",
-                "properties": { STARTER_INPUT_KEY: { "type": "string" } },
-                "required": [STARTER_INPUT_KEY],
-                "additionalProperties": false
-            }),
-            output: serde_json::json!({
-                "type": "object",
-                "properties": { STARTER_OUTPUT_KEY: { "type": "string" } },
-                "required": [STARTER_OUTPUT_KEY],
-                "additionalProperties": false
-            }),
-            events: Vec::new(),
-        },
-    );
+    let meta = manifest_json::build_manifest(ctx).into_metadata(starter_schemas());
     let bundle =
         render_sidecar_bundle(&meta).expect("render sidecar bundle from scaffold manifest");
     serde_json::to_string_pretty(&bundle).expect("serialize scaffold sidecar bundle") + "\n"

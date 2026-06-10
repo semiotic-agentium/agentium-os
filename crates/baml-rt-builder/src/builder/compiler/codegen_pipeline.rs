@@ -31,10 +31,7 @@ use std::{
 
 use baml_rt_tools::{
     SessionPlanFunctionsMap, UnifiedStepExecutorFunctionsMap, external_tool_cache,
-    external_tools::{
-        EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalToolLockEntry, ExternalToolsLockfile,
-        external_dirs_from_env,
-    },
+    external_tools::{EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalToolLockEntry, ExternalToolsLockfile},
     gather_coordination_fragments,
     tools::ToolFunctionMetadata,
 };
@@ -586,13 +583,22 @@ fn build_external_tools_lockfile(
         });
     }
 
-    let dirs = external_dirs_from_env().ok_or_else(|| {
-        BamlBuilderError::InvalidArgument(
-            "manifest uses external tools, but no approved registry snapshot was cached and BAML_EXTERNAL_TOOLS_DIR is not set; builder must pin external tools in external_tools.lock.json"
-                .to_string(),
-        )
-    })?;
-    ExternalToolsLockfile::from_tool_dirs(&dirs).map_err(BamlBuilderError::from)
+    let resolved_names: HashSet<String> = cached_entries
+        .iter()
+        .map(|entry| entry.name.clone())
+        .collect();
+    let mut missing: Vec<String> = external_tool_names
+        .difference(&resolved_names)
+        .cloned()
+        .collect();
+    missing.sort();
+    Err(BamlBuilderError::InvalidArgument(format!(
+        "manifest uses external tool {}, but no approved registry snapshot was found",
+        missing
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "<unknown>".to_string())
+    )))
 }
 
 fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {

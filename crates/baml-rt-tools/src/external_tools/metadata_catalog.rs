@@ -51,7 +51,7 @@ pub fn build_builder_catalog_with_roots(
                 Some(catalog)
             }
         }
-        None => ExternalToolSnapshotCatalog::from_env()?.filter(|c| !c.is_empty()),
+        None => None,
     };
 
     let mcp = match mcp_root {
@@ -63,7 +63,7 @@ pub fn build_builder_catalog_with_roots(
                 Some(catalog)
             }
         }
-        None => McpSnapshotCatalog::from_env()?.filter(|c| !c.is_empty()),
+        None => None,
     };
 
     let mut existing_names: std::collections::HashSet<ToolName> = std::collections::HashSet::new();

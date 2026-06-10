@@ -79,8 +79,8 @@ pub use session_invoker::{
 };
 pub use sidecar_bundle::{
     DEFAULT_SCHEMA_CONTENT_TYPE, SIDECAR_BUNDLE_ABS_PATH, SIDECAR_BUNDLE_REL_PATH, SIDECAR_DIR_ABS,
-    ToolManifestSidecar, ToolRuntimeSidecar, ToolSchemaSidecar, ToolSidecarBundle,
-    read_sidecar_bundle, render_sidecar_bundle,
+    ToolManifestSidecar, ToolRuntimeSidecar, ToolSidecarBundle, read_sidecar_bundle,
+    render_sidecar_bundle,
 };
 pub use snapshot::{
     EXTERNAL_TOOL_SNAPSHOT_SCHEMA_VERSION, EXTERNAL_TOOL_SOURCE, ExternalApprovalState,
@@ -89,9 +89,7 @@ pub use snapshot::{
     compute_snapshot_digest, format_unix_rfc3339_utc, now_snapshot_timestamp,
     validate_describe_schema_support, validate_external_tool_snapshot,
 };
-pub use snapshot_catalog::{
-    BUILDER_EXTERNAL_TOOL_CACHE_ENV, ExternalToolRegistryCatalog, ExternalToolSnapshotCatalog,
-};
+pub use snapshot_catalog::{ExternalToolRegistryCatalog, ExternalToolSnapshotCatalog};
 pub use stdio::StdioSubprocessInvoker;
 
 #[derive(Debug, Clone)]

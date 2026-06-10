@@ -136,7 +136,7 @@ async fn stale_registry_snapshot_blocks_build_cache_materialization() {
 
     let agent_dir = minimal_mcp_agent_dir(&["mcp/grafana/search_dashboards"]);
     let build_dir = BuildDir::new().expect("build dir");
-    let generator = RuntimeTypeGenerator::with_mcp_registry_service(service);
+    let generator = RuntimeTypeGenerator::with_registry_service(service);
 
     let err = generator
         .generate(

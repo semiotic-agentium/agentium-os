@@ -4,11 +4,12 @@
 
 use baml_rt_tools::external_tools::{
     ERR_INTERNAL, ERR_METHOD_NOT_FOUND, ERR_PARSE_ERROR, METHOD_DESCRIBE, METHOD_INVOKE,
-    PROTOCOL_VERSION, SUPPORTED_METHODS,
+    METHOD_SCHEMA, PROTOCOL_VERSION, SUPPORTED_METHODS,
 };
 
 use super::super::{
-    GeneratedFile, STARTER_INPUT_KEY, STARTER_OUTPUT_KEY, ScaffoldContext, tool_server_wrapper,
+    GeneratedFile, STARTER_INPUT_KEY, STARTER_OUTPUT_KEY, ScaffoldContext, bind_sandbox,
+    tool_server_wrapper,
 };
 
 // ----- TypeScript toolchain pins -----
@@ -22,6 +23,10 @@ const TYPES_NODE_VERSION: &str = "^22.0.0";
 pub fn generate(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
     let tool_id = ctx.tool_id();
     let tool_name = ctx.name;
+    // Tool-owned schema + a digest computed with the runner's canonicalization,
+    // so the scaffolded tool's `tool/schema` response validates at discovery.
+    let (schema_input, schema_output, schema_content_digest) =
+        bind_sandbox::starter_schema_parts(ctx);
     // Render SUPPORTED_METHODS as a TypeScript array literal.
     let supported_methods_ts = SUPPORTED_METHODS
         .iter()
@@ -71,6 +76,7 @@ pub fn generate(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
 
 const PROTOCOL_VERSION = "{protocol_version}";
 const METHOD_DESCRIBE = "{method_describe}";
+const METHOD_SCHEMA = "{method_schema}";
 const METHOD_INVOKE = "{method_invoke}";
 // Matches the scaffold's `SUPPORTED_METHODS`. Describe response echoes this
 // so a caller knows which methods the tool handles.
@@ -83,6 +89,14 @@ const ERR_INTERNAL = {err_internal};
 // handler must agree, so both come from the scaffold generator.
 const INPUT_KEY = "{input_key}";
 const OUTPUT_KEY = "{output_key}";
+
+// Tool-owned schema. This tool is the single source of truth for its own
+// contract; the runner discovers it via `tool/schema` and never reads a schema
+// file. `content_digest` is baked at scaffold time with the runner's
+// canonicalization, so the runner's discovery-time recomputation matches.
+const SCHEMA_INPUT: unknown = JSON.parse('{schema_input}');
+const SCHEMA_OUTPUT: unknown = JSON.parse('{schema_output}');
+const SCHEMA_CONTENT_DIGEST = "{schema_content_digest}";
 
 type JsonRpcId = string | number | null;
 
@@ -127,7 +141,19 @@ function handleDescribe(id: JsonRpcId): void {{
   writeResult(id, {{
     protocol_version: PROTOCOL_VERSION,
     tool_name: "{tool_id}",
-    supported_methods: SUPPORTED_METHODS
+    supported_methods: SUPPORTED_METHODS,
+    schema_digest: SCHEMA_CONTENT_DIGEST
+  }});
+}}
+
+function handleSchema(id: JsonRpcId): void {{
+  writeResult(id, {{
+    schema_version: 1,
+    tool_name: "{tool_id}",
+    content_type: "application/schema+json",
+    content_digest: SCHEMA_CONTENT_DIGEST,
+    input: SCHEMA_INPUT,
+    output: SCHEMA_OUTPUT
   }});
 }}
 
@@ -166,6 +192,11 @@ async function main(): Promise<void> {{
     return;
   }}
 
+  if (req.method === METHOD_SCHEMA) {{
+    handleSchema(id);
+    return;
+  }}
+
   if (req.method === METHOD_INVOKE) {{
     handleInvoke(id, req);
     return;
@@ -181,6 +212,7 @@ main().catch((err) => {{
 "#,
         protocol_version = PROTOCOL_VERSION,
         method_describe = METHOD_DESCRIBE,
+        method_schema = METHOD_SCHEMA,
         method_invoke = METHOD_INVOKE,
         supported_methods_ts = supported_methods_ts,
         err_method_not_found = ERR_METHOD_NOT_FOUND,

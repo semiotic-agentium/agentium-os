@@ -11,11 +11,7 @@
 //! Pending, rejected, and stale entries are skipped so a builder cannot
 //! silently emit a contract against unapproved schemas.
 
-use std::{
-    fs,
-    io::ErrorKind,
-    path::{Path, PathBuf},
-};
+use std::{fs, io::ErrorKind, path::Path};
 
 use baml_rt_core::{BamlRtError, Result};
 use serde_json::Value;
@@ -31,10 +27,6 @@ use crate::{
         ToolTypeSpec,
     },
 };
-
-/// Env var that points the builder at a single MCP snapshot cache root.
-/// When unset and no explicit root is supplied, the catalog is empty.
-pub const BUILDER_MCP_CACHE_ENV: &str = "BAML_MCP_CACHE_DIR";
 
 /// Read-only catalog backed by an MCP snapshot cache directory.
 #[derive(Debug, Default)]
@@ -90,17 +82,6 @@ impl McpSnapshotCatalog {
         }
         tools.sort_by_key(|a| a.name.to_string());
         Ok(Self { tools })
-    }
-
-    /// Convenience: scan `$BAML_MCP_CACHE_DIR`. Returns `None` when the env
-    /// var is unset or empty.
-    pub fn from_env() -> Result<Option<Self>> {
-        match std::env::var(BUILDER_MCP_CACHE_ENV) {
-            Ok(value) if !value.trim().is_empty() => {
-                Self::from_root(&PathBuf::from(value)).map(Some)
-            }
-            _ => Ok(None),
-        }
     }
 
     pub fn is_empty(&self) -> bool {
