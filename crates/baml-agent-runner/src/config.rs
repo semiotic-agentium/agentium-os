@@ -76,6 +76,7 @@ pub(crate) struct RunnerConfig {
 
 #[derive(Debug, Parser)]
 #[command(name = "baml-agent-runner")]
+#[command(version)]
 #[command(
     about = "Run the BAML agent server. Agents are deployed exclusively via the repository API.",
     long_about = "Starts the runner and restores any previously-deployed agents from --state-dir.\n\
