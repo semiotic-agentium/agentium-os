@@ -1,0 +1,189 @@
+name: Release publish
+
+# Builds the prebuilt Linux release tarballs (see scripts/release/ and
+# tmp_plans/binary_release_plan.md §F). Three triggers:
+#   - push tag v*.*.*    : full build + GitHub Release upload
+#   - workflow_dispatch  : full build (no upload) — manual dry-run of the matrix
+#   - pull_request (release-tooling paths): aarch64 cross-build smoke only
+#
+# The target matrix is read from scripts/release/release-manifest.sh (the SSOT),
+# and binaries are built via the release-dist Cargo profile through
+# build-release-binaries.sh. tsc/Node are deliberately NOT installed: compiling
+# the Rust binaries does not run the TypeScript pipeline (that is a runtime
+# concern for builder/publish, see INSTALL.md).
+
+on:
+  push:
+    tags: ['v*.*.*']
+  pull_request:
+    # Only the release tooling — keep the heavy aarch64 cross build off normal
+    # PRs. Profile-only edits in Cargo.toml are rare; validate those via
+    # workflow_dispatch rather than triggering on every Cargo.toml change.
+    paths:
+      - 'Cross.toml'
+      - 'scripts/release/**'
+      - '.github/workflows/release-publish.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Cancel superseded PR dry-runs; never cancel a tag build mid-release.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Read the target list from the release manifest so the build matrix and the
+  # rest of the pipeline share one source of truth.
+  manifest:
+    name: Read release manifest
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.read.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        run: |
+          targets=$(bash scripts/release/release-manifest.sh --json \
+            | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["targets"]))')
+          echo "targets=${targets}" >> "$GITHUB_OUTPUT"
+          echo "release targets: ${targets}"
+
+  # Tag only: the vX.Y.Z tag must equal [workspace.package].version.
+  # (Consolidated here from the former standalone release-tag-verify.yml so the
+  # build job can gate on it — GH Actions has no cross-workflow `needs`.)
+  verify:
+    name: Verify tag matches workspace version
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify release tag
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: bash scripts/release/verify-release-tag-matches-workspace-version.sh
+
+  # PR (release-tooling paths) only, same-repo: prove the aarch64 cross path
+  # (pkg-config cross resolution, ONNX download, quickjs bindgen under cross)
+  # before a real tag cut. Uses the same script CI/release use.
+  cross-dry-run:
+    name: aarch64 cross build dry-run
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Cross-build aarch64 release binaries
+        run: bash scripts/release/build-release-binaries.sh --target aarch64-unknown-linux-gnu
+
+      - name: Inspect runner binary (arch + static ONNX)
+        run: |
+          bin=target/aarch64-unknown-linux-gnu/release-dist/baml-agent-runner
+          file "$bin"
+          echo "=== dynamic NEEDED libs ==="
+          readelf -d "$bin" | grep NEEDED || true
+          file "$bin" | grep -q 'aarch64' \
+            || { echo "error: ${bin} is not an aarch64 ELF"; exit 1; }
+          if readelf -d "$bin" | grep -qi 'onnxruntime'; then
+            echo "error: libonnxruntime is dynamically linked (expected static)"; exit 1
+          fi
+          echo "aarch64 cross build OK: arch correct, ONNX statically linked"
+
+  # Tag or manual dispatch: build + pack every target in the manifest.
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [manifest, verify]
+    # Run on tag push (after verify succeeds) and on workflow_dispatch (verify
+    # skipped). Never on pull_request — the cross-dry-run job covers PRs.
+    if: >-
+      !cancelled()
+      && github.event_name != 'pull_request'
+      && (needs.verify.result == 'success' || needs.verify.result == 'skipped')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.manifest.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install OS build deps (native leg; harmless on the cross leg)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config libssl-dev libdbus-1-dev libcap-ng-dev \
+            clang libclang-dev llvm-dev lld
+
+      - name: Configure LIBCLANG_PATH for bindgen (hirofa-quickjs-sys)
+        run: bash scripts/ci/set-libclang-path.sh
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build release binaries
+        run: bash scripts/release/build-release-binaries.sh --target "${{ matrix.target }}"
+
+      - name: Pack tarball
+        run: bash scripts/release/pack-target-tarball.sh --target "${{ matrix.target }}"
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-tarball-${{ matrix.target }}
+          path: dist/release/*.tar.gz
+          if-no-files-found: error
+
+  # Tag only: assemble the GitHub Release with the tarballs + aggregate SHA256SUMS.
+  release:
+    name: Publish GitHub Release
+    needs: [build]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download tarball artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-tarball-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Stage assets + aggregate SHA256SUMS
+        run: |
+          mkdir -p out
+          find artifacts -name '*.tar.gz' -exec cp {} out/ \;
+          ( cd out && sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS )
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Idempotent: a re-run after a partial failure reuses the existing
+          # release and clobbers its assets instead of erroring on "already exists".
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "release ${GITHUB_REF_NAME} exists — uploading assets (--clobber)"
+            gh release upload "${GITHUB_REF_NAME}" out/*.tar.gz out/SHA256SUMS --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes \
+              out/*.tar.gz out/SHA256SUMS
+          fi
