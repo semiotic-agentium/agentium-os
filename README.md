@@ -64,6 +64,10 @@ Commands use [`just`](https://github.com/casey/just) (`just --list` for the full
 set). A `.env` / `fnox.toml` in the repo root supplies API keys for LLM tests and
 demos — see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
+> **Just want the binaries?** Grab prebuilt Linux release tarballs (or
+> `cargo install`) — see [`INSTALL.md`](INSTALL.md). The steps below build from a
+> source clone for contributors.
+
 ### First-time setup
 
 ```bash
