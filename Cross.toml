@@ -1,0 +1,23 @@
+# Cross-compilation image hooks for release builds (see scripts/release/build-release-binaries.sh).
+#
+# aarch64-gnu needs arm64 sysroot headers for dbus/cap-ng (memory/keyring + sandbox).
+
+[target.aarch64-unknown-linux-gnu]
+# clang/libclang-dev: hirofa-quickjs-sys runs bindgen inside the container, which
+# needs libclang (host installs don't reach the cross image). arm64 dev libs:
+# libdbus-sys (memory/keyring) + libcap-ng (sandbox) probe via pkg-config.
+pre-build = [
+    "dpkg --add-architecture arm64",
+    "apt-get update",
+    "apt-get install --assume-yes clang libclang-dev pkg-config libdbus-1-dev:arm64 libcap-ng-dev:arm64",
+]
+
+[build.env]
+# Forward the pkg-config cross settings that build-release-binaries.sh exports
+# into the container. libdbus-sys / libcap-ng probe via the pkg_config crate,
+# which aborts when host != target unless PKG_CONFIG_ALLOW_CROSS=1;
+# PKG_CONFIG_PATH points at the arm64 multiarch .pc files installed above.
+passthrough = [
+    "PKG_CONFIG_ALLOW_CROSS",
+    "PKG_CONFIG_PATH",
+]
