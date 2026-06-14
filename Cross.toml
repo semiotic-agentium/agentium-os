@@ -4,12 +4,18 @@
 
 [target.aarch64-unknown-linux-gnu]
 # clang/libclang-dev: hirofa-quickjs-sys runs bindgen inside the container, which
-# needs libclang (host installs don't reach the cross image). arm64 dev libs:
-# libdbus-sys (memory/keyring) + libcap-ng (sandbox) probe via pkg-config.
+# needs libclang (host installs don't reach the cross image). The cross base
+# image can expose ancient libclang (e.g. 3.8), so install LLVM 14 from
+# apt.llvm.org, create a stable symlink, and have build-release-binaries.sh set
+# LIBCLANG_PATH=/opt/libclang-current. arm64 dev libs: libdbus-sys
+# (memory/keyring) + libcap-ng (sandbox) probe via pkg-config.
 pre-build = [
     "dpkg --add-architecture arm64",
     "apt-get update",
-    "apt-get install --assume-yes clang libclang-dev pkg-config libdbus-1-dev:arm64 libcap-ng-dev:arm64",
+    "apt-get install --assume-yes ca-certificates wget gnupg lsb-release software-properties-common pkg-config libdbus-1-dev:arm64 libcap-ng-dev:arm64",
+    "wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh && chmod +x /tmp/llvm.sh && /tmp/llvm.sh 14",
+    "apt-get install --assume-yes clang-14 libclang-14-dev llvm-14-dev",
+    "ln -sfn /usr/lib/llvm-14/lib /opt/libclang-current && ls -l /opt/libclang-current/libclang.so* && /usr/bin/clang-14 --version",
 ]
 
 [build.env]
@@ -17,7 +23,13 @@ pre-build = [
 # into the container. libdbus-sys / libcap-ng probe via the pkg_config crate,
 # which aborts when host != target unless PKG_CONFIG_ALLOW_CROSS=1;
 # PKG_CONFIG_PATH points at the arm64 multiarch .pc files installed above.
+#
+# microsandbox's build.rs writes to $HOME/.microsandbox/ when the
+# sandbox-provider feature is enabled. build-release-binaries.sh injects a
+# container-only HOME via CROSS_CONTAINER_OPTS; do not passthrough host HOME or
+# poison cross/rustup preflight on the host.
 passthrough = [
+    "LIBCLANG_PATH",
     "PKG_CONFIG_ALLOW_CROSS",
     "PKG_CONFIG_PATH",
 ]

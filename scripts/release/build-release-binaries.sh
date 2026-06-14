@@ -148,6 +148,15 @@ build_for_target() {
     (
       cd "$root"
       if $cross_build; then
+        # microsandbox's build.rs (prebuilt feature) installs msb + libkrunfw under
+        # $HOME/.microsandbox/. Cross containers default HOME=/ (not writable). Cargo
+        # artifacts land in CARGO_TARGET_DIR=/target inside the container; that mount is
+        # read-write even when the project bind-mount is not, so inject container-only
+        # HOME via CROSS_CONTAINER_OPTS. Do not export HOME here: cross/rustup run
+        # host-side preflight before the container starts and need the real host HOME.
+        local container_home_opt="--env HOME=/target/.microsandbox-home-${triple}"
+        export CROSS_CONTAINER_OPTS="${CROSS_CONTAINER_OPTS:+${CROSS_CONTAINER_OPTS} }${container_home_opt}"
+        export LIBCLANG_PATH="/opt/libclang-current"
         export PKG_CONFIG_ALLOW_CROSS=1
         export PKG_CONFIG_PATH="$pkg_config_path"
       fi
