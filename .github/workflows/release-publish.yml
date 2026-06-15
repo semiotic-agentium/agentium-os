@@ -4,7 +4,13 @@ name: Release publish
 # tmp_plans/binary_release_plan.md §F). Three triggers:
 #   - push tag v*.*.*    : full build + GitHub Release upload
 #   - workflow_dispatch  : full build (no upload) — manual dry-run of the matrix
-#   - pull_request (release-tooling paths): aarch64 cross-build smoke only
+#   - pull_request (release-tooling paths): aarch64 native-build smoke only
+#
+# Each target builds NATIVELY on a runner of its own arch (no cross): the
+# onnxruntime prebuilt that ort-sys downloads (fastembed's ort-download-binaries)
+# is built against a jammy+ toolchain — glibc >=2.32 / GCC >=11 — which the
+# cross-rs images (focal at newest) are too old to link. amd64 -> ubuntu-22.04,
+# aarch64 -> ubuntu-22.04-arm, giving both a consistent glibc 2.35 floor.
 #
 # The target matrix is read from scripts/release/release-manifest.sh (the SSOT),
 # and binaries are built via the release-dist Cargo profile through
@@ -16,11 +22,10 @@ on:
   push:
     tags: ['v*.*.*']
   pull_request:
-    # Only the release tooling — keep the heavy aarch64 cross build off normal
-    # PRs. Profile-only edits in Cargo.toml are rare; validate those via
+    # Only the release tooling — keep the heavy aarch64 build off normal PRs.
+    # Profile-only edits in Cargo.toml are rare; validate those via
     # workflow_dispatch rather than triggering on every Cargo.toml change.
     paths:
-      - 'Cross.toml'
       - 'scripts/release/**'
       - '.github/workflows/release-publish.yml'
   workflow_dispatch:
@@ -64,27 +69,32 @@ jobs:
           GITHUB_REF_NAME: ${{ github.ref_name }}
         run: bash scripts/release/verify-release-tag-matches-workspace-version.sh
 
-  # PR (release-tooling paths) only, same-repo: prove the aarch64 cross path
-  # (pkg-config cross resolution, ONNX download, quickjs bindgen under cross)
-  # before a real tag cut. Uses the same script CI/release use.
-  cross-dry-run:
-    name: aarch64 cross build dry-run
+  # PR (release-tooling paths) only, same-repo: prove the aarch64 native build
+  # (pkg-config, ONNX download + static link, quickjs bindgen) on the arm64
+  # runner before a real tag cut. Uses the same scripts the tag build uses.
+  aarch64-dry-run:
+    name: aarch64 native build dry-run
     if: >-
       github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install OS build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config libssl-dev libdbus-1-dev libcap-ng-dev \
+            clang libclang-dev llvm-dev lld
+
+      - name: Configure LIBCLANG_PATH for bindgen (hirofa-quickjs-sys)
+        run: bash scripts/ci/set-libclang-path.sh
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install cross
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cross
-
-      - name: Cross-build aarch64 release binaries
+      - name: Build aarch64 release binaries (native)
         run: bash scripts/release/build-release-binaries.sh --target aarch64-unknown-linux-gnu
 
       - name: Inspect runner binary (arch + static ONNX)
@@ -98,19 +108,22 @@ jobs:
           if readelf -d "$bin" | grep -qi 'onnxruntime'; then
             echo "error: libonnxruntime is dynamically linked (expected static)"; exit 1
           fi
-          echo "aarch64 cross build OK: arch correct, ONNX statically linked"
+          echo "aarch64 native build OK: arch correct, ONNX statically linked"
 
   # Tag or manual dispatch: build + pack every target in the manifest.
   build:
     name: Build ${{ matrix.target }}
     needs: [manifest, verify]
     # Run on tag push (after verify succeeds) and on workflow_dispatch (verify
-    # skipped). Never on pull_request — the cross-dry-run job covers PRs.
+    # skipped). Never on pull_request — the aarch64-dry-run job covers PRs.
     if: >-
       !cancelled()
       && github.event_name != 'pull_request'
       && (needs.verify.result == 'success' || needs.verify.result == 'skipped')
-    runs-on: ubuntu-latest
+    # Each target builds natively on its own arch (no cross — see file header).
+    # aarch64 on the arm64 runner; everything else on amd64. Both pinned to
+    # 22.04 for a consistent glibc 2.35 floor.
+    runs-on: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
     strategy:
       fail-fast: false
       matrix:
@@ -118,7 +131,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install OS build deps (native leg; harmless on the cross leg)
+      - name: Install OS build deps
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -130,11 +143,6 @@ jobs:
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cross
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cross
 
       - name: Build release binaries
         run: bash scripts/release/build-release-binaries.sh --target "${{ matrix.target }}"

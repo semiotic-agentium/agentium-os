@@ -10,7 +10,11 @@
 #   build-release-binaries.sh [--target TRIPLE] [--all-targets]
 #
 # Defaults to the host triple when it appears in the manifest target list.
-# Uses `cargo` for the host triple and `cross` for all other manifest targets.
+# Builds each target natively with `cargo` (no cross): a requested target that
+# is not the host triple is an error — build it on a native runner of that arch.
+# Cross-compiling was dropped because the onnxruntime prebuilt that ort-sys
+# downloads needs a jammy+ toolchain (glibc >=2.32 / GCC >=11) the cross images
+# lack; see .github/workflows/release-publish.yml.
 
 set -euo pipefail
 
@@ -121,45 +125,26 @@ done
 
 build_for_target() {
   local triple="$1"
-  local runner=(cargo build)
-  local cross_build=false
+
+  # Native-only. Each release target builds on a runner of its own arch (see
+  # .github/workflows/release-publish.yml). Cross-compiling is unsupported: the
+  # onnxruntime prebuilt that ort-sys downloads is built against a jammy+
+  # toolchain (glibc >=2.32 / GCC >=11) that the cross-rs images (focal at
+  # newest) are too old to link.
   if [[ "$triple" != "$host" ]]; then
-    command -v cross >/dev/null 2>&1 || die "cross required for target ${triple} (host ${host})"
-    runner=(cross build)
-    cross_build=true
+    die "cannot build ${triple} on host ${host}: cross-compilation is not supported (the downloaded onnxruntime prebuilt needs a jammy+ toolchain). Build this target on a native ${triple%%-*} runner — see .github/workflows/release-publish.yml."
   fi
 
-  echo "build-release-binaries: building for ${triple} via ${runner[*]}"
-
-  # libdbus-sys / libcap-ng probe via the pkg_config crate, which aborts when
-  # host != target unless PKG_CONFIG_ALLOW_CROSS=1. Point pkg-config at the
-  # target's multiarch .pc dir (e.g. /usr/lib/aarch64-linux-gnu/pkgconfig,
-  # installed into the cross image by Cross.toml's pre-build hook). Cross.toml
-  # forwards both vars into the container via [build.env] passthrough. Scoped to
-  # the build subshell so a native host build later in --all-targets is unaffected.
-  local pkg_config_path="/usr/lib/${triple/-unknown-/-}/pkgconfig"
+  echo "build-release-binaries: building for ${triple} via cargo build"
 
   while IFS=$'\t' read -r package bin features; do
-    local -a cmd=("${runner[@]}" --profile release-dist --target "$triple" -p "$package" --bin "$bin")
+    local -a cmd=(cargo build --profile release-dist --target "$triple" -p "$package" --bin "$bin")
     if [[ -n "$features" ]]; then
       cmd+=(--features "$features")
     fi
     echo "build-release-binaries: ${cmd[*]}"
     (
       cd "$root"
-      if $cross_build; then
-        # microsandbox's build.rs (prebuilt feature) installs msb + libkrunfw under
-        # $HOME/.microsandbox/. Cross containers default HOME=/ (not writable). Cargo
-        # artifacts land in CARGO_TARGET_DIR=/target inside the container; that mount is
-        # read-write even when the project bind-mount is not, so inject container-only
-        # HOME via CROSS_CONTAINER_OPTS. Do not export HOME here: cross/rustup run
-        # host-side preflight before the container starts and need the real host HOME.
-        local container_home_opt="--env HOME=/target/.microsandbox-home-${triple}"
-        export CROSS_CONTAINER_OPTS="${CROSS_CONTAINER_OPTS:+${CROSS_CONTAINER_OPTS} }${container_home_opt}"
-        export LIBCLANG_PATH="/opt/libclang-current"
-        export PKG_CONFIG_ALLOW_CROSS=1
-        export PKG_CONFIG_PATH="$pkg_config_path"
-      fi
       "${cmd[@]}"
     )
   done < <(
