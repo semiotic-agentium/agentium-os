@@ -5,17 +5,19 @@
 [target.aarch64-unknown-linux-gnu]
 # clang/libclang-dev: hirofa-quickjs-sys runs bindgen inside the container, which
 # needs libclang (host installs don't reach the cross image). The cross base
-# image can expose ancient libclang (e.g. 3.8), so install LLVM 14 from
-# apt.llvm.org, create a stable symlink, and have build-release-binaries.sh set
-# LIBCLANG_PATH=/opt/libclang-current. arm64 dev libs: libdbus-sys
-# (memory/keyring) + libcap-ng (sandbox) probe via pkg-config.
+# image (released cross ships Ubuntu 16.04 / xenial gnu images) can expose
+# ancient libclang (e.g. 3.8), so install LLVM from apt.llvm.org, create a stable
+# symlink, and have build-release-binaries.sh set LIBCLANG_PATH=/opt/libclang-current.
+# Pin LLVM 12: apt.llvm.org dropped xenial after 12 (xenial-14 → 404), and 12 is
+# new enough for bindgen (needs >=9). arm64 dev libs: libdbus-sys (memory/keyring)
+# + libcap-ng (sandbox) probe via pkg-config.
 pre-build = [
     "dpkg --add-architecture arm64",
     "apt-get update",
     "apt-get install --assume-yes ca-certificates wget gnupg lsb-release software-properties-common pkg-config libdbus-1-dev:arm64 libcap-ng-dev:arm64",
-    "wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh && chmod +x /tmp/llvm.sh && /tmp/llvm.sh 14",
-    "apt-get install --assume-yes clang-14 libclang-14-dev llvm-14-dev",
-    "ln -sfn /usr/lib/llvm-14/lib /opt/libclang-current && ls -l /opt/libclang-current/libclang.so* && /usr/bin/clang-14 --version",
+    "wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh && chmod +x /tmp/llvm.sh && /tmp/llvm.sh 12",
+    "apt-get install --assume-yes clang-12 libclang-12-dev llvm-12-dev",
+    "ln -sfn /usr/lib/llvm-12/lib /opt/libclang-current && ls -l /opt/libclang-current/libclang.so* && /usr/bin/clang-12 --version",
 ]
 
 [build.env]
