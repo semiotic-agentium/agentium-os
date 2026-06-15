@@ -3,21 +3,31 @@
 # aarch64-gnu needs arm64 sysroot headers for dbus/cap-ng (memory/keyring + sandbox).
 
 [target.aarch64-unknown-linux-gnu]
+# Use the cross `main` image (Ubuntu 20.04 / focal). The released-cross default
+# (0.2.5) is Ubuntu 16.04 / xenial, whose libclang is ancient (3.8) and whose apt
+# can no longer install a modern clang: apt.llvm.org dropped xenial after LLVM 12,
+# and xenial's old apt rejects apt.llvm.org's rotated armored signing key
+# (NO_PUBKEY ... unauthenticated). focal carries clang 10 in its own (already
+# enabled) universe repo, so we drop the apt.llvm.org dance entirely.
+#
 # clang/libclang-dev: hirofa-quickjs-sys runs bindgen inside the container, which
-# needs libclang (host installs don't reach the cross image). The cross base
-# image (released cross ships Ubuntu 16.04 / xenial gnu images) can expose
-# ancient libclang (e.g. 3.8), so install LLVM from apt.llvm.org, create a stable
-# symlink, and have build-release-binaries.sh set LIBCLANG_PATH=/opt/libclang-current.
-# Pin LLVM 12: apt.llvm.org dropped xenial after 12 (xenial-14 → 404), and 12 is
-# new enough for bindgen (needs >=9). arm64 dev libs: libdbus-sys (memory/keyring)
-# + libcap-ng (sandbox) probe via pkg-config.
+# needs libclang (host installs don't reach the cross image); clang 10 is new
+# enough (bindgen needs >=9). We symlink focal's /usr/lib/llvm-10/lib (the version
+# is fixed — focal is a frozen LTS) to a stable path and have
+# build-release-binaries.sh set LIBCLANG_PATH=/opt/libclang-current. arm64 dev
+# libs: libdbus-sys (memory/keyring) + libcap-ng (sandbox) probe via pkg-config;
+# their .pc files land in /usr/lib/aarch64-linux-gnu/pkgconfig (the build script's
+# PKG_CONFIG_PATH).
+#
+# `main` is a floating tag (rebuilt periodically); pin a digest here if the build
+# must be byte-reproducible. The whole pre-build is verified against the focal
+# image before each bump.
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
 pre-build = [
     "dpkg --add-architecture arm64",
     "apt-get update",
-    "apt-get install --assume-yes ca-certificates wget gnupg lsb-release software-properties-common pkg-config libdbus-1-dev:arm64 libcap-ng-dev:arm64",
-    "wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh && chmod +x /tmp/llvm.sh && /tmp/llvm.sh 12",
-    "apt-get install --assume-yes clang-12 libclang-12-dev llvm-12-dev",
-    "ln -sfn /usr/lib/llvm-12/lib /opt/libclang-current && ls -l /opt/libclang-current/libclang.so* && /usr/bin/clang-12 --version",
+    "apt-get install --assume-yes ca-certificates pkg-config clang libclang-dev llvm-dev libdbus-1-dev:arm64 libcap-ng-dev:arm64",
+    "ln -sfn /usr/lib/llvm-10/lib /opt/libclang-current && ls -l /opt/libclang-current/libclang.so* && clang --version",
 ]
 
 [build.env]
