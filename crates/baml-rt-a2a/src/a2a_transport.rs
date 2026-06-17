@@ -420,10 +420,18 @@ impl ProjectingConversationContextProvider {
     ) -> Result<Option<Value>> {
         let context_id = scope.context_id();
         let task_id = scope.task_id_opt();
-        let items = self
-            .source
-            .conversation_context_with_task(context_id, item_limit, task_id)
-            .await?;
+        let items = if let Some(store) = self.provenance_store.as_ref() {
+            store
+                .conversation_context_for_agent_prompt(context_id, item_limit, task_id)
+                .await
+                .map_err(|e| baml_rt_core::BamlRtError::ProvenanceContextRead {
+                    source: Box::new(e),
+                })?
+        } else {
+            self.source
+                .conversation_context_with_task(context_id, item_limit, task_id)
+                .await?
+        };
         tracing::debug!(
             context_id = %context_id,
             task_id = ?task_id.map(|t| t.as_str()),

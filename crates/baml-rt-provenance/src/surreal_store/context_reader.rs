@@ -245,6 +245,56 @@ struct ScopedConversationQuery<'a> {
 }
 
 impl SurrealProvenanceStore {
+    /// Agent-facing conversation rows: transcript engine + latest compaction head.
+    pub async fn conversation_context_for_agent_prompt(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+        task_id: Option<&TaskId>,
+    ) -> Result<Vec<ProvenanceConversationContextItem>> {
+        self.compacted_conversation_context(context_id, limit, task_id, None)
+            .await
+    }
+
+    async fn compacted_conversation_context(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+        task_id: Option<&TaskId>,
+        agent_package: Option<&str>,
+    ) -> Result<Vec<ProvenanceConversationContextItem>> {
+        use crate::{
+            conversation_context_query::DEFAULT_LLM_CONTEXT_ITEM_CAP,
+            observation::{ObservationScope, TaskObservationScope, TemporalBound},
+            read::{TranscriptEngine, TranscriptPageRequest, TranscriptProjectionProfile},
+        };
+
+        let scope = ObservationScope {
+            context_id: context_id.clone(),
+            task: match task_id {
+                Some(id) => TaskObservationScope::Task(id.clone()),
+                None => TaskObservationScope::ContextWide,
+            },
+            agent_package: agent_package.map(str::to_string),
+            temporal: TemporalBound::All,
+        };
+        let page = TranscriptEngine::page(
+            self,
+            TranscriptPageRequest {
+                scope,
+                limit: limit.unwrap_or(DEFAULT_LLM_CONTEXT_ITEM_CAP),
+                profile: TranscriptProjectionProfile::AgentPromptCompacted,
+            },
+        )
+        .await?;
+        let head = self.latest_compaction_head(context_id, task_id).await?;
+        Ok(crate::context_compaction::apply_compaction_profile(
+            TranscriptProjectionProfile::AgentPromptCompacted,
+            page.items,
+            head.as_ref(),
+        ))
+    }
+
     async fn fetch_scoped_conversation_nodes(
         &self,
         query: ScopedConversationQuery<'_>,
@@ -1158,36 +1208,8 @@ impl ProvenanceQueryApi for SurrealProvenanceStore {
         task_id: Option<&TaskId>,
         agent_package: Option<&str>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        use crate::{
-            conversation_context_query::DEFAULT_LLM_CONTEXT_ITEM_CAP,
-            observation::{ObservationScope, TaskObservationScope, TemporalBound},
-            read::{TranscriptEngine, TranscriptPageRequest, TranscriptProjectionProfile},
-        };
-
-        let scope = ObservationScope {
-            context_id: context_id.clone(),
-            task: match task_id {
-                Some(id) => TaskObservationScope::Task(id.clone()),
-                None => TaskObservationScope::ContextWide,
-            },
-            agent_package: agent_package.map(str::to_string),
-            temporal: TemporalBound::All,
-        };
-        let page = TranscriptEngine::page(
-            self,
-            TranscriptPageRequest {
-                scope: scope.clone(),
-                limit: limit.unwrap_or(DEFAULT_LLM_CONTEXT_ITEM_CAP),
-                profile: TranscriptProjectionProfile::AgentPromptCompacted,
-            },
-        )
-        .await?;
-        let head = self.latest_compaction_head(context_id, task_id).await?;
-        Ok(crate::context_compaction::apply_compaction_profile(
-            TranscriptProjectionProfile::AgentPromptCompacted,
-            page.items,
-            head.as_ref(),
-        ))
+        self.compacted_conversation_context(context_id, limit, task_id, agent_package)
+            .await
     }
 
     async fn query_conversation_context_after(

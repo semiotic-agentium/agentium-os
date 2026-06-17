@@ -141,7 +141,7 @@ impl SurrealProvenanceStore {
         let task_filter = if task_entity_id.is_some() {
             "AND task_entity_id = $task"
         } else {
-            "AND task_entity_id IS NONE"
+            ""
         };
         let query = format!(
             "SELECT node_id, event_order FROM {TBL_CONTEXT_TRANSCRIPT_INDEX} \
