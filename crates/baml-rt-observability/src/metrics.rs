@@ -313,6 +313,74 @@ pub fn record_provenance_write(event_kind: &str, result: &str, duration: Duratio
     provenance_write_histogram().record(duration.as_millis() as f64, attributes);
 }
 
+static CONTEXT_COMPACTION_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static CONTEXT_COMPACTION_DURATION_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static CONTEXT_COMPACTION_BYTES_BEFORE_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static CONTEXT_COMPACTION_BYTES_AFTER_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static CONTEXT_COMPACTION_COVERED_ROWS_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+
+fn context_compaction_counter() -> &'static Counter<u64> {
+    CONTEXT_COMPACTION_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("baml_rt.context_compaction.attempt_total")
+            .init()
+    })
+}
+
+fn context_compaction_duration_histogram() -> &'static Histogram<f64> {
+    CONTEXT_COMPACTION_DURATION_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.context_compaction.duration_ms")
+            .init()
+    })
+}
+
+fn context_compaction_bytes_before_histogram() -> &'static Histogram<f64> {
+    CONTEXT_COMPACTION_BYTES_BEFORE_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.context_compaction.prompt_bytes_before")
+            .init()
+    })
+}
+
+fn context_compaction_bytes_after_histogram() -> &'static Histogram<f64> {
+    CONTEXT_COMPACTION_BYTES_AFTER_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.context_compaction.prompt_bytes_after")
+            .init()
+    })
+}
+
+fn context_compaction_covered_rows_histogram() -> &'static Histogram<f64> {
+    CONTEXT_COMPACTION_COVERED_ROWS_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.context_compaction.covered_rows")
+            .init()
+    })
+}
+
+/// Record a host context compaction attempt (post-turn, pre-model emergency, or manual).
+pub fn record_context_compaction(
+    trigger: &str,
+    result: &str,
+    duration: Duration,
+    pre_prompt_bytes: u64,
+    post_prompt_bytes: u64,
+    covered_rows: u64,
+) {
+    let attributes = &[
+        KeyValue::new("trigger", trigger.to_string()),
+        KeyValue::new("result", result.to_string()),
+    ];
+    context_compaction_counter().add(1, attributes);
+    context_compaction_duration_histogram().record(duration.as_millis() as f64, attributes);
+    if result == "success" {
+        context_compaction_bytes_before_histogram().record(pre_prompt_bytes as f64, attributes);
+        context_compaction_bytes_after_histogram().record(post_prompt_bytes as f64, attributes);
+        context_compaction_covered_rows_histogram().record(covered_rows as f64, attributes);
+    }
+}
+
 static PROVENANCE_SEQUENCE_RENDER_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 static PROVENANCE_SEQUENCE_RENDER_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
 

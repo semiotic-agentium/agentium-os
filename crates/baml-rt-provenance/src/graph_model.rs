@@ -32,6 +32,10 @@ pub enum GraphNodeLabel {
     FailureClassification,
     /// An individual step within a tool session (Open/SendDone/Read).
     SessionStep,
+    /// Host context compaction activity.
+    ContextCompaction,
+    /// Summary text entity emitted by compaction.
+    CompactionSummary,
 }
 
 impl GraphNodeLabel {
@@ -58,6 +62,8 @@ impl GraphNodeLabel {
             Self::FailureClassificationActivity => "FailureClassificationActivity",
             Self::FailureClassification => "FailureClassification",
             Self::SessionStep => "SessionStep",
+            Self::ContextCompaction => "ContextCompaction",
+            Self::CompactionSummary => "CompactionSummary",
         }
     }
 
@@ -84,6 +90,8 @@ impl GraphNodeLabel {
             "FailureClassificationActivity" => Some(Self::FailureClassificationActivity),
             "FailureClassification" => Some(Self::FailureClassification),
             "SessionStep" => Some(Self::SessionStep),
+            "ContextCompaction" => Some(Self::ContextCompaction),
+            "CompactionSummary" => Some(Self::CompactionSummary),
             _ => None,
         }
     }
@@ -148,9 +156,10 @@ pub enum EventGraphKind {
     HostSourcePollRecorded,
     HostDispatchAccepted,
     HostDispatchRejected,
+    ContextCompactionRecorded,
 }
 
-pub const ALL_EVENT_KINDS: [EventGraphKind; 23] = [
+pub const ALL_EVENT_KINDS: [EventGraphKind; 24] = [
     EventGraphKind::IntentResolved,
     EventGraphKind::PlanGenerated,
     EventGraphKind::PlanStepStatusChanged,
@@ -174,6 +183,7 @@ pub const ALL_EVENT_KINDS: [EventGraphKind; 23] = [
     EventGraphKind::HostSourcePollRecorded,
     EventGraphKind::HostDispatchAccepted,
     EventGraphKind::HostDispatchRejected,
+    EventGraphKind::ContextCompactionRecorded,
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -436,6 +446,13 @@ const MAPPING_HOST_DISPATCH_REJECTED: EventGraphMapping = EventGraphMapping {
     ],
 };
 
+const MAPPING_CONTEXT_COMPACTION_RECORDED: EventGraphMapping = EventGraphMapping {
+    kind: EventGraphKind::ContextCompactionRecorded,
+    primary_node: GraphNodeLabel::ContextCompaction,
+    expected_edges: &[EDGE_WAS_GENERATED_BY],
+    required_properties: &[a2a::CONTEXT_ID, "summary_text"],
+};
+
 pub fn event_kind_from_data(data: &ProvEventData) -> EventGraphKind {
     match data {
         ProvEventData::IntentResolved { .. } => EventGraphKind::IntentResolved,
@@ -463,6 +480,9 @@ pub fn event_kind_from_data(data: &ProvEventData) -> EventGraphKind {
         ProvEventData::HostSourcePollRecorded { .. } => EventGraphKind::HostSourcePollRecorded,
         ProvEventData::HostDispatchAccepted { .. } => EventGraphKind::HostDispatchAccepted,
         ProvEventData::HostDispatchRejected { .. } => EventGraphKind::HostDispatchRejected,
+        ProvEventData::ContextCompactionRecorded { .. } => {
+            EventGraphKind::ContextCompactionRecorded
+        }
     }
 }
 
@@ -493,6 +513,7 @@ pub fn mapping_for_event_kind(kind: EventGraphKind) -> &'static EventGraphMappin
         EventGraphKind::HostSourcePollRecorded => &MAPPING_HOST_SOURCE_POLL_RECORDED,
         EventGraphKind::HostDispatchAccepted => &MAPPING_HOST_DISPATCH_ACCEPTED,
         EventGraphKind::HostDispatchRejected => &MAPPING_HOST_DISPATCH_REJECTED,
+        EventGraphKind::ContextCompactionRecorded => &MAPPING_CONTEXT_COMPACTION_RECORDED,
     }
 }
 

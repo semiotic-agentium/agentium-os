@@ -427,6 +427,13 @@ pub enum ConversationHistoryContentDto {
         #[serde(skip_serializing_if = "Option::is_none")]
         new_status: Option<String>,
     },
+    CompactionSummary {
+        summary: String,
+        covered_event_order_start: u64,
+        covered_event_order_end: u64,
+        #[serde(default, skip_serializing_if = "is_false")]
+        expandable: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -600,6 +607,16 @@ impl From<ConversationItemContent> for ConversationHistoryContentDto {
             },
             ConversationItemContent::Operational(op) => op.into(),
             ConversationItemContent::Planning(plan) => plan.into(),
+            ConversationItemContent::CompactionSummary {
+                summary,
+                covered_event_order_start,
+                covered_event_order_end,
+            } => Self::CompactionSummary {
+                summary,
+                covered_event_order_start,
+                covered_event_order_end,
+                expandable: true,
+            },
         }
     }
 }

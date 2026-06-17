@@ -37,6 +37,7 @@
 pub mod builders;
 pub mod bus_subscriber;
 pub mod citation_queries;
+pub mod context_compaction;
 pub mod context_metrics_queries;
 /// Defaults for LLM conversation-context query limits.
 pub mod conversation_context_query;
@@ -89,6 +90,13 @@ pub mod vocabulary;
 
 pub use baml_rt_conversation::provenance_item_to_projection_item;
 pub use bus_subscriber::ProvenanceBusSubscriber;
+pub use context_compaction::{
+    ContextCompactionHead, ContextCompactionPolicy, ContextCompactionService,
+    ContextCompactionSubscriber, ContextCompactionTrigger, DEFAULT_COMPACTION_ITEM_THRESHOLD,
+    DEFAULT_COMPACTION_PROMPT_BYTES_THRESHOLD, DEFAULT_RECENT_TAIL_RETENTION,
+    apply_compaction_profile, build_compaction_summary, select_compactable_range,
+    validate_summary_preserves_archive_refs,
+};
 pub use conversation_context_query::DEFAULT_LLM_CONTEXT_ITEM_CAP;
 pub use conversation_history_resume::{ConversationResumeUiHints, resolve_resume_ui_hints};
 pub use effect_subscriber::ProvenanceEffectSubscriber;

@@ -892,6 +892,9 @@ fn conv_item_to_entries(
         ConversationItemContent::Planning(_) => {
             return Ok(Vec::new());
         }
+        ConversationItemContent::CompactionSummary { .. } => {
+            return Ok(Vec::new());
+        }
     };
 
     *seq += 1;

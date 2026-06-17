@@ -101,6 +101,13 @@ impl ProvActivityId {
     }
 }
 
+impl ProvActivityId {
+    /// Construct from a write-time node ID for cross-event edge references.
+    pub(crate) fn from_write_time_node_id(node_id: impl Into<String>) -> Self {
+        Self(node_id.into())
+    }
+}
+
 define_prov_id_type!(
     /// Provenance agent identifier.
     ProvAgentId,

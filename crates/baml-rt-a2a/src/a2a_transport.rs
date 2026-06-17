@@ -497,11 +497,46 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
         &self,
         scope: &context::RuntimeScope,
     ) -> Result<Option<Value>> {
-        self.project_conversation_to_json(
-            scope,
-            Some(baml_rt_provenance::DEFAULT_LLM_CONTEXT_ITEM_CAP),
-        )
-        .await
+        let json = self
+            .project_conversation_to_json(
+                scope,
+                Some(baml_rt_provenance::DEFAULT_LLM_CONTEXT_ITEM_CAP),
+            )
+            .await?;
+        let Some(store) = self.provenance_store.as_ref() else {
+            return Ok(json);
+        };
+        let needs_emergency = json.as_ref().is_some_and(|value| {
+            value
+                .as_array()
+                .map(|rows| {
+                    baml_rt_tools::prompt_projection::format_conversation_history_transcript(rows)
+                        .len() as u64
+                        >= baml_rt_provenance::DEFAULT_COMPACTION_PROMPT_BYTES_THRESHOLD
+                })
+                .unwrap_or(false)
+        });
+        if needs_emergency {
+            let writer: Arc<dyn ProvenanceWriter> = Arc::clone(store) as Arc<dyn ProvenanceWriter>;
+            let subscriber = baml_rt_provenance::ContextCompactionSubscriber::new(
+                Arc::clone(store),
+                writer,
+                baml_rt_provenance::ContextCompactionPolicy::default(),
+            );
+            subscriber
+                .try_compact(
+                    scope.context_id(),
+                    baml_rt_provenance::ContextCompactionTrigger::PreModelEmergency,
+                )
+                .await;
+            return self
+                .project_conversation_to_json(
+                    scope,
+                    Some(baml_rt_provenance::DEFAULT_LLM_CONTEXT_ITEM_CAP),
+                )
+                .await;
+        }
+        Ok(json)
     }
 
     async fn conversation_history_json_for_intra_dedup(
@@ -609,6 +644,18 @@ async fn wire_provenance_subsystems(
         subscriber.warm_drift_models().await;
         effect_emitter
             .subscribe_effect_subscriber(Arc::new(subscriber))
+            .await;
+    }
+
+    if let Some(store) = archive_store.clone() {
+        effect_emitter
+            .subscribe_effect_subscriber(Arc::new(
+                baml_rt_provenance::ContextCompactionSubscriber::new(
+                    store,
+                    writer.clone(),
+                    baml_rt_provenance::ContextCompactionPolicy::default(),
+                ),
+            ))
             .await;
     }
 

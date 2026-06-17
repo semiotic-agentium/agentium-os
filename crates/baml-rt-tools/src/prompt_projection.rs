@@ -131,6 +131,49 @@ pub enum PromptProjectionContent {
     ToolError { tool_name: String, error: Value },
     /// An individual step within an in-progress session.
     SessionStep(SessionStepPayload),
+    /// Host planning lifecycle row (intent/plan/step status).
+    Planning(PlanningProjectionPayload),
+    /// Compaction summary replacing a covered transcript prefix.
+    CompactionSummary {
+        summary: String,
+        covered_event_order_start: u64,
+        covered_event_order_end: u64,
+    },
+}
+
+/// Planning lifecycle projection payload (mirrors conversation planning rows).
+#[derive(Debug, Clone)]
+pub struct PlanningProjectionPayload {
+    pub kind: PlanningProjectionKind,
+    pub summary: String,
+    pub detail: Option<String>,
+    pub intent_id: Option<String>,
+    pub plan_id: Option<String>,
+    pub step_id: Option<String>,
+    pub old_status: Option<String>,
+    pub new_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanningProjectionKind {
+    IntentResolved,
+    IntentRevised,
+    PlanCommitted,
+    PlanSuperseded,
+    PlanStepStatusChanged,
+}
+
+impl PlanningProjectionKind {
+    #[must_use]
+    pub const fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::IntentResolved => "intent_resolved",
+            Self::IntentRevised => "intent_revised",
+            Self::PlanCommitted => "plan_committed",
+            Self::PlanSuperseded => "plan_superseded",
+            Self::PlanStepStatusChanged => "plan_step_status_changed",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -475,6 +518,53 @@ fn render_projection_content(
 
         PromptProjectionContent::ToolError { tool_name, error } => {
             tool_value_to_rendered_entry(error, tool_name, true, opts.tool_error)
+        }
+
+        PromptProjectionContent::Planning(plan) => {
+            if plan.summary.trim().is_empty() {
+                return RenderedEntry::Filtered;
+            }
+            let mut body = format!("[planning:{}] {}", plan.kind.as_wire_str(), plan.summary);
+            if let Some(ref detail) = plan.detail
+                && !detail.trim().is_empty()
+            {
+                body.push_str(&format!(" — {detail}"));
+            }
+            if let Some(ref step_id) = plan.step_id {
+                body.push_str(&format!(" step={step_id}"));
+            }
+            if let Some(ref new_status) = plan.new_status {
+                body.push_str(&format!(" status={new_status}"));
+            }
+            let h = ref_table.insert_history(
+                HistoryEntry::new(item.activity_anchor.clone(), "plan".to_string()),
+                body.as_str(),
+            );
+            RenderedEntry::One {
+                content: format!("{h} {body}"),
+                message_citations: None,
+            }
+        }
+
+        PromptProjectionContent::CompactionSummary {
+            summary,
+            covered_event_order_start,
+            covered_event_order_end,
+        } => {
+            if summary.trim().is_empty() {
+                return RenderedEntry::Filtered;
+            }
+            let body = format!(
+                "[compaction summary {covered_event_order_start}..{covered_event_order_end}] {summary}"
+            );
+            let h = ref_table.insert_history(
+                HistoryEntry::new(item.activity_anchor.clone(), "compaction".to_string()),
+                body.as_str(),
+            );
+            RenderedEntry::One {
+                content: format!("{h} {body}"),
+                message_citations: None,
+            }
         }
 
         PromptProjectionContent::SessionStep(s) => match &s.op {

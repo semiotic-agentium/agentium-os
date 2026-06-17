@@ -1176,13 +1176,18 @@ impl ProvenanceQueryApi for SurrealProvenanceStore {
         let page = TranscriptEngine::page(
             self,
             TranscriptPageRequest {
-                scope,
+                scope: scope.clone(),
                 limit: limit.unwrap_or(DEFAULT_LLM_CONTEXT_ITEM_CAP),
-                profile: TranscriptProjectionProfile::AgentPromptIndex,
+                profile: TranscriptProjectionProfile::AgentPromptCompacted,
             },
         )
         .await?;
-        Ok(page.items)
+        let head = self.latest_compaction_head(context_id, task_id).await?;
+        Ok(crate::context_compaction::apply_compaction_profile(
+            TranscriptProjectionProfile::AgentPromptCompacted,
+            page.items,
+            head.as_ref(),
+        ))
     }
 
     async fn query_conversation_context_after(

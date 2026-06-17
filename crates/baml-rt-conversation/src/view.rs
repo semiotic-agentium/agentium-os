@@ -92,6 +92,12 @@ pub enum ConversationItemContent {
     Operational(OperationalEventContent),
     /// Intent, plan, and step lifecycle (operator transcript only).
     Planning(PlanningEventContent),
+    /// Host compaction summary replacing a covered prefix in agent-facing projection.
+    CompactionSummary {
+        summary: String,
+        covered_event_order_start: u64,
+        covered_event_order_end: u64,
+    },
 }
 
 /// True when message text is only an FSM opcode label (sometimes mirrored as assistant noise).
@@ -152,6 +158,7 @@ impl ConversationItemContent {
             }
             Self::Operational(op) => op.is_meaningful(),
             Self::Planning(plan) => plan.is_meaningful(),
+            Self::CompactionSummary { summary, .. } => !summary.trim().is_empty(),
         }
     }
 }
@@ -268,6 +275,7 @@ impl ProvenanceConversationContextItem {
             ConversationItemContent::SessionStep(_) => "session_step",
             ConversationItemContent::Operational(_) => "operational_event",
             ConversationItemContent::Planning(_) => "planning_event",
+            ConversationItemContent::CompactionSummary { .. } => "compaction_summary",
         }
     }
 }

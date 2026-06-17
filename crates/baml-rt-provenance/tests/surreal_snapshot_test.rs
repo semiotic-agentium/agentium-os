@@ -303,6 +303,17 @@ fn normalize_context_item(
             false,
             false,
         ),
+        ConversationItemContent::CompactionSummary { .. } => (
+            vec![
+                "summary".to_string(),
+                "covered_event_order_start".to_string(),
+                "covered_event_order_end".to_string(),
+            ],
+            None,
+            None,
+            false,
+            false,
+        ),
     };
 
     NormalizedContextItem {

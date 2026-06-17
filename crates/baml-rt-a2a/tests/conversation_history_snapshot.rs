@@ -134,8 +134,8 @@ use baml_rt_core::{
     ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
-    CallScope, ProvEvent, ProvenanceContextReader, ProvenanceWriter, SurrealStoreBuilder,
-    prepare_ref_table_for_projection,
+    CallScope, PlanStepSpec, ProvEvent, ProvenanceContextReader, ProvenanceWriter,
+    SurrealStoreBuilder, prepare_ref_table_for_projection,
 };
 use baml_rt_tools::{
     archive_read::{ShortRef, format_session_read_from_vtable, render_to_lines},
@@ -340,6 +340,122 @@ async fn conversation_history_renders_like_ctx_tags() {
     let history = project_prompt_context(projection_items, &registry, &ref_table, Some(&reader));
 
     insta::assert_json_snapshot!(history);
+}
+
+#[tokio::test]
+async fn conversation_history_includes_active_planning_state() {
+    let store = SurrealStoreBuilder::in_memory_isolated()
+        .build()
+        .await
+        .expect("build isolated test store");
+    let context_id = ContextId::new(1_700_000_000_100, 1);
+    let ctx_key = context_id.as_str().to_string();
+    let task_id = TaskId::from_external(ExternalId::new("planning-task-1"));
+    let msg_id = MessageId::from_external(ExternalId::new("planning-msg-1"));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap());
+
+    store
+        .add_event(ProvEvent::agent_booted(
+            agent_id.clone(),
+            baml_rt_provenance::AgentType::new("planning-demo").expect("type"),
+            "1.0.0".to_string(),
+            "planning-demo@1.0.0".to_string(),
+        ))
+        .await
+        .expect("agent_booted");
+    wall_clock_tick().await;
+
+    store
+        .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+        .await
+        .expect("task_exists");
+    wall_clock_tick().await;
+
+    store
+        .add_event(ProvEvent::task_execution_started(
+            context_id.clone(),
+            task_id.clone(),
+            agent_id.clone(),
+        ))
+        .await
+        .expect("task_execution_started");
+    wall_clock_tick().await;
+
+    store
+        .add_event(ProvEvent::message_received_global(
+            context_id.clone(),
+            msg_id.clone(),
+            "user".into(),
+            vec!["investigate checkout 5xx".into()],
+            None,
+            agent_id.clone(),
+            1_700_000_000_100,
+        ))
+        .await
+        .expect("message_received");
+    wall_clock_tick().await;
+
+    store
+        .add_event(ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-checkout",
+            "Debug checkout 5xx errors".to_string(),
+            vec![],
+            None,
+            None,
+        ))
+        .await
+        .expect("intent_resolved");
+    wall_clock_tick().await;
+
+    store
+        .add_event(ProvEvent::plan_generated(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-checkout",
+            "plan-checkout",
+            vec![
+                PlanStepSpec {
+                    step_id: "step-discover".into(),
+                    description: "Inspect traces and logs".to_string(),
+                    order: 1,
+                    depends_on: vec![],
+                },
+                PlanStepSpec {
+                    step_id: "step-remediate".into(),
+                    description: "Propose rollback if needed".to_string(),
+                    order: 2,
+                    depends_on: vec!["step-discover".into()],
+                },
+            ],
+            None,
+        ))
+        .await
+        .expect("plan_generated");
+    wall_clock_tick().await;
+
+    let raw_items = store
+        .conversation_context(&context_id, None)
+        .await
+        .expect("conversation_context");
+
+    let projection_items: Vec<_> = raw_items
+        .into_iter()
+        .filter_map(baml_rt_conversation::provenance_item_to_projection_item)
+        .collect();
+
+    let registry = discover_stub::registry();
+    let ref_table =
+        prepare_ref_table_for_projection(&store, &context_id, &projection_items, &registry)
+            .await
+            .expect("graph-backed ref table");
+    let tables: ContextRefTables = ContextRefTables::new();
+    tables.insert(ctx_key, Arc::clone(&ref_table));
+    let history = project_prompt_context(projection_items, &registry, &ref_table, None);
+
+    insta::assert_json_snapshot!("planning_history_in_transcript", history);
 }
 
 #[tokio::test]

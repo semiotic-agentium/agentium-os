@@ -52,7 +52,43 @@ pub fn provenance_item_to_projection_item(
             ToolOutcome::StatusOnly => return None,
         },
         ConversationItemContent::Operational(_) => return None,
-        ConversationItemContent::Planning(_) => return None,
+        ConversationItemContent::Planning(plan) => {
+            PromptProjectionContent::Planning(baml_rt_tools::prompt_projection::PlanningProjectionPayload {
+                kind: match plan.kind {
+                    crate::planning::PlanningEventKind::IntentResolved => {
+                        baml_rt_tools::prompt_projection::PlanningProjectionKind::IntentResolved
+                    }
+                    crate::planning::PlanningEventKind::IntentRevised => {
+                        baml_rt_tools::prompt_projection::PlanningProjectionKind::IntentRevised
+                    }
+                    crate::planning::PlanningEventKind::PlanCommitted => {
+                        baml_rt_tools::prompt_projection::PlanningProjectionKind::PlanCommitted
+                    }
+                    crate::planning::PlanningEventKind::PlanSuperseded => {
+                        baml_rt_tools::prompt_projection::PlanningProjectionKind::PlanSuperseded
+                    }
+                    crate::planning::PlanningEventKind::PlanStepStatusChanged => {
+                        baml_rt_tools::prompt_projection::PlanningProjectionKind::PlanStepStatusChanged
+                    }
+                },
+                summary: plan.summary.clone(),
+                detail: plan.detail.clone(),
+                intent_id: plan.intent_id.clone(),
+                plan_id: plan.plan_id.clone(),
+                step_id: plan.step_id.clone(),
+                old_status: plan.old_status.clone(),
+                new_status: plan.new_status.clone(),
+            })
+        }
+        ConversationItemContent::CompactionSummary {
+            summary,
+            covered_event_order_start,
+            covered_event_order_end,
+        } => PromptProjectionContent::CompactionSummary {
+            summary: summary.clone(),
+            covered_event_order_start,
+            covered_event_order_end,
+        },
         ConversationItemContent::SessionStep(step) => {
             let projection_op = match step.op {
                 SessionStepOp::Open => SessionStepProjection::Open,
@@ -168,6 +204,69 @@ mod tests {
                 assert_eq!(citations, vec!["#1"]);
             }
             _ => panic!("expected Message"),
+        }
+    }
+
+    #[test]
+    fn planning_maps_to_planning_projection() {
+        use baml_rt_tools::prompt_projection::{PlanningProjectionKind, PromptProjectionContent};
+
+        use crate::planning::{PlanningEventContent, PlanningEventKind};
+
+        let item = ProvenanceConversationContextItem {
+            timestamp_ms: 1,
+            activity_anchor: ActivityAnchorId::from_counter(1),
+            role: "system".into(),
+            content: ConversationItemContent::Planning(PlanningEventContent {
+                kind: PlanningEventKind::PlanStepStatusChanged,
+                summary: "discover completed".into(),
+                detail: None,
+                intent_id: None,
+                plan_id: Some("plan-1".into()),
+                step_id: Some("step-discover".into()),
+                old_status: None,
+                new_status: Some("completed".into()),
+            }),
+            user_speaker_kind: None,
+        };
+        let p = provenance_item_to_projection_item(item).expect("proj");
+        match p.content {
+            PromptProjectionContent::Planning(plan) => {
+                assert_eq!(plan.kind, PlanningProjectionKind::PlanStepStatusChanged);
+                assert_eq!(plan.summary, "discover completed");
+                assert_eq!(plan.step_id.as_deref(), Some("step-discover"));
+            }
+            _ => panic!("expected Planning"),
+        }
+    }
+
+    #[test]
+    fn compaction_summary_maps_to_projection() {
+        use baml_rt_tools::prompt_projection::PromptProjectionContent;
+
+        let item = ProvenanceConversationContextItem {
+            timestamp_ms: 100,
+            activity_anchor: ActivityAnchorId::from_counter(99),
+            role: "system".into(),
+            content: ConversationItemContent::CompactionSummary {
+                summary: "earlier work".into(),
+                covered_event_order_start: 10,
+                covered_event_order_end: 90,
+            },
+            user_speaker_kind: None,
+        };
+        let p = provenance_item_to_projection_item(item).expect("proj");
+        match p.content {
+            PromptProjectionContent::CompactionSummary {
+                summary,
+                covered_event_order_start,
+                covered_event_order_end,
+            } => {
+                assert_eq!(summary, "earlier work");
+                assert_eq!(covered_event_order_start, 10);
+                assert_eq!(covered_event_order_end, 90);
+            }
+            _ => panic!("expected CompactionSummary"),
         }
     }
 }
