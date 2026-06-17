@@ -19,7 +19,7 @@
 
 pub mod channel;
 pub mod digest;
-#[cfg(feature = "sandbox-provider")]
+#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 pub mod exec_adapter;
 pub mod handler;
 pub mod invoker;

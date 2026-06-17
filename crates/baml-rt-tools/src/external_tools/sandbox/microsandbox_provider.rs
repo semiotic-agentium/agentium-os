@@ -5,17 +5,21 @@
 //! First concrete [`SandboxProvider`] — thin wrapper over the `microsandbox`
 //! crate (`tool_sandbox.md` §7.3).
 //!
-//! Behind the `sandbox-provider` Cargo feature. When the feature is off
-//! (the default), [`MicrosandboxProvider::new`] returns an error explaining
-//! sandbox support wasn't compiled in. This is a pragmatic beta-containment
-//! measure and does not contradict §15's "opt-in by metadata declaration"
-//! rule — metadata still drives activation; the feature gate only controls
-//! whether the provider can be built at all.
+//! Behind the `sandbox-provider` Cargo feature *and* `target_os = "linux"`.
+//! [`MicrosandboxProvider::new`] has three behaviors:
+//!   - Linux + feature → real provider
+//!   - non-Linux + feature → `Ok` stub (lets the runner start; sandbox ops
+//!     error at runtime — microsandbox is never linked off Linux)
+//!   - feature off → `Err` explaining sandbox support wasn't compiled in
+//!
+//! This is a pragmatic beta-containment measure and does not contradict §15's
+//! "opt-in by metadata declaration" rule — metadata still drives activation;
+//! the feature gate only controls whether the provider can be built at all.
 //!
 //! ## Platform constraints (§15)
-//! - Linux with KVM (primary)
-//! - Apple Silicon macOS (dev)
-//! - Intel Mac / Windows: unsupported
+//! - Linux with KVM (primary production target)
+//! - macOS / Windows: always stub — microsandbox is not linked; `create` and
+//!   `reattach` return errors at runtime if invoked
 //!
 //! ## API mapping to microsandbox 0.3.13
 //! | Trait method | microsandbox API |
@@ -38,7 +42,7 @@
 //! On reattach, the provider does a lightweight `exec` into the guest to
 //! read them back. This is cheap and avoids adding a new sidecar protocol.
 
-#[cfg(feature = "sandbox-provider")]
+#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 use std::{
     sync::Arc,
     time::{Duration, SystemTime},
@@ -46,10 +50,10 @@ use std::{
 
 use async_trait::async_trait;
 use baml_rt_core::{BamlRtError, Result};
-#[cfg(feature = "sandbox-provider")]
+#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 use dashmap::DashMap;
 use futures_util::stream::{self, BoxStream};
-#[cfg(feature = "sandbox-provider")]
+#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 use tracing::{debug, info, warn};
 
 use super::{
@@ -57,7 +61,7 @@ use super::{
     provider::SandboxProvider,
     spec::{SandboxEvent, SandboxHandle, SandboxSpec},
 };
-#[cfg(feature = "sandbox-provider")]
+#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 use super::{
     exec_adapter::exec_handle_into_channel,
     spec::{PullPolicy, SandboxImageSource, SecretBindingMode},
@@ -65,33 +69,39 @@ use super::{
 
 /// Env-var names used to stash reattach metadata inside the guest. Chosen
 /// under the `BAML_` prefix so they don't collide with tool-author vars.
-#[cfg(feature = "sandbox-provider")]
+#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 const STASH_POLICY_HASH: &str = "BAML_POLICY_HASH";
-#[cfg(feature = "sandbox-provider")]
+#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 const STASH_MAX_DURATION_SECS: &str = "BAML_MAX_DURATION_SECS";
-#[cfg(feature = "sandbox-provider")]
+#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 const STASH_IDLE_TIMEOUT_SECS: &str = "BAML_IDLE_TIMEOUT_SECS";
-#[cfg(feature = "sandbox-provider")]
+#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 const STASH_GUEST_WORKDIR: &str = "BAML_GUEST_WORKDIR";
 /// How long to wait for `stop_and_wait` before falling back to `kill`.
-#[cfg(feature = "sandbox-provider")]
+#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Microsandbox-backed provider. Construction is fallible because sandbox
 /// support may be compiled out (`sandbox-provider` feature).
 pub struct MicrosandboxProvider {
-    #[cfg(feature = "sandbox-provider")]
+    #[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
     live: Arc<DashMap<String, microsandbox::Sandbox>>,
-    #[cfg(not(feature = "sandbox-provider"))]
+    #[cfg(not(all(feature = "sandbox-provider", target_os = "linux")))]
     _unused: std::marker::PhantomData<()>,
 }
 
 impl MicrosandboxProvider {
     pub fn new() -> Result<Self> {
-        #[cfg(feature = "sandbox-provider")]
+        #[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
         {
             Ok(Self {
                 live: Arc::new(DashMap::new()),
+            })
+        }
+        #[cfg(all(feature = "sandbox-provider", not(target_os = "linux")))]
+        {
+            Ok(Self {
+                _unused: std::marker::PhantomData,
             })
         }
         #[cfg(not(feature = "sandbox-provider"))]
@@ -104,12 +114,12 @@ impl MicrosandboxProvider {
     }
 }
 
-#[cfg(feature = "sandbox-provider")]
+#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 fn to_rt_err<E: std::fmt::Display>(context: &str, err: E) -> BamlRtError {
     BamlRtError::InvalidArgument(format!("{context}: {err}"))
 }
 
-#[cfg(feature = "sandbox-provider")]
+#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 fn clamp_cpus(cpus: u32) -> u8 {
     // microsandbox's `.cpus` takes u8; our spec uses u32. Clamp with a warn
     // so oversized requests don't silently wrap.
@@ -134,7 +144,7 @@ fn clamp_cpus(cpus: u32) -> u8 {
 // value. The builder's default is `IfMissing`, which is also our default,
 // so non-default policies fall through to a no-op until §D.
 
-#[cfg(feature = "sandbox-provider")]
+#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 #[async_trait]
 impl SandboxProvider for MicrosandboxProvider {
     async fn create(&self, spec: SandboxSpec) -> Result<SandboxHandle> {
@@ -435,7 +445,7 @@ impl SandboxProvider for MicrosandboxProvider {
 /// Run `env` / `printenv` inside the guest to recover the stashed reattach
 /// metadata (§9.4). Failure is treated as "no metadata available" so the
 /// caller can fall back to cold-create semantics.
-#[cfg(feature = "sandbox-provider")]
+#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 async fn recover_reattach_metadata(
     sandbox: &microsandbox::Sandbox,
 ) -> Result<(Option<String>, Duration, Duration, String)> {
@@ -480,17 +490,24 @@ async fn recover_reattach_metadata(
     ))
 }
 
-#[cfg(not(feature = "sandbox-provider"))]
+/// Why the stub provider refuses sandbox ops. Covers both reasons the stub is
+/// compiled: the `sandbox-provider` feature is off, or the target isn't Linux
+/// (microsandbox is Linux-only and never linked elsewhere).
+#[cfg(not(all(feature = "sandbox-provider", target_os = "linux")))]
+const SANDBOX_UNAVAILABLE: &str =
+    "sandbox provider unavailable: requires the 'sandbox-provider' feature on a Linux target";
+
+#[cfg(not(all(feature = "sandbox-provider", target_os = "linux")))]
 #[async_trait]
 impl SandboxProvider for MicrosandboxProvider {
     async fn create(&self, _spec: SandboxSpec) -> Result<SandboxHandle> {
         Err(BamlRtError::InvalidArgument(
-            "sandbox-provider feature is disabled".to_string(),
+            SANDBOX_UNAVAILABLE.to_string(),
         ))
     }
     async fn rpc_channel(&self, _handle: &SandboxHandle) -> Result<TsrpcChannel> {
         Err(BamlRtError::InvalidArgument(
-            "sandbox-provider feature is disabled".to_string(),
+            SANDBOX_UNAVAILABLE.to_string(),
         ))
     }
     async fn teardown(&self, _handle: &SandboxHandle) -> Result<()> {
@@ -504,7 +521,7 @@ impl SandboxProvider for MicrosandboxProvider {
     }
     async fn reattach(&self, _name: &str) -> Result<SandboxHandle> {
         Err(BamlRtError::InvalidArgument(
-            "sandbox-provider feature is disabled".to_string(),
+            SANDBOX_UNAVAILABLE.to_string(),
         ))
     }
 }
