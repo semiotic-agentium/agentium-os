@@ -905,7 +905,7 @@ impl SessionTypeNames {
 ///
 /// 3. **Default safety**:
 ///    Unknown tools default to `Strict` (prevents double-send bugs).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionPolicy {
     /// Open → Send → SearchRead | PageRead → Finish, one Send per hop (default).
     #[default]
@@ -1255,14 +1255,28 @@ pub struct ToolFunctionMetadataExport {
     pub tags: Vec<String>,
     pub secret_requests: Vec<SecretRequest>,
     pub config: Option<ToolConfigMetadata>,
+    /// Config bundle key for config-store lookup. Carried so a reconstructed
+    /// catalog can answer `ToolCatalog::bundle_config`. Runner-side concern;
+    /// `None` for tools without config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_bundle: Option<BundleName>,
     pub origin: ToolOrigin,
     #[serde(default)]
     pub backend: ToolBackend,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
     pub projection_semantics: Option<ToolProjectionSemantics>,
+    /// FSM scheduling policy. Consumed by typegen (`tool_interfaces.rs`) when
+    /// writing the generated tool-card BAML. Defaults to `Strict`.
+    #[serde(default)]
+    pub session_policy: SessionPolicy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_sources: Vec<EventSourceKind>,
+    /// Session-coordination BAML fragment, merged into the generated prelude
+    /// (`_baml_runtime.baml`) by `gather_coordination_fragments`. `None` for
+    /// tools without a coordination flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordination_baml: Option<String>,
 }
 
 impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
@@ -1283,11 +1297,14 @@ impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
             tags: metadata.tags.clone(),
             secret_requests: metadata.secret_requests.clone(),
             config: metadata.config.clone(),
+            config_bundle: metadata.config_bundle.clone(),
             origin: metadata.origin,
             backend: metadata.backend,
             digest: metadata.digest.clone(),
             projection_semantics: metadata.projection_semantics.clone(),
+            session_policy: metadata.session_policy,
             event_sources: metadata.event_sources.clone(),
+            coordination_baml: metadata.coordination_baml.clone(),
         }
     }
 }
