@@ -65,3 +65,4 @@ Full crate tree and runtime flows: [`README.md`](README.md).
 - **Best conversation example:** `tests/fixtures/agents/task-lifecycle-demo/src/index.ts`
 - **Regen fixtures:** `just regen-fixtures` after BAML/tool contract changes
 - **CI:** single nextest workspace job; doc-only changes skip Rust CI (`docs/**`)
+- **Release builds:** `cargo build --profile release-dist` for prebuilt binary reproduction
