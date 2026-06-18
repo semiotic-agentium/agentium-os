@@ -25,6 +25,40 @@ Image tags are nonces (`local-dev-…`) written to `deploy/values/generated/.las
    ```
 4. **Do not** `just release vX.Y.Z` for semver until container images exist at that tag.
 
+## Publish prebuilt Linux binaries
+
+The GitHub Release with prebuilt binaries is created only by pushing a SemVer tag
+that matches `[workspace.package].version` in `Cargo.toml`. Merging to `main`
+does not publish release assets. Manual `workflow_dispatch` runs build dry-runs
+only and does not upload a GitHub Release.
+
+From an up-to-date `main` checkout:
+
+```bash
+git checkout main
+git pull
+VERSION=$(bash scripts/release/workspace-version.sh)
+git tag "v${VERSION}"
+git push origin "v${VERSION}"
+```
+
+Then watch GitHub Actions → **Release publish**. The workflow verifies the tag
+against the workspace version, builds each Linux target natively, and creates or
+updates the GitHub Release.
+
+Expected release assets:
+
+- `agentium-os-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz`
+- `agentium-os-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz`
+- `SHA256SUMS`
+
+If your local remote still points at the old repository path, update it before
+pushing tags:
+
+```bash
+git remote set-url origin git@github.com:semiotic-agentium/agentium-os.git
+```
+
 ## Dev deploy refs (remote GitOps)
 
 Rolling dev on `main` + `latest`:
