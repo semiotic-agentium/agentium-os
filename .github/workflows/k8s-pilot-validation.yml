@@ -68,8 +68,7 @@ jobs:
     needs: changes
     if: |
       needs.changes.outputs.trusted == 'true' &&
-      (github.event_name == 'push' ||
-       github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' ||
        needs.changes.outputs.pilot == 'true')
     timeout-minutes: 60
     permissions:
