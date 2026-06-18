@@ -1309,6 +1309,39 @@ impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
     }
 }
 
+impl From<ToolFunctionMetadataExport> for ToolFunctionMetadata {
+    /// Lossless inverse of [`ToolFunctionMetadataExport::from`]. The export now
+    /// carries every `ToolFunctionMetadata` field, so a serialized catalog
+    /// reconstructs metadata that typegen treats identically to local inventory.
+    fn from(export: ToolFunctionMetadataExport) -> Self {
+        Self {
+            name: export.name,
+            class_name: export.class_name,
+            description: export.description,
+            open_input_schema: export.open_input_schema,
+            input_schema: export.input_schema,
+            output_schema: export.output_schema,
+            open_input_type: export.open_input_type,
+            input_type: export.input_type,
+            output_type: export.output_type,
+            baml_decl: export.baml_decl,
+            extra_ts_decls: export.extra_ts_decls,
+            access: export.access,
+            tags: export.tags,
+            secret_requests: export.secret_requests,
+            config: export.config,
+            config_bundle: export.config_bundle,
+            origin: export.origin,
+            backend: export.backend,
+            digest: export.digest,
+            projection_semantics: export.projection_semantics,
+            session_policy: export.session_policy,
+            event_sources: export.event_sources,
+            coordination_baml: export.coordination_baml,
+        }
+    }
+}
+
 /// Discovery record for tool search (name, bundle, description, tags, access, origin, event_sources).
 /// Lists globally available tools only; no per-agent invokability.
 #[derive(Debug, Clone, Serialize, Deserialize)]
