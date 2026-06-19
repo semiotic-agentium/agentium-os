@@ -61,7 +61,7 @@ pub fn get_session_coordination_baml_for_tools(tool_names: &[String]) -> Result<
 /// Returns `None` when no inventory provider matches `tool_id`. This is the lookup
 /// used by [`gather_coordination_fragments`] to combine inventory and bundle sources
 /// per-tool.
-fn render_inventory_fragment(tool_id: &str) -> Result<Option<String>> {
+pub(crate) fn render_inventory_fragment(tool_id: &str) -> Result<Option<String>> {
     for provider in inventory::iter::<SessionCoordinationProvider> {
         if provider.tool_id == tool_id {
             return Ok(Some((provider.render)()?));

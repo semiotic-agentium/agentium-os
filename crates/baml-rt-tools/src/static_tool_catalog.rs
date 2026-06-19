@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ToolName,
+    session_coordination::render_inventory_fragment,
     tool_catalog::{InventoryCatalog, ToolCatalog},
     tools::{ToolFunctionMetadata, ToolFunctionMetadataExport},
 };
@@ -50,28 +51,39 @@ pub struct StaticToolCatalogResponse {
 impl StaticToolCatalogResponse {
     /// Project any [`ToolCatalog`] into the wire response, stamping build
     /// identity. Tools are sorted by name for stable output.
+    ///
+    /// Static/internal tools carry session-coordination fragments in the
+    /// inventory provider channel, not in `ToolFunctionMetadata`. Inline those
+    /// fragments into `coordination_baml` before serializing so a thin CLI can
+    /// reconstruct the same prelude without linking the tool crate.
     pub fn from_catalog<C: ToolCatalog>(
         catalog: &C,
         runner_version: Option<String>,
         git_sha: Option<String>,
-    ) -> Self {
+    ) -> Result<Self> {
         let mut tools: Vec<ToolFunctionMetadataExport> = catalog
             .iter()
-            .map(ToolFunctionMetadataExport::from)
-            .collect();
+            .map(|metadata| {
+                let mut export = ToolFunctionMetadataExport::from(metadata);
+                if export.coordination_baml.is_none() {
+                    export.coordination_baml = render_inventory_fragment(&export.name.to_string())?;
+                }
+                Ok(export)
+            })
+            .collect::<Result<_>>()?;
         tools.sort_by_key(|tool| tool.name.to_string());
-        Self {
+        Ok(Self {
             schema_version: STATIC_TOOL_CATALOG_SCHEMA_VERSION.to_string(),
             runner_version,
             git_sha,
             tools,
-        }
+        })
     }
 
     /// Project the current process's linked `inventory` into the wire response.
     /// The runner calls this so the response reflects the slim-runner reality
     /// (only the static tools actually compiled into that binary).
-    pub fn from_inventory(runner_version: Option<String>, git_sha: Option<String>) -> Self {
+    pub fn from_inventory(runner_version: Option<String>, git_sha: Option<String>) -> Result<Self> {
         Self::from_catalog(&InventoryCatalog::new(), runner_version, git_sha)
     }
 }
