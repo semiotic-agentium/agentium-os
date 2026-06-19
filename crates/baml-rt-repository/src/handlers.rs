@@ -311,6 +311,25 @@ pub async fn list_approved_external_tool_snapshots(
     Ok(Json(ExternalToolSnapshotsResponse { snapshots, total }))
 }
 
+/// Static (compiled-in) tool catalog of the host runner
+/// (GET /repository/static-tools/snapshots).
+///
+/// Symmetric with the external-tool snapshot listing: this is the builder/typegen
+/// source of truth for static Rust tools, projected from the runner's own linked
+/// `inventory`. Returns 404 when the service was constructed without a host
+/// runner (no inventory to project), e.g. a detached repository.
+pub async fn get_static_tool_catalog(
+    State(svc): State<RepoState>,
+) -> HttpResult<baml_rt_tools::StaticToolCatalogResponse> {
+    match svc.static_tool_catalog() {
+        Some(catalog) => Ok(Json(catalog.clone())),
+        None => Err(not_found(
+            "static tool catalog is not available on this repository (no host runner inventory)"
+                .to_string(),
+        )),
+    }
+}
+
 /// List versions for one external tool (GET /repository/external-tools/versions?tool_name=...).
 pub async fn list_external_tool_versions(
     State(svc): State<RepoState>,

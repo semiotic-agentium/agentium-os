@@ -258,6 +258,7 @@ fn repository_route_metric_label(matched: &MatchedPath) -> &'static str {
         "/external-tools/versions" => "repository_external_tool_list_versions",
         "/external-tools/snapshots/import" => "repository_external_tool_import_snapshot",
         "/external-tools/snapshots/mark-stale" => "repository_external_tool_mark_stale",
+        "/static-tools/snapshots" => "repository_static_tool_catalog",
         "/entries/{hash}/tags" => "repository_tags",
         "/publish" => "repository_publish",
         _ => "repository_unknown",

@@ -69,6 +69,10 @@ pub fn repository_read_router(service: Arc<RepositoryService>) -> Router {
             "/external-tools/versions",
             get(handlers::list_external_tool_versions),
         )
+        .route(
+            "/static-tools/snapshots",
+            get(handlers::get_static_tool_catalog),
+        )
         .with_state(service)
 }
 
@@ -143,6 +147,10 @@ fn repository_router_with_publish(
         .route(
             "/external-tools/versions",
             get(handlers::list_external_tool_versions),
+        )
+        .route(
+            "/static-tools/snapshots",
+            get(handlers::get_static_tool_catalog),
         )
         .route(
             "/external-tools/snapshots/import",
