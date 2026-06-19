@@ -19,6 +19,7 @@ use baml_rt_tools::{
     tool_catalog::resolve_manifest_tools_with_catalog,
     tools::ToolFunctionMetadata,
 };
+#[cfg(feature = "dev-tools")]
 use baml_tools_calculator as _;
 use serde_json::Value;
 
@@ -46,6 +47,7 @@ pub fn render_baml_tool_interfaces_with_roots(
     external_cache_root: Option<&Path>,
 ) -> Result<String> {
     // Force link so inventory sees these metadata registrations (regen_fixtures + builder).
+    #[cfg(feature = "dev-tools")]
     let _ = baml_tools_calculator::support_calculate_metadata;
     let _ = baml_rt_tools_claude::metadata::claude_dev_metadata;
     let _ = baml_tools_system::metadata::system_internal_a2a_metadata;

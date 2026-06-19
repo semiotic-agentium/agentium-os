@@ -15,16 +15,21 @@ baml-rt-conversation = { path = "../baml-rt-conversation" }
 baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-router = { path = "../baml-rt-router" }
 baml-rt-observability = { path = "../baml-rt-observability" }
-baml-rt-builder = { path = "../baml-rt-builder", features = ["http-tools"] }
+baml-rt-builder = { path = "../baml-rt-builder" }
 baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
 baml-rt-repository = { path = "../baml-rt-repository" }
 baml-rt-tools = { path = "../baml-rt-tools" }
-baml-tools-clickup = { path = "../tools/clickup" }
-baml-tools-github = { path = "../tools/github" }
-baml-tools-notion = { path = "../tools/notion" }
-baml-tools-security-eval = { path = "../tools/security-eval" }
-baml-tools-slack = { path = "../tools/slack" }
+# Static tool crates are force-linked only so repository-side publish/typegen
+# builds (POST /repository/publish) see their inventory metadata. They are
+# feature-gated (and forwarded to baml-rt-builder) so a default build of api —
+# and therefore a default runner — does NOT ship them. Production opts in via
+# `--features http-tools` (or per-tool), which propagates up from the runner.
+baml-tools-clickup = { path = "../tools/clickup", optional = true }
+baml-tools-github = { path = "../tools/github", optional = true }
+baml-tools-notion = { path = "../tools/notion", optional = true }
+baml-tools-security-eval = { path = "../tools/security-eval", optional = true }
+baml-tools-slack = { path = "../tools/slack", optional = true }
 baml-tools-system = { path = "../tools/system" }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -55,3 +60,25 @@ tower = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tracing-subscriber = { workspace = true }
+# Needed by the event_console::registry unit test, which deserializes sample
+# payloads into these batch types. Kept available for tests regardless of which
+# tool features are enabled (mirrors how test-support carries calculator).
+baml-tools-clickup = { path = "../tools/clickup" }
+baml-tools-github = { path = "../tools/github" }
+baml-tools-slack = { path = "../tools/slack" }
+
+[features]
+default = []
+# Each tool feature pulls the api-local force-link dep AND forwards to
+# baml-rt-builder so repository-side typegen links the same tool. Downstream
+# (baml-agent-runner) forwards its own same-named features into these.
+clickup = ["dep:baml-tools-clickup", "baml-rt-builder/clickup"]
+github = ["dep:baml-tools-github", "baml-rt-builder/github"]
+notion = ["dep:baml-tools-notion", "baml-rt-builder/notion"]
+slack = ["dep:baml-tools-slack", "baml-rt-builder/slack"]
+security-eval = ["dep:baml-tools-security-eval", "baml-rt-builder/security-eval"]
+# api has no direct dep on these — they ride in solely through builder.
+slack-notify = ["baml-rt-builder/slack-notify"]
+grafana-alerts = ["baml-rt-builder/grafana-alerts"]
+memory = ["baml-rt-builder/memory"]
+http-tools = ["clickup", "github", "notion", "slack", "slack-notify", "security-eval", "grafana-alerts"]

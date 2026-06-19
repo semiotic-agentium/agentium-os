@@ -5,10 +5,16 @@
 //! Event Console HTTP support: message-shape registry and draft validation.
 
 /// Force-link tool crates so descriptor inventory is present in this binary.
+///
+/// Each is gated on its tool feature so a default build does not pull the crate
+/// (and therefore does not register it). `system` is always linked.
 #[allow(unused_imports)]
 mod tool_inventory {
+    #[cfg(feature = "clickup")]
     use baml_tools_clickup as _;
+    #[cfg(feature = "github")]
     use baml_tools_github as _;
+    #[cfg(feature = "slack")]
     use baml_tools_slack as _;
     use baml_tools_system as _;
 }

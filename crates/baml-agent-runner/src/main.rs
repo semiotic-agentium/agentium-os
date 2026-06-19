@@ -46,11 +46,12 @@ use baml_rt_repository::{
 };
 use baml_rt_tools::{
     ACCESS_ALLOWLIST_ENV, EventProducer, InventoryCatalog, ProducerCheckpoint, RawDatasourceIntake,
-    RawDatasourceProducer, WebhookIntake,
+    RawDatasourceProducer, StaticToolCatalogResponse, WebhookIntake,
     external_tools::{load_approved_snapshots_from_dirs, validate_external_tool_snapshot},
     load_configured_event_producers_with_checkpoints, load_configured_webhook_intakes,
     parse_access_allowlist, raw_datasource_spec,
 };
+#[cfg(feature = "dev-tools")]
 use baml_tools_calculator as _;
 #[cfg(feature = "clickup")]
 use baml_tools_clickup as _;
@@ -252,14 +253,26 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
     baml_tools_system::callback_store::install_callback_store(
         deployment_state.clone() as Arc<dyn CallbackStore>
     );
-    let repository_service = Arc::new(RepositoryService::new(
-        repository_store.clone() as Arc<dyn BlobStore>,
-        repository_store.clone() as Arc<dyn MetadataStore>,
-        repository_store.clone() as Arc<dyn LineageStore>,
-        repository_store.clone() as Arc<dyn SearchStore>,
-        repository_store.clone() as Arc<dyn baml_rt_repository::McpRegistryStore>,
-        repository_store as Arc<dyn baml_rt_repository::ExternalToolRegistryStore>,
-    ));
+    // Project this binary's linked static (compiled-in) tool inventory into the
+    // wire catalog and inject it so `GET /repository/static-tools/snapshots`
+    // reflects the slim-runner reality. This binary — not the CLI — is the
+    // source of truth for which static tools exist (Finding 1/4).
+    let static_tool_catalog = StaticToolCatalogResponse::from_inventory(
+        Some(env!("CARGO_PKG_VERSION").to_string()),
+        option_env!("GIT_SHA").map(str::to_string),
+    )
+    .context("Failed to project static tool inventory into catalog response")?;
+    let repository_service = Arc::new(
+        RepositoryService::new(
+            repository_store.clone() as Arc<dyn BlobStore>,
+            repository_store.clone() as Arc<dyn MetadataStore>,
+            repository_store.clone() as Arc<dyn LineageStore>,
+            repository_store.clone() as Arc<dyn SearchStore>,
+            repository_store.clone() as Arc<dyn baml_rt_repository::McpRegistryStore>,
+            repository_store as Arc<dyn baml_rt_repository::ExternalToolRegistryStore>,
+        )
+        .with_static_tool_catalog(static_tool_catalog),
+    );
     let raw_deployments = deployment_state
         .list_deployments()
         .await
