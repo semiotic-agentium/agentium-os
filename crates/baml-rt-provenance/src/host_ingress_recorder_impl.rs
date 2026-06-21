@@ -134,20 +134,8 @@ impl HostIngressRecorder for HostIngressRecorderImpl {
         let context_id = event.context_id.clone().ok_or_else(|| {
             BamlRtError::InvalidArgument("ProducedEvent missing context_id".into())
         })?;
-        let source_kind = event
-            .messages
-            .first()
-            .and_then(|m| m.get("source_kind"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let source_key = event
-            .messages
-            .first()
-            .and_then(|m| m.get("source_key"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
+        let source_kind = event.source_kind.as_str().to_string();
+        let source_key = event.source_key.as_str().to_string();
         let source_cursor = event
             .messages
             .first()

@@ -178,6 +178,53 @@ async fn host_ingress_lineage_events_project_operational_transcript_rows() {
 }
 
 #[tokio::test]
+async fn record_source_poll_uses_event_source_identity_for_non_source_records_payloads() {
+    let store = Arc::new(build_isolated_store().await);
+    let recorder = HostIngressRecorderImpl::new(Arc::clone(&store));
+    let ctx = ContextId::new(12, 34);
+    let event = ProducedEvent {
+        routing_key: AgentDispatchRoutingKey::parse("grafana:intake").expect("routing"),
+        schema_version: EventSchemaVersion::parse("grafana.alert.v1").expect("schema"),
+        source_kind: EventSourceKind::parse("grafana").expect("kind"),
+        source_key: EventSourceKey::parse("grafana:local").expect("key"),
+        messages: vec![json!({
+            "status": "firing",
+            "fingerprint": "fp1",
+            "labels": {"alertname": "HighLatency"}
+        })],
+        context_id: Some(ctx.clone()),
+        task_id: None,
+        message_id: Some("grafana:fp1:firing:start".into()),
+        metadata: None,
+    };
+
+    recorder
+        .record_source_poll(&event)
+        .await
+        .expect("poll lineage");
+
+    let items = store
+        .conversation_context(&ctx, None)
+        .await
+        .expect("conversation_context");
+    assert_eq!(items.len(), 1, "one source poll row: {items:?}");
+    let baml_rt_conversation::view::ConversationItemContent::Operational(op) = &items[0].content
+    else {
+        panic!("expected operational row: {:?}", items[0].content);
+    };
+    assert!(matches!(
+        op.kind,
+        baml_rt_conversation::operational::OperationalEventKind::SourcePollRecorded
+    ));
+    assert!(
+        op.summary.contains("Host source poll: grafana grafana:local"),
+        "source identity should come from ProducedEvent, got: {}",
+        op.summary
+    );
+    assert!(op.summary.contains("schema grafana.alert.v1"));
+}
+
+#[tokio::test]
 async fn host_dispatch_rejected_projects_operational_row() {
     let store = build_isolated_store().await;
     let ctx = ContextId::new(11, 22);
