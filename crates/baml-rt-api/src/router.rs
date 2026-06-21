@@ -450,6 +450,7 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(handlers::list_agents))
         .routes(utoipa_axum::routes!(handlers::get_context_index))
         .routes(utoipa_axum::routes!(handlers::get_mermaid_context))
+        .routes(utoipa_axum::routes!(handlers::get_mermaid_context_full))
         .routes(utoipa_axum::routes!(handlers::get_mermaid_task))
         .routes(utoipa_axum::routes!(handlers::get_context_metrics))
         .routes(utoipa_axum::routes!(handlers::get_context_planning))

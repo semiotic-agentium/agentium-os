@@ -8,8 +8,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::{
-    EventSchemaVersion,
+    AgentRouteKey, EventSchemaVersion,
     context::{InvocationScope, RuntimeScope},
+    event_subscription::{EventSourceKey, EventSourceKind},
+    host_poll_lineage::stable_external_id,
     ids::{AgentId, ContextId, ExternalId, MessageId, TaskId},
 };
 
@@ -65,6 +67,15 @@ pub struct AgentDispatchRequest {
     /// Optional caller-supplied message id for provenance continuity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
+    /// Generic host event source kind propagated from [`crate::ProducedEvent`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<EventSourceKind>,
+    /// Generic host event source key propagated from [`crate::ProducedEvent`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_key: Option<EventSourceKey>,
+    /// Bounded producer registry key when dispatch originated from a host event producer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_key: Option<String>,
     /// Optional transport metadata for the receiving agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
@@ -148,6 +159,42 @@ impl AgentDispatchAck {
         self.task_id = scope.task_id_opt().map(|t| t.to_string());
         self
     }
+}
+
+/// Ensure host-published dispatch has a stable task scope for downstream tool/A2A provenance.
+///
+/// Direct/manual dispatch stays unchanged. Produced events with context + message id get one
+/// deterministic task per target route so `onDispatch` tool sessions and internal A2A calls record
+/// under the same context graph instead of a context-only message scope.
+pub fn ensure_dispatch_task_scope(request: &mut AgentDispatchRequest, target: &AgentRouteKey) {
+    if request.task_id.is_some() || request.context_id.is_none() || request.message_id.is_none() {
+        return;
+    }
+    let context_id = request.context_id.as_ref().expect("checked above");
+    let message_id = request.message_id.as_deref().expect("checked above");
+    let source_kind = request
+        .source_kind
+        .as_ref()
+        .map(EventSourceKind::as_str)
+        .unwrap_or("");
+    let source_key = request
+        .source_key
+        .as_ref()
+        .map(EventSourceKey::as_str)
+        .unwrap_or("");
+    request.task_id = Some(TaskId::from_external(ExternalId::new(stable_external_id(
+        "host-event-dispatch",
+        &[
+            context_id.as_str(),
+            message_id,
+            request.routing_key.as_str(),
+            request.message_type.as_str(),
+            source_kind,
+            source_key,
+            target.agent_package.as_str(),
+            target.agent_instance_id.as_str(),
+        ],
+    ))));
 }
 
 /// Build the invocation scope for a host [`AgentDispatchRequest`].

@@ -157,6 +157,7 @@ impl HostIngressRecorder for HostIngressRecorderImpl {
             source_cursor,
             event.schema_version.as_str().to_string(),
             record_count,
+            event.producer_key.clone(),
             source_message_ts,
         );
         self.store
@@ -250,6 +251,7 @@ impl HostIngressRecorder for HostIngressRecorderImpl {
             target,
             source_kind,
             source_key,
+            request.producer_key.clone(),
         );
         self.store
             .add_event_with_logging(prov_event, "host dispatch accepted")
@@ -274,6 +276,7 @@ impl HostIngressRecorder for HostIngressRecorderImpl {
             schema_version: request.message_type.clone(),
             target,
             source: HostIngressSourceRef::from_dispatch_request(request),
+            producer_key: request.producer_key.clone(),
             detail: detail.to_string(),
             failure_kind: HostDispatchFailureKind::from_transport_flag(transport_failure),
         });

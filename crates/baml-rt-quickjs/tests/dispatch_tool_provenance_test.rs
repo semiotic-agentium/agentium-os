@@ -152,6 +152,9 @@ async fn on_dispatch_tool_session_materializes_tool_calls_in_provenance() {
         context_id: Some(context_id.clone()),
         task_id: Some(task_id.clone()),
         message_id: Some("system/callback:test-dispatch".to_string()),
+        source_kind: None,
+        source_key: None,
+        producer_key: None,
         metadata: None,
     };
 

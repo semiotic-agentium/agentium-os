@@ -17,6 +17,7 @@ use crate::{
     AgentRouteKey, DispatchTarget, EventDeliveryOutcome, HostIngressRecorder, ProducedEvent,
     Result, SubscriberAcceptance, SubscriberDeliveryFailure,
     deployed_agent_lookup::DeployedAgentLookup,
+    ensure_dispatch_task_scope,
     event_subscription::{PublishedEvent, subscriptions_match_published_event},
 };
 
@@ -195,7 +196,9 @@ pub async fn deliver_to_subscribers(
     };
 
     for target in &targets {
-        match port.dispatch(target, request.clone()).await {
+        let mut request = request.clone();
+        ensure_dispatch_task_scope(&mut request, target);
+        match port.dispatch(target, request).await {
             Ok(ack) if ack.accepted => {
                 outcome.subscribers_accepted += 1;
                 outcome.acceptances.push(SubscriberAcceptance {

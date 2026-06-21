@@ -185,6 +185,7 @@ impl StubProducer {
             context_id: None,
             task_id: None,
             message_id: Some("test-msg-001".into()),
+            producer_key: None,
             metadata: None,
         }
     }
@@ -300,6 +301,7 @@ async fn deliver_event_returns_zero_outcome_when_no_subscribers() {
         context_id: None,
         task_id: None,
         message_id: None,
+        producer_key: None,
         metadata: None,
     };
 
@@ -364,6 +366,7 @@ async fn checkpoint_advances_when_no_subscribers() {
             context_id: None,
             task_id: None,
             message_id: None,
+            producer_key: None,
             metadata: None,
         }],
         next_checkpoint: ProducerCheckpoint::some("cursor-no-subscribers"),
@@ -432,6 +435,7 @@ async fn system_callback_checkpoint_not_advanced_without_subscribers() {
             context_id: None,
             task_id: None,
             message_id: None,
+            producer_key: None,
             metadata: None,
         }],
         next_checkpoint: ProducerCheckpoint::some("cursor-after-callback-delivery"),
@@ -491,6 +495,7 @@ async fn system_callback_checkpoint_advances_when_subscriber_matches() {
             context_id: None,
             task_id: None,
             message_id: None,
+            producer_key: None,
             metadata: None,
         }],
         next_checkpoint: ProducerCheckpoint::some("cursor-after-callback-delivery"),
@@ -701,6 +706,7 @@ async fn raw_source_records_deliver_to_slack_subscriber() {
         context_id: None,
         task_id: None,
         message_id: None,
+        producer_key: None,
         metadata: None,
     };
 

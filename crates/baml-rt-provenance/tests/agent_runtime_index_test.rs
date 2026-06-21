@@ -67,6 +67,7 @@ async fn dispatch_without_boot_does_not_index_route_stub() {
             ),
             "clickup".to_string(),
             "clickup:list:1".to_string(),
+            None,
         ))
         .await
         .expect("dispatch without target agent");

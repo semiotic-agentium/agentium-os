@@ -36,6 +36,29 @@ describe("fetchContextMermaidDiagram", () => {
       vi.fn().mockResolvedValue({ ok: true, text: async () => body }),
     );
     await expect(fetchContextMermaidDiagram("ctx-1")).resolves.toBe(body);
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith("/contexts/ctx-1/mermaid");
+  });
+
+  it("uses full endpoint when requested", async () => {
+    const body = "sequenceDiagram\n  Root->>Child: a2a";
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => body });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchContextMermaidDiagram("ctx-1", { full: true })).resolves.toBe(body);
+    expect(fetchMock).toHaveBeenCalledWith("/contexts/ctx-1/mermaid/full");
+  });
+
+  it("encodes context IDs in path segments", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => "sequenceDiagram\n  A->>B",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchContextMermaidDiagram("a2a:ctx-1:pkg/default:task");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/contexts/a2a%3Actx-1%3Apkg%2Fdefault%3Atask/mermaid",
+    );
   });
 
   it("returns empty string on non-ok, invalid body, or fetch error", async () => {
@@ -68,6 +91,22 @@ describe("fetchContextMermaidDiagram", () => {
     ]);
     expect(a).toBe(b);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps exact and full requests separate", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => "sequenceDiagram\n  A->>B",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await Promise.all([
+      fetchContextMermaidDiagram("ctx-scope"),
+      fetchContextMermaidDiagram("ctx-scope", { full: true }),
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/contexts/ctx-scope/mermaid");
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/contexts/ctx-scope/mermaid/full");
   });
 });
 

@@ -5,8 +5,7 @@
 //! Typed host ingress transcript identity parts (no stringly `unknown` buckets).
 
 use baml_rt_core::{
-    AgentDispatchRequest, AgentDispatchRoutingKey, EventSchemaVersion, host_wire::wire,
-    ids::ContextId,
+    AgentDispatchRequest, AgentDispatchRoutingKey, EventSchemaVersion, ids::ContextId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -72,17 +71,13 @@ impl HostIngressSourceRef {
 
     #[must_use]
     pub fn from_dispatch_request(request: &AgentDispatchRequest) -> Self {
-        if request.message_type.as_str() == wire::HOST_SOURCE_RECORDS_V1
-            && let Some(batch) = request.messages.first()
-            && let Some(kind) = batch.get("source_kind").and_then(|v| v.as_str())
-            && let Some(key) = batch.get("source_key").and_then(|v| v.as_str())
-        {
-            return Self::SourceRecords {
-                kind: kind.to_string(),
-                key: key.to_string(),
-            };
+        match (&request.source_kind, &request.source_key) {
+            (Some(kind), Some(key)) => Self::SourceRecords {
+                kind: kind.as_str().to_string(),
+                key: key.as_str().to_string(),
+            },
+            _ => Self::Unspecified,
         }
-        Self::Unspecified
     }
 
     #[must_use]
@@ -138,6 +133,7 @@ pub struct HostDispatchRejectedSpec {
     pub schema_version: EventSchemaVersion,
     pub target: baml_rt_core::DispatchTarget,
     pub source: HostIngressSourceRef,
+    pub producer_key: Option<String>,
     pub detail: String,
     pub failure_kind: HostDispatchFailureKind,
 }
