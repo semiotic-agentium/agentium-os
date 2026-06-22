@@ -124,6 +124,7 @@ impl GrafanaAlertEventProducer {
             context_id: Some(context_id),
             task_id: None,
             message_id: Some(envelope.message_id),
+            producer_key: None,
             metadata: None,
         })
     }

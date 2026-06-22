@@ -58,6 +58,9 @@ fn make_dispatch_request(
         context_id: None,
         task_id: None,
         message_id: None,
+        source_kind: None,
+        source_key: None,
+        producer_key: None,
         metadata: None,
     }
 }

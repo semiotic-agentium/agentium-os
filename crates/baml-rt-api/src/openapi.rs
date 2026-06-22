@@ -66,6 +66,12 @@ pub struct AgentDispatchRequestDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Object)]
     pub metadata: Option<Value>,
 }
@@ -209,6 +215,9 @@ impl TryFrom<AgentDispatchRequestDto> for baml_rt_core::AgentDispatchRequest {
             context_id,
             task_id,
             message_id,
+            source_kind,
+            source_key,
+            producer_key,
             metadata,
         } = value;
 
@@ -231,6 +240,24 @@ impl TryFrom<AgentDispatchRequestDto> for baml_rt_core::AgentDispatchRequest {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned);
+        let source_kind = source_kind
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                baml_rt_core::EventSourceKind::parse(value)
+                    .ok_or_else(|| "source_kind must be non-empty when provided".to_string())
+            })
+            .transpose()?;
+        let source_key = source_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                baml_rt_core::EventSourceKey::parse(value)
+                    .ok_or_else(|| "source_key must be non-empty when provided".to_string())
+            })
+            .transpose()?;
 
         Ok(Self {
             routing_key: baml_rt_core::AgentDispatchRoutingKey::parse(&routing_key)
@@ -241,6 +268,13 @@ impl TryFrom<AgentDispatchRequestDto> for baml_rt_core::AgentDispatchRequest {
             context_id,
             task_id,
             message_id,
+            source_kind,
+            source_key,
+            producer_key: producer_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
             metadata,
         })
     }
@@ -262,6 +296,8 @@ pub struct ProducedEventDto {
     pub task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Object)]
     pub metadata: Option<Value>,
@@ -290,6 +326,7 @@ impl TryFrom<ProducedEventDto> for baml_rt_core::ProducedEvent {
                 .task_id
                 .map(|id| TaskId::from_external(baml_rt_core::ids::ExternalId::new(id))),
             message_id: value.message_id,
+            producer_key: value.producer_key,
             metadata: value.metadata,
         })
     }
@@ -376,6 +413,9 @@ mod tests {
             context_id: None,
             task_id: None,
             message_id: Some("  dispatch-msg-1  ".to_string()),
+            source_kind: None,
+            source_key: None,
+            producer_key: None,
             metadata: None,
         };
 

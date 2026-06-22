@@ -34,8 +34,11 @@ impl Error for MermaidError {}
 /// The runtime implements this when provenance (SurrealDB) is enabled.
 #[async_trait::async_trait]
 pub trait MermaidService: Send + Sync {
-    /// Return a Mermaid diagram (e.g. sequenceDiagram) for the given context id.
+    /// Return a Mermaid diagram (e.g. sequenceDiagram) for the exact given context id.
     async fn mermaid_for_context(&self, context_id: &str) -> Result<String, MermaidError>;
+
+    /// Return a Mermaid diagram for the given context id plus A2A child contexts.
+    async fn mermaid_for_context_full(&self, context_id: &str) -> Result<String, MermaidError>;
 
     /// Return a Mermaid diagram for the given task id.
     async fn mermaid_for_task(&self, task_id: &str) -> Result<String, MermaidError>;

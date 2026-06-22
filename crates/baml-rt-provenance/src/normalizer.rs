@@ -2493,6 +2493,7 @@ fn normalize_event_with_registry(
             source_cursor,
             schema_version,
             record_count,
+            producer_key,
             ..
         } => {
             use crate::host_ingress_transcript::format_source_poll_summary;
@@ -2513,6 +2514,16 @@ fn normalize_event_with_registry(
                 Value::String(source_key.clone()),
             );
             extra.insert(
+                a2a::HOST_INGRESS_SCHEMA_VERSION.to_string(),
+                Value::String(schema_version.clone()),
+            );
+            if let Some(producer_key) = producer_key {
+                extra.insert(
+                    a2a::HOST_INGRESS_PRODUCER_KEY.to_string(),
+                    Value::String(producer_key.clone()),
+                );
+            }
+            extra.insert(
                 a2a::HOST_INGRESS_RECORD_COUNT.to_string(),
                 Value::Number((*record_count).into()),
             );
@@ -2531,6 +2542,7 @@ fn normalize_event_with_registry(
             target_instance,
             source_kind,
             source_key,
+            producer_key,
             target_agent_id,
         } => {
             use crate::host_ingress_transcript::format_dispatch_accepted_summary;
@@ -2563,6 +2575,16 @@ fn normalize_event_with_registry(
                 a2a::HOST_INGRESS_SOURCE_KEY.to_string(),
                 Value::String(source_key.clone()),
             );
+            extra.insert(
+                a2a::HOST_INGRESS_SCHEMA_VERSION.to_string(),
+                Value::String(schema_version.clone()),
+            );
+            if let Some(producer_key) = producer_key {
+                extra.insert(
+                    a2a::HOST_INGRESS_PRODUCER_KEY.to_string(),
+                    Value::String(producer_key.clone()),
+                );
+            }
             let message_entity = insert_host_ingress_transcript_message(
                 &mut doc,
                 event,
@@ -2582,11 +2604,12 @@ fn normalize_event_with_registry(
         }
         ProvEventData::HostDispatchRejected {
             routing_key,
-            schema_version: _,
+            schema_version,
             target_package,
             target_instance,
-            source_kind: _,
-            source_key: _,
+            source_kind,
+            source_key,
+            producer_key,
             detail,
             failure_kind,
             target_agent_id,
@@ -2614,6 +2637,24 @@ fn normalize_event_with_registry(
                 a2a::HOST_INGRESS_TARGET_INSTANCE.to_string(),
                 Value::String(target_instance.clone()),
             );
+            extra.insert(
+                a2a::HOST_INGRESS_SOURCE_KIND.to_string(),
+                Value::String(source_kind.clone()),
+            );
+            extra.insert(
+                a2a::HOST_INGRESS_SOURCE_KEY.to_string(),
+                Value::String(source_key.clone()),
+            );
+            extra.insert(
+                a2a::HOST_INGRESS_SCHEMA_VERSION.to_string(),
+                Value::String(schema_version.clone()),
+            );
+            if let Some(producer_key) = producer_key {
+                extra.insert(
+                    a2a::HOST_INGRESS_PRODUCER_KEY.to_string(),
+                    Value::String(producer_key.clone()),
+                );
+            }
             extra.insert(a2a::REASON.to_string(), Value::String(detail.clone()));
             let message_entity = insert_host_ingress_transcript_message(
                 &mut doc,

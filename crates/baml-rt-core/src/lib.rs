@@ -83,7 +83,7 @@ pub use deployment::{
 pub use dispatch::{
     AgentDispatchAck, AgentDispatchRequest, AgentDispatchRoutingKey,
     DISPATCH_METADATA_SCHEDULING_CONTEXT_ID, DISPATCH_METADATA_SCHEDULING_TASK_ID,
-    DispatchMetadata, callback_scheduling_scopes_differ_from_dispatch,
+    DispatchMetadata, callback_scheduling_scopes_differ_from_dispatch, ensure_dispatch_task_scope,
     invocation_scope_for_agent_dispatch, scheduling_scope_from_dispatch_metadata,
 };
 pub use dispatch_ingress::{
@@ -102,8 +102,8 @@ pub use event_producer::{
     EventDeliveryOutcome, ProducedEvent, SubscriberAcceptance, SubscriberDeliveryFailure,
 };
 pub use event_subscription::{
-    EventSchemaVersion, EventSourceKind, EventSubscription, EventSubscriptionFilter,
-    subscriptions_match_filter,
+    EventSchemaVersion, EventSourceKey, EventSourceKind, EventSubscription,
+    EventSubscriptionFilter, subscriptions_match_filter,
 };
 pub use function_id::{BamlFunctionId, BamlPromptName, VariantPhase};
 pub use history_text::is_history_infrastructure_notice;

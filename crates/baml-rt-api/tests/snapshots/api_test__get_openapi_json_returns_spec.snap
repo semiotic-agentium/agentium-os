@@ -2102,8 +2102,26 @@ expression: snapshot
             "metadata": {
               "type": "object"
             },
+            "producer_key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "routing_key": {
               "type": "string"
+            },
+            "source_key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source_kind": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "task_id": {
               "type": [
@@ -4070,6 +4088,12 @@ expression: snapshot
             },
             "metadata": {
               "type": "object"
+            },
+            "producer_key": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "routing_key": {
               "type": "string"

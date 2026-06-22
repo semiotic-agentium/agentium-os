@@ -311,6 +311,7 @@ impl CallbackEventProducer {
                 "system/callback:{callback_id}",
                 callback_id = callback_id
             )),
+            producer_key: None,
             metadata: dispatch_metadata,
         })
     }

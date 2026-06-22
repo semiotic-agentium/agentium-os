@@ -341,6 +341,9 @@ pub fn build_agent_dispatch_request(
         context_id,
         task_id,
         message_id: Some(message_id),
+        source_kind: None,
+        source_key: None,
+        producer_key: None,
         metadata: Some(metadata),
     })
 }

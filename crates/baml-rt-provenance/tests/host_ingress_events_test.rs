@@ -74,6 +74,7 @@ fn host_source_poll_recorded_kind_and_validation() {
         "slack:1:2:1".to_string(),
         "host.source-records.v1".to_string(),
         1,
+        None,
         vec!["1".to_string()],
     );
     assert!(matches!(
@@ -104,6 +105,7 @@ fn host_dispatch_accepted_requires_context() {
             target_instance: "default".to_string(),
             source_kind: "slack".to_string(),
             source_key: "slack:C123".to_string(),
+            producer_key: None,
             target_agent_id: None,
         },
     });
@@ -125,6 +127,7 @@ async fn host_ingress_lineage_events_project_operational_transcript_rows() {
             "slack:1:2:1".to_string(),
             "host.source-records.v1".to_string(),
             2,
+            None,
             vec!["1".to_string(), "2".to_string()],
         ))
         .await
@@ -146,6 +149,7 @@ async fn host_ingress_lineage_events_project_operational_transcript_rows() {
             dispatch_target("dispatch-echo", agent_id),
             "slack".to_string(),
             "slack:C123".to_string(),
+            None,
         ))
         .await
         .expect("dispatch write");
@@ -178,6 +182,54 @@ async fn host_ingress_lineage_events_project_operational_transcript_rows() {
 }
 
 #[tokio::test]
+async fn record_source_poll_uses_event_source_identity_for_non_source_records_payloads() {
+    let store = Arc::new(build_isolated_store().await);
+    let recorder = HostIngressRecorderImpl::new(Arc::clone(&store));
+    let ctx = ContextId::new(12, 34);
+    let event = ProducedEvent {
+        routing_key: AgentDispatchRoutingKey::parse("grafana:intake").expect("routing"),
+        schema_version: EventSchemaVersion::parse("grafana.alert.v1").expect("schema"),
+        source_kind: EventSourceKind::parse("grafana").expect("kind"),
+        source_key: EventSourceKey::parse("grafana:local").expect("key"),
+        messages: vec![json!({
+            "status": "firing",
+            "fingerprint": "fp1",
+            "labels": {"alertname": "HighLatency"}
+        })],
+        context_id: Some(ctx.clone()),
+        task_id: None,
+        message_id: Some("grafana:fp1:firing:start".into()),
+        producer_key: None,
+        metadata: None,
+    };
+
+    recorder
+        .record_source_poll(&event)
+        .await
+        .expect("poll lineage");
+
+    let items = store
+        .conversation_context(&ctx, None)
+        .await
+        .expect("conversation_context");
+    assert_eq!(items.len(), 1, "one source poll row: {items:?}");
+    let baml_rt_conversation::view::ConversationItemContent::Operational(op) = &items[0].content
+    else {
+        panic!("expected operational row: {:?}", items[0].content);
+    };
+    assert!(matches!(
+        op.kind,
+        baml_rt_conversation::operational::OperationalEventKind::SourcePollRecorded
+    ));
+    assert!(
+        op.summary
+            .contains("Host event (grafana.alert.v1) from grafana:grafana:local"),
+        "source identity should come from ProducedEvent, got: {}",
+        op.summary
+    );
+}
+
+#[tokio::test]
 async fn host_dispatch_rejected_projects_operational_row() {
     let store = build_isolated_store().await;
     let ctx = ContextId::new(11, 22);
@@ -190,6 +242,7 @@ async fn host_dispatch_rejected_projects_operational_row() {
                     .expect("schema"),
                 target: DispatchTarget::with_optional_agent(test_route("coordinator-agent"), None),
                 source: HostIngressSourceRef::from_fields("slack", "slack:C123"),
+                producer_key: None,
                 detail: "no handler for record_kind".to_string(),
                 failure_kind: HostDispatchFailureKind::Rejected,
             },
@@ -231,6 +284,7 @@ async fn host_dispatch_rejected_is_idempotent_on_double_write() {
         schema_version: EventSchemaVersion::parse("host.source-records.v1").expect("schema"),
         target: dispatch_target("coordinator-agent", agent_id),
         source: HostIngressSourceRef::from_fields("slack", "slack:C123"),
+        producer_key: None,
         detail: "no handler for record_kind".to_string(),
         failure_kind: HostDispatchFailureKind::Rejected,
     });
@@ -289,6 +343,7 @@ async fn host_dispatch_accepted_links_booted_runtime_instance() {
             dispatch_target("clickup-agent", agent_id.clone()),
             "clickup".to_string(),
             "clickup:list:1".to_string(),
+            None,
         ))
         .await
         .expect("dispatch accepted");
@@ -486,6 +541,7 @@ async fn record_source_poll_and_unit_prelude_emit_single_ingress_user_line() {
         context_id: Some(ctx.clone()),
         task_id: None,
         message_id: Some("evt-console-msg-1".into()),
+        producer_key: None,
         metadata: None,
     };
     recorder
@@ -587,6 +643,7 @@ async fn host_ingress_dispatch_accepted_precedes_unit_ingress_user() {
         context_id: Some(ctx.clone()),
         task_id: None,
         message_id: Some("evt-order-msg".into()),
+        producer_key: None,
         metadata: None,
     };
     recorder
@@ -608,6 +665,9 @@ async fn host_ingress_dispatch_accepted_precedes_unit_ingress_user() {
         context_id: Some(ctx.clone()),
         task_id: None,
         message_id: Some("evt-order-msg".into()),
+        source_kind: Some(EventSourceKind::parse("clickup").expect("kind")),
+        source_key: Some(EventSourceKey::parse("clickup:list:1").expect("key")),
+        producer_key: Some("test-clickup-producer".to_string()),
         metadata: None,
     };
     recorder
@@ -719,6 +779,7 @@ async fn transcript_engine_includes_event_order_zero_ingress_with_later_index_ro
         context_id: Some(ctx.clone()),
         task_id: None,
         message_id: Some("evt-restore-msg".into()),
+        producer_key: None,
         metadata: None,
     };
     recorder
@@ -846,6 +907,7 @@ async fn transport_and_agent_reject_are_distinct_operational_rows() {
                     .expect("schema"),
                 target: DispatchTarget::with_optional_agent(test_route("slack-agent"), None),
                 source: source.clone(),
+                producer_key: None,
                 detail: "transport failed".to_string(),
                 failure_kind: HostDispatchFailureKind::TransportError,
             },
@@ -861,6 +923,7 @@ async fn transport_and_agent_reject_are_distinct_operational_rows() {
                     .expect("schema"),
                 target: DispatchTarget::with_optional_agent(test_route("slack-agent"), None),
                 source,
+                producer_key: None,
                 detail: "agent rejected".to_string(),
                 failure_kind: HostDispatchFailureKind::Rejected,
             },
@@ -890,6 +953,7 @@ async fn host_source_poll_is_idempotent_on_double_write() {
         "clickup:list:901325431486".to_string(),
         "host.source-records.v1".to_string(),
         1,
+        None,
         vec![],
     );
     store.add_event(poll.clone()).await.expect("first poll");

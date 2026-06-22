@@ -1037,6 +1037,13 @@ impl MermaidService for MockMermaid {
         Ok(self.context_body.clone())
     }
 
+    async fn mermaid_for_context_full(
+        &self,
+        _context_id: &str,
+    ) -> std::result::Result<String, MermaidError> {
+        Ok(self.context_body.clone())
+    }
+
     async fn mermaid_for_task(&self, _task_id: &str) -> std::result::Result<String, MermaidError> {
         Ok(self.task_body.clone())
     }

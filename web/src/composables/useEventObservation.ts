@@ -262,7 +262,7 @@ export function useEventObservation() {
 
   async function fetchDiagram(ctx: string): Promise<void> {
     const seq = ++diagramFetchSeq;
-    const text = await scheduleContextMermaidDiagram(ctx);
+    const text = await scheduleContextMermaidDiagram(ctx, { full: true });
     if (seq !== diagramFetchSeq) return;
     provenanceDiagram.value = text;
   }
