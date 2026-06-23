@@ -332,6 +332,10 @@ enum Commands {
         /// Explicit read-only snapshot cache for offline CI/test regen
         #[arg(long)]
         snapshot_cache: Option<String>,
+
+        /// Explicit static tool catalog JSON for offline regen
+        #[arg(long)]
+        static_tool_catalog: Option<String>,
     },
 
     /// Validate standalone external tool manifest against runtime parser
@@ -937,7 +941,14 @@ fn main() -> anyhow::Result<()> {
             paths,
             repository_url,
             snapshot_cache,
-        } => commands::regen::run(&names, &paths, &repository_url, snapshot_cache.as_deref()),
+            static_tool_catalog,
+        } => commands::regen::run(
+            &names,
+            &paths,
+            &repository_url,
+            snapshot_cache.as_deref(),
+            static_tool_catalog.as_deref(),
+        ),
 
         Commands::CheckExternalTool { path } => commands::check_external_tool::run(&path),
 

@@ -34,6 +34,7 @@ pub struct RuntimeTypeGenerator {
     /// from the `BAML_REGISTRY_URL` env var; explicit constructors set it directly.
     registry_url: Option<String>,
     snapshot_cache_root: Option<PathBuf>,
+    static_tool_catalog_path: Option<PathBuf>,
 }
 
 impl RuntimeTypeGenerator {
@@ -44,6 +45,7 @@ impl RuntimeTypeGenerator {
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
             snapshot_cache_root: None,
+            static_tool_catalog_path: None,
         }
     }
 
@@ -52,6 +54,7 @@ impl RuntimeTypeGenerator {
             registry_service: Some(service),
             registry_url: None,
             snapshot_cache_root: None,
+            static_tool_catalog_path: None,
         }
     }
 
@@ -60,6 +63,7 @@ impl RuntimeTypeGenerator {
             registry_service: None,
             registry_url: Some(url.into()),
             snapshot_cache_root: None,
+            static_tool_catalog_path: None,
         }
     }
 
@@ -68,7 +72,13 @@ impl RuntimeTypeGenerator {
             registry_service: None,
             registry_url: None,
             snapshot_cache_root: Some(root.into()),
+            static_tool_catalog_path: None,
         }
+    }
+
+    pub fn with_static_tool_catalog_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.static_tool_catalog_path = Some(path.into());
+        self
     }
 }
 
@@ -116,6 +126,20 @@ impl TypeGenerator for RuntimeTypeGenerator {
 async fn prepare_static_tool_catalog(
     generator: &RuntimeTypeGenerator,
 ) -> Result<Option<StaticToolSnapshotCatalog>> {
+    if let Some(path) = &generator.static_tool_catalog_path {
+        let catalog = crate::static_tool_registry::load_static_tool_catalog_from_file(path)
+            .map_err(|err| BamlBuilderError::InvalidArgumentWithSource {
+                message: format!("failed to load static tool catalog from {}", path.display()),
+                source: err.into(),
+            })?;
+        tracing::info!(
+            static_tools = catalog.len(),
+            static_tool_registry_source = %path.display(),
+            "resolved static tool catalog for agent build"
+        );
+        return Ok(Some(catalog));
+    }
+
     if let Some(service) = &generator.registry_service {
         let response = service.static_tool_catalog().cloned().ok_or_else(|| {
             BamlBuilderError::InvalidArgument(

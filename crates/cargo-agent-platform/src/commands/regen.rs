@@ -24,6 +24,7 @@ pub fn run(
     paths: &[String],
     repository_url: &str,
     snapshot_cache: Option<&str>,
+    static_tool_catalog: Option<&str>,
 ) -> Result<()> {
     if !paths.is_empty() && !names.is_empty() {
         bail!("--path cannot be combined with agent names");
@@ -31,14 +32,21 @@ pub fn run(
 
     if let Some(cache) = snapshot_cache {
         println!(
-            "{} Resolving snapshots from offline cache {} (registry not contacted).",
+            "{} Resolving snapshots from offline cache {} (registry not contacted for MCP/external snapshots).",
             style("Note:").yellow(),
             style(cache).dim()
         );
     }
+    if let Some(path) = static_tool_catalog {
+        println!(
+            "{} Resolving static tools from catalog file {} (runner static catalog not fetched).",
+            style("Note:").yellow(),
+            style(path).dim()
+        );
+    }
 
     if !paths.is_empty() {
-        return run_explicit_paths(paths, repository_url, snapshot_cache);
+        return run_explicit_paths(paths, repository_url, snapshot_cache, static_tool_catalog);
     }
 
     let workspace_root = find_workspace_root()?;
@@ -114,7 +122,12 @@ pub fn run(
             let mut stdout = std::io::stdout();
             let _ = std::io::Write::flush(&mut stdout);
 
-            match regen_agent(&entry.path(), repository_url, snapshot_cache) {
+            match regen_agent(
+                &entry.path(),
+                repository_url,
+                snapshot_cache,
+                static_tool_catalog,
+            ) {
                 Ok(()) => {
                     println!("{}", style("ok").green());
                     total_count += 1;
@@ -160,6 +173,7 @@ fn run_explicit_paths(
     paths: &[String],
     repository_url: &str,
     snapshot_cache: Option<&str>,
+    static_tool_catalog: Option<&str>,
 ) -> Result<()> {
     let mut unique_paths = HashSet::new();
     for raw in paths {
@@ -197,7 +211,7 @@ fn run_explicit_paths(
         let mut stdout = std::io::stdout();
         let _ = std::io::Write::flush(&mut stdout);
 
-        match regen_agent(path, repository_url, snapshot_cache) {
+        match regen_agent(path, repository_url, snapshot_cache, static_tool_catalog) {
             Ok(()) => {
                 println!("{}", style("ok").green());
                 total_count += 1;
@@ -241,7 +255,12 @@ fn validate_agent_dir(path: &Path) -> Result<()> {
 }
 
 /// Regenerate types for a single agent.
-fn regen_agent(root: &Path, repository_url: &str, snapshot_cache: Option<&str>) -> Result<()> {
+fn regen_agent(
+    root: &Path,
+    repository_url: &str,
+    snapshot_cache: Option<&str>,
+    static_tool_catalog: Option<&str>,
+) -> Result<()> {
     use baml_rt_builder::builder::{
         AgentDir, BuildDir, RuntimeTypeGenerator, compiler::write_canonical_tsconfig,
         traits::TypeGenerator,
@@ -258,6 +277,10 @@ fn regen_agent(root: &Path, repository_url: &str, snapshot_cache: Option<&str>) 
         let generator = match snapshot_cache {
             Some(root) => RuntimeTypeGenerator::with_snapshot_cache(root),
             None => RuntimeTypeGenerator::with_registry_url(repository_url),
+        };
+        let generator = match static_tool_catalog {
+            Some(path) => generator.with_static_tool_catalog_file(path),
+            None => generator,
         };
         // generate() writes src/baml-runtime.d.ts directly into the agent's source tree
         generator
