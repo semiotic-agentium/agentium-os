@@ -92,13 +92,10 @@ impl StaticToolCatalogResponse {
 /// [`StaticToolCatalogResponse`].
 ///
 /// Reconstructs [`ToolFunctionMetadata`] losslessly and answers [`ToolCatalog`]
-/// lookups. Retains `runner_version`/`git_sha` so [`Self::missing_tool_error`]
-/// can name the runner build.
+/// lookups.
 #[derive(Debug, Clone, Default)]
 pub struct StaticToolSnapshotCatalog {
     tools: Vec<ToolFunctionMetadata>,
-    runner_version: Option<String>,
-    git_sha: Option<String>,
 }
 
 impl StaticToolSnapshotCatalog {
@@ -117,11 +114,7 @@ impl StaticToolSnapshotCatalog {
             .into_iter()
             .map(ToolFunctionMetadata::from)
             .collect();
-        Ok(Self {
-            tools,
-            runner_version: response.runner_version,
-            git_sha: response.git_sha,
-        })
+        Ok(Self { tools })
     }
 
     pub fn len(&self) -> usize {
@@ -130,25 +123,6 @@ impl StaticToolSnapshotCatalog {
 
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
-    }
-
-    /// Operator-facing error for a manifest tool absent from this runner
-    /// catalog. Names the runner build (version/sha) so the operator can pin a
-    /// compatible runner — without enumerating which cargo features were on.
-    pub fn missing_tool_error(&self, tool: &str) -> BamlRtError {
-        BamlRtError::InvalidArgument(format!(
-            "runner static catalog does not include {tool}\n{} — tool may be gated off in this build, or this runner predates it. Use a compatible runner.",
-            self.runner_descriptor()
-        ))
-    }
-
-    fn runner_descriptor(&self) -> String {
-        match (&self.runner_version, &self.git_sha) {
-            (Some(v), Some(sha)) => format!("runner v{v} (sha {sha})"),
-            (Some(v), None) => format!("runner v{v}"),
-            (None, Some(sha)) => format!("runner (sha {sha})"),
-            (None, None) => "runner (version unknown)".to_string(),
-        }
     }
 }
 
