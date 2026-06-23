@@ -4,15 +4,17 @@
 
 //! `list-event-sources` subcommand implementation.
 //!
-//! Lists all event source kinds declared by tools in the inventory,
+//! Lists all event source kinds declared by tools in the runner/static catalog,
 //! compatibility source kinds, and known schema versions.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
+    path::Path,
 };
 
-use baml_rt_tools::{InventoryCatalog, ToolCatalog};
+use anyhow::{Context, Result};
+use baml_rt_tools::ToolCatalog;
 use console::style;
 
 use crate::{
@@ -20,9 +22,38 @@ use crate::{
     text::truncate_for_display,
 };
 
-pub fn run() -> anyhow::Result<()> {
-    let catalog = InventoryCatalog::new();
-    let source_kinds = collect_tool_declared_source_kinds(&catalog);
+pub fn run(repository_url: &str, snapshot_cache: Option<&str>) -> Result<()> {
+    let source_kinds = match snapshot_cache {
+        Some(root) => {
+            let catalog =
+                baml_rt_builder::static_tool_registry::load_static_tool_catalog_from_cache(
+                    Path::new(root),
+                )
+                .with_context(|| {
+                    format!(
+                        "loading static tool catalog from {}",
+                        baml_rt_builder::static_tool_registry::static_tool_catalog_path(root)
+                            .display()
+                    )
+                })?;
+            collect_tool_declared_source_kinds(&catalog)
+        }
+        None => {
+            let rt = tokio::runtime::Runtime::new()?;
+            let catalog = rt.block_on(async {
+                baml_rt_builder::static_tool_registry::fetch_static_tool_catalog(repository_url)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "loading static tool catalog from runner/repository at {}",
+                            repository_url.trim_end_matches('/')
+                        )
+                    })
+            })?;
+            collect_tool_declared_source_kinds(&catalog)
+        }
+    };
+
     print!("{}", render_report(&source_kinds));
 
     Ok(())
@@ -30,7 +61,9 @@ pub fn run() -> anyhow::Result<()> {
 
 type ToolDeclaredSourceKinds = BTreeMap<String, Vec<(String, String)>>;
 
-fn collect_tool_declared_source_kinds(catalog: &InventoryCatalog) -> ToolDeclaredSourceKinds {
+fn collect_tool_declared_source_kinds<C: ToolCatalog + ?Sized>(
+    catalog: &C,
+) -> ToolDeclaredSourceKinds {
     let mut source_kinds: ToolDeclaredSourceKinds = BTreeMap::new();
 
     for tool in catalog.iter() {

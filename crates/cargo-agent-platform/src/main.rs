@@ -21,9 +21,9 @@
 //! - `deploy --hash <hash>` — Activate a deployed hash in a running runner
 //! - `undeploy --hash <hash>` — Remove an active deployed hash from a running runner
 //! - `list-deployed-instances` — List loaded agent instances from a running runner
-//! - `list-tools` — List all registered tools from the inventory
+//! - `list-tools` — List all registered tools from runner/cache catalog
 //! - `list-agents` — List all agent packages
-//! - `list-event-sources` — List event source kinds declared by tools and known schema versions
+//! - `list-event-sources` — List event source kinds declared by runner/cache tools and known schema versions
 //! - `regen` — Regenerate type declarations for all agents
 //! - `doctor` — Validate workspace integrity
 //! - `chat` — Interactive terminal chat with a deployed agent
@@ -183,6 +183,14 @@ enum Commands {
         #[arg(long)]
         subscriptions: Option<String>,
 
+        /// Repository URL used for interactive tool/source picker metadata. Wins over --snapshot-cache.
+        #[arg(long)]
+        repository_url: Option<String>,
+
+        /// Read interactive tool/source picker metadata from unified offline snapshot cache.
+        #[arg(long)]
+        snapshot_cache: Option<String>,
+
         /// Target directory (defaults to agents/<name>)
         #[arg(long)]
         output: Option<String>,
@@ -206,8 +214,16 @@ enum Commands {
     /// List all agent packages
     ListAgents,
 
-    /// List event source kinds declared by tools and known schema versions
-    ListEventSources,
+    /// List event source kinds declared by runner/cache tools and known schema versions
+    ListEventSources {
+        /// Repository URL to query when not using --snapshot-cache
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
+        repository_url: String,
+
+        /// Read static tool catalog from unified offline snapshot cache instead of repository
+        #[arg(long)]
+        snapshot_cache: Option<String>,
+    },
 
     /// Package agents into distributable tar.gz files
     Build {
@@ -804,6 +820,8 @@ fn main() -> anyhow::Result<()> {
             description,
             tags,
             subscriptions,
+            repository_url,
+            snapshot_cache,
             output,
             dry_run,
         } => {
@@ -827,6 +845,11 @@ fn main() -> anyhow::Result<()> {
                 None => "simple".to_string(),
             };
             let normalized_template = template.to_ascii_lowercase();
+            let picker_source = repository_url
+                .map(|url| interactive::ToolPickerSource::Repository { url })
+                .or_else(|| {
+                    snapshot_cache.map(|root| interactive::ToolPickerSource::SnapshotCache { root })
+                });
 
             // For interactive mode with basic-tools or planner, prompt for tools
             let tools = match tools {
@@ -835,7 +858,7 @@ fn main() -> anyhow::Result<()> {
                     && (normalized_template == "basic-tools"
                         || normalized_template == "planner") =>
                 {
-                    interactive::prompt_tools()?
+                    interactive::prompt_tools(picker_source.as_ref())?
                 }
                 None => None,
             };
@@ -852,7 +875,7 @@ fn main() -> anyhow::Result<()> {
                 .unwrap_or_default();
 
             let suggested_tags = if interactive {
-                interactive::suggest_agent_tags(&tool_ids)?
+                interactive::suggest_agent_tags(&tool_ids, picker_source.as_ref())?
             } else {
                 Vec::new()
             };
@@ -867,7 +890,7 @@ fn main() -> anyhow::Result<()> {
             let subscriptions = match subscriptions {
                 Some(s) => Some(s),
                 None if interactive && normalized_template != "coordinator" => {
-                    interactive::prompt_subscriptions(&tool_ids)?
+                    interactive::prompt_subscriptions(&tool_ids, picker_source.as_ref())?
                 }
                 None => None,
             };
@@ -895,7 +918,10 @@ fn main() -> anyhow::Result<()> {
 
         Commands::ListAgents => commands::list_agents::run(),
 
-        Commands::ListEventSources => commands::list_event_sources::run(),
+        Commands::ListEventSources {
+            repository_url,
+            snapshot_cache,
+        } => commands::list_event_sources::run(&repository_url, snapshot_cache.as_deref()),
 
         Commands::Build {
             names,

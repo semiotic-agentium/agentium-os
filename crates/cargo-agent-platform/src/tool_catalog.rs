@@ -4,11 +4,9 @@
 
 use std::{collections::BTreeMap, fs, path::Path};
 
-use anyhow::Result;
-use baml_rt_tools::{InventoryCatalog, ToolCatalog};
-use regex::Regex;
-
-use crate::workspace::find_workspace_root;
+use anyhow::{Context, Result, bail};
+use baml_rt_tools::ToolCatalog;
+use serde::Deserialize;
 
 #[derive(Debug, Clone)]
 pub struct CliTool {
@@ -17,133 +15,123 @@ pub struct CliTool {
     pub tags: Vec<String>,
 }
 
-pub fn load_cli_tools() -> Result<Vec<CliTool>> {
-    let mut merged: BTreeMap<String, CliTool> = inventory_tools()
-        .into_iter()
-        .map(|tool| (tool.id.clone(), tool))
-        .collect();
+#[derive(Debug, Clone)]
+pub enum ToolPickerSource {
+    Repository { url: String },
+    SnapshotCache { root: String },
+}
 
-    // Workspace-defined tools should override inventory metadata so new tools appear immediately
-    // even when the installed cargo subcommand binary is stale.
-    //
-    // Limit overlay to support/* for now, because `new-tool` currently scaffolds support tools
-    // and non-support/test-only tool bundles may not be linkable in standard CLI builds.
-    for tool in workspace_tools()? {
-        if !tool.id.starts_with("support/") {
-            continue;
-        }
-        merged.insert(tool.id.clone(), tool);
+pub fn load_tools_for_picker(source: &ToolPickerSource) -> Result<Vec<CliTool>> {
+    Ok(canonicalize_tools(load_tools(source)?))
+}
+
+pub fn load_tools(source: &ToolPickerSource) -> Result<Vec<CliTool>> {
+    match source {
+        ToolPickerSource::Repository { url } => load_repository_tools(url),
+        ToolPickerSource::SnapshotCache { root } => load_cache_tools(Path::new(root)),
     }
-
-    let mut tools: Vec<CliTool> = merged.into_values().collect();
-    tools.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok(tools)
 }
 
-pub fn load_cli_tools_for_picker() -> Result<Vec<CliTool>> {
-    Ok(canonicalize_tools(load_cli_tools()?))
+#[derive(Debug, Deserialize)]
+struct ToolsResponse {
+    tools: Vec<RepositoryTool>,
 }
 
-fn inventory_tools() -> Vec<CliTool> {
-    let catalog = InventoryCatalog::new();
-    let mut tools: Vec<CliTool> = catalog
-        .iter()
-        .map(|tool| CliTool {
+#[derive(Debug, Deserialize)]
+struct RepositoryTool {
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+fn load_repository_tools(repository_url: &str) -> Result<Vec<CliTool>> {
+    let url = format!("{}/tools", repository_url.trim_end_matches('/'));
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async move {
+        let response = reqwest::Client::new()
+            .get(url.as_str())
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!("GET {url} failed ({status}): {body}");
+        }
+        let parsed: ToolsResponse =
+            serde_json::from_str(&body).with_context(|| format!("parsing response from {url}"))?;
+        let mut tools: Vec<CliTool> = parsed
+            .tools
+            .into_iter()
+            .map(|tool| CliTool {
+                id: tool.name,
+                description: tool.description,
+                tags: tool.tags,
+            })
+            .collect();
+        tools.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(tools)
+    })
+}
+
+fn load_cache_tools(root: &Path) -> Result<Vec<CliTool>> {
+    let mut tools = Vec::new();
+
+    let static_catalog =
+        baml_rt_builder::static_tool_registry::load_static_tool_catalog_from_cache(root)
+            .with_context(|| {
+                format!(
+                    "loading static tool catalog from {}",
+                    baml_rt_builder::static_tool_registry::static_tool_catalog_path(root).display()
+                )
+            })?;
+    for tool in static_catalog.iter() {
+        tools.push(CliTool {
             id: tool.name.to_string(),
             description: tool.description.clone(),
             tags: tool.tags.clone(),
-        })
-        .collect();
-    tools.sort_by(|a, b| a.id.cmp(&b.id));
-    tools
-}
-
-fn workspace_tools() -> Result<Vec<CliTool>> {
-    let workspace_root = find_workspace_root()?;
-    let tools_root = workspace_root.join("crates").join("tools");
-    if !tools_root.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut by_id: BTreeMap<String, CliTool> = BTreeMap::new();
-    visit_rs_files(&tools_root, &mut |path| {
-        if let Ok(content) = fs::read_to_string(path) {
-            for tool in parse_baml_tool_attrs(&content) {
-                by_id.insert(tool.id.clone(), tool);
-            }
-        }
-    })?;
-
-    Ok(by_id.into_values().collect())
-}
-
-fn visit_rs_files(root: &Path, f: &mut dyn FnMut(&Path)) -> Result<()> {
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            visit_rs_files(&path, f)?;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            f(&path);
-        }
-    }
-    Ok(())
-}
-
-fn parse_baml_tool_attrs(content: &str) -> Vec<CliTool> {
-    let Ok(attr_re) = Regex::new(r#"(?s)#\s*\[\s*baml_tool\s*\((.*?)\)\s*\]"#) else {
-        return Vec::new();
-    };
-    let Ok(name_re) = Regex::new(r#"name\s*=\s*"([^"]+)""#) else {
-        return Vec::new();
-    };
-    let Ok(desc_re) = Regex::new(r#"description\s*=\s*"([^"]*)""#) else {
-        return Vec::new();
-    };
-    let Ok(tags_re) = Regex::new(r#"(?s)tags\s*=\s*\[(.*?)\]"#) else {
-        return Vec::new();
-    };
-    let Ok(tag_item_re) = Regex::new(r#""([^"]+)""#) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for caps in attr_re.captures_iter(content) {
-        let Some(block) = caps.get(1).map(|m| m.as_str()) else {
-            continue;
-        };
-        let Some(id) = name_re
-            .captures(block)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string())
-        else {
-            continue;
-        };
-
-        let description = desc_re
-            .captures(block)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default();
-
-        let tags = tags_re
-            .captures(block)
-            .and_then(|c| c.get(1))
-            .map(|m| {
-                tag_item_re
-                    .captures_iter(m.as_str())
-                    .filter_map(|tag_caps| tag_caps.get(1).map(|t| t.as_str().to_string()))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        out.push(CliTool {
-            id,
-            description,
-            tags,
         });
     }
 
-    out
+    let external_root = baml_rt_tools::external_tool_cache::resolve_cache_root(root);
+    for snapshot in baml_rt_tools::external_tool_cache::read_approved_snapshots(&external_root)? {
+        tools.push(CliTool {
+            id: snapshot.tool.name,
+            description: snapshot.tool.description,
+            tags: snapshot.tool.tags,
+        });
+    }
+
+    let mcp_root = baml_rt_tools::mcp_cache::resolve_cache_root(root);
+    let servers_dir = mcp_root.join("servers");
+    if servers_dir.exists() {
+        for entry in fs::read_dir(&servers_dir)
+            .with_context(|| format!("reading MCP cache servers from {}", servers_dir.display()))?
+        {
+            let entry = entry?;
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let server_id = entry.file_name().to_string_lossy().to_string();
+            let snapshot = baml_rt_tools::mcp_cache::read_snapshot(&mcp_root, &server_id)
+                .with_context(|| format!("reading MCP cache snapshot {server_id}"))?;
+            if !snapshot.approval.state.is_approved() {
+                continue;
+            }
+            for tool in snapshot.tools {
+                tools.push(CliTool {
+                    id: tool.platform_tool_name,
+                    description: tool.description.unwrap_or_default(),
+                    tags: vec!["mcp".to_string(), snapshot.server_id.clone()],
+                });
+            }
+        }
+    }
+
+    tools.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(tools)
 }
 
 fn canonicalize_tools(tools: Vec<CliTool>) -> Vec<CliTool> {
