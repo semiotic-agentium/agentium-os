@@ -232,11 +232,16 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        AgentDispatchAck, AgentDispatchRoutingKey, DISPATCH_METADATA_SCHEDULING_CONTEXT_ID,
-        DISPATCH_METADATA_SCHEDULING_TASK_ID, callback_scheduling_scopes_differ_from_dispatch,
+        AgentDispatchAck, AgentDispatchRequest, AgentDispatchRoutingKey,
+        DISPATCH_METADATA_SCHEDULING_CONTEXT_ID, DISPATCH_METADATA_SCHEDULING_TASK_ID,
+        callback_scheduling_scopes_differ_from_dispatch, ensure_dispatch_task_scope,
         scheduling_scope_from_dispatch_metadata,
     };
-    use crate::ids::{ContextId, TaskId};
+    use crate::{
+        AgentInstanceId, AgentPackageName, AgentRouteKey, EventSchemaVersion,
+        event_subscription::{EventSourceKey, EventSourceKind},
+        ids::{ContextId, TaskId},
+    };
 
     #[test]
     fn with_resolved_scope_attaches_runtime_ids() {
@@ -303,5 +308,57 @@ mod tests {
         let key: AgentDispatchRoutingKey =
             serde_json::from_str("\"  slack:intake  \"").expect("routing key should deserialize");
         assert_eq!(key.as_str(), "slack:intake");
+    }
+
+    #[test]
+    fn ensure_dispatch_task_scope_mints_stable_task_for_context_message_event() {
+        let target = AgentRouteKey::new(
+            AgentPackageName::parse("observability-coordinator").expect("package"),
+            AgentInstanceId::default(),
+        );
+        let mut request = AgentDispatchRequest {
+            routing_key: AgentDispatchRoutingKey::parse("grafana:intake").expect("routing"),
+            message_type: EventSchemaVersion::parse("grafana.alert.v1").expect("schema"),
+            messages: Vec::new(),
+            context_id: Some(ContextId::new(10, 20)),
+            task_id: None,
+            message_id: Some("alert-123".to_string()),
+            source_kind: Some(EventSourceKind::parse("grafana").expect("kind")),
+            source_key: Some(EventSourceKey::parse("grafana:local").expect("key")),
+            producer_key: None,
+            metadata: None,
+        };
+
+        ensure_dispatch_task_scope(&mut request, &target);
+        let task_id = request.task_id.as_ref().expect("task minted");
+        assert!(task_id.as_str().starts_with("host-event-dispatch-"));
+
+        let first = task_id.clone();
+        ensure_dispatch_task_scope(&mut request, &target);
+        assert_eq!(request.task_id.as_ref(), Some(&first));
+    }
+
+    #[test]
+    fn ensure_dispatch_task_scope_preserves_explicit_task() {
+        let target = AgentRouteKey::new(
+            AgentPackageName::parse("observability-coordinator").expect("package"),
+            AgentInstanceId::default(),
+        );
+        let explicit = TaskId::from_external(crate::ids::ExternalId::new("caller-task"));
+        let mut request = AgentDispatchRequest {
+            routing_key: AgentDispatchRoutingKey::parse("grafana:intake").expect("routing"),
+            message_type: EventSchemaVersion::parse("grafana.alert.v1").expect("schema"),
+            messages: Vec::new(),
+            context_id: Some(ContextId::new(10, 20)),
+            task_id: Some(explicit.clone()),
+            message_id: Some("alert-123".to_string()),
+            source_kind: Some(EventSourceKind::parse("grafana").expect("kind")),
+            source_key: Some(EventSourceKey::parse("grafana:local").expect("key")),
+            producer_key: None,
+            metadata: None,
+        };
+
+        ensure_dispatch_task_scope(&mut request, &target);
+        assert_eq!(request.task_id, Some(explicit));
     }
 }
