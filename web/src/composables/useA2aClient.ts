@@ -230,7 +230,8 @@ export function useA2aClient() {
     closeConversationHistoryStream();
     const params = new URLSearchParams();
     params.set("limit", String(CONVERSATION_HISTORY_PAGE_SIZE));
-    const url = `/contexts/${_contextId.value}/conversation-history/stream?${params.toString()}`;
+    const encodedContextId = encodeURIComponent(_contextId.value);
+    const url = `/contexts/${encodedContextId}/conversation-history/stream?${params.toString()}`;
     const stream = new EventSource(url);
 
     stream.addEventListener("snapshot", (ev) => {
@@ -886,7 +887,7 @@ export function useA2aClient() {
   async function fetchContextMetrics(): Promise<void> {
     if (!_contextId.value) return;
     try {
-      const res = await fetch(`/contexts/${_contextId.value}/metrics`);
+      const res = await fetch(`/contexts/${encodeURIComponent(_contextId.value)}/metrics`);
       if (res.ok) {
         contextMetrics.value = await res.json();
       }
@@ -921,8 +922,9 @@ export function useA2aClient() {
         const params = new URLSearchParams();
         params.set("limit", String(PAGE_LIMIT));
         if (cursor) params.set("cursor", cursor);
+        const encodedContextId = encodeURIComponent(contextId);
         const response = await fetch(
-          `/contexts/${contextId}/conversation-history?${params.toString()}`,
+          `/contexts/${encodedContextId}/conversation-history?${params.toString()}`,
         );
         if (!response.ok) {
           if (!options.quiet) {

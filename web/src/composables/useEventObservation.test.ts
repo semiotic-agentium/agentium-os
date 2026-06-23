@@ -182,6 +182,20 @@ describe("useEventObservation transcript reconcile", () => {
     expect(obs.messages.value.map((m) => m.role)).toEqual(["user", "agent"]);
   });
 
+  it("encodes child A2A context ids in history fetch and stream URLs", async () => {
+    const childContextId = "a2a:ctx-1:grafana-investigator/default:a2a-child-1";
+    const encoded = encodeURIComponent(childContextId);
+
+    await obs.loadContext(childContextId, null);
+
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      expect.stringContaining(`/contexts/${encoded}/conversation-history?`),
+      expect.any(Object),
+    );
+    const lastStream = MockEventSource.instances[MockEventSource.instances.length - 1];
+    expect(lastStream?.url).toContain(`/contexts/${encoded}/conversation-history/stream?`);
+  });
+
   it("keeps one history stream when reloading the same observe scope", async () => {
     await obs.loadContext("ctx-observe", null);
     const streamsAfterFirst = MockEventSource.instances.length;
