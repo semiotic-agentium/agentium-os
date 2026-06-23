@@ -92,11 +92,7 @@ pub(super) struct WorkspaceReady {
 }
 
 impl WorkspaceReady {
-    pub(super) fn materialize_with_static_catalog(
-        agent_dir: AgentDir,
-        build_dir: BuildDir,
-        static_catalog: Option<StaticToolSnapshotCatalog>,
-    ) -> Result<Self> {
+    pub(super) fn materialize(agent_dir: AgentDir, build_dir: BuildDir) -> Result<Self> {
         let paths = CodegenPaths::new(agent_dir, build_dir);
         let baml_src = paths.agent_dir.baml_src();
 
@@ -123,6 +119,28 @@ impl WorkspaceReady {
                 "using packaged external-tool registry snapshots during type generation"
             );
             Some(paths.build_dir.as_path().to_path_buf())
+        } else {
+            None
+        };
+        let static_catalog_path =
+            crate::static_tool_registry::static_tool_catalog_path(paths.build_dir.as_path());
+        let static_catalog = if static_catalog_path.exists() {
+            tracing::info!(
+                static_catalog = %static_catalog_path.display(),
+                "using packaged static tool catalog during type generation"
+            );
+            Some(
+                crate::static_tool_registry::load_static_tool_catalog_from_file(
+                    &static_catalog_path,
+                )
+                .map_err(|err| BamlBuilderError::InvalidArgumentWithSource {
+                    message: format!(
+                        "failed to load static tool catalog from {}",
+                        static_catalog_path.display()
+                    ),
+                    source: err.into(),
+                })?,
+            )
         } else {
             None
         };

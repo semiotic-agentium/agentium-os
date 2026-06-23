@@ -9,7 +9,7 @@
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
 use baml_rt_repository::RepositoryService;
-use baml_rt_tools::{StaticToolSnapshotCatalog, ToolName, tool_catalog::ToolCatalog};
+use baml_rt_tools::{ToolName, tool_catalog::ToolCatalog};
 use tokio::task;
 
 use super::codegen_pipeline::WorkspaceReady;
@@ -34,7 +34,6 @@ pub struct RuntimeTypeGenerator {
     /// from the `BAML_REGISTRY_URL` env var; explicit constructors set it directly.
     registry_url: Option<String>,
     snapshot_cache_root: Option<PathBuf>,
-    static_tool_catalog_path: Option<PathBuf>,
 }
 
 impl RuntimeTypeGenerator {
@@ -45,7 +44,6 @@ impl RuntimeTypeGenerator {
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
             snapshot_cache_root: None,
-            static_tool_catalog_path: None,
         }
     }
 
@@ -54,7 +52,6 @@ impl RuntimeTypeGenerator {
             registry_service: Some(service),
             registry_url: None,
             snapshot_cache_root: None,
-            static_tool_catalog_path: None,
         }
     }
 
@@ -63,7 +60,6 @@ impl RuntimeTypeGenerator {
             registry_service: None,
             registry_url: Some(url.into()),
             snapshot_cache_root: None,
-            static_tool_catalog_path: None,
         }
     }
 
@@ -72,23 +68,16 @@ impl RuntimeTypeGenerator {
             registry_service: None,
             registry_url: None,
             snapshot_cache_root: Some(root.into()),
-            static_tool_catalog_path: None,
         }
-    }
-
-    pub fn with_static_tool_catalog_file(mut self, path: impl Into<PathBuf>) -> Self {
-        self.static_tool_catalog_path = Some(path.into());
-        self
     }
 }
 
 #[async_trait::async_trait]
 impl TypeGenerator for RuntimeTypeGenerator {
     async fn generate(&self, agent_dir: &AgentDir, build_dir: &BuildDir) -> Result<()> {
-        let static_catalog = prepare_static_tool_catalog(self).await?;
+        prepare_static_tool_catalog(build_dir, self).await?;
         prepare_mcp_snapshots(agent_dir, build_dir, self).await?;
-        prepare_external_tool_snapshots(agent_dir, build_dir, self, static_catalog.as_ref())
-            .await?;
+        prepare_external_tool_snapshots(agent_dir, build_dir, self).await?;
 
         let agent_dir = agent_dir.clone();
         let build_dir = build_dir.clone();
@@ -97,11 +86,7 @@ impl TypeGenerator for RuntimeTypeGenerator {
         // rewriter in between), session artifact generation, stable catalog planning, manifest
         // + .d.ts emission.
         let catalog_render_inputs = task::spawn_blocking(move || {
-            let workspace = WorkspaceReady::materialize_with_static_catalog(
-                agent_dir,
-                build_dir,
-                static_catalog,
-            )?;
+            let workspace = WorkspaceReady::materialize(agent_dir, build_dir)?;
             let prelude = workspace.emit_tool_interfaces_prelude()?;
             let compiled = prelude.compile_first_pass()?;
             let normalized = compiled.normalize_authored_prompts()?;
@@ -124,22 +109,9 @@ impl TypeGenerator for RuntimeTypeGenerator {
 }
 
 async fn prepare_static_tool_catalog(
+    build_dir: &BuildDir,
     generator: &RuntimeTypeGenerator,
-) -> Result<Option<StaticToolSnapshotCatalog>> {
-    if let Some(path) = &generator.static_tool_catalog_path {
-        let catalog = crate::static_tool_registry::load_static_tool_catalog_from_file(path)
-            .map_err(|err| BamlBuilderError::InvalidArgumentWithSource {
-                message: format!("failed to load static tool catalog from {}", path.display()),
-                source: err.into(),
-            })?;
-        tracing::info!(
-            static_tools = catalog.len(),
-            static_tool_registry_source = %path.display(),
-            "resolved static tool catalog for agent build"
-        );
-        return Ok(Some(catalog));
-    }
-
+) -> Result<()> {
     if let Some(service) = &generator.registry_service {
         let response = service.static_tool_catalog().cloned().ok_or_else(|| {
             BamlBuilderError::InvalidArgument(
@@ -147,42 +119,84 @@ async fn prepare_static_tool_catalog(
                     .to_string(),
             )
         })?;
-        let catalog = StaticToolSnapshotCatalog::from_response(response)?;
+        let catalog = baml_rt_tools::StaticToolSnapshotCatalog::from_response(response.clone())?;
+        crate::static_tool_registry::write_static_tool_catalog_to_cache(
+            build_dir.as_path(),
+            &response,
+        )
+        .map_err(|err| BamlBuilderError::InvalidArgumentWithSource {
+            message: "failed to write embedded static tool catalog into build cache".to_string(),
+            source: err.into(),
+        })?;
         tracing::info!(
             static_tools = catalog.len(),
             static_tool_registry_source = "embedded",
             "resolved static tool catalog for agent build"
         );
-        return Ok(Some(catalog));
+        return Ok(());
     }
 
-    if let Some(registry_url) = &generator.registry_url {
-        let catalog = crate::static_tool_registry::fetch_static_tool_catalog(registry_url)
-            .await
+    if let Some(snapshot_cache_root) = &generator.snapshot_cache_root {
+        let path = crate::static_tool_registry::static_tool_catalog_path(snapshot_cache_root);
+        let response = crate::static_tool_registry::load_static_tool_catalog_response_from_file(&path)
             .map_err(|err| BamlBuilderError::InvalidArgumentWithSource {
                 message: format!(
-                    "failed to fetch static tool catalog from registry {registry_url}. Run a compatible runner, pass --static-tool-catalog for offline builds, or pass --use-local-inventory for dev-only local inventory."
+                    "snapshot cache missing static tool catalog at {}. Export a complete snapshot cache from a compatible runner.",
+                    path.display()
                 ),
                 source: err.into(),
             })?;
+        let catalog = baml_rt_tools::StaticToolSnapshotCatalog::from_response(response.clone())?;
+        crate::static_tool_registry::write_static_tool_catalog_to_cache(
+            build_dir.as_path(),
+            &response,
+        )
+        .map_err(|err| BamlBuilderError::InvalidArgumentWithSource {
+            message: "failed to copy static tool catalog into build cache".to_string(),
+            source: err.into(),
+        })?;
+        tracing::info!(
+            static_tools = catalog.len(),
+            static_tool_registry_source = %path.display(),
+            "resolved static tool catalog from explicit snapshot cache"
+        );
+        return Ok(());
+    }
+
+    if let Some(registry_url) = &generator.registry_url {
+        let response = crate::static_tool_registry::fetch_static_tool_catalog_response(registry_url)
+            .await
+            .map_err(|err| BamlBuilderError::InvalidArgumentWithSource {
+                message: format!(
+                    "failed to fetch static tool catalog from registry {registry_url}. Run a compatible runner or pass --snapshot-cache with static-tools/catalog.json for offline builds."
+                ),
+                source: err.into(),
+            })?;
+        let catalog = baml_rt_tools::StaticToolSnapshotCatalog::from_response(response.clone())?;
+        crate::static_tool_registry::write_static_tool_catalog_to_cache(
+            build_dir.as_path(),
+            &response,
+        )
+        .map_err(|err| BamlBuilderError::InvalidArgumentWithSource {
+            message: "failed to write fetched static tool catalog into build cache".to_string(),
+            source: err.into(),
+        })?;
         tracing::info!(
             static_tools = catalog.len(),
             static_tool_registry_source = %registry_url,
             "resolved static tool catalog for agent build"
         );
-        return Ok(Some(catalog));
     }
 
-    Ok(None)
+    Ok(())
 }
 
 async fn prepare_external_tool_snapshots(
     agent_dir: &AgentDir,
     build_dir: &BuildDir,
     generator: &RuntimeTypeGenerator,
-    static_catalog: Option<&StaticToolSnapshotCatalog>,
 ) -> Result<()> {
-    let required_external_tools = manifest_external_tool_names(agent_dir, static_catalog)?;
+    let required_external_tools = manifest_external_tool_names(agent_dir, build_dir)?;
     if required_external_tools.is_empty() {
         return Ok(());
     }
@@ -299,19 +313,29 @@ async fn prepare_external_tool_snapshots(
 
 fn manifest_external_tool_names(
     agent_dir: &AgentDir,
-    static_catalog: Option<&StaticToolSnapshotCatalog>,
+    build_dir: &BuildDir,
 ) -> Result<HashSet<String>> {
     let tool_names = load_manifest_tools(&agent_dir.baml_src())?;
     if tool_names.is_empty() {
         return Ok(HashSet::new());
     }
 
-    let static_tool_names: HashSet<String> = match static_catalog {
-        Some(catalog) => catalog.iter().map(|tool| tool.name.to_string()).collect(),
-        None => {
-            let inventory = baml_rt_tools::tool_catalog::InventoryCatalog::new();
-            inventory.iter().map(|tool| tool.name.to_string()).collect()
-        }
+    let static_catalog_path =
+        crate::static_tool_registry::static_tool_catalog_path(build_dir.as_path());
+    let static_tool_names: HashSet<String> = if static_catalog_path.exists() {
+        let catalog =
+            crate::static_tool_registry::load_static_tool_catalog_from_file(&static_catalog_path)
+                .map_err(|err| BamlBuilderError::InvalidArgumentWithSource {
+                message: format!(
+                    "failed to load static tool catalog from {}",
+                    static_catalog_path.display()
+                ),
+                source: err.into(),
+            })?;
+        catalog.iter().map(|tool| tool.name.to_string()).collect()
+    } else {
+        let inventory = baml_rt_tools::tool_catalog::InventoryCatalog::new();
+        inventory.iter().map(|tool| tool.name.to_string()).collect()
     };
 
     let mut external_tools = HashSet::new();
