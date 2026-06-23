@@ -334,6 +334,17 @@ enum Commands {
         snapshot_cache: Option<String>,
     },
 
+    /// Export all approved repository tool catalogs into an offline snapshot cache
+    ExportSnapshotCache {
+        /// Repository URL to export from
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
+        repository_url: String,
+
+        /// Output snapshot-cache directory
+        #[arg(long, value_name = "DIR")]
+        output: String,
+    },
+
     /// Validate standalone external tool manifest against runtime parser
     CheckExternalTool {
         /// Path to external tool directory (contains tool-manifest.json)
@@ -938,6 +949,11 @@ fn main() -> anyhow::Result<()> {
             repository_url,
             snapshot_cache,
         } => commands::regen::run(&names, &paths, &repository_url, snapshot_cache.as_deref()),
+
+        Commands::ExportSnapshotCache {
+            repository_url,
+            output,
+        } => commands::export_snapshot_cache::run(&repository_url, &output),
 
         Commands::CheckExternalTool { path } => commands::check_external_tool::run(&path),
 
