@@ -24,9 +24,7 @@ use baml_rt_tools::{StaticToolCatalogResponse, StaticToolSnapshotCatalog};
 /// detached repository) — surfaced as an error rather than a silent empty
 /// catalog, which would recreate the stale-schema bug this whole path exists to
 /// kill.
-pub async fn fetch_static_tool_catalog(
-    repository_url: &str,
-) -> Result<StaticToolSnapshotCatalog> {
+pub async fn fetch_static_tool_catalog(repository_url: &str) -> Result<StaticToolSnapshotCatalog> {
     let url = format!(
         "{}/static-tools/snapshots",
         repository_url.trim_end_matches('/')
