@@ -15,7 +15,6 @@ pub struct CliTool {
     pub id: String,
     pub description: String,
     pub tags: Vec<String>,
-    pub access: String,
 }
 
 pub fn load_cli_tools() -> Result<Vec<CliTool>> {
@@ -53,11 +52,6 @@ fn inventory_tools() -> Vec<CliTool> {
             id: tool.name.to_string(),
             description: tool.description.clone(),
             tags: tool.tags.clone(),
-            access: tool
-                .access
-                .as_ref()
-                .map(|a| format!("{a:?}"))
-                .unwrap_or_else(|| "None".to_string()),
         })
         .collect();
     tools.sort_by(|a, b| a.id.cmp(&b.id));
@@ -112,10 +106,6 @@ fn parse_baml_tool_attrs(content: &str) -> Vec<CliTool> {
     let Ok(tag_item_re) = Regex::new(r#""([^"]+)""#) else {
         return Vec::new();
     };
-    let Ok(access_re) = Regex::new(r#"access\s*=\s*(Read|Write)"#) else {
-        return Vec::new();
-    };
-
     let mut out = Vec::new();
     for caps in attr_re.captures_iter(content) {
         let Some(block) = caps.get(1).map(|m| m.as_str()) else {
@@ -146,17 +136,10 @@ fn parse_baml_tool_attrs(content: &str) -> Vec<CliTool> {
             })
             .unwrap_or_default();
 
-        let access = access_re
-            .captures(block)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_else(|| "None".to_string());
-
         out.push(CliTool {
             id,
             description,
             tags,
-            access,
         });
     }
 

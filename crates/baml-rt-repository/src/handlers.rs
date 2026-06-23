@@ -27,7 +27,8 @@ use crate::{
         ImportMcpSnapshotRequest, ImportMcpSnapshotResponse, LineagePath, LineageQuery,
         LineageResponse, ListAgentsResponse, ListVersionsPath, ListVersionsResponse, McpServerPath,
         McpServerVersionPath, McpServerVersionsResponse, McpServersResponse, McpToolLookupResponse,
-        McpToolQuery, RemoveTagRequest, SearchResponse, TagPath,
+        McpToolQuery, RemoveTagRequest, RepositoryToolSummary, SearchResponse, TagPath, ToolsQuery,
+        ToolsResponse,
     },
     ids::Version,
     search::SearchQuery,
@@ -186,6 +187,91 @@ pub async fn remove_tag(
         .await
         .map_err(HttpApiProblem::from)?;
     Ok(Json(()))
+}
+
+/// List unified approved tool inventory (GET /repository/tools?source=static|external|mcp).
+pub async fn list_tools(
+    State(svc): State<RepoState>,
+    Query(q): Query<ToolsQuery>,
+) -> HttpResult<ToolsResponse> {
+    let source = q.source.as_deref().unwrap_or("all");
+    if !matches!(source, "all" | "static" | "external" | "mcp") {
+        return Err(bad_request(
+            "source must be one of: all, static, external, mcp".to_string(),
+        ));
+    }
+
+    let include_static = matches!(source, "all" | "static");
+    let include_external = matches!(source, "all" | "external");
+    let include_mcp = matches!(source, "all" | "mcp");
+
+    let mut tools = Vec::new();
+
+    if include_static && let Some(catalog) = svc.static_tool_catalog() {
+        for tool in &catalog.tools {
+            tools.push(RepositoryToolSummary {
+                name: tool.name.to_string(),
+                description: tool.description.clone(),
+                tags: tool.tags.clone(),
+                access: tool
+                    .access
+                    .as_ref()
+                    .map(|a| format!("{a:?}"))
+                    .unwrap_or_else(|| "None".to_string()),
+                source: "static".to_string(),
+                server_id: None,
+                snapshot_digest: None,
+            });
+        }
+    }
+
+    if include_external {
+        for snapshot in svc
+            .list_approved_external_tool_snapshots()
+            .await
+            .map_err(HttpApiProblem::from)?
+        {
+            tools.push(RepositoryToolSummary {
+                name: snapshot.tool.name.clone(),
+                description: snapshot.tool.description.clone(),
+                tags: snapshot.tool.tags.clone(),
+                access: format!("{:?}", snapshot.tool.access_level),
+                source: "external".to_string(),
+                server_id: None,
+                snapshot_digest: Some(snapshot.snapshot_digest.to_string()),
+            });
+        }
+    }
+
+    if include_mcp {
+        for server in svc.list_mcp_servers().await.map_err(HttpApiProblem::from)? {
+            let Some(snapshot) = svc
+                .get_latest_mcp_snapshot(&server.server_id)
+                .await
+                .map_err(HttpApiProblem::from)?
+            else {
+                continue;
+            };
+            if !snapshot.approval.state.is_approved() {
+                continue;
+            }
+            for tool in snapshot.tools {
+                tools.push(RepositoryToolSummary {
+                    name: tool.platform_tool_name,
+                    description: tool.description.unwrap_or_default(),
+                    tags: vec!["mcp".to_string(), snapshot.server_id.clone()],
+                    access: format!("{:?}", tool.access_level),
+                    source: "mcp".to_string(),
+                    server_id: Some(snapshot.server_id.clone()),
+                    snapshot_digest: Some(snapshot.tools_digest.to_string()),
+                });
+            }
+        }
+    }
+
+    tools.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.source.cmp(&b.source)));
+    let total = tools.len();
+    Ok(Json(ToolsResponse { tools, total }))
 }
 
 /// List MCP servers (GET /repository/mcp/servers).

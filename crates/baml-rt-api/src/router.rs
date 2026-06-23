@@ -243,6 +243,7 @@ fn repository_route_metric_label(matched: &MatchedPath) -> &'static str {
         "/search" => "repository_search",
         "/lineage/{hash}" => "repository_get_lineage",
         "/blobs/{hash}" => "repository_get_blob",
+        "/tools" => "repository_tool_list",
         "/mcp/servers" => "repository_mcp_list_servers",
         "/mcp/servers/{server_id}" => "repository_mcp_get_latest_snapshot",
         "/mcp/servers/{server_id}/versions" => "repository_mcp_list_server_versions",

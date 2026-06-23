@@ -192,8 +192,16 @@ enum Commands {
         dry_run: bool,
     },
 
-    /// List all registered tools from the inventory
-    ListTools,
+    /// List tools from runner/repository catalog or offline snapshot cache
+    ListTools {
+        /// Repository URL to query when not using --snapshot-cache
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
+        repository_url: String,
+
+        /// Read tools from unified offline snapshot cache instead of repository
+        #[arg(long)]
+        snapshot_cache: Option<String>,
+    },
 
     /// List all agent packages
     ListAgents,
@@ -880,7 +888,10 @@ fn main() -> anyhow::Result<()> {
             )
         }
 
-        Commands::ListTools => commands::list_tools::run(),
+        Commands::ListTools {
+            repository_url,
+            snapshot_cache,
+        } => commands::list_tools::run(&repository_url, snapshot_cache.as_deref()),
 
         Commands::ListAgents => commands::list_agents::run(),
 

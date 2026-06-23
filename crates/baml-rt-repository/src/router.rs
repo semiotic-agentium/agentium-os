@@ -42,6 +42,7 @@ pub fn repository_read_router(service: Arc<RepositoryService>) -> Router {
         .route("/search", post(handlers::search))
         .route("/lineage/{hash}", get(handlers::get_lineage))
         .route("/blobs/{hash}", get(handlers::get_blob))
+        .route("/tools", get(handlers::list_tools))
         .route("/mcp/servers", get(handlers::list_mcp_servers))
         .route(
             "/mcp/servers/{server_id}",
@@ -116,6 +117,7 @@ fn repository_router_with_publish(
         .route("/search", post(handlers::search))
         .route("/lineage/{hash}", get(handlers::get_lineage))
         .route("/blobs/{hash}", get(handlers::get_blob))
+        .route("/tools", get(handlers::list_tools))
         .route("/mcp/servers", get(handlers::list_mcp_servers))
         .route(
             "/mcp/servers/{server_id}",
