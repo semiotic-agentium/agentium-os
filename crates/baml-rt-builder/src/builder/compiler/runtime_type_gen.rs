@@ -9,7 +9,7 @@
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
 use baml_rt_repository::RepositoryService;
-use baml_rt_tools::{ToolName, tool_catalog::ToolCatalog};
+use baml_rt_tools::{StaticToolSnapshotCatalog, ToolName, tool_catalog::ToolCatalog};
 use tokio::task;
 
 use super::codegen_pipeline::WorkspaceReady;
@@ -75,8 +75,10 @@ impl RuntimeTypeGenerator {
 #[async_trait::async_trait]
 impl TypeGenerator for RuntimeTypeGenerator {
     async fn generate(&self, agent_dir: &AgentDir, build_dir: &BuildDir) -> Result<()> {
+        let static_catalog = prepare_static_tool_catalog(self).await?;
         prepare_mcp_snapshots(agent_dir, build_dir, self).await?;
-        prepare_external_tool_snapshots(agent_dir, build_dir, self).await?;
+        prepare_external_tool_snapshots(agent_dir, build_dir, self, static_catalog.as_ref())
+            .await?;
 
         let agent_dir = agent_dir.clone();
         let build_dir = build_dir.clone();
@@ -85,7 +87,11 @@ impl TypeGenerator for RuntimeTypeGenerator {
         // rewriter in between), session artifact generation, stable catalog planning, manifest
         // + .d.ts emission.
         let catalog_render_inputs = task::spawn_blocking(move || {
-            let workspace = WorkspaceReady::materialize(agent_dir, build_dir)?;
+            let workspace = WorkspaceReady::materialize_with_static_catalog(
+                agent_dir,
+                build_dir,
+                static_catalog,
+            )?;
             let prelude = workspace.emit_tool_interfaces_prelude()?;
             let compiled = prelude.compile_first_pass()?;
             let normalized = compiled.normalize_authored_prompts()?;
@@ -107,12 +113,52 @@ impl TypeGenerator for RuntimeTypeGenerator {
     }
 }
 
+async fn prepare_static_tool_catalog(
+    generator: &RuntimeTypeGenerator,
+) -> Result<Option<StaticToolSnapshotCatalog>> {
+    if let Some(service) = &generator.registry_service {
+        let response = service.static_tool_catalog().cloned().ok_or_else(|| {
+            BamlBuilderError::InvalidArgument(
+                "static tool catalog not available from embedded repository service; host runner did not inject its inventory"
+                    .to_string(),
+            )
+        })?;
+        let catalog = StaticToolSnapshotCatalog::from_response(response)?;
+        tracing::info!(
+            static_tools = catalog.len(),
+            static_tool_registry_source = "embedded",
+            "resolved static tool catalog for agent build"
+        );
+        return Ok(Some(catalog));
+    }
+
+    if let Some(registry_url) = &generator.registry_url {
+        let catalog = crate::static_tool_registry::fetch_static_tool_catalog(registry_url)
+            .await
+            .map_err(|err| BamlBuilderError::InvalidArgumentWithSource {
+                message: format!(
+                    "failed to fetch static tool catalog from registry {registry_url}. Run a compatible runner, pass --static-tool-catalog for offline builds, or pass --use-local-inventory for dev-only local inventory."
+                ),
+                source: err.into(),
+            })?;
+        tracing::info!(
+            static_tools = catalog.len(),
+            static_tool_registry_source = %registry_url,
+            "resolved static tool catalog for agent build"
+        );
+        return Ok(Some(catalog));
+    }
+
+    Ok(None)
+}
+
 async fn prepare_external_tool_snapshots(
     agent_dir: &AgentDir,
     build_dir: &BuildDir,
     generator: &RuntimeTypeGenerator,
+    static_catalog: Option<&StaticToolSnapshotCatalog>,
 ) -> Result<()> {
-    let required_external_tools = manifest_external_tool_names(agent_dir)?;
+    let required_external_tools = manifest_external_tool_names(agent_dir, static_catalog)?;
     if required_external_tools.is_empty() {
         return Ok(());
     }
@@ -227,19 +273,26 @@ async fn prepare_external_tool_snapshots(
     ensure_external_snapshots_resolved(&required_external_tools, &resolved)
 }
 
-fn manifest_external_tool_names(agent_dir: &AgentDir) -> Result<HashSet<String>> {
+fn manifest_external_tool_names(
+    agent_dir: &AgentDir,
+    static_catalog: Option<&StaticToolSnapshotCatalog>,
+) -> Result<HashSet<String>> {
     let tool_names = load_manifest_tools(&agent_dir.baml_src())?;
     if tool_names.is_empty() {
         return Ok(HashSet::new());
     }
 
-    let inventory = baml_rt_tools::tool_catalog::InventoryCatalog::new();
-    let inventory_names: HashSet<String> =
-        inventory.iter().map(|tool| tool.name.to_string()).collect();
+    let static_tool_names: HashSet<String> = match static_catalog {
+        Some(catalog) => catalog.iter().map(|tool| tool.name.to_string()).collect(),
+        None => {
+            let inventory = baml_rt_tools::tool_catalog::InventoryCatalog::new();
+            inventory.iter().map(|tool| tool.name.to_string()).collect()
+        }
+    };
 
     let mut external_tools = HashSet::new();
     for name in tool_names {
-        if name.starts_with("mcp/") || inventory_names.contains(&name) {
+        if name.starts_with("mcp/") || static_tool_names.contains(&name) {
             continue;
         }
         ToolName::parse(&name).map_err(BamlBuilderError::from)?;
