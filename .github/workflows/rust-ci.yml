@@ -35,11 +35,11 @@ env:
   # Trusted lane: LLM integration tests + secret-backed fnox.toml (same-repo PRs,
   # push to main, workflow_dispatch). Untrusted lane omits llm-tests features.
   CI_FEATURES_TRUSTED: >-
-    baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/llm-tests,
+    baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/dev-tools,baml-rt-builder/llm-tests,
     baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,
     baml-agent-runner/llm-tests
   CI_FEATURES_UNTRUSTED: >-
-    baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,
+    baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/dev-tools,baml-agent-runner/http-tools,
     baml-agent-runner/memory
   # Prefer workspace-local ONNX model cache in CI for deterministic loading.
   BAML_MODELS_DIR: ${{ github.workspace }}/models
