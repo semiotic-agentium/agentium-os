@@ -98,7 +98,7 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          # Distinct from ci-nextest / ci-doctor: this job compiles
+          # Distinct from ci-nextest: this job compiles
           # cargo-agent-platform host-side via `cargo run` during smoke,
           # producing a different feature graph than the workspace
           # nextest invocation.

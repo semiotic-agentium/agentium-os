@@ -4,10 +4,6 @@
 
 //! `cargo-agent-platform` CLI for scaffolding BAML tools and agents.
 //!
-// Allow unexpected cfg values from the force_link_all_tools! macro - these features
-// are passed through from baml-tool-links and checked at compile time there.
-#![allow(unexpected_cfgs)]
-//!
 //! Invoked as `cargo agent-platform <subcommand>`.
 //!
 //! # Subcommands
@@ -466,6 +462,14 @@ enum Commands {
         /// Downgrade missing catalog entries from error to warning
         #[arg(long)]
         warn_missing_catalog: bool,
+
+        /// Repository URL to query for catalog validation. Wins over --snapshot-cache.
+        #[arg(long)]
+        repository_url: Option<String>,
+
+        /// Read tool catalog from unified offline snapshot cache instead of local inventory.
+        #[arg(long)]
+        snapshot_cache: Option<String>,
     },
 
     /// Inspect and manage external-tool snapshot cache entries
@@ -643,9 +647,6 @@ fn parse_runtime_or_default(raw: &str) -> Runtime {
 }
 
 fn main() -> anyhow::Result<()> {
-    // Force-link all tools so the inventory is complete
-    baml_tool_links::force_link_all_tools!();
-
     // When invoked as `cargo agent-platform`, Cargo passes "agent-platform" as the
     // first argument. Strip it so clap sees the actual command/flags.
     let args: Vec<String> = std::env::args()
@@ -1040,7 +1041,14 @@ fn main() -> anyhow::Result<()> {
         Commands::Doctor {
             ci,
             warn_missing_catalog,
-        } => commands::doctor::run(ci, warn_missing_catalog),
+            repository_url,
+            snapshot_cache,
+        } => commands::doctor::run(
+            ci,
+            warn_missing_catalog,
+            repository_url.as_deref(),
+            snapshot_cache.as_deref(),
+        ),
 
         Commands::ExternalTool { command } => match command {
             ExternalToolCommands::Enable {
