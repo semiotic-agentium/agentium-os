@@ -108,6 +108,7 @@ pub(crate) struct AgentPackageBootArgs<'a> {
     pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
     pub(crate) observation_notify:
         Option<tokio::sync::broadcast::Sender<baml_rt_core::ObservationUpdate>>,
+    pub(crate) compaction_summarizer: Arc<dyn baml_rt_provenance::ConversationCompactionSummarizer>,
 }
 
 impl AgentPackage {
@@ -352,6 +353,7 @@ impl AgentPackage {
         provenance_config: &ProvenanceConfig,
         stream_idle_secs: Option<u64>,
         observation_notify: Option<tokio::sync::broadcast::Sender<baml_rt_core::ObservationUpdate>>,
+        compaction_summarizer: Arc<dyn baml_rt_provenance::ConversationCompactionSummarizer>,
     ) -> Result<JsInitialized> {
         use baml_rt_quickjs::QuickJSConfig;
 
@@ -365,24 +367,8 @@ impl AgentPackage {
         )));
 
         {
-            use baml_rt_llm_config::{LLM_CONFIG_BUNDLE_NAME, LlmClientConfig, StaticResolver};
-            let config_service = provenance_config.config_service();
-            let bundle = baml_rt_tools::BundleName::new(LLM_CONFIG_BUNDLE_NAME)
-                .expect("llm bundle name valid");
-            let llm_config = match config_service.get(&bundle).await {
-                Ok(Some(v)) => match LlmClientConfig::from_value(v) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "stored LLM config parse failed; using sensible default");
-                        LlmClientConfig::sensible_default()
-                    }
-                },
-                Ok(None) => LlmClientConfig::sensible_default(),
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to load LLM config; using sensible default");
-                    LlmClientConfig::sensible_default()
-                }
-            };
+            use baml_rt_llm_config::{StaticResolver, load_stored_config};
+            let llm_config = load_stored_config(provenance_config.config_service().as_ref()).await;
             tracing::info!(
                 default = %llm_config.default,
                 clients = llm_config.clients.len(),
@@ -422,6 +408,7 @@ impl AgentPackage {
         }
         let agent_builder =
             agent_builder.with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()));
+        let agent_builder = agent_builder.with_compaction_summarizer(compaction_summarizer);
         info!(
             agent = %self.manifest.name,
             "building QuickJS runtime and A2a bridge (often the longest boot step)"
@@ -496,6 +483,7 @@ impl AgentPackage {
                     args.provenance_config,
                     args.stream_idle_secs,
                     args.observation_notify.clone(),
+                    Arc::clone(&args.compaction_summarizer),
                 )
                 .await?;
             // Register before `initialize_js_phase`: a CPU-bound JS top-level

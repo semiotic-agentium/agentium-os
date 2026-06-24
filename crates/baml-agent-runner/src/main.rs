@@ -16,6 +16,7 @@ mod cluster;
 mod config;
 mod deployment_restore;
 mod deployment_state;
+mod host_compaction;
 mod package;
 mod routing;
 mod runner;
@@ -312,6 +313,12 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         permitted = ?permitted,
         "Tool access cap resolved (per-agent manifest allowlist still gates tool exposure)"
     );
+    let compaction_effect_emitter: Arc<dyn baml_rt_core::bus::EffectEmitter> =
+        Arc::new(baml_rt_core::bus::BusWithEffects::new());
+    let compaction_summarizer =
+        host_compaction::boot_compaction_summarizer(&provenance_config, compaction_effect_emitter)
+            .await
+            .map_err(|e| anyhow::anyhow!("host compaction init: {e}"))?;
     let builder = builder::RunnerBuilder::<builder::Loading>::new(runner::AgentRunnerConfig {
         provenance_config,
         deployment_state,
@@ -324,6 +331,7 @@ async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow
         sandbox_bind_roots: config.sandbox_bind_roots.clone(),
         runtime_progress: runtime_progress.clone(),
         observation_notify: None,
+        compaction_summarizer,
     })
     .map_err(|e| anyhow::anyhow!("runner builder init: {e}"))?;
 
@@ -1185,6 +1193,7 @@ globalThis.onChatMessage = async function(_message) {
                 sandbox_bind_roots: Vec::new(),
                 runtime_progress: baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
                 observation_notify: None,
+                compaction_summarizer: baml_rt_provenance::FixedCompactionSummarizer::test_stub(),
             })
             .expect("test runner construction"),
         );

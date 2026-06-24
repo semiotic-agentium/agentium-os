@@ -8,6 +8,7 @@ description = "Centralised LLM client configuration for BAML runtime"
 
 [dependencies]
 baml-rt-core = { path = "../baml-rt-core" }
+baml-rt-tools = { path = "../baml-rt-tools" }
 baml-runtime = { workspace = true }
 baml-types = { workspace = true }
 internal-llm-client = { workspace = true }
@@ -19,3 +20,4 @@ tracing = { workspace = true }
 serde_yaml = "0.9"
 fnox = "0.1"
 tokio = { workspace = true }
+reqwest = { workspace = true }

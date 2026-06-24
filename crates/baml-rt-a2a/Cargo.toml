@@ -14,6 +14,7 @@ baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-tools = { path = "../baml-rt-tools" }
 baml-tools-system = { path = "../tools/system" }
 inventory = { workspace = true }
+baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 baml-rt-quickjs = { path = "../baml-rt-quickjs" }
 baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }

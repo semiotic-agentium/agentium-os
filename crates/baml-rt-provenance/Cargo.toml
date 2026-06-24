@@ -15,6 +15,7 @@ baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-embedding = { path = "../baml-rt-embedding" }
 baml-rt-id = { path = "../baml-rt-id" }
  baml-rt-interceptor = { path = "../baml-rt-interceptor" }
+baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-tools = { path = "../baml-rt-tools" }
 baml-rt-vocabulary = { path = "../baml-rt-vocabulary" }

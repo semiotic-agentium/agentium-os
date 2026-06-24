@@ -495,6 +495,10 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(config_handlers::delete_secret))
         .routes(utoipa_axum::routes!(config_handlers::put_config))
         .routes(utoipa_axum::routes!(config_handlers::delete_config))
+        .routes(utoipa_axum::routes!(config_handlers::get_llm_model_budgets))
+        .routes(utoipa_axum::routes!(
+            config_handlers::refresh_llm_model_budgets
+        ))
         .routes(utoipa_axum::routes!(handlers::post_deploy))
         .routes(utoipa_axum::routes!(handlers::post_undeploy))
         .routes(utoipa_axum::routes!(handlers::get_deployments))

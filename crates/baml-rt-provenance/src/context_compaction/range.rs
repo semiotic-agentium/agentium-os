@@ -2,72 +2,56 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Select a sealed compactable prefix from transcript rows.
-
+//! Select a sealed compactable prefix from conversation rows.
 use baml_rt_conversation::view::{ConversationItemContent, ProvenanceConversationContextItem};
 
 use super::types::ContextCompactionPolicy;
-
-/// One indexed transcript row used for range selection.
-#[derive(Debug, Clone)]
-pub struct TranscriptIndexRow {
-    pub node_id: String,
-    pub event_order: u64,
-}
 
 /// Selected prefix eligible for compaction plus retained recent tail boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactableRange {
     pub covered_event_order_start: u64,
     pub covered_event_order_end: u64,
-    pub covered_node_ids: Vec<String>,
     pub recent_tail_start_event_order: u64,
 }
 
-/// Returns `None` when compaction should not run (too few rows, unresolved work, etc.).
+/// Returns `None` when compaction should not run (too few rows, etc.).
 #[must_use]
 pub fn select_compactable_range(
-    index_rows: &[TranscriptIndexRow],
     items: &[ProvenanceConversationContextItem],
     policy: &ContextCompactionPolicy,
-    awaiting_input: bool,
-    in_flight_tool_work: bool,
 ) -> Option<CompactableRange> {
-    if index_rows.is_empty() || items.len() < policy.item_threshold {
-        return None;
-    }
-    if awaiting_input || in_flight_tool_work {
+    if items.len() < policy.item_threshold {
         return None;
     }
 
     let tail_keep = policy.recent_tail_retention.max(1);
-    if index_rows.len() <= tail_keep {
+    if items.len() <= tail_keep {
         return None;
     }
 
-    let split_at = index_rows.len().saturating_sub(tail_keep);
-    let prefix_rows = &index_rows[..split_at];
-    let tail_rows = &index_rows[split_at..];
+    let split_at = items.len().saturating_sub(tail_keep);
+    let prefix_rows = &items[..split_at];
+    let tail_rows = &items[split_at..];
 
     if prefix_rows.is_empty() {
         return None;
     }
 
-    // Do not compact rows that represent live planning obligations in the tail window.
-    let tail_start = tail_rows.first().map(|r| r.event_order).unwrap_or(u64::MAX);
+    let tail_start = tail_rows
+        .first()
+        .map(|r| r.timestamp_ms)
+        .unwrap_or(u64::MAX);
 
-    let covered_start = prefix_rows.first().map(|r| r.event_order).unwrap_or(0);
+    let covered_start = prefix_rows.first().map(|r| r.timestamp_ms).unwrap_or(0);
     let covered_end = prefix_rows
         .last()
-        .map(|r| r.event_order)
+        .map(|r| r.timestamp_ms)
         .unwrap_or(covered_start);
-
-    let covered_node_ids: Vec<String> = prefix_rows.iter().map(|r| r.node_id.clone()).collect();
 
     Some(CompactableRange {
         covered_event_order_start: covered_start,
         covered_event_order_end: covered_end,
-        covered_node_ids,
         recent_tail_start_event_order: tail_start,
     })
 }
@@ -100,37 +84,38 @@ mod tests {
 
     use super::*;
 
-    fn row(node: &str, order: u64) -> TranscriptIndexRow {
-        TranscriptIndexRow {
-            node_id: node.to_string(),
-            event_order: order,
-        }
+    fn dummy_items(count: usize) -> Vec<ProvenanceConversationContextItem> {
+        (0..count)
+            .map(|i| ProvenanceConversationContextItem {
+                timestamp_ms: (i as u64 + 1) * 10,
+                activity_anchor: ActivityAnchorId::from(format!("a{i}")),
+                role: "user".into(),
+                content: ConversationItemContent::Message {
+                    text: format!("msg {i}"),
+                    citations: vec![],
+                },
+                user_speaker_kind: None,
+            })
+            .collect()
     }
 
     #[test]
     fn selects_prefix_leaving_recent_tail() {
-        let rows: Vec<_> = (1..=50)
-            .map(|i| row(&format!("n{i}"), i as u64 * 10))
-            .collect();
+        let items = dummy_items(50);
         let policy = ContextCompactionPolicy {
             item_threshold: 40,
             recent_tail_retention: 8,
             ..Default::default()
         };
-        let range = select_compactable_range(&rows, &[], &policy, false, false).expect("range");
-        assert_eq!(range.covered_node_ids.len(), 42);
+        let range = select_compactable_range(&items, &policy).expect("range");
+        assert_eq!(range.covered_event_order_end, 420);
         assert_eq!(range.recent_tail_start_event_order, 430);
     }
 
     #[test]
-    fn skips_when_awaiting_input() {
-        let rows: Vec<_> = (1..=50)
-            .map(|i| row(&format!("n{i}"), i as u64 * 10))
-            .collect();
-        assert!(
-            select_compactable_range(&rows, &[], &ContextCompactionPolicy::default(), true, false)
-                .is_none()
-        );
+    fn skips_when_below_item_threshold() {
+        let items = dummy_items(5);
+        assert!(select_compactable_range(&items, &ContextCompactionPolicy::default()).is_none());
     }
 
     #[test]

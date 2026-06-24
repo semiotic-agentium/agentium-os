@@ -62,6 +62,7 @@ async fn awaitinput_two_turn_persists_inbound_and_outbound_messages() {
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .with_surreal_store(store.clone())
+        .with_compaction_summarizer(baml_rt_provenance::FixedCompactionSummarizer::test_stub())
         .build()
         .await
         .expect("build task-lifecycle-demo agent with surreal store");

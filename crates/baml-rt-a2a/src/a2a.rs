@@ -610,7 +610,8 @@ mod tests {
         let builder = A2aAgent::builder()
             .with_init_js(js_code)
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
-            .with_surreal_store(store);
+            .with_surreal_store(store)
+            .with_compaction_summarizer(baml_rt_provenance::FixedCompactionSummarizer::test_stub());
         tracing::info!("setup_agent_with_js_inner: Calling build()");
         let agent = builder.build().await.expect("agent build");
         tracing::info!("setup_agent_with_js_inner: Agent built successfully");

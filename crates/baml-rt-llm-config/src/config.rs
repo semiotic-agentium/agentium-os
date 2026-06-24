@@ -10,7 +10,9 @@ use baml_rt_core::BamlFunctionId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::provider_requirements::ensure_base_url_for_provider_config;
+use crate::{
+    model_budget::LlmCompactionConfig, provider_requirements::ensure_base_url_for_provider_config,
+};
 
 /// Default env placeholder for api_key when the UI does not send one (secrets are linked in Link UI).
 fn default_api_key_placeholder(p: LlmProvider) -> Option<&'static str> {
@@ -129,13 +131,15 @@ pub struct RetryPolicyDef {
     pub strategy: Option<serde_json::Value>,
 }
 
-/// Full LLM client config: clients, default, overrides, retry policies.
+/// Full LLM client config: clients, default, overrides, retry policies, compaction.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LlmClientConfig {
     pub default: String,
     pub clients: HashMap<String, ClientDef>,
     pub overrides: LlmOverrides,
     pub retry_policies: HashMap<String, RetryPolicyDef>,
+    #[serde(default)]
+    pub compaction: LlmCompactionConfig,
 }
 
 impl LlmClientConfig {
@@ -178,6 +182,7 @@ impl LlmClientConfig {
             clients,
             overrides: LlmOverrides::default(),
             retry_policies: HashMap::new(),
+            compaction: LlmCompactionConfig::default(),
         };
         config.normalize();
         config
@@ -218,9 +223,12 @@ impl LlmClientConfig {
         self.clients.get(name)
     }
 
-    /// Normalize client options: ensure `base_url` for providers that require it, and inject
-    /// default `api_key` placeholder when missing (so UI need not send it; secrets are linked in Link UI).
+    /// Normalize client options: ensure `base_url` for providers that require it, inject
+    /// default `api_key` placeholder when missing, and fill missing compaction defaults.
     pub fn normalize(&mut self) {
+        if self.compaction.defaults.recent_tail_retention == 0 {
+            self.compaction = LlmCompactionConfig::default();
+        }
         for client in self.clients.values_mut() {
             ensure_base_url_for_provider_config(&mut client.options, client.provider.as_str());
             if !client.options.contains_key("api_key")
@@ -262,6 +270,7 @@ mod tests {
         let mut config = LlmClientConfig {
             default: "Default".to_string(),
             clients,
+            compaction: LlmCompactionConfig::default(),
             ..Default::default()
         };
         config.normalize();

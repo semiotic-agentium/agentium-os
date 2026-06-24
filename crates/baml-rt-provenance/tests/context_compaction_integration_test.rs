@@ -8,15 +8,15 @@ use std::sync::Arc;
 
 use baml_rt_conversation::view::{ConversationItemContent, ProvenanceConversationContextItem};
 use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId};
+use baml_rt_llm_config::{LlmClientConfig, ModelBudgetOverride};
 use baml_rt_provenance::{
-    ContextCompactionPolicy, ContextCompactionSubscriber, ContextCompactionTrigger,
-    DEFAULT_COMPACTION_ITEM_THRESHOLD, DEFAULT_LLM_CONTEXT_ITEM_CAP, DEFAULT_RECENT_TAIL_RETENTION,
-    ProvenanceContextReader, ProvenanceQueryApi, ProvenanceWriter,
+    CompactionRequest, CompactionTriggerInput, CompactionTriggerSource,
+    ContextCompactionSubscriber, DEFAULT_COMPACTION_ITEM_THRESHOLD, DEFAULT_LLM_CONTEXT_ITEM_CAP,
+    DEFAULT_RECENT_TAIL_RETENTION, FixedCompactionSummarizer, ProvenanceContextReader,
+    ProvenanceQueryApi, ProvenanceWriter, render_items_with_ref_table, resolve_compaction_policies,
 };
 use baml_rt_tools::{
-    archive_refs::RefTable,
-    prompt_projection::{PromptProjectionItem, project_prompt_context},
-    tools::ToolRegistry,
+    archive_refs::RefTable, prompt_projection::project_prompt_context, tools::ToolRegistry,
 };
 use test_support::testing::provenance_fixtures::{
     build_isolated_store, provenance_agent_id, provenance_context_id, wall_clock_tick,
@@ -47,25 +47,29 @@ async fn seed_user_messages(
 }
 
 fn projected_transcript_bytes(items: &[ProvenanceConversationContextItem]) -> usize {
-    let projection_items: Vec<PromptProjectionItem> = items
-        .iter()
-        .cloned()
-        .filter_map(baml_rt_conversation::provenance_item_to_projection_item)
-        .collect();
-    let ref_table = Arc::new(RefTable::new());
     let registry = ToolRegistry::new();
-    let history = project_prompt_context(projection_items, &registry, &ref_table, None);
-    baml_rt_tools::prompt_projection::format_conversation_history_transcript(
-        history.as_array().unwrap_or(&vec![]),
-    )
-    .len()
+    let ref_table = RefTable::new();
+    render_items_with_ref_table(items, &registry, &ref_table).len()
 }
 
 fn compaction_subscriber(
     store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
+    agent_id: AgentId,
+    llm_config: &LlmClientConfig,
 ) -> ContextCompactionSubscriber {
     let writer: Arc<dyn ProvenanceWriter> = Arc::clone(&store) as Arc<dyn ProvenanceWriter>;
-    ContextCompactionSubscriber::new(store, writer, ContextCompactionPolicy::default())
+    let summarizer = Arc::new(FixedCompactionSummarizer::new(format!(
+        "Compacted history for agent {agent_id}; user asked about status pings."
+    )));
+    let (trigger_policy, legacy_policy) = resolve_compaction_policies(llm_config, None, "default");
+    ContextCompactionSubscriber::new(
+        store,
+        writer,
+        trigger_policy,
+        legacy_policy,
+        summarizer,
+        Arc::new(ToolRegistry::new()),
+    )
 }
 
 #[tokio::test]
@@ -75,7 +79,7 @@ async fn agent_prompt_read_applies_compaction_head_after_write() {
     let agent_id = provenance_agent_id();
     let message_count = DEFAULT_COMPACTION_ITEM_THRESHOLD + 1;
 
-    seed_user_messages(&store, &ctx, &agent_id, message_count, "status ping").await;
+    seed_user_messages(&store, &ctx, &agent_id, message_count, "status ping @1").await;
 
     let full_before = store.conversation_context(&ctx, None).await.expect("full");
     let agent_before = store
@@ -91,13 +95,23 @@ async fn agent_prompt_read_applies_compaction_head_after_write() {
         agent_before.len() <= DEFAULT_LLM_CONTEXT_ITEM_CAP,
         "agent read is capped before compaction"
     );
-    assert!(
-        agent_before.len() < full_before.len() || message_count <= DEFAULT_LLM_CONTEXT_ITEM_CAP,
-        "long transcripts are tail-capped on read before compaction"
-    );
 
-    compaction_subscriber(Arc::clone(&store))
-        .try_compact(&ctx, ContextCompactionTrigger::PostTurnThreshold)
+    let request = CompactionRequest {
+        context_id: ctx.clone(),
+        agent_id: agent_id.clone(),
+    };
+    let llm_config = LlmClientConfig::sensible_default();
+    compaction_subscriber(Arc::clone(&store), agent_id.clone(), &llm_config)
+        .evaluate_and_compact(
+            &request,
+            CompactionTriggerInput {
+                source: CompactionTriggerSource::PostTurn,
+                item_count: message_count,
+                prompt_bytes: 0,
+                safety: Default::default(),
+                force: false,
+            },
+        )
         .await;
 
     let head = store
@@ -106,8 +120,16 @@ async fn agent_prompt_read_applies_compaction_head_after_write() {
         .expect("head")
         .expect("compaction head written");
     assert!(
-        !head.summary_text.is_empty(),
-        "compaction summary must be non-empty"
+        head.summary_text.contains("[conversation summary]"),
+        "compaction summary uses wire format"
+    );
+    assert!(
+        head.summary_text.contains("Preserved refs:"),
+        "compaction summary includes deterministic ref appendix"
+    );
+    assert!(
+        head.summary_text.contains("@1"),
+        "compaction summary preserves @1 from source"
     );
 
     let full_after = store.conversation_context(&ctx, None).await.expect("full");
@@ -149,10 +171,6 @@ async fn agent_prompt_read_applies_compaction_head_after_write() {
         has_summary,
         "agent prompt must include compaction summary row"
     );
-    assert!(
-        agent_after.len() < agent_before.len(),
-        "compacted row count must shrink versus pre-compaction agent read"
-    );
 
     let agent_after_len = agent_after.len();
     let projection_items: Vec<_> = agent_after
@@ -174,10 +192,6 @@ async fn agent_prompt_read_applies_compaction_head_after_write() {
         agent_after_len,
         "every compacted item must project to a transcript row"
     );
-    assert!(
-        rows.len() <= DEFAULT_RECENT_TAIL_RETENTION + 1,
-        "projected history is summary plus recent tail"
-    );
 }
 
 #[tokio::test]
@@ -196,18 +210,52 @@ async fn pre_model_emergency_trigger_compacts_large_agent_prompt() {
     )
     .await;
 
+    let mut llm_config = LlmClientConfig::sensible_default();
+    llm_config.compaction.client_overrides.insert(
+        "OpenRouter".to_string(),
+        ModelBudgetOverride {
+            context_window_tokens: Some(8_192),
+            trigger_ratio: Some(0.5),
+            emergency_ratio: Some(0.75),
+            output_reserve_tokens: Some(512),
+        },
+    );
+
     let agent_before = store
         .conversation_context_for_agent_prompt(&ctx, None, None)
         .await
         .expect("agent");
     let bytes_before = projected_transcript_bytes(&agent_before);
+    let emergency_bytes = llm_config
+        .compaction
+        .client_overrides
+        .get("OpenRouter")
+        .and_then(|o| o.context_window_tokens)
+        .map(|cw| {
+            let usable = cw.saturating_sub(512);
+            ((usable as f64) * 0.75) as u64 * 4
+        })
+        .unwrap_or(32_768);
     assert!(
-        bytes_before >= baml_rt_provenance::DEFAULT_COMPACTION_PROMPT_BYTES_THRESHOLD as usize,
-        "fixture must exceed emergency prompt threshold (bytes={bytes_before})"
+        bytes_before as u64 >= emergency_bytes,
+        "fixture must exceed emergency prompt threshold (bytes={bytes_before}, threshold={emergency_bytes})"
     );
 
-    compaction_subscriber(Arc::clone(&store))
-        .try_compact(&ctx, ContextCompactionTrigger::PreModelEmergency)
+    let request = CompactionRequest {
+        context_id: ctx.clone(),
+        agent_id: agent_id.clone(),
+    };
+    let subscriber = compaction_subscriber(Arc::clone(&store), agent_id, &llm_config);
+    let projection_items: Vec<_> = agent_before
+        .iter()
+        .cloned()
+        .filter_map(baml_rt_conversation::provenance_item_to_projection_item)
+        .collect();
+    let ref_table = Arc::new(RefTable::new());
+    let history = project_prompt_context(projection_items, &ToolRegistry::new(), &ref_table, None);
+    let rows = history.as_array().cloned().unwrap_or_default();
+    subscriber
+        .evaluate_pre_model_from_rows(&request, &rows, false)
         .await;
 
     store

@@ -53,6 +53,7 @@ pub mod provenance {
             .with_init_js(init_js)
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
             .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
+            .with_compaction_summarizer(baml_rt_provenance::FixedCompactionSummarizer::test_stub())
             .build()
             .await
             .expect("build provenance agent")

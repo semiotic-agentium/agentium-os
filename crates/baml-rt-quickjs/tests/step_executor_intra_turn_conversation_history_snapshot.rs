@@ -215,6 +215,11 @@ async fn step_executor_intra_turn_merged_conversation_grows_per_llm_hop() {
         Some(store.clone()),
         &manager,
         &bus,
+        Arc::new(baml_rt_provenance::FixedCompactionSummarizer::new(
+            "Prior conversation was compacted; continue from recent context.",
+        )),
+        &baml_rt_llm_config::LlmClientConfig::sensible_default(),
+        None,
     )
     .await
     .expect("provenance + conversation wiring");

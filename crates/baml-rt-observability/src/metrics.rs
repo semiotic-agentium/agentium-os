@@ -359,19 +359,51 @@ fn context_compaction_covered_rows_histogram() -> &'static Histogram<f64> {
     })
 }
 
+/// Labels and measurements for a context compaction attempt.
+pub struct ContextCompactionMetrics<'a> {
+    pub trigger: &'a str,
+    pub result: &'a str,
+    pub reason: Option<&'a str>,
+    pub summarizer_backend: &'a str,
+    pub model: &'a str,
+    pub provider: &'a str,
+    pub budget_source: &'a str,
+    pub budget_freshness: &'a str,
+    pub duration: Duration,
+    pub pre_prompt_bytes: u64,
+    pub post_prompt_bytes: u64,
+    pub covered_rows: u64,
+}
+
 /// Record a host context compaction attempt (post-turn, pre-model emergency, or manual).
-pub fn record_context_compaction(
-    trigger: &str,
-    result: &str,
-    duration: Duration,
-    pre_prompt_bytes: u64,
-    post_prompt_bytes: u64,
-    covered_rows: u64,
-) {
-    let attributes = &[
+pub fn record_context_compaction(metrics: ContextCompactionMetrics<'_>) {
+    let ContextCompactionMetrics {
+        trigger,
+        result,
+        reason,
+        summarizer_backend,
+        model,
+        provider,
+        budget_source,
+        budget_freshness,
+        duration,
+        pre_prompt_bytes,
+        post_prompt_bytes,
+        covered_rows,
+    } = metrics;
+    let mut attributes = vec![
         KeyValue::new("trigger", trigger.to_string()),
         KeyValue::new("result", result.to_string()),
+        KeyValue::new("summarizer", summarizer_backend.to_string()),
+        KeyValue::new("model", model.to_string()),
+        KeyValue::new("provider", provider.to_string()),
+        KeyValue::new("budget_source", budget_source.to_string()),
+        KeyValue::new("budget_freshness", budget_freshness.to_string()),
     ];
+    if let Some(reason) = reason {
+        attributes.push(KeyValue::new("reason", reason.to_string()));
+    }
+    let attributes = attributes.as_slice();
     context_compaction_counter().add(1, attributes);
     context_compaction_duration_histogram().record(duration.as_millis() as f64, attributes);
     if result == "success" {

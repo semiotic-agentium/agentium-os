@@ -126,6 +126,7 @@ async fn setup_stream_js_tool_agent() -> A2aAgent {
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
+        .with_compaction_summarizer(baml_rt_provenance::FixedCompactionSummarizer::test_stub())
         .build()
         .await
         .expect("build stream-js-tool agent")
@@ -148,6 +149,7 @@ async fn setup_task_lifecycle_demo_agent() -> A2aAgent {
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
+        .with_compaction_summarizer(baml_rt_provenance::FixedCompactionSummarizer::test_stub())
         .build()
         .await
         .expect("build task-lifecycle-demo agent")
@@ -172,6 +174,7 @@ async fn setup_emit_plan_then_block_agent() -> A2aAgent {
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
+        .with_compaction_summarizer(baml_rt_provenance::FixedCompactionSummarizer::test_stub())
         .build()
         .await
         .expect("build emit-plan-then-block agent")
@@ -197,6 +200,7 @@ async fn setup_stream_baml_tool_agent() -> A2aAgent {
         .with_init_js(tool_invoker_js())
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
+        .with_compaction_summarizer(baml_rt_provenance::FixedCompactionSummarizer::test_stub())
         .build()
         .await
         .expect("build stream-baml-tool agent")

@@ -9,7 +9,10 @@ use std::{collections::HashMap, path::Path};
 use anyhow::{Context as _, Result};
 use serde::Deserialize;
 
-use crate::config::{ClientDef, LlmClientConfig, LlmOverrides, RetryPolicyDef};
+use crate::{
+    config::{ClientDef, LlmClientConfig, LlmOverrides, RetryPolicyDef},
+    model_budget::LlmCompactionConfig,
+};
 
 /// Raw config as deserialized from YAML/JSON (optional default).
 #[derive(Debug, Default, Deserialize)]
@@ -19,6 +22,7 @@ struct RawConfig {
     clients: Option<Vec<ClientDef>>,
     overrides: Option<LlmOverrides>,
     retry_policies: Option<HashMap<String, RetryPolicyDef>>,
+    compaction: Option<LlmCompactionConfig>,
 }
 
 impl LlmClientConfig {
@@ -56,11 +60,13 @@ impl LlmClientConfig {
             .collect();
         let overrides = raw.overrides.unwrap_or_default();
         let retry_policies = raw.retry_policies.unwrap_or_default();
+        let compaction = raw.compaction.unwrap_or_default();
         let mut config = Self {
             default,
             clients,
             overrides,
             retry_policies,
+            compaction,
         };
         config.normalize();
         Ok(config)

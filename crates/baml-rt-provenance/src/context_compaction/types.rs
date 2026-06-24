@@ -4,10 +4,26 @@
 
 //! Types for host-owned context/history compaction provenance events.
 
-use baml_rt_core::ids::{ActivityAnchorId, ContextId, TaskId};
+use baml_rt_core::ids::{ActivityAnchorId, AgentId, ContextId, TaskId};
 use serde::{Deserialize, Serialize};
 
 pub use crate::events::ContextCompactionTrigger;
+
+/// Identity for a compaction attempt (routing + provenance scope).
+#[derive(Debug, Clone)]
+pub struct CompactionRequest {
+    pub context_id: ContextId,
+    pub agent_id: AgentId,
+}
+
+/// Prepared prefix handed to any summarizer backend.
+#[derive(Debug, Clone)]
+pub struct CompactionPrefixInput {
+    /// Rendered transcript of the sealed prefix (LLM input + ref extraction source).
+    pub source_rendered: String,
+    pub active_planning_digest: Option<String>,
+    pub recent_tail_preview: Option<String>,
+}
 
 /// Latest compaction head for a context (optionally task-scoped).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,7 +39,7 @@ pub struct ContextCompactionHead {
 }
 
 /// Policy knobs for when to compact.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ContextCompactionPolicy {
     /// Item count at or above which post-turn compaction may run.
     pub item_threshold: usize,
@@ -31,6 +47,10 @@ pub struct ContextCompactionPolicy {
     pub prompt_bytes_threshold: u64,
     /// Recent tail rows kept verbatim after compaction.
     pub recent_tail_retention: usize,
+    /// Model id the policy was resolved for (observability).
+    pub model_id: String,
+    /// Where the model budget came from.
+    pub budget_source: baml_rt_llm_config::BudgetSource,
 }
 
 impl Default for ContextCompactionPolicy {
@@ -39,6 +59,8 @@ impl Default for ContextCompactionPolicy {
             item_threshold: super::DEFAULT_COMPACTION_ITEM_THRESHOLD,
             prompt_bytes_threshold: super::DEFAULT_COMPACTION_PROMPT_BYTES_THRESHOLD,
             recent_tail_retention: super::DEFAULT_RECENT_TAIL_RETENTION,
+            model_id: "unknown".to_string(),
+            budget_source: baml_rt_llm_config::BudgetSource::Fallback,
         }
     }
 }

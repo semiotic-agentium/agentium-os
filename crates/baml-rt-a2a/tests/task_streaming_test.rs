@@ -159,6 +159,7 @@ async fn setup_agent() -> A2aAgent {
         .with_init_js(fixture_js_code())
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
+        .with_compaction_summarizer(baml_rt_provenance::FixedCompactionSummarizer::test_stub())
         .build()
         .await
         .unwrap()
@@ -178,6 +179,7 @@ async fn setup_agent_with_stream_idle_5s() -> A2aAgent {
                 .with_max_attempts_ms(Some(15_000))
                 .with_stream_collector_idle_secs(Some(5)),
         )
+        .with_compaction_summarizer(baml_rt_provenance::FixedCompactionSummarizer::test_stub())
         .build()
         .await
         .unwrap()
@@ -195,6 +197,7 @@ async fn setup_agent_with_a2a_session_tool() -> A2aAgent {
         .with_init_js(fixture_js_code())
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
+        .with_compaction_summarizer(baml_rt_provenance::FixedCompactionSummarizer::test_stub())
         .build()
         .await
         .unwrap();

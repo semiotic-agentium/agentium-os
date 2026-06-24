@@ -1097,6 +1097,11 @@ async fn test_step_executor_loop_drives_full_session_with_interceptor() {
         Some(store.clone()),
         &manager,
         &bus,
+        Arc::new(baml_rt_provenance::FixedCompactionSummarizer::new(
+            "Prior conversation was compacted; continue from recent context.",
+        )),
+        &baml_rt_llm_config::LlmClientConfig::sensible_default(),
+        None,
     )
     .await
     .expect("provenance + conversation wiring");
@@ -1263,6 +1268,11 @@ async fn test_step_executor_loop_rejects_finish_before_send_done() {
         Some(store.clone()),
         &manager,
         &bus,
+        Arc::new(baml_rt_provenance::FixedCompactionSummarizer::new(
+            "Prior conversation was compacted; continue from recent context.",
+        )),
+        &baml_rt_llm_config::LlmClientConfig::sensible_default(),
+        None,
     )
     .await
     .expect("provenance + conversation wiring");
@@ -1651,6 +1661,11 @@ async fn test_unified_step_executor_ask_user_then_plan_with_interceptor() {
         Some(store.clone()),
         &manager,
         &bus,
+        Arc::new(baml_rt_provenance::FixedCompactionSummarizer::new(
+            "Prior conversation was compacted; continue from recent context.",
+        )),
+        &baml_rt_llm_config::LlmClientConfig::sensible_default(),
+        None,
     )
     .await
     .expect("provenance + conversation wiring");

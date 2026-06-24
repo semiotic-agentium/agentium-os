@@ -49,6 +49,20 @@ Example (empty registry at start; deploy after publish):
 | `--stream-idle-secs <SECS>` | `900` | Idle timeout for streaming tool sessions |
 | `--invoke <AGENT> <FUNCTION> <JSON_ARGS>` | unset | One-shot invoke mode for a JS function |
 
+## Context compaction (host BAML)
+
+When conversation history exceeds the compaction threshold, the runner summarizes sealed prefix rows via the host-owned BAML function `SummarizeConversationPrefix` (`baml_src/host/context_compaction.baml`). The LLM returns prose only; `@N`/`#N` wire refs from the source transcript are appended deterministically in Rust before the compaction record is written. LLM routing uses the agent's stored `LlmClientConfig` (same resolver as agent BAML hops).
+
+**Triggering** is model-aware and resolved from the `llm` config bundle:
+
+- **Post-turn** (`A2aCompleted`): runs when item count crosses `compaction.defaults.item_threshold` and safety gates allow (defers while awaiting input or in-flight work when configured).
+- **Pre-model emergency** (`conversation_history_json` read): runs when projected wire bytes/tokens exceed the resolved model emergency budget for the effective client.
+- **Manual operator** (future API): bypasses threshold checks with `force`, but safety gates still apply unless explicitly overridden.
+
+Budget resolution order: client override → model override → known-model table → online metadata cache (OpenRouter) → conservative fallback. Operators configure overrides under **Settings → LLM → Compaction budgets**; resolved budgets are exposed at `GET /config/llm/model-budgets`.
+
+Set `BAML_HOST_SCHEMA_DIR` to the directory that **contains** `baml_src/host/` (typically the repository root). If unset, the runner defaults to the repo root relative to the binary build. Boot fails fast if the host schema cannot be loaded.
+
 ## HTTP Surface
 
 When `--serve-http` is set, the runner exposes:

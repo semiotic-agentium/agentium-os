@@ -91,11 +91,21 @@ pub mod vocabulary;
 pub use baml_rt_conversation::provenance_item_to_projection_item;
 pub use bus_subscriber::ProvenanceBusSubscriber;
 pub use context_compaction::{
-    ContextCompactionHead, ContextCompactionPolicy, ContextCompactionService,
-    ContextCompactionSubscriber, ContextCompactionTrigger, DEFAULT_COMPACTION_ITEM_THRESHOLD,
+    CompactionDeferReason, CompactionPrefixInput, CompactionPrepareError, CompactionRenderContext,
+    CompactionRequest, CompactionSafetySignals, CompactionSkipReason, CompactionSummarizeError,
+    CompactionTriggerDecision, CompactionTriggerInput, CompactionTriggerPolicy,
+    CompactionTriggerSource, ContextCompactionHead, ContextCompactionPolicy,
+    ContextCompactionService, ContextCompactionSubscriber, ContextCompactionTrigger,
+    ConversationCompactionSummarizer, DEFAULT_COMPACTION_ITEM_THRESHOLD,
     DEFAULT_COMPACTION_PROMPT_BYTES_THRESHOLD, DEFAULT_RECENT_TAIL_RETENTION,
-    apply_compaction_profile, build_compaction_summary, select_compactable_range,
-    validate_summary_preserves_archive_refs,
+    FixedCompactionSummarizer, HOST_COMPACTION_BAML_FUNCTION, PreparedCompaction,
+    apply_compaction_profile, compaction_runtime_scope, context_compaction_policy_from_trigger,
+    evaluate_compaction_trigger, extract_wire_refs, item_is_live_planning_obligation,
+    merge_compaction_summary, partition_items_for_compaction, prepare_compaction,
+    prepare_render_context, render_items_for_context, render_items_with_ref_table,
+    render_wire_history_rows, resolve_compaction_policies, resolve_compaction_trigger_policy,
+    resolve_safety_signals, select_compactable_range, trigger_policy_from_budget,
+    validate_summary_preserves_wire_refs, wire_history_byte_len,
 };
 pub use conversation_context_query::DEFAULT_LLM_CONTEXT_ITEM_CAP;
 pub use conversation_history_resume::{ConversationResumeUiHints, resolve_resume_ui_hints};

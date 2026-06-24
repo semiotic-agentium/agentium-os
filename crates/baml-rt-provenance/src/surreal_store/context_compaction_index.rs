@@ -131,42 +131,6 @@ impl SurrealProvenanceStore {
             })
         }))
     }
-
-    pub(crate) async fn fetch_transcript_index_rows_for_context(
-        &self,
-        context_id: &str,
-        task_entity_id: Option<&str>,
-    ) -> Result<Vec<super::super::context_compaction::TranscriptIndexRow>> {
-        use crate::surreal_tables::TBL_CONTEXT_TRANSCRIPT_INDEX;
-        let task_filter = if task_entity_id.is_some() {
-            "AND task_entity_id = $task"
-        } else {
-            ""
-        };
-        let query = format!(
-            "SELECT node_id, event_order FROM {TBL_CONTEXT_TRANSCRIPT_INDEX} \
-             WHERE context_id = $ctx {task_filter} \
-             ORDER BY event_order ASC, node_id ASC"
-        );
-        let mut q = self
-            .db()
-            .query(&query)
-            .bind(("ctx", context_id.to_string()));
-        if let Some(task) = task_entity_id {
-            q = q.bind(("task", task.to_string()));
-        }
-        let response = q.await.map_err(map_surreal_error)?;
-        let rows: Vec<serde_json::Value> = check_and_take_zero(response, map_surreal_error)?;
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| {
-                Some(super::super::context_compaction::TranscriptIndexRow {
-                    node_id: row.get("node_id")?.as_str()?.to_string(),
-                    event_order: row.get("event_order")?.as_u64()?,
-                })
-            })
-            .collect())
-    }
 }
 
 fn parse_trigger(raw: &str) -> ContextCompactionTrigger {

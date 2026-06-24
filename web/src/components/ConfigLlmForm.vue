@@ -7,7 +7,13 @@ SPDX-License-Identifier: Apache-2.0
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import type { AgentDiscoveryEntry } from "../types/a2a";
-import type { LlmClientConfig, LlmClientDef } from "../types/config";
+import type {
+  LlmClientConfig,
+  LlmClientDef,
+  ModelBudgetOverride,
+  ModelContextBudget,
+  ResolvedClientBudgets,
+} from "../types/config";
 import { LLM_PROVIDERS } from "../types/config";
 
 const props = defineProps<{
@@ -33,6 +39,9 @@ watch(
         agent_function: { ...v.overrides?.agent_function },
       },
       retry_policies: v.retry_policies ? { ...v.retry_policies } : {},
+      compaction: v.compaction
+        ? JSON.parse(JSON.stringify(v.compaction))
+        : { defaults: {}, model_overrides: {}, client_overrides: {}, online_sources: {} },
     };
   },
   { immediate: true },
@@ -51,7 +60,104 @@ onMounted(async () => {
   } catch {
     // non-fatal
   }
+  await loadBudgets();
 });
+
+const resolvedBudgets = ref<ModelContextBudget[]>([]);
+const budgetLoadError = ref<string | null>(null);
+const budgetRefreshing = ref(false);
+
+async function loadBudgets() {
+  budgetLoadError.value = null;
+  try {
+    const res = await fetch("/config/llm/model-budgets");
+    if (!res.ok) {
+      budgetLoadError.value = `Failed to load budgets (${res.status})`;
+      return;
+    }
+    const data = (await res.json()) as ResolvedClientBudgets;
+    resolvedBudgets.value = data.clients ?? [];
+  } catch {
+    budgetLoadError.value = "Failed to load compaction budgets";
+  }
+}
+
+async function refreshBudgetMetadata() {
+  budgetRefreshing.value = true;
+  budgetLoadError.value = null;
+  try {
+    const res = await fetch("/config/llm/model-budgets/refresh", { method: "POST" });
+    if (!res.ok) {
+      budgetLoadError.value = `Refresh failed (${res.status})`;
+      return;
+    }
+    const data = (await res.json()) as { budgets: ResolvedClientBudgets };
+    resolvedBudgets.value = data.budgets?.clients ?? [];
+  } catch {
+    budgetLoadError.value = "Refresh failed";
+  } finally {
+    budgetRefreshing.value = false;
+  }
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1000)}k`;
+  return String(n);
+}
+
+function budgetForClient(clientName: string): ModelContextBudget | undefined {
+  return resolvedBudgets.value.find((b) => b.client_name === clientName);
+}
+
+function ensureCompaction() {
+  if (!local.value.compaction) {
+    local.value.compaction = {
+      defaults: {},
+      model_overrides: {},
+      client_overrides: {},
+      online_sources: {},
+    };
+  }
+  if (!local.value.compaction.client_overrides) {
+    local.value.compaction.client_overrides = {};
+  }
+}
+
+function getClientBudgetOverride(clientName: string): ModelBudgetOverride {
+  ensureCompaction();
+  return local.value.compaction?.client_overrides?.[clientName] ?? {};
+}
+
+function setClientBudgetOverride(clientName: string, patch: ModelBudgetOverride) {
+  ensureCompaction();
+  const overrides = { ...(local.value.compaction?.client_overrides ?? {}) };
+  const merged = { ...overrides[clientName], ...patch };
+  const hasValues = Object.values(merged).some((v) => v !== undefined && v !== null && v !== "");
+  if (hasValues) {
+    overrides[clientName] = merged;
+  } else {
+    delete overrides[clientName];
+  }
+  local.value.compaction = {
+    ...local.value.compaction,
+    client_overrides: overrides,
+  };
+  emit("update:modelValue", local.value);
+  void loadBudgets();
+}
+
+function resetClientBudgetOverride(clientName: string) {
+  ensureCompaction();
+  const overrides = { ...(local.value.compaction?.client_overrides ?? {}) };
+  delete overrides[clientName];
+  local.value.compaction = {
+    ...local.value.compaction,
+    client_overrides: overrides,
+  };
+  emit("update:modelValue", local.value);
+  void loadBudgets();
+}
 
 function functionsForAgent(agentPackage: string): string[] {
   const agent = discoveredAgents.value.find((a) => a.agent_package === agentPackage);
@@ -328,6 +434,107 @@ watch(
                 @input="(e) => setBaseUrl(name, (e.target as HTMLInputElement).value)"
               />
             </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ Compaction budgets ══ -->
+    <div class="config-routing-block">
+      <div class="config-routing-block-header">
+        <div>
+          <h3 class="config-section-title">Compaction budgets</h3>
+          <p class="config-hint">
+            Model-aware context limits for post-turn and pre-model emergency compaction.
+          </p>
+        </div>
+        <button
+          type="button"
+          class="btn btn--secondary"
+          :disabled="budgetRefreshing"
+          @click="refreshBudgetMetadata"
+        >
+          {{ budgetRefreshing ? "Refreshing…" : "Refresh model metadata" }}
+        </button>
+      </div>
+      <p v-if="budgetLoadError" class="config-error">{{ budgetLoadError }}</p>
+      <div class="config-agent-cards">
+        <div v-for="name in clientNames" :key="`budget-${name}`" class="config-client-card">
+          <div class="config-client-header">
+            <strong>{{ name }}</strong>
+            <span v-if="budgetForClient(name)" class="config-badge-default">
+              {{ budgetForClient(name)?.source }}
+            </span>
+          </div>
+          <template v-if="budgetForClient(name)">
+            <p class="config-hint">
+              <code>{{ budgetForClient(name)?.model_id }}</code>
+              · context {{ formatTokens(budgetForClient(name)!.context_window_tokens) }} tok
+              · trigger {{ formatTokens(budgetForClient(name)!.safe_prompt_tokens) }}
+              · emergency {{ formatTokens(budgetForClient(name)!.emergency_prompt_tokens) }}
+            </p>
+            <p v-if="budgetForClient(name)?.warning" class="config-error">
+              {{ budgetForClient(name)?.warning }}
+            </p>
+          </template>
+          <div class="config-client-fields">
+            <label class="config-label">Context window (tokens)</label>
+            <input
+              type="number"
+              class="config-input"
+              :value="getClientBudgetOverride(name).context_window_tokens ?? ''"
+              placeholder="Auto"
+              @input="
+                (e) =>
+                  setClientBudgetOverride(name, {
+                    context_window_tokens:
+                      (e.target as HTMLInputElement).value === ''
+                        ? undefined
+                        : Number((e.target as HTMLInputElement).value),
+                  })
+              "
+            />
+            <label class="config-label">Trigger ratio (0–1)</label>
+            <input
+              type="number"
+              step="0.05"
+              min="0.1"
+              max="0.95"
+              class="config-input"
+              :value="getClientBudgetOverride(name).trigger_ratio ?? ''"
+              placeholder="Default 0.70"
+              @input="
+                (e) =>
+                  setClientBudgetOverride(name, {
+                    trigger_ratio:
+                      (e.target as HTMLInputElement).value === ''
+                        ? undefined
+                        : Number((e.target as HTMLInputElement).value),
+                  })
+              "
+            />
+            <label class="config-label">Emergency ratio (0–1)</label>
+            <input
+              type="number"
+              step="0.05"
+              min="0.1"
+              max="0.99"
+              class="config-input"
+              :value="getClientBudgetOverride(name).emergency_ratio ?? ''"
+              placeholder="Default 0.90"
+              @input="
+                (e) =>
+                  setClientBudgetOverride(name, {
+                    emergency_ratio:
+                      (e.target as HTMLInputElement).value === ''
+                        ? undefined
+                        : Number((e.target as HTMLInputElement).value),
+                  })
+              "
+            />
+            <button type="button" class="btn btn--ghost btn--sm" @click="resetClientBudgetOverride(name)">
+              Reset override
+            </button>
           </div>
         </div>
       </div>

@@ -849,6 +849,7 @@ mod nested_assistant_message_persistence_tests {
             )
             .with_effect_emitter(std::sync::Arc::new(baml_rt_core::bus::BusWithEffects::new()))
             .with_surreal_store(prov.clone())
+            .with_compaction_summarizer(baml_rt_provenance::FixedCompactionSummarizer::test_stub())
             .build()
             .await
             .expect("graph-backed agent");
