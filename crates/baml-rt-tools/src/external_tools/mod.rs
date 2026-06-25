@@ -50,7 +50,8 @@ pub use metadata::{
 };
 pub use metadata_catalog::{
     BUILDER_EXTERNAL_TOOLS_ENV, build_builder_catalog, build_builder_catalog_with_mcp_root,
-    build_builder_catalog_with_roots, external_dirs_from_env,
+    build_builder_catalog_with_roots, build_builder_catalog_with_static_catalog,
+    external_dirs_from_env,
 };
 pub use policy::{
     BACKOFF_SCHEDULE_MS, DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT, DEFAULT_MAX_CONCURRENT,

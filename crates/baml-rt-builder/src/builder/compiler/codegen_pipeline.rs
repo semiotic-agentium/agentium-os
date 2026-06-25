@@ -30,7 +30,8 @@ use std::{
 };
 
 use baml_rt_tools::{
-    SessionPlanFunctionsMap, UnifiedStepExecutorFunctionsMap, external_tool_cache,
+    SessionPlanFunctionsMap, StaticToolSnapshotCatalog, UnifiedStepExecutorFunctionsMap,
+    external_tool_cache,
     external_tools::{EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalToolLockEntry, ExternalToolsLockfile},
     gather_coordination_fragments,
     tools::ToolFunctionMetadata,
@@ -45,7 +46,7 @@ use super::{
 use crate::builder::{
     baml_gen::{
         CATALOG_SIDECAR_FILE, GENERATED_BAML_PRELUDE_FILE, GeneratedSessionBaml,
-        purge_managed_generated_baml_files, render_baml_tool_interfaces_with_roots,
+        purge_managed_generated_baml_files, render_baml_tool_interfaces_with_static_catalog,
         render_generated_session_baml_from_ir,
     },
     baml_signature_gen::{extract_baml_signatures, session_plan_functions_map},
@@ -87,6 +88,7 @@ pub(super) struct WorkspaceReady {
     pub tool_names: Vec<String>,
     pub tool_metadata: Vec<ToolFunctionMetadata>,
     pub unified_roots: UnifiedStepExecutorFunctionsMap,
+    pub static_catalog: Option<StaticToolSnapshotCatalog>,
 }
 
 impl WorkspaceReady {
@@ -120,10 +122,35 @@ impl WorkspaceReady {
         } else {
             None
         };
+        let static_catalog_path =
+            crate::static_tool_registry::static_tool_catalog_path(paths.build_dir.as_path());
+        let static_catalog = if static_catalog_path.exists() {
+            tracing::info!(
+                static_catalog = %static_catalog_path.display(),
+                "using packaged static tool catalog during type generation"
+            );
+            Some(
+                crate::static_tool_registry::load_static_tool_catalog_from_file(
+                    &static_catalog_path,
+                )
+                .map_err(|err| BamlBuilderError::InvalidArgumentWithSource {
+                    message: format!(
+                        "failed to load static tool catalog from {}",
+                        static_catalog_path.display()
+                    ),
+                    source: err.into(),
+                })?,
+            )
+        } else {
+            None
+        };
         let tool_metadata = if !tool_names.is_empty() {
-            let catalog = baml_rt_tools::external_tools::build_builder_catalog_with_roots(
+            let catalog = baml_rt_tools::external_tools::build_builder_catalog_with_static_catalog(
                 mcp_root.as_deref(),
                 external_cache_root.as_deref(),
+                static_catalog
+                    .clone()
+                    .map(|catalog| Box::new(catalog) as Box<dyn baml_rt_tools::ToolCatalog>),
             )?;
             baml_rt_tools::tool_catalog::resolve_manifest_tools_with_catalog(&catalog, &tool_names)?
         } else {
@@ -136,6 +163,7 @@ impl WorkspaceReady {
             tool_names,
             tool_metadata,
             unified_roots,
+            static_catalog,
         })
     }
 
@@ -146,10 +174,11 @@ impl WorkspaceReady {
         let external_cache_root = external_cache_root
             .exists()
             .then_some(self.paths.build_dir.as_path().to_path_buf());
-        let mut generated_baml = render_baml_tool_interfaces_with_roots(
+        let mut generated_baml = render_baml_tool_interfaces_with_static_catalog(
             &self.tool_names,
             mcp_root.as_deref(),
             external_cache_root.as_deref(),
+            self.static_catalog,
         )?;
         if !self.tool_metadata.is_empty()
             && let Some(coord_baml) = gather_coordination_fragments(&self.tool_metadata)?

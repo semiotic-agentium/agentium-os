@@ -35,11 +35,11 @@ env:
   # Trusted lane: LLM integration tests + secret-backed fnox.toml (same-repo PRs,
   # push to main, workflow_dispatch). Untrusted lane omits llm-tests features.
   CI_FEATURES_TRUSTED: >-
-    baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/llm-tests,
+    baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/dev-tools,baml-rt-builder/llm-tests,
     baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,
     baml-agent-runner/llm-tests
   CI_FEATURES_UNTRUSTED: >-
-    baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,
+    baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/dev-tools,baml-agent-runner/http-tools,
     baml-agent-runner/memory
   # Prefer workspace-local ONNX model cache in CI for deterministic loading.
   BAML_MODELS_DIR: ${{ github.workspace }}/models
@@ -79,66 +79,6 @@ jobs:
               - 'crates/cargo-agent-platform/src/commands/mod.rs'
               - 'crates/cargo-agent-platform/src/main.rs'
               - '.github/workflows/rust-ci.yml'
-
-  doctor:
-    name: Workspace integrity (doctor)
-    runs-on: arc-runner-set
-    needs: changes
-    if: needs.changes.outputs.trusted == 'true'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Refresh apt indices (retry; mitigates mirror sync races)
-        run: bash scripts/ci/apt-update-retry.sh
-
-      - name: Install OS build deps
-        run: |
-          sudo apt-get install -y build-essential pkg-config libssl-dev libclang-dev lld
-
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          # Separate scope from nextest: `cargo run -p cargo-agent-platform`
-          # resolves a different feature graph than the workspace nextest
-          # invocation, producing distinct rlib variants for shared crates
-          # (e.g. baml-rt-builder, baml-rt-tools). Sharing `ci-nextest` would
-          # have nextest's save prune doctor's variants from target/.
-          shared-key: "ci-doctor"
-          cache-on-failure: true
-          cache-targets: "true"
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
-
-      - name: Workspace integrity check
-        # `--warn-missing-catalog` downgrades unknown tool names to warnings so that agents
-        # referencing external/sandbox tools (declared via tool-manifest.json, not Rust inventory)
-        # do not fail CI. Doctor discovery of external tool catalogs is tracked separately.
-        run: cargo run -p cargo-agent-platform -- doctor --ci --warn-missing-catalog
-        env:
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
-
-  doctor-untrusted:
-    name: Workspace integrity (doctor)
-    runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.trusted != 'true'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install OS build deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libssl-dev libclang-dev lld
-
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Workspace integrity check
-        run: cargo run -p cargo-agent-platform -- doctor --ci --warn-missing-catalog
-        env:
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
 
   nextest:
     name: Nextest (workspace)

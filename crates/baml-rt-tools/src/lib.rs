@@ -39,6 +39,7 @@ pub mod prompt_projection;
 pub mod session_coordination;
 pub mod session_ctx_tags;
 mod spans;
+pub mod static_tool_catalog;
 pub mod tool_catalog;
 pub mod tool_discovery;
 pub mod tool_error_classify;
@@ -99,6 +100,9 @@ pub use session_coordination::{
 pub use session_ctx_tags::{
     CONVERSATION_TRANSCRIPT_TAG, SESSION_STEP_STABLE_PREFIX_BAML, SESSION_STEP_STABLE_PREFIX_VALUE,
     TOOL_SCHEMA_CATALOG_SIDECAR_FILE, TOOL_SCHEMA_PRELUDE_TAG,
+};
+pub use static_tool_catalog::{
+    STATIC_TOOL_CATALOG_SCHEMA_VERSION, StaticToolCatalogResponse, StaticToolSnapshotCatalog,
 };
 pub use tool_catalog::{CompositeCatalog, InventoryCatalog, ManifestToolNames, ToolCatalog};
 pub use tool_discovery::search_tools;

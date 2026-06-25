@@ -16,7 +16,7 @@ baml-rt-quickjs = { path = "../baml-rt-quickjs" }
 baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
 baml-rt-tools-claude = { path = "../tools/claude" }
 baml-tools-system = { path = "../tools/system" }
-baml-tools-calculator = { path = "../tools/calculator" }
+baml-tools-calculator = { path = "../tools/calculator", optional = true }
 baml-rt-mcp = { path = "../baml-rt-mcp" }
 baml-tools-clickup = { path = "../tools/clickup", optional = true }
 baml-tools-github = { path = "../tools/github", optional = true }
@@ -63,4 +63,7 @@ slack-notify = ["dep:baml-tools-slack-notify"]
 grafana-alerts = ["dep:baml-tools-grafana-alerts"]
 security-eval = ["dep:baml-tools-security-eval"]
 http-tools = ["clickup", "github", "notion", "slack", "slack-notify", "security-eval", "grafana-alerts"]
+# Demo/testing-only tools (e.g. `support/calculate`). Off by default; enabled by
+# `--all-features` dev/CI builds and `regen-fixtures`. NOT part of `http-tools`.
+dev-tools = ["dep:baml-tools-calculator"]
 llm-tests = []

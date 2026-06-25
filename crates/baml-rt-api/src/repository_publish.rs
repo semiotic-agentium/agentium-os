@@ -17,7 +17,10 @@ use baml_rt_repository::{
     package::source_bundle_from_tar_gz,
 };
 // Register tool inventory for repository-side artifact builds (POST /repository/publish).
+// Feature-gated so a default build does not link these tool crates.
+#[cfg(feature = "notion")]
 use baml_tools_notion as _;
+#[cfg(feature = "security-eval")]
 use baml_tools_security_eval as _;
 use http_api_problem::HttpApiProblem;
 

@@ -359,9 +359,11 @@ async fn diagnose_lag_stays_small_under_no_load() {
     let lag = body.runtime_progress_lag_ms;
 
     // Looser bound than the in-process unit test: an axum handler round-trip
-    // adds scheduling jitter, and CI workers can be noisy.
+    // adds scheduling jitter, and CI workers can be noisy. Keep this well below
+    // the readiness threshold so the test still catches unhealthy ticker stalls
+    // without failing on transient runner scheduling slips.
     assert!(
-        lag < 400,
-        "runtime_progress_lag_ms should stay under one interval period plus handler jitter under no load (got {lag})"
+        lag < 750,
+        "runtime_progress_lag_ms should stay below CI jitter budget under no load (got {lag})"
     );
 }

@@ -611,7 +611,7 @@ fmt:
 clippy:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-ci_features := "baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests"
+ci_features := "baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-builder/dev-tools,baml-rt-builder/llm-tests,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests"
 
 # CI parity: single workspace pass with the union feature set, matching rust-ci.yml.
 # Requires: cargo-nextest and OPENROUTER_API_KEY for LLM tests.
@@ -630,7 +630,7 @@ test-crate crate:
 
 # Run tests that don't need FalkorDB or API keys (unit tests only).
 test-unit:
-    cargo nextest run --workspace --features baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory
+    cargo nextest run --workspace --features baml-rt-builder/http-tools,baml-rt-builder/dev-tools,baml-agent-runner/http-tools,baml-agent-runner/memory
 
 # Per-file #[test] counts under crates/ (matrix-consolidation triage baseline).
 test-inventory:

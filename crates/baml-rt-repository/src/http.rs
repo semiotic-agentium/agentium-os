@@ -340,6 +340,33 @@ pub struct ImportMcpSnapshotResponse {
     pub version: McpRegistryServerVersion,
 }
 
+/// Unified tool inventory source filter/query.
+#[derive(Debug, Deserialize)]
+pub struct ToolsQuery {
+    pub source: Option<String>,
+}
+
+/// Unified operator-facing tool inventory row.
+#[derive(Debug, Serialize)]
+pub struct RepositoryToolSummary {
+    pub name: String,
+    pub description: String,
+    pub tags: Vec<String>,
+    pub access: String,
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_digest: Option<String>,
+}
+
+/// Response for unified tool inventory listing.
+#[derive(Debug, Serialize)]
+pub struct ToolsResponse {
+    pub tools: Vec<RepositoryToolSummary>,
+    pub total: usize,
+}
+
 /// Response for external-tool listing.
 #[derive(Debug, Serialize)]
 pub struct ExternalToolsResponse {

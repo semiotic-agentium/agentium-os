@@ -3127,7 +3127,6 @@ dependencies = [
  "baml-rt-core",
  "baml-rt-repository",
  "baml-rt-tools",
- "baml-tool-links",
  "clap",
  "console 0.15.11",
  "futures-util",
