@@ -75,9 +75,10 @@ impl RuntimeTypeGenerator {
 #[async_trait::async_trait]
 impl TypeGenerator for RuntimeTypeGenerator {
     async fn generate(&self, agent_dir: &AgentDir, build_dir: &BuildDir) -> Result<()> {
-        prepare_static_tool_catalog(build_dir, self).await?;
-        prepare_mcp_snapshots(agent_dir, build_dir, self).await?;
-        prepare_external_tool_snapshots(agent_dir, build_dir, self).await?;
+        let manifest_tools = load_manifest_tools(&agent_dir.baml_src())?;
+        prepare_static_tool_catalog(build_dir, self, &manifest_tools).await?;
+        prepare_mcp_snapshots(build_dir, self, &manifest_tools).await?;
+        prepare_external_tool_snapshots(build_dir, self, &manifest_tools).await?;
 
         let agent_dir = agent_dir.clone();
         let build_dir = build_dir.clone();
@@ -108,10 +109,19 @@ impl TypeGenerator for RuntimeTypeGenerator {
     }
 }
 
+fn needs_static_tool_catalog(manifest_tools: &[String]) -> bool {
+    manifest_tools.iter().any(|name| !name.starts_with("mcp/"))
+}
+
 async fn prepare_static_tool_catalog(
     build_dir: &BuildDir,
     generator: &RuntimeTypeGenerator,
+    manifest_tools: &[String],
 ) -> Result<()> {
+    if !needs_static_tool_catalog(manifest_tools) {
+        return Ok(());
+    }
+
     if let Some(service) = &generator.registry_service {
         let response = service.static_tool_catalog().cloned().ok_or_else(|| {
             BamlBuilderError::InvalidArgument(
@@ -192,11 +202,11 @@ async fn prepare_static_tool_catalog(
 }
 
 async fn prepare_external_tool_snapshots(
-    agent_dir: &AgentDir,
     build_dir: &BuildDir,
     generator: &RuntimeTypeGenerator,
+    manifest_tools: &[String],
 ) -> Result<()> {
-    let required_external_tools = manifest_external_tool_names(agent_dir, build_dir)?;
+    let required_external_tools = manifest_external_tool_names(manifest_tools, build_dir)?;
     if required_external_tools.is_empty() {
         return Ok(());
     }
@@ -312,10 +322,9 @@ async fn prepare_external_tool_snapshots(
 }
 
 fn manifest_external_tool_names(
-    agent_dir: &AgentDir,
+    tool_names: &[String],
     build_dir: &BuildDir,
 ) -> Result<HashSet<String>> {
-    let tool_names = load_manifest_tools(&agent_dir.baml_src())?;
     if tool_names.is_empty() {
         return Ok(HashSet::new());
     }
@@ -340,11 +349,11 @@ fn manifest_external_tool_names(
 
     let mut external_tools = HashSet::new();
     for name in tool_names {
-        if name.starts_with("mcp/") || static_tool_names.contains(&name) {
+        if name.starts_with("mcp/") || static_tool_names.contains(name) {
             continue;
         }
-        ToolName::parse(&name).map_err(BamlBuilderError::from)?;
-        external_tools.insert(name);
+        ToolName::parse(name).map_err(BamlBuilderError::from)?;
+        external_tools.insert(name.clone());
     }
     Ok(external_tools)
 }
@@ -367,11 +376,10 @@ fn ensure_external_snapshots_resolved(
 }
 
 async fn prepare_mcp_snapshots(
-    agent_dir: &AgentDir,
     build_dir: &BuildDir,
     generator: &RuntimeTypeGenerator,
+    tool_names: &[String],
 ) -> Result<()> {
-    let tool_names = load_manifest_tools(&agent_dir.baml_src())?;
     let mut server_ids: Vec<String> = tool_names
         .iter()
         .filter_map(|name| {
@@ -481,4 +489,60 @@ async fn prepare_mcp_snapshots(
         baml_rt_tools::mcp_cache::write_snapshot(&root, &snapshot).map_err(BamlBuilderError::Io)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::builder::bootstrap::run_bootstrap;
+
+    #[tokio::test]
+    async fn static_catalog_fetch_skipped_when_manifest_has_no_tools() {
+        let port = test_support::common::reserve_ephemeral_addr("127.0.0.1").port();
+        let generator = RuntimeTypeGenerator::with_registry_url(format!("http://127.0.0.1:{port}"));
+        let build_dir = BuildDir::new().unwrap();
+
+        prepare_static_tool_catalog(&build_dir, &generator, &[])
+            .await
+            .expect("no tools should not require runner static catalog");
+
+        assert!(
+            !crate::static_tool_registry::static_tool_catalog_path(build_dir.as_path()).exists(),
+            "static catalog should not be written when manifest has no tools"
+        );
+    }
+
+    #[tokio::test]
+    async fn static_catalog_fetch_skipped_when_manifest_is_mcp_only() {
+        let port = test_support::common::reserve_ephemeral_addr("127.0.0.1").port();
+        let generator = RuntimeTypeGenerator::with_registry_url(format!("http://127.0.0.1:{port}"));
+        let build_dir = BuildDir::new().unwrap();
+        let manifest_tools = vec!["mcp/meteo/get_forecast".to_string()];
+
+        prepare_static_tool_catalog(&build_dir, &generator, &manifest_tools)
+            .await
+            .expect("MCP-only manifest should not require runner static catalog");
+
+        assert!(
+            !crate::static_tool_registry::static_tool_catalog_path(build_dir.as_path()).exists(),
+            "static catalog should not be written for MCP-only manifest"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_tool_agent_generation_with_registry_url_does_not_require_runner() {
+        let root = tempfile::TempDir::new().unwrap();
+        run_bootstrap(root.path(), "No Tool Agent", "no tool test", &[])
+            .await
+            .unwrap();
+        let agent_dir = AgentDir::new(root.path().to_path_buf()).unwrap();
+        let build_dir = BuildDir::new().unwrap();
+        let port = test_support::common::reserve_ephemeral_addr("127.0.0.1").port();
+        let generator = RuntimeTypeGenerator::with_registry_url(format!("http://127.0.0.1:{port}"));
+
+        generator
+            .generate(&agent_dir, &build_dir)
+            .await
+            .expect("no-tool generation should not require runner catalog");
+    }
 }
