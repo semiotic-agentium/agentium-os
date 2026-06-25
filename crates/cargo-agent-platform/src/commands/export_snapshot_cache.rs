@@ -66,10 +66,11 @@ async fn export_all(repository_url: &str, output: &Path) -> Result<()> {
             continue;
         };
         let path = format!("/mcp/servers/{server_id}");
-        let snapshot: McpServerSnapshot = match get_json(&http, repository_url, &path).await {
-            Ok(snapshot) => snapshot,
-            Err(_) => continue,
-        };
+        let snapshot: McpServerSnapshot = get_json(&http, repository_url, &path)
+            .await
+            .with_context(|| {
+                format!("fetching MCP snapshot {server_id} from {path} for snapshot cache export")
+            })?;
         if !snapshot.approval.state.is_approved() {
             continue;
         }
@@ -106,4 +107,74 @@ async fn get_json<T: serde::de::DeserializeOwned>(
         bail!("GET {url} failed ({status}): {body}");
     }
     serde_json::from_str(&body).with_context(|| format!("parsing response from {url}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{Json, Router, http::StatusCode, routing::get};
+    use serde_json::json;
+
+    use super::*;
+
+    fn start_snapshot_server_with_failing_mcp_snapshot() -> String {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async move {
+                let app = Router::new()
+                    .route(
+                        "/static-tools/snapshots",
+                        get(|| async {
+                            Json(json!({
+                                "schema_version": "static-tool-catalog.v1",
+                                "tools": []
+                            }))
+                        }),
+                    )
+                    .route(
+                        "/external-tools/snapshots",
+                        get(|| async { Json(json!({ "snapshots": [] })) }),
+                    )
+                    .route(
+                        "/mcp/servers",
+                        get(|| async { Json(json!({ "servers": [{ "server_id": "meteo" }] })) }),
+                    )
+                    .route(
+                        "/mcp/servers/meteo",
+                        get(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "boom") }),
+                    );
+                let (listener, addr) = test_support::common::bind_ephemeral_tokio("127.0.0.1")
+                    .await
+                    .unwrap();
+                tx.send(addr.port()).unwrap();
+                axum::serve(listener, app).await.unwrap();
+            });
+        });
+
+        let port = rx.recv().unwrap();
+        format!("http://127.0.0.1:{port}")
+    }
+
+    #[test]
+    fn export_all_fails_when_mcp_snapshot_fetch_fails() {
+        let repository_url = start_snapshot_server_with_failing_mcp_snapshot();
+        let output = tempfile::tempdir().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let err = rt
+            .block_on(export_all(&repository_url, output.path()))
+            .unwrap_err();
+        let chained = format!("{err:#}");
+
+        assert!(
+            chained.contains(
+                "fetching MCP snapshot meteo from /mcp/servers/meteo for snapshot cache export"
+            ),
+            "missing MCP context: {chained}"
+        );
+        assert!(
+            chained.contains("GET") && chained.contains("/mcp/servers/meteo failed"),
+            "missing HTTP failure: {chained}"
+        );
+    }
 }
