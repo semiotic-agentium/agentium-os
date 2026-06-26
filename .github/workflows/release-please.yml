@@ -16,11 +16,115 @@ concurrency:
 
 jobs:
   release-please:
-    name: Open or update release PR
+    name: Open/update release PR or create release
     runs-on: ubuntu-latest
     if: github.repository == 'semiotic-agentium/agentium-os'
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - uses: googleapis/release-please-action@v4
+      - id: release
+        uses: googleapis/release-please-action@v4
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  manifest:
+    name: Read release manifest
+    needs: [release-please]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.read.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+      - id: read
+        run: |
+          targets=$(bash scripts/release/release-manifest.sh --json \
+            | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["targets"]))')
+          echo "targets=${targets}" >> "$GITHUB_OUTPUT"
+          echo "release targets: ${targets}"
+
+  verify:
+    name: Verify release tag
+    needs: [release-please]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+      - name: Verify release tag matches workspace version
+        env:
+          GITHUB_REF_NAME: ${{ needs.release-please.outputs.tag_name }}
+        run: bash scripts/release/verify-release-tag-matches-workspace-version.sh
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [release-please, manifest, verify]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.manifest.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Install OS build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config libssl-dev libdbus-1-dev libcap-ng-dev \
+            clang libclang-dev llvm-dev lld
+
+      - name: Configure LIBCLANG_PATH for bindgen (hirofa-quickjs-sys)
+        run: bash scripts/ci/set-libclang-path.sh
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binaries
+        run: bash scripts/release/build-release-binaries.sh --target "${{ matrix.target }}"
+
+      - name: Pack tarball
+        run: bash scripts/release/pack-target-tarball.sh --target "${{ matrix.target }}"
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-tarball-${{ matrix.target }}
+          path: dist/release/*.tar.gz
+          if-no-files-found: error
+
+  upload-assets:
+    name: Upload binary release assets
+    needs: [release-please, build]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download tarball artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-tarball-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Stage assets + aggregate SHA256SUMS
+        run: |
+          mkdir -p out
+          find artifacts -name '*.tar.gz' -exec cp {} out/ \;
+          ( cd out && sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS )
+
+      - name: Upload assets to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        run: gh release upload "${TAG_NAME}" out/*.tar.gz out/SHA256SUMS --clobber

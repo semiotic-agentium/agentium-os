@@ -15,7 +15,7 @@ Releases are driven by Release Please. One SemVer must stay consistent across:
 4. Verify release PR CI is green.
 5. Merge release PR.
 6. Release Please creates tag `vX.Y.Z` and a GitHub Release.
-7. `Release publish` builds Linux binaries and uploads assets to that release.
+7. Same Release Please workflow builds Linux binaries and uploads assets to that release.
 
 Do not manually bump versions or create release tags during normal releases.
 

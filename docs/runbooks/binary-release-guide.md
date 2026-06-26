@@ -47,15 +47,15 @@ Release Please owns normal releases:
 3. Release PR postprocess workflow updates `Cargo.lock` on that PR.
 4. Merge the release PR after CI is green.
 5. Release Please creates `vX.Y.Z` and a GitHub Release.
-6. This workflow builds binaries and uploads assets to that release.
+6. Same Release Please workflow builds binaries and uploads assets to that release.
 
 Manual tag pushes are fallback-only. If used, the tag must point at a commit where `Cargo.toml`, `Cargo.lock`, and `deploy/helm/agentium-os/Chart.yaml` all contain the same version.
 
-The workflow automatically:
+The binary publish workflow automatically:
 1. Verifies tag matches `[workspace.package].version` and Helm `appVersion`
 2. Builds all targets natively
 3. Packs tarballs with reproducible archives
-4. Creates or updates GitHub Release with assets
+4. Uploads assets to the GitHub Release
 
 ### Dry-run testing
 
