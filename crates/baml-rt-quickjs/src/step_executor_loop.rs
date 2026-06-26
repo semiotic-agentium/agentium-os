@@ -513,7 +513,9 @@ pub async fn run_step_executor_loop(
             lines
         } else {
             let guard = manager.read().await;
-            guard.read_provider_conversation_array(scope).await?
+            guard
+                .read_provider_conversation_array(scope, &current_function)
+                .await?
         };
 
         if let Some(m) = step_intra_supplement_mirror.as_ref() {
@@ -564,7 +566,9 @@ pub async fn run_step_executor_loop(
             // the authoritative session/tool binding, so do not pay the strict-growth
             // timeout when Open is not projected into conversation_context.
             let guard = manager.read().await;
-            guard.read_provider_conversation_array(scope).await?
+            guard
+                .read_provider_conversation_array(scope, &current_function)
+                .await?
         } else {
             read_provider_conversation_after_hop(manager, scope, &p_before, &function_id).await?
         };

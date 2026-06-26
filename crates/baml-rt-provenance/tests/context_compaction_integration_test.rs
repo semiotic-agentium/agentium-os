@@ -13,7 +13,7 @@ use baml_rt_provenance::{
     CompactionRequest, CompactionTriggerInput, CompactionTriggerSource,
     ContextCompactionSubscriber, DEFAULT_COMPACTION_ITEM_THRESHOLD, DEFAULT_LLM_CONTEXT_ITEM_CAP,
     DEFAULT_RECENT_TAIL_RETENTION, FixedCompactionSummarizer, ProvenanceContextReader,
-    ProvenanceQueryApi, ProvenanceWriter, render_items_with_ref_table, resolve_compaction_policies,
+    ProvenanceQueryApi, ProvenanceWriter, render_items_with_ref_table,
 };
 use baml_rt_tools::{
     archive_refs::RefTable, prompt_projection::project_prompt_context, tools::ToolRegistry,
@@ -61,12 +61,11 @@ fn compaction_subscriber(
     let summarizer = Arc::new(FixedCompactionSummarizer::new(format!(
         "Compacted history for agent {agent_id}; user asked about status pings."
     )));
-    let (trigger_policy, legacy_policy) = resolve_compaction_policies(llm_config, None, "default");
     ContextCompactionSubscriber::new(
         store,
         writer,
-        trigger_policy,
-        legacy_policy,
+        Arc::new(llm_config.clone()),
+        None,
         summarizer,
         Arc::new(ToolRegistry::new()),
     )
@@ -111,6 +110,7 @@ async fn agent_prompt_read_applies_compaction_head_after_write() {
                 safety: Default::default(),
                 force: false,
             },
+            "default",
         )
         .await;
 
@@ -255,7 +255,7 @@ async fn pre_model_emergency_trigger_compacts_large_agent_prompt() {
     let history = project_prompt_context(projection_items, &ToolRegistry::new(), &ref_table, None);
     let rows = history.as_array().cloned().unwrap_or_default();
     subscriber
-        .evaluate_pre_model_from_rows(&request, &rows, false)
+        .evaluate_pre_model_from_rows(&request, &rows, false, "default")
         .await;
 
     store

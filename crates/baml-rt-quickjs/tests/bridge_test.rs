@@ -1100,7 +1100,7 @@ async fn test_step_executor_loop_drives_full_session_with_interceptor() {
         Arc::new(baml_rt_provenance::FixedCompactionSummarizer::new(
             "Prior conversation was compacted; continue from recent context.",
         )),
-        &baml_rt_llm_config::LlmClientConfig::sensible_default(),
+        Arc::new(baml_rt_llm_config::LlmClientConfig::sensible_default()),
         None,
     )
     .await
@@ -1271,7 +1271,7 @@ async fn test_step_executor_loop_rejects_finish_before_send_done() {
         Arc::new(baml_rt_provenance::FixedCompactionSummarizer::new(
             "Prior conversation was compacted; continue from recent context.",
         )),
-        &baml_rt_llm_config::LlmClientConfig::sensible_default(),
+        Arc::new(baml_rt_llm_config::LlmClientConfig::sensible_default()),
         None,
     )
     .await
@@ -1664,7 +1664,7 @@ async fn test_unified_step_executor_ask_user_then_plan_with_interceptor() {
         Arc::new(baml_rt_provenance::FixedCompactionSummarizer::new(
             "Prior conversation was compacted; continue from recent context.",
         )),
-        &baml_rt_llm_config::LlmClientConfig::sensible_default(),
+        Arc::new(baml_rt_llm_config::LlmClientConfig::sensible_default()),
         None,
     )
     .await

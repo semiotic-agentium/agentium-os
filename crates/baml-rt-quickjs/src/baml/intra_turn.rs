@@ -136,7 +136,8 @@ pub(crate) async fn read_provider_conversation_after_hop(
 ) -> baml_rt_core::Result<Vec<Value>> {
     let p_after = {
         let g = manager.read().await;
-        g.read_provider_conversation_array(scope).await?
+        g.read_provider_conversation_array(scope, &phase_function.full_name())
+            .await?
     };
     hop_lines_from_provider_delta(p_before, &p_after, phase_function)?;
     Ok(p_after)
@@ -153,12 +154,15 @@ impl BamlRuntimeManager {
     pub async fn merged_conversation_history_lines_json(
         &self,
         scope: &context::RuntimeScope,
+        function_name: &str,
         step_intra_supplement: &[Value],
     ) -> Result<Value> {
         let Some(ref exec) = self.state.executor else {
             return Ok(Value::Array(vec![]));
         };
-        let prov = exec.provider_conversation_history_lines(scope).await?;
+        let prov = exec
+            .provider_conversation_history_lines_for_llm(scope, function_name)
+            .await?;
         let merged =
             append_intra_lines_to_provider_then_cap(prov, step_intra_supplement.iter().cloned());
         Ok(Value::Array(merged))
@@ -172,12 +176,15 @@ impl BamlRuntimeManager {
     pub(in crate::baml) async fn build_conversation_context_tags_with_intra(
         &self,
         scope: &context::RuntimeScope,
+        function_name: &str,
         step_intra_supplement: &[Value],
     ) -> Result<Option<HashMap<String, BamlValue>>> {
         let Some(ref exec) = self.state.executor else {
             return Ok(None);
         };
-        let prov = exec.provider_conversation_history_lines(scope).await?;
+        let prov = exec
+            .provider_conversation_history_lines_for_llm(scope, function_name)
+            .await?;
         let merged =
             append_intra_lines_to_provider_then_cap(prov, step_intra_supplement.iter().cloned());
         let mut tags = exec.tags_from_merged_conversation_lines(merged)?;
@@ -190,11 +197,12 @@ impl BamlRuntimeManager {
     pub(crate) async fn read_provider_conversation_array(
         &self,
         scope: &context::RuntimeScope,
+        function_name: &str,
     ) -> Result<Vec<Value>> {
         let Some(ref exec) = self.state.executor else {
             return Ok(vec![]);
         };
-        exec.provider_conversation_history_lines_for_intra_dedup(scope)
+        exec.provider_conversation_history_lines_for_intra_dedup(scope, function_name)
             .await
     }
 }

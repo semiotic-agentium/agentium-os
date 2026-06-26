@@ -39,6 +39,7 @@ impl PlanningEmitEnv<'_> {
     pub(crate) async fn build_dynamic_context(
         &self,
         scope: &context::RuntimeScope,
+        function_name: &str,
     ) -> Result<PlanningDynamicContext> {
         let mut available_tools = self
             .tool_registry
@@ -50,7 +51,9 @@ impl PlanningEmitEnv<'_> {
         available_tools.dedup();
         let conversation_history =
             if let Some(provider) = self.conversation_context_provider.as_ref() {
-                provider.conversation_history_json(scope).await?
+                provider
+                    .conversation_history_json(scope, function_name)
+                    .await?
             } else {
                 None
             };
@@ -79,7 +82,7 @@ impl PlanningEmitEnv<'_> {
                 BamlRtError::InvalidArgument("effect emitter not configured".to_string())
             })?
             .clone();
-        let dynamic_context = self.build_dynamic_context(scope).await?;
+        let dynamic_context = self.build_dynamic_context(scope, "default").await?;
         let resolved = self
             .planning_resolver
             .resolve_intent(&dynamic_context, submission)
@@ -117,7 +120,7 @@ impl PlanningEmitEnv<'_> {
                 BamlRtError::InvalidArgument("effect emitter not configured".to_string())
             })?
             .clone();
-        let dynamic_context = self.build_dynamic_context(scope).await?;
+        let dynamic_context = self.build_dynamic_context(scope, "default").await?;
         let resolved = self
             .planning_resolver
             .resolve_plan(
@@ -169,7 +172,7 @@ impl PlanningEmitEnv<'_> {
                 BamlRtError::InvalidArgument("effect emitter not configured".to_string())
             })?
             .clone();
-        let dynamic_context = self.build_dynamic_context(scope).await?;
+        let dynamic_context = self.build_dynamic_context(scope, "default").await?;
         let resolved = self
             .planning_resolver
             .resolve_step_status(

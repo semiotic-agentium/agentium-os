@@ -7,19 +7,26 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use baml_rt_core::bus::{EffectEvent, EffectSubscriber, EffectSubscriberTier};
+use baml_rt_core::{
+    bus::{EffectEvent, EffectSubscriber, EffectSubscriberTier},
+    ids::ContextId,
+};
+use baml_rt_llm_config::{
+    CompactionTriggerPolicy, LlmClientConfig, resolve_compaction_trigger_policy,
+};
 use baml_rt_tools::tools::ToolRegistry;
 
 use super::{
     compactor::ContextCompactionService,
+    context_compaction_policy_from_trigger,
     prepare::prepare_compaction,
-    render::wire_history_byte_len,
+    render::{prepare_render_context, wire_history_byte_len},
     summarizer::{ConversationCompactionSummarizer, compaction_runtime_scope},
     trigger::{
         CompactionSafetySignals, CompactionTriggerDecision, CompactionTriggerInput,
-        CompactionTriggerPolicy, CompactionTriggerSource, evaluate_compaction_trigger,
+        CompactionTriggerSource, evaluate_compaction_trigger,
     },
-    types::{CompactionRequest, ContextCompactionPolicy, ContextCompactionTrigger},
+    types::{CompactionRequest, ContextCompactionTrigger},
 };
 use crate::{
     store::{ProvenanceContextReader, ProvenanceWriter},
@@ -31,8 +38,8 @@ use crate::{
 pub struct ContextCompactionSubscriber {
     store: Arc<SurrealProvenanceStore>,
     writer: Arc<dyn ProvenanceWriter>,
-    trigger_policy: CompactionTriggerPolicy,
-    legacy_policy: ContextCompactionPolicy,
+    llm_config: Arc<LlmClientConfig>,
+    agent_package: Option<String>,
     summarizer: Arc<dyn ConversationCompactionSummarizer>,
     tool_registry: Arc<ToolRegistry>,
 }
@@ -41,35 +48,56 @@ impl ContextCompactionSubscriber {
     pub fn new(
         store: Arc<SurrealProvenanceStore>,
         writer: Arc<dyn ProvenanceWriter>,
-        trigger_policy: CompactionTriggerPolicy,
-        legacy_policy: ContextCompactionPolicy,
+        llm_config: Arc<LlmClientConfig>,
+        agent_package: Option<String>,
         summarizer: Arc<dyn ConversationCompactionSummarizer>,
         tool_registry: Arc<ToolRegistry>,
     ) -> Self {
         Self {
             store,
             writer,
-            trigger_policy,
-            legacy_policy,
+            llm_config,
+            agent_package,
             summarizer,
             tool_registry,
         }
     }
 
-    pub fn trigger_policy(&self) -> &CompactionTriggerPolicy {
-        &self.trigger_policy
+    #[must_use]
+    pub fn trigger_policy_for(&self, function_name: &str) -> CompactionTriggerPolicy {
+        resolve_compaction_trigger_policy(
+            &self.llm_config,
+            self.agent_package.as_deref(),
+            function_name,
+        )
     }
 
-    pub fn legacy_policy(&self) -> &ContextCompactionPolicy {
-        &self.legacy_policy
+    #[must_use]
+    pub fn pre_model_exceeds_emergency(
+        &self,
+        rows: &[serde_json::Value],
+        function_name: &str,
+    ) -> bool {
+        let policy = self.trigger_policy_for(function_name);
+        let input = CompactionTriggerInput {
+            source: CompactionTriggerSource::PreModel,
+            item_count: rows.len(),
+            prompt_bytes: wire_history_byte_len(rows),
+            safety: CompactionSafetySignals::default(),
+            force: false,
+        };
+        matches!(
+            evaluate_compaction_trigger(&policy, &input),
+            CompactionTriggerDecision::Run(_)
+        )
     }
 
-    /// Pre-model emergency evaluation and compaction from projected wire rows.
     pub async fn evaluate_pre_model_from_rows(
         &self,
         request: &CompactionRequest,
         rows: &[serde_json::Value],
         in_flight: bool,
+        function_name: &str,
     ) {
         let bytes = wire_history_byte_len(rows);
         let safety =
@@ -83,11 +111,11 @@ impl ContextCompactionSubscriber {
                 safety,
                 force: false,
             },
+            function_name,
         )
         .await;
     }
 
-    /// Manual operator compaction with optional force bypass of threshold checks.
     pub async fn evaluate_manual(&self, request: &CompactionRequest, force: bool, in_flight: bool) {
         let item_count = self
             .store
@@ -106,24 +134,26 @@ impl ContextCompactionSubscriber {
                 safety,
                 force,
             },
+            "default",
         )
         .await;
     }
 
-    /// Evaluate trigger and optionally run compaction.
     pub async fn evaluate_and_compact(
         &self,
         request: &CompactionRequest,
         input: CompactionTriggerInput,
+        function_name: &str,
     ) {
-        let decision = evaluate_compaction_trigger(&self.trigger_policy, &input);
+        let policy = self.trigger_policy_for(function_name);
+        let decision = evaluate_compaction_trigger(&policy, &input);
         let start = std::time::Instant::now();
         let backend = self.summarizer.backend_label();
-        let budget = &self.trigger_policy.budget;
+        let budget = &policy.budget;
 
         match decision {
             CompactionTriggerDecision::Run(trigger) => {
-                self.run_compact(request, trigger, start, backend, budget)
+                self.run_compact(request, trigger, start, backend, budget, function_name)
                     .await;
             }
             CompactionTriggerDecision::Skip(reason) => {
@@ -162,8 +192,12 @@ impl ContextCompactionSubscriber {
         start: std::time::Instant,
         backend: &str,
         budget: &baml_rt_llm_config::ModelContextBudget,
+        function_name: &str,
     ) {
-        let outcome = match self.try_compact_inner(request, trigger).await {
+        let outcome = match self
+            .try_compact_inner(request, trigger, function_name)
+            .await
+        {
             Ok(CompactionAttempt::Succeeded {
                 pre_prompt_bytes,
                 post_prompt_bytes,
@@ -203,12 +237,15 @@ impl ContextCompactionSubscriber {
         &self,
         request: &CompactionRequest,
         trigger: ContextCompactionTrigger,
+        function_name: &str,
     ) -> Result<CompactionAttempt, ()> {
         let context_id = &request.context_id;
+        let range_policy =
+            context_compaction_policy_from_trigger(&self.trigger_policy_for(function_name));
         let prepared = match prepare_compaction(
             self.store.as_ref(),
             self.tool_registry.as_ref(),
-            &self.legacy_policy,
+            &range_policy,
             request,
             trigger,
         )
@@ -263,6 +300,28 @@ impl ContextCompactionSubscriber {
             post_prompt_bytes,
             covered_rows: prepared.covered_rows,
         })
+    }
+
+    async fn estimate_context_prompt_bytes(&self, context_id: &ContextId) -> u64 {
+        let Ok(items) = self.store.conversation_context(context_id, None).await else {
+            return 0;
+        };
+        if items.is_empty() {
+            return 0;
+        }
+        let Ok(Some(render_context)) = prepare_render_context(
+            self.store.as_ref(),
+            context_id,
+            &items,
+            self.tool_registry.as_ref(),
+        )
+        .await
+        else {
+            return 0;
+        };
+        render_context
+            .render_items(&items, self.tool_registry.as_ref())
+            .len() as u64
     }
 }
 
@@ -352,23 +411,24 @@ impl EffectSubscriber for ContextCompactionSubscriber {
             .await
             .map(|items| items.len())
             .unwrap_or(0);
+        let prompt_bytes = self.estimate_context_prompt_bytes(context_id).await;
         let safety = resolve_safety_signals(self.store.as_ref(), context_id, None).await;
         self.evaluate_and_compact(
             &request,
             CompactionTriggerInput {
                 source: CompactionTriggerSource::PostTurn,
                 item_count,
-                prompt_bytes: 0,
+                prompt_bytes,
                 safety,
                 force: false,
             },
+            "default",
         )
         .await;
         Ok(())
     }
 }
 
-/// Resolve safety signals from provenance graph (awaiting-input gate).
 pub async fn resolve_safety_signals(
     store: &SurrealProvenanceStore,
     context_id: &baml_rt_core::ids::ContextId,

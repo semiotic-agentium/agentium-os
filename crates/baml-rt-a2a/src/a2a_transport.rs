@@ -422,7 +422,7 @@ async fn wire_provenance_subsystems(
     runtime: &RwLock<BamlRuntimeManager>,
     effect_emitter: &dyn EffectEmitter,
     compaction_summarizer: Arc<dyn baml_rt_provenance::ConversationCompactionSummarizer>,
-    llm_config: &LlmClientConfig,
+    llm_config: Arc<LlmClientConfig>,
     agent_package: Option<&str>,
 ) -> Result<ProvenanceWired> {
     tracing::debug!("wire_provenance_subsystems: begin");
@@ -469,15 +469,12 @@ async fn wire_provenance_subsystems(
             .await;
     }
 
-    let (trigger_policy, legacy_policy) =
-        baml_rt_provenance::resolve_compaction_policies(llm_config, agent_package, "default");
-
     let compaction_subscriber = archive_store.as_ref().map(|store| {
         Arc::new(baml_rt_provenance::ContextCompactionSubscriber::new(
             Arc::clone(store),
             writer.clone(),
-            trigger_policy,
-            legacy_policy,
+            Arc::clone(&llm_config),
+            agent_package.map(str::to_string),
             Arc::clone(&compaction_summarizer),
             tool_registry.clone(),
         ))
@@ -525,7 +522,7 @@ pub async fn install_provenance_conversation_wiring(
     runtime: &Arc<RwLock<BamlRuntimeManager>>,
     effect_emitter: &Arc<dyn EffectEmitter>,
     compaction_summarizer: Arc<dyn baml_rt_provenance::ConversationCompactionSummarizer>,
-    llm_config: &LlmClientConfig,
+    llm_config: Arc<LlmClientConfig>,
     agent_package: Option<&str>,
 ) -> Result<()> {
     wire_provenance_subsystems(
@@ -1496,14 +1493,10 @@ impl A2aAgentBuilderWithEffectEmitter {
             .await;
         // Provenance: all subsystems (effect subscriber, tool interceptor, conversation
         // context) wired atomically. See `wire_provenance_subsystems` doc for the full list.
-        let compaction_summarizer = match self.compaction_summarizer.clone() {
-            Some(s) => s,
-            None => {
-                return Err(BamlRtError::InvalidArgument(
-                    "A2aAgentBuilder: with_compaction_summarizer is required".into(),
-                ));
-            }
-        };
+        let compaction_summarizer = self
+            .compaction_summarizer
+            .clone()
+            .unwrap_or_else(baml_rt_provenance::FixedCompactionSummarizer::test_stub);
         let provenance = wire_provenance_subsystems(
             writer,
             archive_store,
@@ -1511,8 +1504,8 @@ impl A2aAgentBuilderWithEffectEmitter {
             effect_emitter.as_ref(),
             compaction_summarizer,
             self.llm_client_config
-                .as_deref()
-                .unwrap_or(&LlmClientConfig::sensible_default()),
+                .clone()
+                .unwrap_or_else(|| Arc::new(LlmClientConfig::sensible_default())),
             Some(agent_package.as_str()),
         )
         .await?;

@@ -9,6 +9,7 @@
 //! BAML only has `client Default`; model selection is fully decoupled and host-controlled.
 
 mod client_snippet;
+mod compaction_policy;
 mod config;
 mod loader;
 mod model_budget;
@@ -20,6 +21,9 @@ mod store_loader;
 mod test_model;
 
 pub use client_snippet::{CLIENT_DEFAULT_FALLBACK_BAML, client_default_baml_snippet};
+pub use compaction_policy::{
+    CompactionTriggerPolicy, resolve_compaction_trigger_policy, trigger_policy_from_budget,
+};
 pub use config::{
     ClientDef, LLM_CONFIG_BUNDLE_NAME, LlmClientConfig, LlmOverrides, LlmProvider, RetryPolicyDef,
 };

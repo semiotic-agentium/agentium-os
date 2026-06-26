@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use baml_rt_conversation::view::ProvenanceConversationContextItem;
 use baml_rt_core::{Result, context};
-use baml_rt_provenance::DEFAULT_LLM_CONTEXT_ITEM_CAP;
+use baml_rt_provenance::{CompactionRequest, DEFAULT_LLM_CONTEXT_ITEM_CAP};
 use baml_rt_quickjs::baml_execution::ConversationContextProvider;
 use baml_rt_tools::{
     prompt_projection::{PromptProjectionItem, project_prompt_context},
@@ -17,9 +17,6 @@ use baml_rt_tools::{
 };
 use serde_json::Value;
 
-use super::compaction_gate::{
-    prompt_exceeds_emergency_threshold, run_pre_model_emergency_compaction,
-};
 use crate::a2a_store::{ConversationContextSource, ProvenanceWriterConversationSource};
 
 type BoxedArchiveReader = Box<dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>>;
@@ -159,6 +156,16 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
     async fn conversation_history_json(
         &self,
         scope: &context::RuntimeScope,
+        _function_name: &str,
+    ) -> Result<Option<Value>> {
+        self.project_conversation_to_json(scope, Some(DEFAULT_LLM_CONTEXT_ITEM_CAP))
+            .await
+    }
+
+    async fn conversation_history_json_for_llm(
+        &self,
+        scope: &context::RuntimeScope,
+        function_name: &str,
     ) -> Result<Option<Value>> {
         let json = self
             .project_conversation_to_json(scope, Some(DEFAULT_LLM_CONTEXT_ITEM_CAP))
@@ -169,7 +176,7 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
             .is_some_and(|rows| {
                 self.compaction_subscriber
                     .as_ref()
-                    .is_some_and(|sub| prompt_exceeds_emergency_threshold(rows, sub.as_ref()))
+                    .is_some_and(|sub| sub.pre_model_exceeds_emergency(rows, function_name))
             });
         if needs_emergency {
             if let Some(subscriber) = self.compaction_subscriber.as_ref() {
@@ -178,7 +185,13 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
                     .and_then(|v| v.as_array())
                     .map(|a| a.as_slice())
                     .unwrap_or(&[]);
-                run_pre_model_emergency_compaction(subscriber, scope, rows, false).await;
+                let request = CompactionRequest {
+                    context_id: scope.context_id().clone(),
+                    agent_id: scope.agent_id().clone(),
+                };
+                subscriber
+                    .evaluate_pre_model_from_rows(&request, rows, false, function_name)
+                    .await;
             }
             return self
                 .project_conversation_to_json(scope, Some(DEFAULT_LLM_CONTEXT_ITEM_CAP))
@@ -190,6 +203,7 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
     async fn conversation_history_json_for_intra_dedup(
         &self,
         scope: &context::RuntimeScope,
+        _function_name: &str,
     ) -> Result<Option<Value>> {
         self.project_conversation_to_json(scope, None).await
     }

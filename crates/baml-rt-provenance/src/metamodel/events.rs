@@ -298,6 +298,7 @@ graph_event!(CallbackDispatchContextsLinked => CallbackDispatchContextsLinked, p
 graph_event!(HostSourcePollRecorded => HostSourcePollRecorded, primary: Message, required: LegacyRequiredProps);
 graph_event!(HostDispatchAccepted => HostDispatchAccepted, primary: Message, required: LegacyRequiredProps);
 graph_event!(HostDispatchRejected => HostDispatchRejected, primary: Message, required: LegacyRequiredProps);
+graph_event!(ContextCompactionRecorded => ContextCompactionRecorded, primary: ContextCompaction, required: LegacyRequiredProps);
 
 #[cfg(test)]
 mod tests {
@@ -332,10 +333,11 @@ mod tests {
             HostSourcePollRecorded::RUNTIME_KIND,
             HostDispatchAccepted::RUNTIME_KIND,
             HostDispatchRejected::RUNTIME_KIND,
+            ContextCompactionRecorded::RUNTIME_KIND,
         );
 
         // Reflective check: typed markers must equal the runtime list of EventGraphKind variants.
-        assert_eq!(ALL_EVENT_KINDS.len(), 23);
+        assert_eq!(ALL_EVENT_KINDS.len(), 24);
     }
 
     #[test]

@@ -145,7 +145,9 @@ impl BamlRuntimeManager {
         self.log_invoke_baml_start(function_name, &args);
         // Verify function exists
         self.require_function_name(function_name)?;
-        let merged_tags = self.build_conversation_context_tags(scope).await?;
+        let merged_tags = self
+            .build_conversation_context_tags(scope, function_name)
+            .await?;
         self.invoke_baml_core(scope, function_name, args, merged_tags)
             .await
     }
@@ -195,7 +197,11 @@ impl BamlRuntimeManager {
         self.log_invoke_baml_start(function_name, &args);
         self.require_function_name(function_name)?;
         let merged_tags = self
-            .build_conversation_context_tags_with_intra(scope, conversation_intra_supplement)
+            .build_conversation_context_tags_with_intra(
+                scope,
+                function_name,
+                conversation_intra_supplement,
+            )
             .await?;
         self.invoke_baml_core(scope, function_name, args, merged_tags)
             .await

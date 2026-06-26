@@ -24,11 +24,14 @@ impl BamlRuntimeManager {
     pub async fn build_conversation_context_tags(
         &self,
         scope: &context::RuntimeScope,
+        function_name: &str,
     ) -> Result<Option<HashMap<String, BamlValue>>> {
         let Some(ref exec) = self.state.executor else {
             return Ok(None);
         };
-        let mut tags = exec.build_conversation_context_tags(scope).await?;
+        let mut tags = exec
+            .build_conversation_context_tags(scope, function_name)
+            .await?;
         self.enrich_with_tool_schema_prelude(&mut tags);
         Ok(tags)
     }

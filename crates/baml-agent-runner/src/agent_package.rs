@@ -366,7 +366,7 @@ impl AgentPackage {
             provenance_config.llm_secret_resolver(),
         )));
 
-        {
+        let llm_config_arc = {
             use baml_rt_llm_config::{StaticResolver, load_stored_config};
             let llm_config = load_stored_config(provenance_config.config_service().as_ref()).await;
             tracing::info!(
@@ -376,12 +376,14 @@ impl AgentPackage {
                 function_overrides = llm_config.overrides.agent_function.len(),
                 "LLM client config loaded for override resolution"
             );
+            let llm_config_arc = Arc::new(llm_config);
             let resolver = Arc::new(StaticResolver::new(
-                Arc::new(llm_config),
+                Arc::clone(&llm_config_arc),
                 provenance_config.llm_secret_resolver(),
             ));
             runtime_manager.set_llm_client_resolver(resolver);
-        }
+            llm_config_arc
+        };
 
         let runtime_manager_arc = Arc::new(tokio::sync::RwLock::new(runtime_manager));
         let store = provenance_config.store().clone();
@@ -402,7 +404,8 @@ impl AgentPackage {
             .with_quickjs_config(quickjs_config)
             .with_baml_helpers(true)
             .with_agent_identity(agent_package, agent_instance_id)
-            .with_surreal_store(store);
+            .with_surreal_store(store)
+            .with_llm_client_config(llm_config_arc);
         if let Some(tx) = observation_notify.clone() {
             agent_builder = agent_builder.with_observation_notify(tx);
         }

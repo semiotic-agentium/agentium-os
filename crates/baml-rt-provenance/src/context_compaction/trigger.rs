@@ -4,7 +4,7 @@
 
 //! Pure compaction trigger decision controller.
 
-use baml_rt_llm_config::{ModelContextBudget, bytes_to_tokens};
+use baml_rt_llm_config::{CompactionTriggerPolicy, bytes_to_tokens};
 
 use super::types::ContextCompactionTrigger;
 
@@ -85,46 +85,6 @@ pub enum CompactionTriggerSource {
 pub struct CompactionSafetySignals {
     pub in_flight: bool,
     pub awaiting_input: bool,
-}
-
-/// Policy resolved for the model that will consume the next prompt.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompactionTriggerPolicy {
-    pub budget: ModelContextBudget,
-    pub item_threshold: usize,
-    pub recent_tail_retention: usize,
-    pub defer_while_in_flight: bool,
-    pub defer_while_awaiting_input: bool,
-}
-
-impl CompactionTriggerPolicy {
-    /// Build from resolved model budget and compaction defaults.
-    #[must_use]
-    pub fn from_budget(
-        budget: ModelContextBudget,
-        item_threshold: usize,
-        recent_tail_retention: usize,
-        defer_in_flight: bool,
-        defer_awaiting: bool,
-    ) -> Self {
-        Self {
-            budget,
-            item_threshold,
-            recent_tail_retention,
-            defer_while_in_flight: defer_in_flight,
-            defer_while_awaiting_input: defer_awaiting,
-        }
-    }
-
-    #[must_use]
-    pub fn emergency_prompt_bytes(&self) -> u64 {
-        self.budget.emergency_prompt_bytes()
-    }
-
-    #[must_use]
-    pub fn safe_prompt_bytes(&self) -> u64 {
-        self.budget.safe_prompt_bytes()
-    }
 }
 
 /// Inputs for a single trigger evaluation.

@@ -91,6 +91,7 @@ pub mod a2a {
     pub const ARTIFACT_ID: &str = "a2a:artifact_id";
     pub const ARTIFACT_TYPE: &str = "a2a:artifact_type";
     pub const CONTEXT_ID: &str = "a2a:context_id";
+    pub const SUMMARY_TEXT: &str = "summary_text";
     pub const REASON: &str = "a2a:reason";
     pub const OLD_REASON: &str = "a2a:old_reason";
     pub const TIMESTAMP_MS: &str = "a2a:timestamp_ms";

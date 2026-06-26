@@ -450,7 +450,7 @@ const MAPPING_CONTEXT_COMPACTION_RECORDED: EventGraphMapping = EventGraphMapping
     kind: EventGraphKind::ContextCompactionRecorded,
     primary_node: GraphNodeLabel::ContextCompaction,
     expected_edges: &[EDGE_WAS_GENERATED_BY],
-    required_properties: &[a2a::CONTEXT_ID, "summary_text"],
+    required_properties: &[a2a::CONTEXT_ID, a2a::SUMMARY_TEXT],
 };
 
 pub fn event_kind_from_data(data: &ProvEventData) -> EventGraphKind {
