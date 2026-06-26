@@ -44,9 +44,10 @@ Release Please owns normal releases:
 
 1. Conventional Commits land on `main`.
 2. Release Please opens or updates a release PR.
-3. Merge the release PR after CI is green.
-4. Release Please creates `vX.Y.Z` and a GitHub Release.
-5. This workflow builds binaries and uploads assets to that release.
+3. Release PR postprocess workflow updates `Cargo.lock` on that PR.
+4. Merge the release PR after CI is green.
+5. Release Please creates `vX.Y.Z` and a GitHub Release.
+6. This workflow builds binaries and uploads assets to that release.
 
 Manual tag pushes are fallback-only. If used, the tag must point at a commit where `Cargo.toml`, `Cargo.lock`, and `deploy/helm/agentium-os/Chart.yaml` all contain the same version.
 

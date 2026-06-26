@@ -11,10 +11,11 @@ Releases are driven by Release Please. One SemVer must stay consistent across:
 
 1. Merge feature/fix PRs to `main` using Conventional Commits (`feat:`, `fix:`, etc.).
 2. Release Please opens or updates a release PR.
-3. Verify release PR CI is green.
-4. Merge release PR.
-5. Release Please creates tag `vX.Y.Z` and a GitHub Release.
-6. `Release publish` builds Linux binaries and uploads assets to that release.
+3. Release PR postprocess workflow updates `Cargo.lock` on that PR.
+4. Verify release PR CI is green.
+5. Merge release PR.
+6. Release Please creates tag `vX.Y.Z` and a GitHub Release.
+7. `Release publish` builds Linux binaries and uploads assets to that release.
 
 Do not manually bump versions or create release tags during normal releases.
 
