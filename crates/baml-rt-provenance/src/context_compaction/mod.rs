@@ -16,7 +16,6 @@ pub mod summarizer;
 pub mod trigger;
 pub mod types;
 
-use baml_rt_llm_config::LlmClientConfig;
 pub use baml_rt_llm_config::{
     CompactionTriggerPolicy, resolve_compaction_trigger_policy, trigger_policy_from_budget,
 };
@@ -30,8 +29,9 @@ pub use prepare::{CompactionPrepareError, PreparedCompaction, prepare_compaction
 pub use projection::{CompactionSummaryItem, apply_compaction_profile};
 pub use range::{CompactableRange, item_is_live_planning_obligation, select_compactable_range};
 pub use render::{
-    CompactionRenderContext, prepare_render_context, render_items_for_context,
-    render_items_with_ref_table, render_wire_history_rows, wire_history_byte_len,
+    CompactionRenderContext, estimate_compaction_prompt_bytes, prepare_render_context,
+    render_items_for_context, render_items_with_ref_table, render_wire_history_rows,
+    wire_history_byte_len,
 };
 pub use subscriber::{ContextCompactionSubscriber, resolve_safety_signals};
 pub use summarizer::{
@@ -44,35 +44,9 @@ pub use trigger::{
     evaluate_compaction_trigger,
 };
 pub use types::{
-    CompactionPrefixInput, CompactionRequest, ContextCompactionHead, ContextCompactionPolicy,
-    ContextCompactionRecord, ContextCompactionTrigger,
+    CompactionPrefixInput, CompactionRequest, ContextCompactionHead, ContextCompactionRecord,
+    ContextCompactionTrigger,
 };
-
-/// Build legacy prepare/range policy from a trigger policy.
-#[must_use]
-pub fn context_compaction_policy_from_trigger(
-    trigger_policy: &CompactionTriggerPolicy,
-) -> ContextCompactionPolicy {
-    ContextCompactionPolicy {
-        item_threshold: trigger_policy.item_threshold,
-        prompt_bytes_threshold: trigger_policy.emergency_prompt_bytes(),
-        recent_tail_retention: trigger_policy.recent_tail_retention,
-        model_id: trigger_policy.budget.model_id.clone(),
-        budget_source: trigger_policy.budget.source,
-    }
-}
-
-/// Resolve both trigger and legacy policies.
-#[must_use]
-pub fn resolve_compaction_policies(
-    config: &LlmClientConfig,
-    agent_package: Option<&str>,
-    function_name: &str,
-) -> (CompactionTriggerPolicy, ContextCompactionPolicy) {
-    let trigger = resolve_compaction_trigger_policy(config, agent_package, function_name);
-    let legacy = context_compaction_policy_from_trigger(&trigger);
-    (trigger, legacy)
-}
 
 use crate::conversation_context_query::DEFAULT_LLM_CONTEXT_ITEM_CAP;
 

@@ -9,7 +9,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use baml_rt_conversation::view::ProvenanceConversationContextItem;
 use baml_rt_core::{Result, context};
-use baml_rt_provenance::{CompactionRequest, DEFAULT_LLM_CONTEXT_ITEM_CAP};
+use baml_rt_provenance::{
+    CompactionRequest, DEFAULT_LLM_CONTEXT_ITEM_CAP, ProvenanceContextReader,
+    estimate_compaction_prompt_bytes,
+};
 use baml_rt_quickjs::baml_execution::ConversationContextProvider;
 use baml_rt_tools::{
     prompt_projection::{PromptProjectionItem, project_prompt_context},
@@ -20,6 +23,11 @@ use serde_json::Value;
 use crate::a2a_store::{ConversationContextSource, ProvenanceWriterConversationSource};
 
 type BoxedArchiveReader = Box<dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>>;
+
+struct PromptEvaluationContext {
+    item_count: usize,
+    prompt_bytes: u64,
+}
 
 /// Projects [`ProvenanceConversationContextItem`] rows into **wire** conversation JSON.
 pub struct ProjectingConversationContextProvider {
@@ -63,6 +71,44 @@ impl ProjectingConversationContextProvider {
             archive_ref_tables,
             compaction_subscriber,
         )
+    }
+
+    async fn load_prompt_evaluation(
+        &self,
+        scope: &context::RuntimeScope,
+    ) -> Result<Option<PromptEvaluationContext>> {
+        let Some(store) = self.provenance_store.as_ref() else {
+            return Ok(None);
+        };
+        let context_id = scope.context_id();
+        let task_id = scope.task_id_opt();
+        let full_items = store
+            .conversation_context(context_id, None)
+            .await
+            .map_err(|e| baml_rt_core::BamlRtError::ProvenanceContextRead {
+                source: Box::new(e),
+            })?;
+        let item_count = full_items.len();
+        let agent_items = store
+            .conversation_context_for_agent_prompt(context_id, None, task_id)
+            .await
+            .map_err(|e| baml_rt_core::BamlRtError::ProvenanceContextRead {
+                source: Box::new(e),
+            })?;
+        let prompt_bytes = estimate_compaction_prompt_bytes(
+            store,
+            context_id,
+            &agent_items,
+            self.tool_registry.as_ref(),
+        )
+        .await
+        .map_err(|e| baml_rt_core::BamlRtError::ProvenanceContextRead {
+            source: Box::new(e),
+        })?;
+        Ok(Some(PromptEvaluationContext {
+            item_count,
+            prompt_bytes,
+        }))
     }
 
     async fn project_conversation_to_json(
@@ -167,37 +213,35 @@ impl ConversationContextProvider for ProjectingConversationContextProvider {
         scope: &context::RuntimeScope,
         function_name: &str,
     ) -> Result<Option<Value>> {
-        let json = self
-            .project_conversation_to_json(scope, Some(DEFAULT_LLM_CONTEXT_ITEM_CAP))
-            .await?;
-        let needs_emergency = json
-            .as_ref()
-            .and_then(|v| v.as_array())
-            .is_some_and(|rows| {
-                self.compaction_subscriber
-                    .as_ref()
-                    .is_some_and(|sub| sub.pre_model_exceeds_emergency(rows, function_name))
-            });
+        let evaluation = self.load_prompt_evaluation(scope).await?;
+        let needs_emergency = evaluation.as_ref().is_some_and(|ctx| {
+            self.compaction_subscriber.as_ref().is_some_and(|sub| {
+                sub.pre_model_exceeds_emergency(ctx.prompt_bytes, ctx.item_count, function_name)
+            })
+        });
         if needs_emergency {
-            if let Some(subscriber) = self.compaction_subscriber.as_ref() {
-                let rows = json
-                    .as_ref()
-                    .and_then(|v| v.as_array())
-                    .map(|a| a.as_slice())
-                    .unwrap_or(&[]);
+            if let (Some(subscriber), Some(ctx)) =
+                (self.compaction_subscriber.as_ref(), evaluation.as_ref())
+            {
                 let request = CompactionRequest {
                     context_id: scope.context_id().clone(),
                     agent_id: scope.agent_id().clone(),
                 };
                 subscriber
-                    .evaluate_pre_model_from_rows(&request, rows, false, function_name)
+                    .evaluate_pre_model_emergency(
+                        &request,
+                        ctx.prompt_bytes,
+                        ctx.item_count,
+                        function_name,
+                    )
                     .await;
             }
             return self
                 .project_conversation_to_json(scope, Some(DEFAULT_LLM_CONTEXT_ITEM_CAP))
                 .await;
         }
-        Ok(json)
+        self.project_conversation_to_json(scope, Some(DEFAULT_LLM_CONTEXT_ITEM_CAP))
+            .await
     }
 
     async fn conversation_history_json_for_intra_dedup(

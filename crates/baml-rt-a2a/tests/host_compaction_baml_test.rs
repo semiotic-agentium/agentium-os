@@ -25,7 +25,7 @@ impl LlmSecretResolver for EnvSecretResolver {
 }
 
 fn host_schema_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 #[tokio::test]

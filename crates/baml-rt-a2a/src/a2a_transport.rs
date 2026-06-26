@@ -565,6 +565,7 @@ pub struct A2aAgent {
     response_formatter: Arc<dyn ResponseFormatter>,
     request_router: Arc<dyn RequestRouter>,
     error_classifier: Arc<dyn ErrorClassifier>,
+    effect_emitter: Arc<dyn EffectEmitter>,
     update_tx: broadcast::Sender<TaskUpdateEvent>,
     stream_sessions: Arc<Mutex<HashMap<LiveStreamSessionKey, LiveStreamSession>>>,
 }
@@ -841,6 +842,16 @@ impl A2aAgent {
         };
         let mut ack: AgentDispatchAck = serde_json::from_value(value).map_err(BamlRtError::Json)?;
         ack = ack.with_resolved_scope(invocation_scope.as_scope());
+        if let Some(context_id) = request.context_id.clone() {
+            self.effect_emitter
+                .emit_context_history_settled(
+                    context_id,
+                    self.agent_id().clone(),
+                    baml_rt_core::bus::ContextHistorySettlementKind::HostDispatch,
+                    Some("onDispatch".to_string()),
+                )
+                .await;
+        }
         Ok(ack)
     }
 }
@@ -1513,7 +1524,7 @@ impl A2aAgentBuilderWithEffectEmitter {
             task_handler.clone(),
             js_invoker,
             result_pipeline.clone(),
-            self.effect_emitter,
+            effect_emitter.clone(),
             agent_id.clone(),
         ));
         let error_classifier: Arc<dyn ErrorClassifier> = Arc::new(A2aErrorClassifier);
@@ -1532,6 +1543,7 @@ impl A2aAgentBuilderWithEffectEmitter {
             response_formatter,
             request_router,
             error_classifier,
+            effect_emitter,
             update_tx,
             stream_sessions,
         };
@@ -2193,9 +2205,8 @@ impl A2aAgent {
                             tracing::debug!(
                                 "live stream synthetic-final send failed (receiver dropped)"
                             );
-                            completion = Some(StreamCompletion::ChannelClosed);
-                            break;
                         }
+                        completion = Some(StreamCompletion::ChannelClosed);
                         break;
                     };
                     if first_drain_chunk {
@@ -2393,8 +2404,9 @@ impl A2aAgent {
             }
             a2a::A2aOutcome::Stream(handle) => {
                 let mut rx = handle.receiver;
-                let synthetic_context = a2a::A2aRequest::from_value(request.clone())
-                    .ok()
+                let parsed_request = a2a::A2aRequest::from_value(request.clone()).ok();
+                let synthetic_context = parsed_request
+                    .as_ref()
                     .map(|p| p.context_id().as_str().to_string())
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "unknown-context".to_string());

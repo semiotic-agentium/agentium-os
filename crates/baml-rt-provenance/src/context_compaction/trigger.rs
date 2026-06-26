@@ -27,11 +27,10 @@ impl CompactionSkipReason {
     }
 }
 
-/// Why compaction was deferred (may retry later).
+/// Why compaction was deferred (may retry on next pre-model read).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactionDeferReason {
     InFlightTurn,
-    AwaitingInput,
 }
 
 impl CompactionDeferReason {
@@ -39,7 +38,6 @@ impl CompactionDeferReason {
     pub const fn as_wire_str(self) -> &'static str {
         match self {
             Self::InFlightTurn => "in_flight_turn",
-            Self::AwaitingInput => "awaiting_input",
         }
     }
 }
@@ -187,12 +185,6 @@ fn apply_safety_gates(
     {
         return CompactionTriggerDecision::Defer(CompactionDeferReason::InFlightTurn);
     }
-    if policy.defer_while_awaiting_input
-        && input.safety.awaiting_input
-        && matches!(input.source, CompactionTriggerSource::PostTurn)
-    {
-        return CompactionTriggerDecision::Defer(CompactionDeferReason::AwaitingInput);
-    }
     CompactionTriggerDecision::Run(trigger)
 }
 
@@ -240,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn post_turn_defers_when_awaiting_input() {
+    fn post_turn_runs_despite_awaiting_input_at_settlement() {
         let decision = evaluate_compaction_trigger(
             &test_policy(),
             &CompactionTriggerInput {
@@ -256,7 +248,7 @@ mod tests {
         );
         assert_eq!(
             decision,
-            CompactionTriggerDecision::Defer(CompactionDeferReason::AwaitingInput)
+            CompactionTriggerDecision::Run(ContextCompactionTrigger::PostTurnThreshold)
         );
     }
 

@@ -4,8 +4,7 @@
 
 //! Select a sealed compactable prefix from conversation rows.
 use baml_rt_conversation::view::{ConversationItemContent, ProvenanceConversationContextItem};
-
-use super::types::ContextCompactionPolicy;
+use baml_rt_llm_config::CompactionTriggerPolicy;
 
 /// Selected prefix eligible for compaction plus retained recent tail boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,7 +18,7 @@ pub struct CompactableRange {
 #[must_use]
 pub fn select_compactable_range(
     items: &[ProvenanceConversationContextItem],
-    policy: &ContextCompactionPolicy,
+    policy: &CompactionTriggerPolicy,
 ) -> Option<CompactableRange> {
     if items.len() < policy.item_threshold {
         return None;
@@ -62,27 +61,47 @@ pub fn item_is_live_planning_obligation(item: &ProvenanceConversationContextItem
     let ConversationItemContent::Planning(plan) = &item.content else {
         return false;
     };
-    matches!(
-        plan.kind,
+    match plan.kind {
+        baml_rt_conversation::planning::PlanningEventKind::PlanStepStatusChanged => plan
+            .new_status
+            .as_deref()
+            .is_some_and(|s| s != "completed" && s != "aborted"),
         baml_rt_conversation::planning::PlanningEventKind::IntentResolved
-            | baml_rt_conversation::planning::PlanningEventKind::PlanCommitted
-            | baml_rt_conversation::planning::PlanningEventKind::PlanStepStatusChanged
-    ) && plan
-        .new_status
-        .as_deref()
-        .is_some_and(|s| s != "completed" && s != "aborted")
-        || matches!(
-            plan.kind,
-            baml_rt_conversation::planning::PlanningEventKind::IntentResolved
-                | baml_rt_conversation::planning::PlanningEventKind::PlanCommitted
-        )
+        | baml_rt_conversation::planning::PlanningEventKind::PlanCommitted
+        | baml_rt_conversation::planning::PlanningEventKind::IntentRevised
+        | baml_rt_conversation::planning::PlanningEventKind::PlanSuperseded => false,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use baml_rt_core::ids::ActivityAnchorId;
+    use baml_rt_llm_config::{
+        BudgetFreshness, BudgetSource, CompactionTriggerPolicy, ModelContextBudget,
+    };
 
     use super::*;
+
+    fn test_range_policy() -> CompactionTriggerPolicy {
+        CompactionTriggerPolicy::from_budget(
+            ModelContextBudget {
+                model_id: "test".into(),
+                provider: "test".into(),
+                client_name: "test".into(),
+                context_window_tokens: 128_000,
+                safe_prompt_tokens: 80_000,
+                emergency_prompt_tokens: 110_000,
+                output_reserve_tokens: 4096,
+                source: BudgetSource::Fallback,
+                freshness: BudgetFreshness::NotApplicable,
+                warning: None,
+            },
+            40,
+            8,
+            true,
+            true,
+        )
+    }
 
     fn dummy_items(count: usize) -> Vec<ProvenanceConversationContextItem> {
         (0..count)
@@ -102,11 +121,7 @@ mod tests {
     #[test]
     fn selects_prefix_leaving_recent_tail() {
         let items = dummy_items(50);
-        let policy = ContextCompactionPolicy {
-            item_threshold: 40,
-            recent_tail_retention: 8,
-            ..Default::default()
-        };
+        let policy = test_range_policy();
         let range = select_compactable_range(&items, &policy).expect("range");
         assert_eq!(range.covered_event_order_end, 420);
         assert_eq!(range.recent_tail_start_event_order, 430);
@@ -115,7 +130,7 @@ mod tests {
     #[test]
     fn skips_when_below_item_threshold() {
         let items = dummy_items(5);
-        assert!(select_compactable_range(&items, &ContextCompactionPolicy::default()).is_none());
+        assert!(select_compactable_range(&items, &test_range_policy()).is_none());
     }
 
     #[test]

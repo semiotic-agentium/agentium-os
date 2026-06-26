@@ -2202,7 +2202,9 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
             }
             // A2A effects are primarily for liveness gating, not provenance
             // Skip provenance emission for A2A lifecycle events.
-            EffectEvent::A2aStarted { .. } | EffectEvent::A2aCompleted { .. } => {
+            EffectEvent::A2aStarted { .. }
+            | EffectEvent::A2aCompleted { .. }
+            | EffectEvent::ContextHistorySettled { .. } => {
                 return Ok(());
             }
             EffectEvent::IntentResolved {

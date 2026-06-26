@@ -7,7 +7,7 @@
 use baml_rt_conversation::view::{ConversationItemContent, ProvenanceConversationContextItem};
 use baml_rt_tools::{archive_refs::RefTable, tools::ToolRegistry};
 
-use super::{range::item_is_live_planning_obligation, render::render_items_with_ref_table};
+use super::render::render_items_with_ref_table;
 
 /// Live planning rows from the sealed prefix, one line each.
 #[must_use]
@@ -16,7 +16,7 @@ pub fn format_planning_digest(
 ) -> Option<String> {
     let lines: Vec<String> = prefix_items
         .iter()
-        .filter(|item| item_is_live_planning_obligation(item))
+        .filter(|item| matches!(item.content, ConversationItemContent::Planning(_)))
         .filter_map(|item| {
             let ConversationItemContent::Planning(plan) = &item.content else {
                 return None;
@@ -90,6 +90,7 @@ mod tests {
     #[test]
     fn format_planning_digest_includes_live_obligations() {
         let items = vec![
+            planning_item(PlanningEventKind::IntentResolved, "build feature", None),
             planning_item(
                 PlanningEventKind::PlanStepStatusChanged,
                 "deploy step",
@@ -107,6 +108,7 @@ mod tests {
             },
         ];
         let digest = format_planning_digest(&items).expect("digest");
+        assert!(digest.contains("build feature"));
         assert!(digest.contains("deploy step"));
         assert!(digest.contains("in_progress"));
     }

@@ -55,9 +55,13 @@ When conversation history exceeds the compaction threshold, the runner summarize
 
 **Triggering** is model-aware and resolved from the `llm` config bundle:
 
-- **Post-turn** (`A2aCompleted`): runs when item count crosses `compaction.defaults.item_threshold` and safety gates allow (defers while awaiting input or in-flight work when configured).
-- **Pre-model emergency** (`conversation_history_json` read): runs when projected wire bytes/tokens exceed the resolved model emergency budget for the effective client.
+- **Post-turn** (`ContextHistorySettled`): runs after a history mutation cycle completes — A2A chat stream terminal (`InputRequired`, semantic final, channel closed) or host `onDispatch` ack. Evaluates against the **final** transcript for that cycle (not `A2aCompleted` stream handover). Defers mid-turn on `awaiting_input` only; settlement after `InputRequired` is allowed. Pre-model emergency compaction covers prompt overflow when post-turn defers.
+- **Pre-model emergency** (`conversation_history_json_for_llm` read): runs when full agent-prompt byte estimate exceeds the resolved model emergency budget for the effective BAML function.
 - **Manual operator** (future API): bypasses threshold checks with `force`, but safety gates still apply unless explicitly overridden.
+
+**History kinds:** compaction is history-kind agnostic — chat messages, host ingress operational rows (`role=host`), ingress user rows, planning events, and tool/session rows all contribute to prefix selection and summarizer input. Live in-progress planning steps stay verbatim in the retained tail; sealed intents/plans are summarizable.
+
+**Invariants (I1–I6):** settlement timing, history-kind coverage, planning preservation, prompt boundedness under sustained chat or event intake, pre-model emergency fallback, and R9 append-only graph with compaction on agent read only.
 
 Budget resolution order: client override → model override → known-model table → online metadata cache (OpenRouter) → conservative fallback. Operators configure overrides under **Settings → LLM → Compaction budgets**; resolved budgets are exposed at `GET /config/llm/model-budgets`.
 

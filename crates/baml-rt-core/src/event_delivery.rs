@@ -125,7 +125,7 @@ impl HostPublishService {
             recorder.record_source_poll(&event).await?;
         }
         let dispatch_request = event.clone().into_dispatch_request();
-        let outcome = publish_to_subscribers(entries, event, port).await?;
+        let outcome = publish_to_subscribers(entries, event.clone(), port).await?;
         if let Some(recorder) = self.recorder.as_ref() {
             for (route, failure) in &outcome.failures {
                 // Agent rejections are recorded by the runner dispatch boundary; publish

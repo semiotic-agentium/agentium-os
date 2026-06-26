@@ -38,33 +38,6 @@ pub struct ContextCompactionHead {
     pub task_entity_id: Option<String>,
 }
 
-/// Policy knobs for when to compact.
-#[derive(Debug, Clone)]
-pub struct ContextCompactionPolicy {
-    /// Item count at or above which post-turn compaction may run.
-    pub item_threshold: usize,
-    /// Serialized prompt bytes at or above which pre-model emergency may run.
-    pub prompt_bytes_threshold: u64,
-    /// Recent tail rows kept verbatim after compaction.
-    pub recent_tail_retention: usize,
-    /// Model id the policy was resolved for (observability).
-    pub model_id: String,
-    /// Where the model budget came from.
-    pub budget_source: baml_rt_llm_config::BudgetSource,
-}
-
-impl Default for ContextCompactionPolicy {
-    fn default() -> Self {
-        Self {
-            item_threshold: super::DEFAULT_COMPACTION_ITEM_THRESHOLD,
-            prompt_bytes_threshold: super::DEFAULT_COMPACTION_PROMPT_BYTES_THRESHOLD,
-            recent_tail_retention: super::DEFAULT_RECENT_TAIL_RETENTION,
-            model_id: "unknown".to_string(),
-            budget_source: baml_rt_llm_config::BudgetSource::Fallback,
-        }
-    }
-}
-
 /// Inputs collected before writing a compaction provenance event.
 #[derive(Debug, Clone)]
 pub struct ContextCompactionRecord {

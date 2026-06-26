@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Post-turn compaction hook on [`EffectEvent::A2aCompleted`].
+//! Post-turn compaction hook on [`EffectEvent::ContextHistorySettled`].
 
 use std::sync::Arc;
 
@@ -18,9 +18,8 @@ use baml_rt_tools::tools::ToolRegistry;
 
 use super::{
     compactor::ContextCompactionService,
-    context_compaction_policy_from_trigger,
     prepare::prepare_compaction,
-    render::{prepare_render_context, wire_history_byte_len},
+    render::estimate_compaction_prompt_bytes,
     summarizer::{ConversationCompactionSummarizer, compaction_runtime_scope},
     trigger::{
         CompactionSafetySignals, CompactionTriggerDecision, CompactionTriggerInput,
@@ -33,7 +32,7 @@ use crate::{
     surreal_store::SurrealProvenanceStore,
 };
 
-/// Background subscriber: after each A2A turn, maybe compact sealed transcript prefix.
+/// Background subscriber: after each history settlement, maybe compact sealed transcript prefix.
 #[derive(Clone)]
 pub struct ContextCompactionSubscriber {
     store: Arc<SurrealProvenanceStore>,
@@ -75,14 +74,15 @@ impl ContextCompactionSubscriber {
     #[must_use]
     pub fn pre_model_exceeds_emergency(
         &self,
-        rows: &[serde_json::Value],
+        prompt_bytes: u64,
+        item_count: usize,
         function_name: &str,
     ) -> bool {
         let policy = self.trigger_policy_for(function_name);
         let input = CompactionTriggerInput {
             source: CompactionTriggerSource::PreModel,
-            item_count: rows.len(),
-            prompt_bytes: wire_history_byte_len(rows),
+            item_count,
+            prompt_bytes,
             safety: CompactionSafetySignals::default(),
             force: false,
         };
@@ -92,6 +92,29 @@ impl ContextCompactionSubscriber {
         )
     }
 
+    pub async fn evaluate_pre_model_emergency(
+        &self,
+        request: &CompactionRequest,
+        prompt_bytes: u64,
+        item_count: usize,
+        function_name: &str,
+    ) {
+        let safety =
+            resolve_safety_signals(self.store.as_ref(), &request.context_id, Some(false)).await;
+        self.evaluate_and_compact(
+            request,
+            CompactionTriggerInput {
+                source: CompactionTriggerSource::PreModel,
+                item_count,
+                prompt_bytes,
+                safety,
+                force: false,
+            },
+            function_name,
+        )
+        .await;
+    }
+
     pub async fn evaluate_pre_model_from_rows(
         &self,
         request: &CompactionRequest,
@@ -99,7 +122,7 @@ impl ContextCompactionSubscriber {
         in_flight: bool,
         function_name: &str,
     ) {
-        let bytes = wire_history_byte_len(rows);
+        let bytes = super::render::wire_history_byte_len(rows);
         let safety =
             resolve_safety_signals(self.store.as_ref(), &request.context_id, Some(in_flight)).await;
         self.evaluate_and_compact(
@@ -135,6 +158,41 @@ impl ContextCompactionSubscriber {
                 force,
             },
             "default",
+        )
+        .await;
+    }
+
+    pub async fn evaluate_post_turn(&self, request: &CompactionRequest, function_name: &str) {
+        let items = self
+            .store
+            .conversation_context(&request.context_id, None)
+            .await
+            .unwrap_or_default();
+        let item_count = items.len();
+        let prompt_bytes = estimate_compaction_prompt_bytes(
+            self.store.as_ref(),
+            &request.context_id,
+            &items,
+            self.tool_registry.as_ref(),
+        )
+        .await
+        .unwrap_or(0);
+        let hints =
+            resolve_safety_signals(self.store.as_ref(), &request.context_id, Some(false)).await;
+        let safety = CompactionSafetySignals {
+            in_flight: false,
+            awaiting_input: hints.awaiting_input,
+        };
+        self.evaluate_and_compact(
+            request,
+            CompactionTriggerInput {
+                source: CompactionTriggerSource::PostTurn,
+                item_count,
+                prompt_bytes,
+                safety,
+                force: false,
+            },
+            function_name,
         )
         .await;
     }
@@ -240,12 +298,11 @@ impl ContextCompactionSubscriber {
         function_name: &str,
     ) -> Result<CompactionAttempt, ()> {
         let context_id = &request.context_id;
-        let range_policy =
-            context_compaction_policy_from_trigger(&self.trigger_policy_for(function_name));
+        let policy = self.trigger_policy_for(function_name);
         let prepared = match prepare_compaction(
             self.store.as_ref(),
             self.tool_registry.as_ref(),
-            &range_policy,
+            &policy,
             request,
             trigger,
         )
@@ -300,28 +357,6 @@ impl ContextCompactionSubscriber {
             post_prompt_bytes,
             covered_rows: prepared.covered_rows,
         })
-    }
-
-    async fn estimate_context_prompt_bytes(&self, context_id: &ContextId) -> u64 {
-        let Ok(items) = self.store.conversation_context(context_id, None).await else {
-            return 0;
-        };
-        if items.is_empty() {
-            return 0;
-        }
-        let Ok(Some(render_context)) = prepare_render_context(
-            self.store.as_ref(),
-            context_id,
-            &items,
-            self.tool_registry.as_ref(),
-        )
-        .await
-        else {
-            return 0;
-        };
-        render_context
-            .render_items(&items, self.tool_registry.as_ref())
-            .len() as u64
     }
 }
 
@@ -393,9 +428,10 @@ impl EffectSubscriber for ContextCompactionSubscriber {
     }
 
     async fn on_effect(&self, event: &EffectEvent) -> baml_rt_core::Result<()> {
-        let EffectEvent::A2aCompleted {
+        let EffectEvent::ContextHistorySettled {
             context_id,
-            metadata,
+            agent_id,
+            function_name,
             ..
         } = event
         else {
@@ -403,35 +439,17 @@ impl EffectSubscriber for ContextCompactionSubscriber {
         };
         let request = CompactionRequest {
             context_id: context_id.clone(),
-            agent_id: metadata.agent_id.clone(),
+            agent_id: agent_id.clone(),
         };
-        let item_count = self
-            .store
-            .conversation_context(context_id, None)
-            .await
-            .map(|items| items.len())
-            .unwrap_or(0);
-        let prompt_bytes = self.estimate_context_prompt_bytes(context_id).await;
-        let safety = resolve_safety_signals(self.store.as_ref(), context_id, None).await;
-        self.evaluate_and_compact(
-            &request,
-            CompactionTriggerInput {
-                source: CompactionTriggerSource::PostTurn,
-                item_count,
-                prompt_bytes,
-                safety,
-                force: false,
-            },
-            "default",
-        )
-        .await;
+        let function_name = function_name.as_deref().unwrap_or("default");
+        self.evaluate_post_turn(&request, function_name).await;
         Ok(())
     }
 }
 
 pub async fn resolve_safety_signals(
     store: &SurrealProvenanceStore,
-    context_id: &baml_rt_core::ids::ContextId,
+    context_id: &ContextId,
     in_flight: Option<bool>,
 ) -> CompactionSafetySignals {
     let hints = crate::resolve_resume_ui_hints(store, context_id.as_str(), None)

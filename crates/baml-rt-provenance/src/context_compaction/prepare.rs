@@ -4,6 +4,7 @@
 
 //! Prepare compaction inputs from store reads (pure orchestration split from subscriber).
 
+use baml_rt_llm_config::CompactionTriggerPolicy;
 use baml_rt_tools::tools::ToolRegistry;
 use sha2::{Digest, Sha256};
 
@@ -13,8 +14,7 @@ use super::{
     range::select_compactable_range,
     render::prepare_render_context,
     types::{
-        CompactionPrefixInput, CompactionRequest, ContextCompactionPolicy, ContextCompactionRecord,
-        ContextCompactionTrigger,
+        CompactionPrefixInput, CompactionRequest, ContextCompactionRecord, ContextCompactionTrigger,
     },
 };
 use crate::{
@@ -40,7 +40,7 @@ pub enum CompactionPrepareError {
 pub async fn prepare_compaction(
     store: &SurrealProvenanceStore,
     tool_registry: &ToolRegistry,
-    policy: &ContextCompactionPolicy,
+    policy: &CompactionTriggerPolicy,
     request: &CompactionRequest,
     trigger: ContextCompactionTrigger,
 ) -> Result<Option<PreparedCompaction>, CompactionPrepareError> {

@@ -343,6 +343,24 @@ pub fn extract_agent_name(value: &Value) -> Option<String> {
         .or_else(|| metadata_value_as_string(params.message.metadata.as_ref(), "agent_name"))
 }
 
+/// BAML function name for compaction policy resolution from message.sendStream metadata.
+#[must_use]
+pub fn compaction_function_name_from_request(request: &A2aRequest) -> Option<String> {
+    let A2aParams::MessageSendStream(params) = &request.params else {
+        return None;
+    };
+    compaction_function_name_from_send_params(params)
+}
+
+fn compaction_function_name_from_send_params(params: &SendMessageRequest) -> Option<String> {
+    metadata_value_as_string(params.metadata.as_ref(), "baml_function")
+        .or_else(|| metadata_value_as_string(params.metadata.as_ref(), "function_name"))
+        .or_else(|| metadata_value_as_string(params.metadata.as_ref(), "bamlFunction"))
+        .or_else(|| metadata_value_as_string(params.message.metadata.as_ref(), "baml_function"))
+        .or_else(|| metadata_value_as_string(params.message.metadata.as_ref(), "function_name"))
+        .or_else(|| metadata_value_as_string(params.message.metadata.as_ref(), "bamlFunction"))
+}
+
 fn metadata_value_as_string(
     metadata: Option<&std::collections::HashMap<String, Value>>,
     key: &str,

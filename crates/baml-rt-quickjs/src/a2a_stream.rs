@@ -95,16 +95,9 @@ impl<'a> A2aYieldSessionReady<'a> {
     }
 }
 
-/// Job for the per-bridge handover lane: stream (begin→invoke→collect), one-shot invoke, or tool call.
+/// Job for the per-bridge handover lane: stream (begin→invoke→collect), named invoke, or tool call.
 pub(crate) enum HandoverJob {
     Stream(StreamHandoverRequest),
-    Invoke {
-        bridge: Arc<Mutex<QuickJSBridge>>,
-        scope: InvocationScope,
-        request: Value,
-        tx_result:
-            tokio::sync::oneshot::Sender<std::result::Result<Value, baml_rt_core::BamlRtError>>,
-    },
     /// Generic named-function invocation (used by dispatch handlers).
     InvokeNamed {
         bridge: Arc<Mutex<QuickJSBridge>>,
@@ -215,17 +208,6 @@ impl BridgeHandle {
                                     )
                                     .await;
                                 }
-                                HandoverJob::Invoke {
-                                    bridge,
-                                    scope,
-                                    request,
-                                    tx_result,
-                                } => {
-                                    let out = run_invoke_same_thread(bridge, scope, request).await;
-                                    if tx_result.send(out).is_err() {
-                                        tracing::debug!("handover Invoke: result receiver dropped (task cancelled)");
-                                    }
-                                }
                                 HandoverJob::InvokeNamed {
                                     bridge,
                                     scope,
@@ -328,19 +310,6 @@ impl Drop for BridgeHandle {
             tracing::error!(error = ?e, "handover lane thread panicked; in-flight stream sessions may have silently incomplete streams");
         }
     }
-}
-
-/// Runs a single onChatMessage invoke using the brief-lock pattern.
-///
-/// Acquires the bridge lock only for synchronous setup (`prepare_brief_poll_eval`),
-/// then releases it before polling. This allows concurrent contexts to make progress
-/// while this invocation awaits LLM or BAML results.
-async fn run_invoke_same_thread(
-    bridge: Arc<Mutex<QuickJSBridge>>,
-    scope: InvocationScope,
-    request: Value,
-) -> std::result::Result<Value, baml_rt_core::BamlRtError> {
-    QuickJSBridge::invoke_js_function_nonblocking(bridge, &scope, "onChatMessage", request).await
 }
 
 async fn run_named_invoke_same_thread(
@@ -563,30 +532,6 @@ pub async fn spawn_stream_handover(
         ));
     }
     (rx, abort_tx)
-}
-
-/// Enqueues a single onChatMessage invoke to the bridge's handover lane and waits for the result.
-pub async fn invoke_handler_handover(
-    handle: &BridgeHandle,
-    scope: InvocationScope,
-    request: Value,
-) -> Result<Value> {
-    let (tx_result, rx_result) = tokio::sync::oneshot::channel();
-    handle
-        .handover_sender()
-        .send(HandoverJob::Invoke {
-            bridge: handle.bridge().clone(),
-            scope,
-            request,
-            tx_result,
-        })
-        .await
-        .map_err(|_| {
-            baml_rt_core::BamlRtError::InvalidArgument("handover lane closed".to_string())
-        })?;
-    rx_result.await.map_err(|_| {
-        baml_rt_core::BamlRtError::InvalidArgument("handover invoke dropped".to_string())
-    })?
 }
 
 /// Enqueues a single JS tool invoke to the bridge's handover lane and waits for the result.

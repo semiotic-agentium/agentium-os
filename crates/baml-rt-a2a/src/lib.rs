@@ -29,6 +29,7 @@ pub mod result_deduplicator;
 pub mod result_extractor;
 pub mod result_pipeline;
 pub mod result_processor;
+pub(crate) mod stream_collector;
 pub mod task_subgraph_store;
 pub mod task_update_broadcaster;
 pub mod task_update_drain;

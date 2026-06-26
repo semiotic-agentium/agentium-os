@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use baml_rt_conversation::view::ProvenanceConversationContextItem;
+use baml_rt_conversation::view::{ConversationItemContent, ProvenanceConversationContextItem};
 use baml_rt_core::ids::ContextId;
 use baml_rt_tools::{
     archive_refs::RefTable,
@@ -41,15 +41,35 @@ pub fn render_items_with_ref_table(
     tool_registry: &ToolRegistry,
     ref_table: &RefTable,
 ) -> String {
+    let mut lines = Vec::new();
     let projection_items: Vec<_> = items
         .iter()
         .filter_map(|item| baml_rt_conversation::provenance_item_to_projection_item(item.clone()))
         .collect();
-    if projection_items.is_empty() {
-        return String::new();
+    if !projection_items.is_empty() {
+        let history = project_prompt_context(projection_items, tool_registry, ref_table, None);
+        let rendered =
+            format_conversation_history_transcript(history.as_array().unwrap_or(&vec![]));
+        if !rendered.trim().is_empty() {
+            lines.push(rendered);
+        }
     }
-    let history = project_prompt_context(projection_items, tool_registry, ref_table, None);
-    format_conversation_history_transcript(history.as_array().unwrap_or(&vec![]))
+    for item in items {
+        if let Some(line) = compaction_operational_line(item) {
+            lines.push(line);
+        }
+    }
+    lines.join("\n")
+}
+
+fn compaction_operational_line(item: &ProvenanceConversationContextItem) -> Option<String> {
+    let ConversationItemContent::Operational(op) = &item.content else {
+        return None;
+    };
+    if !op.is_meaningful() {
+        return None;
+    }
+    Some(format!("{}: {}", item.role, op.summary))
 }
 
 /// Hydrate ref table from store and render items for compaction or prompt measurement.
@@ -59,21 +79,30 @@ pub async fn render_items_for_context(
     items: &[ProvenanceConversationContextItem],
     tool_registry: &ToolRegistry,
 ) -> Result<String> {
-    let projection_items: Vec<_> = items
-        .iter()
-        .filter_map(|item| baml_rt_conversation::provenance_item_to_projection_item(item.clone()))
-        .collect();
-    if projection_items.is_empty() {
+    let Some(render_context) =
+        prepare_render_context(store, context_id, items, tool_registry).await?
+    else {
         return Ok(String::new());
+    };
+    Ok(render_context.render_items(items, tool_registry))
+}
+
+/// Byte length of the compaction render for a stable item set (includes operational rows).
+pub async fn estimate_compaction_prompt_bytes(
+    store: &SurrealProvenanceStore,
+    context_id: &ContextId,
+    items: &[ProvenanceConversationContextItem],
+    tool_registry: &ToolRegistry,
+) -> Result<u64> {
+    if items.is_empty() {
+        return Ok(0);
     }
-    let ref_table =
-        prepare_ref_table_for_projection(store, context_id, &projection_items, tool_registry)
-            .await?;
-    Ok(render_items_with_ref_table(
-        items,
-        tool_registry,
-        ref_table.as_ref(),
-    ))
+    let Some(render_context) =
+        prepare_render_context(store, context_id, items, tool_registry).await?
+    else {
+        return Ok(0);
+    };
+    Ok(render_context.render_items(items, tool_registry).len() as u64)
 }
 
 /// Hydrate the ref table once for a stable item set and reuse it for full/prefix/tail renders.
@@ -83,16 +112,19 @@ pub async fn prepare_render_context(
     items: &[ProvenanceConversationContextItem],
     tool_registry: &ToolRegistry,
 ) -> Result<Option<CompactionRenderContext>> {
+    if items.is_empty() {
+        return Ok(None);
+    }
     let projection_items: Vec<_> = items
         .iter()
         .filter_map(|item| baml_rt_conversation::provenance_item_to_projection_item(item.clone()))
         .collect();
-    if projection_items.is_empty() {
-        return Ok(None);
-    }
-    let ref_table =
+    let ref_table = if projection_items.is_empty() {
+        Arc::new(RefTable::new())
+    } else {
         prepare_ref_table_for_projection(store, context_id, &projection_items, tool_registry)
-            .await?;
+            .await?
+    };
     Ok(Some(CompactionRenderContext { ref_table }))
 }
 
