@@ -7,6 +7,8 @@ name: Rust CI
 on:
   push:
     branches: [main]
+    tags-ignore:
+      - '**'
     # Documentation-only edits do not affect the Rust artifact graph; skipping
     # avoids spinning ~30min nextest lanes and cancelling in-flight runs via
     # extra pushes (see paths-ignore semantics for bundled PR diffs).
