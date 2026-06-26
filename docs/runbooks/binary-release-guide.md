@@ -38,30 +38,23 @@ Tarball contents:
 - `SHA256SUMS` (per-tarball binary checksums)
 - `INSTALL.md` (installation guide)
 
-## Manual release process
+## Release process
 
-### Prerequisites
+Release Please owns normal releases:
 
-1. Workspace version matches intended tag:
-   ```bash
-   scripts/release/workspace-version.sh  # should match vX.Y.Z
-   ```
+1. Conventional Commits land on `main`.
+2. Release Please opens or updates a release PR.
+3. Merge the release PR after CI is green.
+4. Release Please creates `vX.Y.Z` and a GitHub Release.
+5. This workflow builds binaries and uploads assets to that release.
 
-2. Release notes prepared (auto-generated from commits)
-
-### Tag and release
-
-```bash
-# Create and push the release tag
-git tag v1.2.3
-git push origin v1.2.3
-```
+Manual tag pushes are fallback-only. If used, the tag must point at a commit where `Cargo.toml`, `Cargo.lock`, and `deploy/helm/agentium-os/Chart.yaml` all contain the same version.
 
 The workflow automatically:
-1. Verifies tag matches `[workspace.package].version`
+1. Verifies tag matches `[workspace.package].version` and Helm `appVersion`
 2. Builds all targets natively
 3. Packs tarballs with reproducible archives
-4. Creates GitHub Release with assets
+4. Creates or updates GitHub Release with assets
 
 ### Dry-run testing
 
