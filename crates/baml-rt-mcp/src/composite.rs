@@ -67,7 +67,7 @@ mod tests {
     use baml_rt_tools::{
         ToolSession,
         tool_fsm::ToolStep,
-        tools::{SessionPolicy, ToolBackend, ToolOrigin, ToolSessionContext, ToolTypeSpec},
+        tools::{SessionPolicy, ToolBackend, ToolCapability, ToolOrigin, ToolSessionContext, ToolTypeSpec},
     };
     use serde_json::Value;
 
@@ -118,6 +118,7 @@ mod tests {
                         digest: None,
                         projection_semantics: None,
                         session_policy: SessionPolicy::Strict,
+                        capability: ToolCapability::default(),
                         event_sources: Vec::new(),
                         coordination_baml: None,
                     },

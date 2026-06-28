@@ -44,6 +44,8 @@ pub(crate) struct ToolAttrs {
     pub secrets: Vec<SecretDef>,
     /// Access level: `Read`, `Write`, or `Delete`.
     pub access: Option<Ident>,
+    /// Read/stream semantics: `OneShot` or `Streaming`.
+    pub capability: Option<Ident>,
     /// Types whose `baml_decl()` forms the BAML declaration.
     pub baml_types: Vec<Path>,
     /// Types whose `ts_decl()` produces extra TypeScript declarations.
@@ -72,6 +74,7 @@ enum AttrEntry {
     Tags(Vec<LitStr>),
     Secrets(Vec<SecretDef>),
     Access(Ident),
+    Capability(Ident),
     EventSources(Vec<LitStr>),
     Config(Box<ConfigDef>),
     BamlTypes(Vec<Path>),
@@ -99,6 +102,7 @@ impl Parse for ToolAttrs {
         let mut tags: Vec<LitStr> = Vec::new();
         let mut secrets: Vec<SecretDef> = Vec::new();
         let mut access: Option<Ident> = None;
+        let mut capability: Option<Ident> = None;
         let mut event_sources: Vec<LitStr> = Vec::new();
         let mut config: Option<ConfigDef> = None;
         let mut baml_types: Vec<Path> = Vec::new();
@@ -116,6 +120,7 @@ impl Parse for ToolAttrs {
                 AttrEntry::Tags(v) => tags = v,
                 AttrEntry::Secrets(v) => secrets = v,
                 AttrEntry::Access(v) => access = Some(v),
+                AttrEntry::Capability(v) => capability = Some(v),
                 AttrEntry::EventSources(v) => event_sources = v,
                 AttrEntry::Config(v) => config = Some(*v),
                 AttrEntry::BamlTypes(v) => baml_types = v,
@@ -152,6 +157,7 @@ impl Parse for ToolAttrs {
             tags,
             secrets,
             access,
+            capability,
             event_sources,
             config,
             baml_types,
@@ -266,6 +272,20 @@ impl Parse for AttrEntry {
                     ));
                 }
                 Ok(AttrEntry::Access(ident))
+            }
+            "capability" => {
+                let ident: Ident = input.parse()?;
+                let valid = ["OneShot", "Streaming"];
+                if !valid.contains(&ident.to_string().as_str()) {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!(
+                            "baml_tool: `capability` must be one of: {}",
+                            valid.join(", ")
+                        ),
+                    ));
+                }
+                Ok(AttrEntry::Capability(ident))
             }
             "event_sources" => {
                 let strings = parse_string_array(input)?;

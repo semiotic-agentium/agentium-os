@@ -70,6 +70,10 @@ pub(crate) fn resolve_baml_tool_invocation_plan(
                     [single] => {
                         resolve_tool_name_from_plan_type_with_registry(tool_registry, single).ok()
                     }
+                    // Polymorphic entry (>1 candidate). Both `<Tool>OpenStep` and `<Tool>SendStep`
+                    // bake a literal `tool_name` that the constrained decoder fills in, so the
+                    // chosen variant pins the tool via `selected_tool`. Scope lookup is the final
+                    // fallback for the legacy Send/Read-after-Open path.
                     _ => plan
                         .selected_tool
                         .clone()

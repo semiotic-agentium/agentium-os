@@ -94,6 +94,7 @@ async fn bootstrap_no_tools_artifacts_snapshot() {
 }
 
 #[tokio::test]
+#[cfg(feature = "dev-tools")]
 async fn bootstrap_with_tools_artifacts_snapshot() {
     let root = TempDir::new().unwrap();
     let root_path = root.path();
@@ -146,6 +147,7 @@ async fn bootstrap_no_tools_creates_layout_and_files() {
 }
 
 #[tokio::test]
+#[cfg(feature = "dev-tools")]
 async fn bootstrap_with_tools_creates_generated_tools_and_manifest_tools() {
     let root = TempDir::new().unwrap();
     let root_path = root.path();

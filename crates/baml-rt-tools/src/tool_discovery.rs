@@ -139,6 +139,7 @@ mod tests {
             digest: None,
             projection_semantics: None,
             session_policy: crate::tools::SessionPolicy::default(),
+            capability: crate::tools::ToolCapability::default(),
             event_sources: vec![],
             coordination_baml: None,
         }

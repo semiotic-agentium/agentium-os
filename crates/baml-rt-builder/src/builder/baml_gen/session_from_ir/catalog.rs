@@ -135,6 +135,12 @@ fn render_catalog_text(
         out.push_str("  send: ");
         out.push_str(&tool.input_type.name);
         out.push('\n');
+        out.push_str("  capability: ");
+        out.push_str(&format!("{:?}", tool.capability));
+        out.push('\n');
+        out.push_str("  invocation_mode: ");
+        out.push_str(baml_rt_tools::capability_invocation_mode(tool.capability));
+        out.push('\n');
         out.push_str("  operations: ");
         out.push_str(&format!(
             "{}OpenStep | {}SendStep | {}SearchReadStep | {}PageReadStep | {}FinishStep | {}AbortStep",

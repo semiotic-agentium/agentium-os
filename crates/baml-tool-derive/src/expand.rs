@@ -71,6 +71,17 @@ fn access_tokens(access: &Option<Ident>) -> TokenStream {
     }
 }
 
+/// Emit the `with_capability(...)` builder call (or nothing if not set).
+fn capability_tokens(capability: &Option<Ident>) -> TokenStream {
+    let Some(ident) = capability else {
+        return TokenStream::new();
+    };
+    let variant = format_ident!("{}", ident);
+    quote! {
+        .with_capability(::baml_rt_tools::tools::ToolCapability::#variant)
+    }
+}
+
 /// Emit the `with_event_sources(...)` builder call (or nothing if empty).
 ///
 /// Each string is validated at registration time via `EventSourceKind::parse`.
@@ -196,6 +207,7 @@ pub(crate) fn expand_impl(attrs: &ToolAttrs, impl_block: &ItemImpl) -> syn::Resu
     let tags = tags_tokens(&attrs.tags);
     let secrets = secrets_tokens(&attrs.secrets);
     let access = access_tokens(&attrs.access);
+    let capability = capability_tokens(&attrs.capability);
     let event_sources = event_sources_tokens(&attrs.event_sources);
     let config = config_tokens(&attrs.config);
     let baml_decl = baml_decl_tokens(&attrs.baml_types);
@@ -233,6 +245,7 @@ pub(crate) fn expand_impl(attrs: &ToolAttrs, impl_block: &ItemImpl) -> syn::Resu
             #tags
             #secrets
             #access
+            #capability
             #config
             #event_sources
             .build_metadata()
@@ -271,6 +284,7 @@ pub(crate) fn expand_struct(attrs: &ToolAttrs, item: &ItemStruct) -> syn::Result
     let tags = tags_tokens(&attrs.tags);
     let secrets = secrets_tokens(&attrs.secrets);
     let access = access_tokens(&attrs.access);
+    let capability = capability_tokens(&attrs.capability);
     let event_sources = event_sources_tokens(&attrs.event_sources);
     let config = config_tokens(&attrs.config);
     let baml_decl = baml_decl_tokens(&attrs.baml_types);
@@ -302,6 +316,7 @@ pub(crate) fn expand_struct(attrs: &ToolAttrs, item: &ItemStruct) -> syn::Result
             #tags
             #secrets
             #access
+            #capability
             #config
             #event_sources
             .build_metadata()

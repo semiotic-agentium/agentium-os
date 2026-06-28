@@ -177,6 +177,17 @@ pub enum InvocationMode {
     Session,
 }
 
+impl InvocationMode {
+    /// Map manifest invocation mode to runtime read/stream semantics.
+    #[must_use]
+    pub fn capability(self) -> crate::tools::ToolCapability {
+        match self {
+            Self::SingleShot => crate::tools::ToolCapability::OneShot,
+            Self::Session => crate::tools::ToolCapability::Streaming,
+        }
+    }
+}
+
 /// Where secrets are attached for session-mode tools.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -477,6 +488,7 @@ pub(crate) fn build_tool_metadata(
         digest: None,
         projection_semantics: None,
         session_policy: meta.session_policy.to_session_policy(),
+        capability: meta.invocation_mode.capability(),
         event_sources: parse_event_sources(&meta.name, &meta.event_sources)?,
         coordination_baml,
     })

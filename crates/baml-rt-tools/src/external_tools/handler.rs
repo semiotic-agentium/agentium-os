@@ -306,7 +306,7 @@ mod tests {
             protocol::{METHOD_INVOKE, ToolSchemaResult},
         },
         tool_fsm::ToolSessionId,
-        tools::{ToolAccess, ToolBackend, ToolOrigin, ToolSessionContext, ToolTypeSpec},
+        tools::{ToolAccess, ToolBackend, ToolCapability, ToolOrigin, ToolSessionContext, ToolTypeSpec},
     };
 
     struct BlockingMockInvoker {
@@ -697,6 +697,7 @@ mod tests {
             digest: None,
             projection_semantics: None,
             session_policy: Default::default(),
+            capability: ToolCapability::default(),
             event_sources: Vec::new(),
             coordination_baml: None,
         }

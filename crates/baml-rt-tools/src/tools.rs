@@ -235,6 +235,10 @@ pub trait BamlTool: Send + Sync + 'static {
     /// different queries in one session (e.g. search pages then read blocks).
     const SESSION_POLICY: SessionPolicy = SessionPolicy::Strict;
 
+    /// Read/stream semantics. Override to `Streaming` for tools that emit
+    /// `ToolStep::Streaming` from `read()`.
+    const CAPABILITY: ToolCapability = ToolCapability::OneShot;
+
     /// Typed input for opening the session (initial_input in Open step).
     /// Use `()` for tools that don't need args when opening.
     type OpenInput: ToolType + Serialize + for<'de> Deserialize<'de> + DescribeAction;
@@ -879,6 +883,10 @@ impl SessionTypeNames {
         format!("{class_name}OpenStep")
     }
 
+    pub fn send_step(class_name: &str) -> String {
+        format!("{class_name}SendStep")
+    }
+
     pub fn session_plan(class_name: &str) -> String {
         format!("{class_name}SessionPlan")
     }
@@ -966,6 +974,9 @@ pub struct ToolFunctionMetadata {
     /// FSM scheduling policy for the step executor. Controls which ops are
     /// offered after a Send. Defaults to `Strict` (one Send per hop).
     pub session_policy: SessionPolicy,
+    /// Whether this tool completes after one read (`OneShot`) or may stream (`Streaming`).
+    /// Drives builder entry-Send eligibility and auto-finish scoping.
+    pub capability: ToolCapability,
     /// Event source kinds this tool can produce when polled.
     /// Empty means the tool is invoke-only (no event production).
     pub event_sources: Vec<EventSourceKind>,
@@ -1061,6 +1072,7 @@ impl ToolFunctionMetadata {
             digest: None,
             projection_semantics: None,
             session_policy: SessionPolicy::default(),
+            capability: ToolCapability::default(),
             event_sources: Vec::new(),
             coordination_baml: None,
         }
@@ -1084,6 +1096,7 @@ pub struct TypeBasedMetadataBuilder<OpenInput, Input, Output> {
     extra_ts_decls: Vec<String>,
     access: Option<ToolAccess>,
     session_policy: SessionPolicy,
+    capability: ToolCapability,
     event_sources: Vec<EventSourceKind>,
     _phantom: std::marker::PhantomData<(OpenInput, Input, Output)>,
 }
@@ -1112,6 +1125,7 @@ where
             digest: None,
             projection_semantics: None,
             session_policy: SessionPolicy::default(),
+            capability: ToolCapability::default(),
             event_sources: Vec::new(),
             _phantom: std::marker::PhantomData,
         }
@@ -1195,6 +1209,12 @@ where
         self
     }
 
+    /// Override read/stream semantics for builder catalog and auto-finish scoping.
+    pub fn with_capability(mut self, capability: ToolCapability) -> Self {
+        self.capability = capability;
+        self
+    }
+
     /// Set event source kinds this tool can produce when polled.
     pub fn with_event_sources(mut self, event_sources: Vec<EventSourceKind>) -> Self {
         self.event_sources = event_sources;
@@ -1233,6 +1253,7 @@ where
         metadata.digest = self.digest;
         metadata.projection_semantics = self.projection_semantics;
         metadata.session_policy = self.session_policy;
+        metadata.capability = self.capability;
         metadata.event_sources = self.event_sources;
         metadata
     }
@@ -1270,6 +1291,12 @@ pub struct ToolFunctionMetadataExport {
     /// writing the generated tool-card BAML. Defaults to `Strict`.
     #[serde(default)]
     pub session_policy: SessionPolicy,
+    /// Read/stream semantics for builder entry-Send and auto-finish scoping.
+    #[serde(default)]
+    pub capability: ToolCapability,
+    /// Manifest-aligned invocation mode (`single_shot` | `session`).
+    #[serde(default = "default_invocation_mode_for_export")]
+    pub invocation_mode: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_sources: Vec<EventSourceKind>,
     /// Session-coordination BAML fragment, merged into the generated prelude
@@ -1303,6 +1330,8 @@ impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
             digest: metadata.digest.clone(),
             projection_semantics: metadata.projection_semantics.clone(),
             session_policy: metadata.session_policy,
+            capability: metadata.capability,
+            invocation_mode: capability_invocation_mode(metadata.capability).to_string(),
             event_sources: metadata.event_sources.clone(),
             coordination_baml: metadata.coordination_baml.clone(),
         }
@@ -1336,6 +1365,7 @@ impl From<ToolFunctionMetadataExport> for ToolFunctionMetadata {
             digest: export.digest,
             projection_semantics: export.projection_semantics,
             session_policy: export.session_policy,
+            capability: export.capability,
             event_sources: export.event_sources,
             coordination_baml: export.coordination_baml,
         }
@@ -1397,10 +1427,24 @@ pub struct ToolBundleMetadata {
 /// - **Streaming:** This tool may return `ToolStep::Streaming` one or more times. Each read may
 ///   block or buffer and does *not* indicate completion until the step is `Done`. Callers must
 ///   use `open_session` and call `read(input)` in a loop until `Done`. `execute()` is disabled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolCapability {
+    #[default]
     OneShot,
     Streaming,
+}
+
+/// Manifest-aligned invocation mode label for exported builder catalog metadata.
+#[must_use]
+pub fn capability_invocation_mode(capability: ToolCapability) -> &'static str {
+    match capability {
+        ToolCapability::OneShot => "single_shot",
+        ToolCapability::Streaming => "session",
+    }
+}
+
+fn default_invocation_mode_for_export() -> String {
+    capability_invocation_mode(ToolCapability::default()).to_string()
 }
 
 /// Origin of a tool invocation (host vs guest)
@@ -2112,6 +2156,7 @@ pub fn create_tool_handler<T: BamlTool>(
         description_str.clone(),
     )
     .with_session_policy(T::SESSION_POLICY)
+    .with_capability(T::CAPABILITY)
     .build_metadata();
     let handler: Arc<dyn ToolHandler> = Arc::new(ToolWrapper {
         tool: Arc::new(tool),

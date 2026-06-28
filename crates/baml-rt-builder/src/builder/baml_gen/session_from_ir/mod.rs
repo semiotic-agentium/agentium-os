@@ -20,7 +20,9 @@ pub(crate) mod phase_prompt;
 
 use std::{collections::HashMap, ops::Deref};
 
-use baml_rt_tools::{SessionPlanTypeName, SessionTypeNames, tools::ToolFunctionMetadata};
+use baml_rt_tools::{
+    SessionPlanTypeName, SessionTypeNames, entry_send_eligible, tools::ToolFunctionMetadata,
+};
 use baml_types::ir_type::TypeGeneric;
 pub use catalog::{CATALOG_FUNCTION_NAME, CATALOG_SIDECAR_FILE, CatalogPlan};
 use internal_baml_core::ir::ir_hasher::IRSignature;
@@ -28,13 +30,22 @@ use internal_baml_core::ir::ir_hasher::IRSignature;
 use super::ir_type_print::{collect_union_type_names, type_ir_to_baml};
 use crate::builder::error::{Result, write_line};
 
-/// Compact state-indexed policy for **entry** hops with archive/read-only or Open choices.
+/// Compact state-indexed policy for **entry** hops with archive/read-only choices only.
 ///
 /// No ASCII double quotes inside: text is concatenated into BAML `prompt #""#` literals.
 const PHASE_STEP_EXECUTOR_SUFFIX_ENTRY: &str = r#"
 
 Phase policy:
 - Derived state rule: this entry return union excludes `Send`, `Finish`, and `Abort`.
+"#;
+
+/// Compact state-indexed policy for **entry** hops that include typed `<Tool>SendStep` variants.
+///
+/// No ASCII double quotes inside: text is concatenated into BAML `prompt #""#` literals.
+const PHASE_STEP_EXECUTOR_SUFFIX_ENTRY_WITH_SEND: &str = r#"
+
+Phase policy:
+- Derived state rule: eligible one-shot tools may emit Send directly (runtime auto-opens and auto-finishes); Open remains valid during migration. Finish and Abort are excluded on entry.
 "#;
 
 /// Compact state-indexed policy for **entry** hops when the union is open-only.
@@ -46,12 +57,16 @@ Phase policy:
 - Derived state rule: this entry return union only allows `Open`.
 "#;
 
-/// Per-hop suffix for generated `__entry` functions: branchy union vs Open-shaped union only.
+/// Per-hop suffix for generated `__entry` functions: Send-inclusive, open-only, or branchy.
 ///
-/// Open-only when **every** member of `entry_return` ends with `OpenStep`.
+/// Send-inclusive when any member ends with `SendStep`. Open-only when **every** tool step ends
+/// with `OpenStep` (no Send variants). Otherwise branchy (archive reads / non-tool steps only).
 pub(crate) fn entry_phase_executor_suffix(entry_return: &[String]) -> &'static str {
     if entry_return.is_empty() {
         return PHASE_STEP_EXECUTOR_SUFFIX_ENTRY;
+    }
+    if entry_return.iter().any(|t| t.ends_with("SendStep")) {
+        return PHASE_STEP_EXECUTOR_SUFFIX_ENTRY_WITH_SEND;
     }
     if entry_return.iter().all(|t| t.ends_with("OpenStep")) {
         PHASE_STEP_EXECUTOR_SUFFIX_ENTRY_OPEN_ONLY
@@ -142,6 +157,37 @@ where
     legal
 }
 
+/// Build the sorted, deduplicated entry-hop return union for a session-plan executor.
+fn entry_return_type_names(
+    candidates: &[&ToolFunctionMetadata],
+    non_plan_types: &[String],
+) -> Vec<String> {
+    let open_types: Vec<String> = candidates
+        .iter()
+        .map(|t| SessionTypeNames::open_step(&t.class_name))
+        .collect();
+    let send_types: Vec<String> = candidates
+        .iter()
+        .filter(|t| entry_send_eligible(t))
+        .map(|t| SessionTypeNames::send_step(&t.class_name))
+        .collect();
+    let mut entry_return = non_plan_types.to_vec();
+    entry_return.extend(open_types);
+    entry_return.extend(send_types);
+    for extra in [
+        "ArchiveSearchReadStep",
+        "ArchivePageReadStep",
+        "ReadOnlyFinishStep",
+    ] {
+        if !entry_return.iter().any(|t| t == extra) {
+            entry_return.push(extra.to_string());
+        }
+    }
+    entry_return.sort();
+    entry_return.dedup();
+    entry_return
+}
+
 /// Generate polymorphic session BAML types AND per-phase step executor functions from the
 /// compiled IR. Single source of truth — no source text parsing.
 ///
@@ -228,23 +274,7 @@ pub fn render_generated_session_baml_from_ir(
                 .collect()
         };
 
-        let open_types: Vec<String> = candidates
-            .iter()
-            .map(|t| SessionTypeNames::open_step(&t.class_name))
-            .collect();
-        let mut entry_return = non_plan_types.clone();
-        entry_return.extend(open_types);
-        for extra in [
-            "ArchiveSearchReadStep",
-            "ArchivePageReadStep",
-            "ReadOnlyFinishStep",
-        ] {
-            if !entry_return.iter().any(|t| t == extra) {
-                entry_return.push(extra.to_string());
-            }
-        }
-        entry_return.sort();
-        entry_return.dedup();
+        let entry_return = entry_return_type_names(&candidates, &non_plan_types);
         let entry_name = SessionTypeNames::entry(func_name);
 
         write_line(
@@ -539,6 +569,23 @@ fn entry_phase_executor_suffix_branchy_when_non_open_step_present() {
 
 #[cfg(test)]
 #[test]
+fn entry_phase_executor_suffix_send_inclusive_when_send_step_present() {
+    assert_eq!(
+        entry_phase_executor_suffix(&[
+            "SupportCalculateOpenStep".to_string(),
+            "SupportCalculateSendStep".to_string(),
+            "ArchiveSearchReadStep".to_string(),
+        ]),
+        PHASE_STEP_EXECUTOR_SUFFIX_ENTRY_WITH_SEND
+    );
+    assert_eq!(
+        entry_phase_executor_suffix(&["SupportSlackNotifySendStep".to_string()]),
+        PHASE_STEP_EXECUTOR_SUFFIX_ENTRY_WITH_SEND
+    );
+}
+
+#[cfg(test)]
+#[test]
 fn entry_phase_executor_suffix_open_only_despite_session_plan_sibling_in_ir_simulation() {
     // Both entries are open-shaped step class names; non_plan_types-heuristic would be wrong if it only checked emptiness.
     assert_eq!(
@@ -554,4 +601,96 @@ fn entry_phase_executor_suffix_empty_falls_back_to_branchy() {
         entry_phase_executor_suffix(&[]),
         PHASE_STEP_EXECUTOR_SUFFIX_ENTRY
     );
+}
+
+#[cfg(test)]
+mod entry_return_tests {
+    use baml_rt_tools::tools::{ToolCapability, ToolFunctionMetadata, ToolTypeSpec};
+    use serde_json::json;
+
+    use super::entry_return_type_names;
+
+    fn sample_tool(class_name: &str, capability: ToolCapability, open_input_schema: serde_json::Value) -> ToolFunctionMetadata {
+        ToolFunctionMetadata {
+            name: baml_rt_tools::ToolName::parse("support/sample").expect("valid tool name"),
+            class_name: class_name.to_string(),
+            description: "sample".to_string(),
+            open_input_schema,
+            input_schema: json!({}),
+            output_schema: json!({}),
+            open_input_type: ToolTypeSpec {
+                name: "()".to_string(),
+                ts_decl: None,
+            },
+            input_type: ToolTypeSpec {
+                name: "SupportSampleInput".to_string(),
+                ts_decl: None,
+            },
+            output_type: ToolTypeSpec {
+                name: "SupportSampleOutput".to_string(),
+                ts_decl: None,
+            },
+            baml_decl: None,
+            extra_ts_decls: Vec::new(),
+            access: None,
+            tags: Vec::new(),
+            secret_requests: Vec::new(),
+            config: None,
+            config_bundle: None,
+            origin: baml_rt_tools::ToolOrigin::Host,
+            backend: baml_rt_tools::ToolBackend::default(),
+            digest: None,
+            projection_semantics: None,
+            session_policy: baml_rt_tools::SessionPolicy::default(),
+            capability,
+            event_sources: Vec::new(),
+            coordination_baml: None,
+        }
+    }
+
+    #[test]
+    fn eligible_one_shot_gets_open_and_send_on_entry() {
+        let tool = sample_tool("SupportCalculate", ToolCapability::OneShot, json!({}));
+        let entry_return = entry_return_type_names(&[&tool], &[]);
+        assert!(entry_return.contains(&"SupportCalculateOpenStep".to_string()));
+        assert!(entry_return.contains(&"SupportCalculateSendStep".to_string()));
+        assert!(entry_return.contains(&"ArchiveSearchReadStep".to_string()));
+        assert!(entry_return.contains(&"ArchivePageReadStep".to_string()));
+        assert!(entry_return.contains(&"ReadOnlyFinishStep".to_string()));
+    }
+
+    #[test]
+    fn streaming_tool_gets_open_only_not_send_on_entry() {
+        let tool = sample_tool("McpGrafanaQuery", ToolCapability::Streaming, json!({}));
+        let entry_return = entry_return_type_names(&[&tool], &[]);
+        assert!(entry_return.contains(&"McpGrafanaQueryOpenStep".to_string()));
+        assert!(!entry_return.iter().any(|t| t.ends_with("SendStep")));
+    }
+
+    #[test]
+    fn archive_reads_and_read_only_finish_always_present() {
+        let tool = sample_tool("SupportCalculate", ToolCapability::OneShot, json!({}));
+        let entry_return = entry_return_type_names(&[&tool], &[]);
+        for shared in [
+            "ArchiveSearchReadStep",
+            "ArchivePageReadStep",
+            "ReadOnlyFinishStep",
+        ] {
+            assert!(
+                entry_return.contains(&shared.to_string()),
+                "entry union must always include {shared}: {entry_return:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn archive_reads_survive_when_non_plan_types_present() {
+        let tool = sample_tool("SupportCalculate", ToolCapability::OneShot, json!({}));
+        let entry_return =
+            entry_return_type_names(&[&tool], &["CoordinatorReport".to_string()]);
+        assert!(entry_return.contains(&"CoordinatorReport".to_string()));
+        assert!(entry_return.contains(&"ArchiveSearchReadStep".to_string()));
+        assert!(entry_return.contains(&"ArchivePageReadStep".to_string()));
+        assert!(entry_return.contains(&"ReadOnlyFinishStep".to_string()));
+    }
 }
