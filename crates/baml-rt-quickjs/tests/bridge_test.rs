@@ -1576,6 +1576,181 @@ async fn test_blocked_send_produces_no_effect_and_surfaces_block() {
     );
 }
 
+/// Provenance/projection invariant (H): an entry-Send one-shot must surface to the model as a
+/// single Send (tool) result — the auto-open and auto-finish lifecycle stays graph-internal and
+/// never leaks into the model-facing conversation as opcode/Open/SendDone/Finish lines.
+#[tokio::test]
+async fn test_entry_send_projection_hides_lifecycle_shows_single_send() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use baml_rt::baml::BamlRuntimeManager;
+    use baml_rt_core::context::InvocationScope;
+    use baml_rt_quickjs::step_executor_loop::run_step_executor_loop;
+    use serde_json::json;
+
+    test_support::common::ensure_fixture_runtime_types();
+    let agent_dir =
+        test_support::common::workspace_root().join("tests/fixtures/agents/stream-baml-tool");
+    let built =
+        test_support::common::build_agent_package_to_temp(agent_dir, "stream-baml-tool").await;
+
+    let scope = InvocationScope::synthetic_task(AgentId::from_uuid(
+        UuidId::parse_str("00000000-0000-0000-0000-000000000095").unwrap(),
+    ));
+    let (context_id, message_id, task_id) = {
+        let rs = scope.as_scope();
+        let task_id = rs
+            .task_id_opt()
+            .expect("synthetic_task has task_id")
+            .clone();
+        (rs.context_id().clone(), rs.message_id().clone(), task_id)
+    };
+
+    let mut manager = BamlRuntimeManager::builder().build().unwrap();
+    manager
+        .load_schema(built.to_str().unwrap())
+        .expect("load schema");
+
+    let manifest = baml_rt_tools::ManifestToolNames::parse(&["support/calculate".to_string()])
+        .expect("parse manifest");
+    let policy = baml_rt_tools::parse_access_allowlist();
+    manager
+        .set_tool_allowlist(
+            ["support/calculate"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        )
+        .await
+        .unwrap();
+    baml_rt_tools::register_manifest_tools(manager.tool_registry().as_ref(), &manifest, &policy)
+        .unwrap();
+    manager.rebuild_function_tool_manifest();
+
+    let bus: Arc<dyn EffectEmitter> = Arc::new(BusWithEffects::new());
+    let store = SurrealStoreBuilder::in_memory_isolated()
+        .build()
+        .await
+        .expect("in-memory provenance for projection e2e");
+    manager.set_effect_emitter(bus.clone());
+    let manager = Arc::new(RwLock::new(manager));
+    baml_rt::a2a_transport::install_provenance_conversation_wiring(
+        store.clone(),
+        Some(store.clone()),
+        &manager,
+        &bus,
+    )
+    .await
+    .expect("provenance + conversation wiring");
+
+    {
+        let agent = scope.as_scope().agent_id().clone();
+        store
+            .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+            .await
+            .expect("task exists");
+        store
+            .add_event(ProvEvent::task_execution_started(
+                context_id.clone(),
+                task_id.clone(),
+                agent.clone(),
+            ))
+            .await
+            .expect("task execution started");
+        store
+            .add_event(ProvEvent::message_received_task(
+                context_id.clone(),
+                task_id,
+                message_id,
+                "user".to_string(),
+                vec!["entry-send projection invariant e2e".to_string()],
+                None,
+                agent,
+                1_700_000_010_606,
+            ))
+            .await
+            .expect("message received");
+    }
+
+    let call_count = Arc::new(AtomicU32::new(0));
+    let call_count_clone = call_count.clone();
+    struct EntrySendThenFinish {
+        count: Arc<AtomicU32>,
+    }
+    #[async_trait]
+    impl baml_rt::interceptor::LLMInterceptor for EntrySendThenFinish {
+        async fn intercept_llm_call(
+            &self,
+            _ctx: &baml_rt::interceptor::LLMCallContext,
+        ) -> baml_rt_core::Result<baml_rt::interceptor::InterceptorDecision> {
+            let n = self.count.fetch_add(1, Ordering::Relaxed);
+            let response = match n {
+                0 => json!({ "step": { "op": "Send", "tool_name": "support/calculate", "input": { "expression": { "left": 2, "operation": "Add", "right": 3 } } } }),
+                _ => json!({ "op": "ReadOnlyFinish", "reply": { "parts": [{ "type": "text", "text": "5" }], "citations": [] } }),
+            };
+            Ok(baml_rt::interceptor::InterceptorDecision::Substitute(response))
+        }
+        async fn on_llm_call_complete(
+            &self,
+            _: &baml_rt::interceptor::LLMCallContext,
+            _: &baml_rt_core::Result<Value>,
+            _: u64,
+        ) {
+        }
+    }
+
+    {
+        let w = manager.write().await;
+        w.register_llm_interceptor(EntrySendThenFinish {
+            count: call_count_clone,
+        })
+        .await;
+    }
+
+    context::with_scope(
+        scope.as_scope().clone(),
+        run_step_executor_loop(
+            &manager,
+            scope.as_scope(),
+            "ChooseCalcTool",
+            json!({ "user_message": "what is 2 + 3?" }),
+            8,
+            None,
+        ),
+    )
+    .await
+    .expect("entry-send loop should complete");
+
+    // What the model would see on a following hop: the projected conversation history.
+    let no_supplement: Vec<Value> = Vec::new();
+    let merged = {
+        let g = manager.read().await;
+        g.merged_conversation_history_lines_json(scope.as_scope(), &no_supplement)
+            .await
+            .expect("merged conversation history")
+    };
+    let lines = merged.as_array().expect("history is an array");
+    let blob = merged.to_string();
+
+    // The Send surfaces as a tool result (a single Send, not its lifecycle).
+    let tool_lines = lines
+        .iter()
+        .filter(|l| l.get("role").and_then(Value::as_str) == Some("tool"))
+        .count();
+    assert!(
+        tool_lines >= 1,
+        "the Send result must reach the model as a tool line: {blob}"
+    );
+
+    // Lifecycle stays graph-internal — no opcode/Open/SendDone/Finish leakage to the model.
+    for leak in ["SendDone", "describe_open", "\"op\":", "ReadOnlyFinish"] {
+        assert!(
+            !blob.contains(leak),
+            "model-facing history must not leak lifecycle marker {leak:?}: {blob}"
+        );
+    }
+}
+
 /// ACTIVE Finish before any Send reaches Done must surface as a contract error (has_done gate).
 #[tokio::test]
 async fn test_step_executor_loop_rejects_finish_before_send_done() {
