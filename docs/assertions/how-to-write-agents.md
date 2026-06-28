@@ -66,6 +66,8 @@ For example, `clickup-agent` runs `InferClickUpIntent({})` against `ctx.tags['co
 
 Host tools run in **Rust** as an FSM: `**Open` → `Send` / `SearchRead` / `PageRead` → `Finish` or `Abort`** (`SearchRead` line-filters a prior `**Send**` archive with required `grep`; `**PageRead**` pages contiguous rendered lines without `grep`). JavaScript never drives the FSM directly unless you use the imperative `**openToolSession**` API (§3.8).
 
+**The host runs the full FSM; the model emits only intent.** For a tool whose `open_input` is empty/optional and whose capability is `OneShot` (the common case — slack-notify and most write-only tools), the model may emit a typed `**<Tool>SendStep**` **directly on the entry hop** — no `Open`, no `Finish`. The runtime **auto-opens**, sends, reads internally, and **auto-finishes** after the Send completes, so each Send is a fresh, stateless session (no "open before send" / "finish before send" bookkeeping for the model). `Open`/`Finish` stay runtime-owned; the model emits only `Send` and optional `@N` reads. See **§3.4a**. (`Open` still surfaces to the model only when the tool needs configuration the model must choose — non-empty `open_input`.)
+
 The runtime parses a **single fragment** per BAML result: either a wrapper `**{ "step": { "op": "Open" | "Send" | …, … } }`** (generated `*SessionPlan` classes) or a **flat** step object `**{ "op": "Send", … }`** (per-phase executor functions). See `extract_tool_session_plan` in `crates/baml-rt-quickjs/src/baml/tool_extraction.rs`.
 
 ### Worked example: reporting agent (CRM + email)
@@ -256,7 +258,7 @@ The model never sees `_baml_runtime.baml`. The schema text it sees is the render
 
 | FSM position                         | Function called                     | Return type (pattern)                                                                                    | What the model can emit                                                                                                                                        |
 | ------------------------------------ | ----------------------------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Entry (no host session pinned)       | `ExecuteStep__entry`                | `CrmStepResult | …OpenStep… | archive reads | ReadOnlyFinish` (see IR)                                  | Plain result, **Open** a tool, reuse a visible archive via SearchRead/PageRead, or **ReadOnlyFinish**. **No Send** — Send is **active** only.                   |
+| Entry (no host session pinned)       | `ExecuteStep__entry`                | `CrmStepResult | …OpenStep… | …SendStep… (eligible one-shot tools) | archive reads | ReadOnlyFinish` (see IR) | Plain result; **Send** directly for eligible one-shot tools (runtime auto-opens + auto-finishes — **§3.4a**); **Open** a tool otherwise; reuse a visible archive via SearchRead/PageRead; or **ReadOnlyFinish**.                   |
 | Active (CRM session open)            | `ExecuteStep__active__support_crm`  | `SupportCrmSendStep | SupportCrmSearchReadStep | SupportCrmPageReadStep | SupportCrmFinishStep | SupportCrmAbortStep` | **Send**, **SearchRead** / **PageRead** on `@N`, **Finish**, or **Abort**. **No Open** for a different tool — wrong slug is unrepresentable in the narrowed union. |
 | Active (email session open)          | `ExecuteStep__active__support_email` | `SupportEmailSendStep | … | SupportEmailFinishStep | SupportEmailAbortStep`                              | Same pattern for email payloads.                                                                                                                                |
 
@@ -304,6 +306,35 @@ The runtime accepts **flat** `{ "op": … }` (from per-phase functions) and **wr
 **Strictness:** If the package is stale and a phase function (e.g. `ExecuteStep__entry` or `ExecuteStep__active__support_crm`) is **missing**, the executor **fails fast** with an explicit rebuild message.
 
 **Tool corpus, transcript order, and spare prose (session and step-executor BAML).** The merged `baml_src/_baml_runtime.baml` holds **all** tool cards, `*OpenInput`, `*SendInput`, `ArchiveSearchReadInput` / `ArchivePageReadInput`, and step classes — **for the BAML compiler and for IR-driven codegen**, not as model input. The model-facing schema is the rendered catalog `_baml_tool_schema_catalog.txt` (§3.3.2). Field names and semantics live in those BAML types and in `@@description` — not in a second, hand-copied “JSON with `query` / `limit` / …” block in the `prompt` text. **Codegen** ([`session_from_ir/mod.rs`](../crates/baml-rt-builder/src/builder/baml_gen/session_from_ir/mod.rs), [`phase_prompt.rs`](../crates/baml-rt-builder/src/builder/baml_gen/session_from_ir/phase_prompt.rs)) builds **generated** tool-session per-phase functions (`**__entry**` / `**__active__\***`) with the **same** compositor as unified-primary roots: **`SESSION_STEP_STABLE_PREFIX_BAML`** → **`tool_schema_prelude`** Jinja (rendered catalog) → **Phase: ENTRY | ACTIVE | STRUCTURED** cue → optional **supplement** → **stripped** parent IR task text ([`strip_phase_executor_ir_template`](../crates/baml-rt-builder/src/builder/baml_gen/session_from_ir/phase_prompt.rs) — **§3.3.1**) → **canonical session-history Jinja** → (unified-primary only) **`{{ ctx.output_format }}`** → `---` **Narrowed return union for this hop only:** + emit instruction → **phase constraint** suffix. **Tool-session phases never re-emit `{{ ctx.output_format }}`** — that would defeat the prefix-cache discipline the catalog establishes. Authors put **task + domain-only** lines in the parent session-plan template; **do not** rely on the stripper — omit transcript/`output_format`/legacy lines in source. Plain plan/synthesis functions (non-session) still use **task** → optional **`{{ ctx.tags['conversation_transcript'] }}`** → **`{{ ctx.output_format }}`** last. Do not add a parallel FSM story in prose that could disagree with the generated union.
+
+### 3.4a Entry-hop Send: runtime-owned Open/Finish for one-shot tools
+
+For a tool that is **`OneShot`** and whose **`open_input` is empty/optional**, the builder adds a typed `**<Tool>SendStep**` to the entry union (alongside `<Tool>OpenStep`, which stays during migration). The model can then **Send on the entry hop** and the runtime owns the rest of the lifecycle. This is the recommended surface for write-only / single-shot tools (slack-notify, email send, most internal tools).
+
+**What the model emits (one hop):**
+
+```json
+{ "op": "Send", "tool_name": "support/slack_notify", "input": { "text": "deploy ok", "context_id": "ctx-1" } }
+```
+
+`tool_name` is a **constrained literal** baked into `<Tool>SendStep` (the model never types it freely); it pins the tool for dispatch the same way `<Tool>OpenStep`'s literal does.
+
+**What the runtime does (full FSM, unchanged underneath):**
+
+1. **Auto-open** the session (synthetic `Open`, since `open_input` is empty).
+2. **Send** — the policy/authz gate fires here, *before* any output, and can block the effect.
+3. Drain the result internally (archived at `@N`).
+4. **Auto-finish** after the Send completes (`OneShot` + `Strict`), so the session does not dangle. Each Send is its own fresh session — **stateless resend**: the model never tracks "am I open?" or "must I finish first?". The whole `Tool session already has input` / `Open before Send` / `Finish before Send` error class is gone from the model's surface.
+
+The model ends the turn with a **`ReadOnlyFinish`** (its reply) or by emitting another `Send`. A pure one-shot creates **no active hop**. Optional `@N` `SearchRead` / `PageRead` reads stay first-class — they are *intent* (the agent chooses what evidence to materialize), independent of the (now-closed) session.
+
+**Multi-tool is the same rule.** A polymorphic entry union is `GrafanaPromSendStep | GrafanaLokiSendStep | … | <Tool>OpenStep… | archive reads | ReadOnlyFinish`. The chosen typed `<Tool>SendStep` pins its tool; the runtime auto-opens/finishes each. N independent queries are **N typed Sends**, not 4N FSM hops.
+
+**Failures are intent-level, never lifecycle-phrased.** An auto-open that fails, or a Send the runtime cannot perform, surfaces as a failed-Send tool result (`status: "error"`, the model can retry or route elsewhere) — not an `Open before send` style FSM error. A failed auto-opened Send is aborted so no stale session leaks into the next hop.
+
+**`MultiSend` / `Streaming` tools are excluded** from auto-finish: `MultiSend` keeps the session open to accumulate sends; `Streaming` needs multiple reads. Those still open explicitly (or auto-open but stay open across the turn).
+
+**Provenance/projection.** The graph records the session steps (`Open`, `SendDone`, any reads); teardown is session lifecycle, not a separate step node. The model-facing conversation shows a **single Send result** — the auto-open/finish never appear as history lines.
 
 ### 3.5 Map the BAML function to session plans (packaging)
 
