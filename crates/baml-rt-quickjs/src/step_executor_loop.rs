@@ -651,6 +651,12 @@ pub async fn run_step_executor_loop(
         } else {
             match phase {
                 Phase::Entry => {
+                    // An entry-hop Send (typed `<Tool>SendStep`, no Open) runs via auto-open and,
+                    // for OneShot+Strict tools, auto-finish (see `execute_tool_session_plan`), so it
+                    // returns Done with the session already closed. Stay in Entry — stateless
+                    // resend: the next hop emits another Send or a ReadOnlyFinish to end the turn.
+                    // A one-shot therefore never enters Active (no Open → no `Phase::Active`).
+                    // Entry archive reads (`@N`) also return Done and likewise continue here.
                     if status == StepStatus::Done {
                         continue;
                     }

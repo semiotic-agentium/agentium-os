@@ -292,6 +292,9 @@ impl BamlRuntimeManager {
                 "Reusing existing session for single-fragment continuation",
             );
         }
+        // True when the runtime synthesized the Open for a bare Send fragment. Scopes auto-finish
+        // (below) to the entry-Send path: an explicitly model-opened session is the model's to Finish.
+        let mut auto_opened = false;
         if let Some(first) = steps.first()
             && matches!(first, ToolSessionOp::Send { .. })
             && session_id.is_none()
@@ -315,6 +318,7 @@ impl BamlRuntimeManager {
                     reason: Some("auto-open for send fragment with no open session".to_string()),
                 },
             );
+            auto_opened = true;
         } else if let Some(first) = steps.first()
             && !matches!(first, ToolSessionOp::Open { .. })
             && !matches!(
@@ -329,6 +333,8 @@ impl BamlRuntimeManager {
         }
 
         let mut last_output: Option<Value> = None;
+        // Set once a Send fragment reaches Done — gates the OneShot auto-finish after the loop.
+        let mut send_completed = false;
 
         for step in steps {
             match step {
@@ -464,6 +470,7 @@ impl BamlRuntimeManager {
                         match send_outcome {
                             Ok(ToolSessionSendBlockingOutcome::Completed(send_result)) => {
                                 last_output = Some(send_done_json(&send_result));
+                                send_completed = true;
                                 if let Some(emitter) = self.effect_emitter_for_tool_effects() {
                                     let _ = emitter
                                         .emit(baml_rt_core::bus::EffectEvent::ToolSessionStep {
@@ -813,6 +820,36 @@ impl BamlRuntimeManager {
                     }
                     last_output = Some(serde_json::json!({ "status": "aborted" }));
                 }
+            }
+        }
+
+        // Auto-finish: a OneShot+Strict tool we auto-opened for a bare Send is closed here so each
+        // Send stands alone (stateless resend) — no open session dangles into the next entry hop.
+        // Scoped to `auto_opened` so an explicitly model-opened session stays the model's to Finish.
+        // Safe w.r.t. reads: `@N` archive reads hit the global ref table, not this session, so
+        // closing never blocks a later read. Streaming is excluded inherently (capability != OneShot).
+        // The Done output is preserved (status stays "done"); the loop continues and the model ends
+        // the turn with ReadOnlyFinish. tool_session_finish records the Finish in provenance.
+        if auto_opened
+            && send_completed
+            && let Some(session) = session_id.clone()
+        {
+            let one_shot_strict = self
+                .state
+                .tool_registry
+                .get_metadata(&tool_name_str)
+                .map(|m| {
+                    m.capability == baml_rt_tools::ToolCapability::OneShot
+                        && m.session_policy == baml_rt_tools::SessionPolicy::Strict
+                })
+                .unwrap_or(false);
+            if one_shot_strict {
+                tracing::debug!(
+                    tool = %tool_name_str,
+                    session_id = %session,
+                    "auto-finish after Send→Done; OneShot+Strict"
+                );
+                self.tool_session_finish(&session).await?;
             }
         }
 
