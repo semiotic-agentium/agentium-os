@@ -1386,6 +1386,196 @@ async fn test_step_executor_loop_entry_send_auto_finishes_and_resends_statelessl
     );
 }
 
+/// Policy gate (F): a `ToolInterceptor` returning `Block` on the **Send** sub-step must refuse the
+/// effect before it commits — the tool never runs, no Done output reaches the model, and the loop
+/// surfaces the block. The interceptor allows the (empty-arg) auto-open and blocks only the Send
+/// payload, proving the gate fires on Send specifically, before any output read materializes.
+#[tokio::test]
+async fn test_blocked_send_produces_no_effect_and_surfaces_block() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use baml_rt::baml::BamlRuntimeManager;
+    use baml_rt_core::context::InvocationScope;
+    use baml_rt_quickjs::step_executor_loop::run_step_executor_loop;
+    use serde_json::json;
+
+    test_support::common::ensure_fixture_runtime_types();
+    let agent_dir =
+        test_support::common::workspace_root().join("tests/fixtures/agents/stream-baml-tool");
+    let built =
+        test_support::common::build_agent_package_to_temp(agent_dir, "stream-baml-tool").await;
+
+    let scope = InvocationScope::synthetic_task(AgentId::from_uuid(
+        UuidId::parse_str("00000000-0000-0000-0000-000000000096").unwrap(),
+    ));
+    let (context_id, message_id, task_id) = {
+        let rs = scope.as_scope();
+        let task_id = rs
+            .task_id_opt()
+            .expect("synthetic_task has task_id")
+            .clone();
+        (rs.context_id().clone(), rs.message_id().clone(), task_id)
+    };
+
+    let mut manager = BamlRuntimeManager::builder().build().unwrap();
+    manager
+        .load_schema(built.to_str().unwrap())
+        .expect("load schema");
+
+    let manifest = baml_rt_tools::ManifestToolNames::parse(&["support/calculate".to_string()])
+        .expect("parse manifest");
+    let policy = baml_rt_tools::parse_access_allowlist();
+    manager
+        .set_tool_allowlist(
+            ["support/calculate"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        )
+        .await
+        .unwrap();
+    baml_rt_tools::register_manifest_tools(manager.tool_registry().as_ref(), &manifest, &policy)
+        .unwrap();
+    manager.rebuild_function_tool_manifest();
+
+    let bus: Arc<dyn EffectEmitter> = Arc::new(BusWithEffects::new());
+    let store = SurrealStoreBuilder::in_memory_isolated()
+        .build()
+        .await
+        .expect("in-memory provenance for blocked-send e2e");
+    manager.set_effect_emitter(bus.clone());
+    let manager = Arc::new(RwLock::new(manager));
+    baml_rt::a2a_transport::install_provenance_conversation_wiring(
+        store.clone(),
+        Some(store.clone()),
+        &manager,
+        &bus,
+    )
+    .await
+    .expect("provenance + conversation wiring");
+
+    {
+        let agent = scope.as_scope().agent_id().clone();
+        store
+            .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+            .await
+            .expect("task exists");
+        store
+            .add_event(ProvEvent::task_execution_started(
+                context_id.clone(),
+                task_id.clone(),
+                agent.clone(),
+            ))
+            .await
+            .expect("task execution started");
+        store
+            .add_event(ProvEvent::message_received_task(
+                context_id.clone(),
+                task_id,
+                message_id,
+                "user".to_string(),
+                vec!["blocked-send policy gate e2e".to_string()],
+                None,
+                agent,
+                1_700_000_010_505,
+            ))
+            .await
+            .expect("message received");
+    }
+
+    // Tool interceptor: allow the empty-arg auto-open, block the Send payload (args carry the
+    // calculator `expression`). Counts blocks so we can assert the gate fired on the Send.
+    let send_blocks = Arc::new(AtomicU32::new(0));
+    struct BlockSendInterceptor {
+        blocks: Arc<AtomicU32>,
+    }
+    #[async_trait]
+    impl baml_rt::interceptor::ToolInterceptor for BlockSendInterceptor {
+        async fn intercept_tool_call(
+            &self,
+            context: &baml_rt::interceptor::ToolCallContext,
+        ) -> baml_rt_core::Result<baml_rt::interceptor::InterceptorDecision> {
+            let is_send = context.args.get("expression").is_some();
+            if context.tool_name == "support/calculate" && is_send {
+                self.blocks.fetch_add(1, Ordering::Relaxed);
+                return Ok(baml_rt::interceptor::InterceptorDecision::Block(
+                    "policy: support/calculate Send is not permitted".to_string(),
+                ));
+            }
+            Ok(baml_rt::interceptor::InterceptorDecision::Allow)
+        }
+
+        async fn on_tool_call_complete(
+            &self,
+            _: &baml_rt::interceptor::ToolCallContext,
+            _: &baml_rt_core::Result<Value>,
+            _: u64,
+        ) {
+        }
+    }
+
+    // LLM interceptor: emit one entry Send (which the tool interceptor will block).
+    struct OneEntrySendInterceptor;
+    #[async_trait]
+    impl baml_rt::interceptor::LLMInterceptor for OneEntrySendInterceptor {
+        async fn intercept_llm_call(
+            &self,
+            _ctx: &baml_rt::interceptor::LLMCallContext,
+        ) -> baml_rt_core::Result<baml_rt::interceptor::InterceptorDecision> {
+            Ok(baml_rt::interceptor::InterceptorDecision::Substitute(json!({
+                "step": {
+                    "op": "Send",
+                    "tool_name": "support/calculate",
+                    "input": { "expression": { "left": 2, "operation": "Add", "right": 3 } }
+                }
+            })))
+        }
+        async fn on_llm_call_complete(
+            &self,
+            _: &baml_rt::interceptor::LLMCallContext,
+            _: &baml_rt_core::Result<Value>,
+            _: u64,
+        ) {
+        }
+    }
+
+    {
+        let w = manager.write().await;
+        w.register_tool_interceptor(BlockSendInterceptor {
+            blocks: send_blocks.clone(),
+        })
+        .await;
+        w.register_llm_interceptor(OneEntrySendInterceptor).await;
+    }
+
+    let outcome = context::with_scope(
+        scope.as_scope().clone(),
+        run_step_executor_loop(
+            &manager,
+            scope.as_scope(),
+            "ChooseCalcTool",
+            json!({ "user_message": "what is 2 + 3?" }),
+            8,
+            None,
+        ),
+    )
+    .await;
+
+    assert!(
+        outcome.is_err(),
+        "a blocked Send must fail the step loop (no output to the model), got Ok: {outcome:?}"
+    );
+    let err = outcome.unwrap_err().to_string();
+    assert!(
+        err.contains("blocked by interceptor"),
+        "the surfaced error must name the interceptor block, got: {err}"
+    );
+    assert!(
+        send_blocks.load(Ordering::Relaxed) >= 1,
+        "the policy gate must fire on the Send sub-step (before the output read)"
+    );
+}
+
 /// ACTIVE Finish before any Send reaches Done must surface as a contract error (has_done gate).
 #[tokio::test]
 async fn test_step_executor_loop_rejects_finish_before_send_done() {
