@@ -61,6 +61,26 @@ fn plan_send_tool_error_value(
     })
 }
 
+/// Intent-level failure for a Send that could not be performed (synthetic open failed, or the tool
+/// cannot be invoked directly). Surfaces as a tool result the model can act on — never a
+/// lifecycle-phrased FSM error ("open before send", "session already has input"). `status: "error"`
+/// flows through the step loop like Done, so the model sees the failure and can retry or route
+/// elsewhere instead of the turn aborting.
+fn send_unavailable_result(tool_name: &str, reason: &str) -> Value {
+    serde_json::json!({
+        "status": "error",
+        "tool_name": tool_name,
+        "has_more": false,
+        "message": format!("Could not run {tool_name}: {reason}"),
+        "error": {
+            "kind": "ToolUnavailable",
+            "code": "tool_unavailable",
+            "disposition": "LlmCorrectable",
+        },
+        "result": Value::Null,
+    })
+}
+
 fn send_done_json(send_result: &SendResult) -> Value {
     // `output` remains the archive header line; `result` carries typed tool JSON (e.g. calculator).
     serde_json::json!({
@@ -306,9 +326,12 @@ impl BamlRuntimeManager {
                 .map(|m| open_input::schema_allows_empty_open_input(&m.open_input_schema))
                 .unwrap_or(false);
             if !can_auto_open {
-                return Err(BamlRtError::InvalidArgument(
-                    "step rejected: no open session; strict auto-open is allowed only when tool open_input is empty/optional"
-                        .to_string(),
+                // A bare Send to a tool that needs configuration to start. The builder should not
+                // surface a direct Send for such tools, but if one slips through the model gets an
+                // intent-level failure (route elsewhere), not a lifecycle-phrased FSM error.
+                return Ok(send_unavailable_result(
+                    &tool_name_str,
+                    "this tool requires configuration before use and cannot be invoked directly",
                 ));
             }
             steps.insert(
@@ -390,9 +413,19 @@ impl BamlRuntimeManager {
                         .clone()
                         .filter(|v| !v.is_null())
                         .unwrap_or_else(open_input::empty_open_input);
-                    let session = self
+                    let session = match self
                         .open_tool_session(&plan_scope, &tool_name_str, open_input)
-                        .await?;
+                        .await
+                    {
+                        Ok(session) => session,
+                        // A synthetic open (for a bare Send) that fails surfaces as an intent-level
+                        // failed-Send result — no hard FSM error, and no session was created so
+                        // there is nothing to clean up. An explicit model Open still propagates.
+                        Err(e) if auto_opened => {
+                            return Ok(send_unavailable_result(&tool_name_str, &e.to_string()));
+                        }
+                        Err(e) => return Err(e),
+                    };
                     last_output = Some(serde_json::json!({
                         "status": "open",
                         "session_id": session.to_string(),
@@ -823,33 +856,50 @@ impl BamlRuntimeManager {
             }
         }
 
-        // Auto-finish: a OneShot+Strict tool we auto-opened for a bare Send is closed here so each
-        // Send stands alone (stateless resend) — no open session dangles into the next entry hop.
-        // Scoped to `auto_opened` so an explicitly model-opened session stays the model's to Finish.
-        // Safe w.r.t. reads: `@N` archive reads hit the global ref table, not this session, so
-        // closing never blocks a later read. Streaming is excluded inherently (capability != OneShot).
-        // The Done output is preserved (status stays "done"); the loop continues and the model ends
-        // the turn with ReadOnlyFinish. tool_session_finish records the Finish in provenance.
+        // Clean up a session the runtime auto-opened for a bare Send so it never dangles into the
+        // next hop (a reused stale session would trigger a lifecycle error like "session already
+        // has input" — which must never reach the model). An explicitly model-opened session is the
+        // model's to Finish/Abort, so this is scoped to `auto_opened`.
         if auto_opened
-            && send_completed
             && let Some(session) = session_id.clone()
         {
-            let one_shot_strict = self
-                .state
-                .tool_registry
-                .get_metadata(&tool_name_str)
-                .map(|m| {
-                    m.capability == baml_rt_tools::ToolCapability::OneShot
-                        && m.session_policy == baml_rt_tools::SessionPolicy::Strict
-                })
-                .unwrap_or(false);
-            if one_shot_strict {
+            if send_completed {
+                // Success. OneShot+Strict closes per the stateless-resend rule so each Send stands
+                // alone; the Done output is preserved (status stays "done") and the loop continues
+                // to a ReadOnlyFinish. MultiSend keeps the session open to accumulate further sends.
+                // Streaming is excluded inherently (capability != OneShot). `@N` reads hit the
+                // global ref table, not this session, so closing never blocks a later read.
+                let one_shot_strict = self
+                    .state
+                    .tool_registry
+                    .get_metadata(&tool_name_str)
+                    .map(|m| {
+                        m.capability == baml_rt_tools::ToolCapability::OneShot
+                            && m.session_policy == baml_rt_tools::SessionPolicy::Strict
+                    })
+                    .unwrap_or(false);
+                if one_shot_strict {
+                    tracing::debug!(
+                        tool = %tool_name_str,
+                        session_id = %session,
+                        "auto-finish after Send→Done; OneShot+Strict"
+                    );
+                    self.tool_session_finish(&session).await?;
+                }
+            } else {
+                // The auto-opened Send did not complete (failed and returned a failed-Send result).
+                // Abort so no stale session lingers; the model already has the failure to act on and
+                // its next Send auto-opens fresh. The abort is recorded in provenance with a reason.
                 tracing::debug!(
                     tool = %tool_name_str,
                     session_id = %session,
-                    "auto-finish after Send→Done; OneShot+Strict"
+                    "auto-abort after failed Send on auto-opened session"
                 );
-                self.tool_session_finish(&session).await?;
+                self.tool_session_abort(
+                    &session,
+                    Some("auto-abort after failed Send on auto-opened session".to_string()),
+                )
+                .await?;
             }
         }
 
@@ -860,5 +910,42 @@ impl BamlRuntimeManager {
                     .to_string(),
             )
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Intent-level failure contract (G): a Send that cannot be performed surfaces as a tool result
+    /// the model can act on (`status: "error"`, recoverable disposition), never a lifecycle-phrased
+    /// FSM error. The loop treats `status: "error"` like Done, so the model sees it and recovers.
+    #[test]
+    fn send_unavailable_result_is_intent_level_not_lifecycle() {
+        let v = send_unavailable_result("support/slack_notify", "service is unreachable");
+
+        assert_eq!(v.get("status").and_then(Value::as_str), Some("error"));
+        assert_eq!(
+            v.get("error").and_then(|e| e.get("disposition")),
+            Some(&Value::String("LlmCorrectable".to_string()))
+        );
+
+        let blob = v.to_string().to_lowercase();
+        // Names the tool and the underlying reason (intent-level).
+        assert!(blob.contains("support/slack_notify"));
+        assert!(blob.contains("service is unreachable"));
+        // Must not leak FSM/lifecycle phrasing to the model surface.
+        for forbidden in [
+            "open before send",
+            "session already has input",
+            "finish before send",
+            "no open session",
+            "fsm",
+        ] {
+            assert!(
+                !blob.contains(forbidden),
+                "failed-send result must not contain lifecycle phrasing {forbidden:?}: {v}"
+            );
+        }
     }
 }
