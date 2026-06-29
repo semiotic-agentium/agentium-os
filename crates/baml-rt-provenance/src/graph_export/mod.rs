@@ -106,7 +106,7 @@ impl GraphExporter {
         Self { store }
     }
 
-    /// Export the full subgraph for a given `context_id`.
+    /// Export the exact subgraph for a given `context_id`.
     pub async fn export_by_context(&self, context_id: &str) -> Result<ExportedGraph> {
         let span = spans::graph_export_by_context(context_id);
         let start = std::time::Instant::now();
@@ -125,15 +125,72 @@ impl GraphExporter {
         result
     }
 
+    /// Export a root context plus A2A child contexts derived from it.
+    pub async fn export_by_context_family(&self, context_id: &str) -> Result<ExportedGraph> {
+        let span = spans::graph_export_by_context(context_id);
+        let start = std::time::Instant::now();
+        let result = async {
+            let context_ids = self.context_family_ids(context_id).await?;
+            let graph = self.export_contexts_core(context_id, &context_ids).await?;
+            let allowed: HashSet<String> = context_ids.into_iter().collect();
+            Ok(filter_scope_multi(graph, a2a::CONTEXT_ID, &allowed))
+        }
+        .instrument(span)
+        .await;
+        let result_label = match &result {
+            Ok(_) => "success",
+            Err(_) => "error",
+        };
+        record_provenance_read("export_by_context_family", result_label, start.elapsed());
+        result
+    }
+
+    async fn context_family_ids(&self, context_id: &str) -> Result<Vec<String>> {
+        let prefix = format!("a2a:{context_id}:");
+        let query =
+            "SELECT VALUE props.a2a_context_id FROM prov_node WHERE props.a2a_context_id != NONE"
+                .to_string();
+        let response = self
+            .store
+            .db()
+            .query(&query)
+            .await
+            .map_err(map_surreal_error)?;
+        let rows: Vec<Value> = check_and_take_zero(response, map_surreal_error)?;
+        let mut ids = vec![context_id.to_string()];
+        let mut seen: HashSet<String> = ids.iter().cloned().collect();
+        for value in rows {
+            let Some(candidate) = value.as_str() else {
+                continue;
+            };
+            if candidate.starts_with(&prefix) && seen.insert(candidate.to_string()) {
+                ids.push(candidate.to_string());
+            }
+        }
+        Ok(ids)
+    }
+
     async fn export_context_core(&self, context_id: &str) -> Result<ExportedGraph> {
-        tracing::debug!(context_id = %context_id, "export_context_core: START surreal");
+        self.export_contexts_core(context_id, &[context_id.to_string()])
+            .await
+    }
+
+    async fn export_contexts_core(
+        &self,
+        scope_context_id: &str,
+        context_ids: &[String],
+    ) -> Result<ExportedGraph> {
+        tracing::debug!(context_id = %scope_context_id, context_count = context_ids.len(), "export_contexts_core: START surreal");
         let t0 = std::time::Instant::now();
 
         let scoped_to = context_scope::SCOPED_TO;
-        let ctx_node_id = context_entity_id_string(context_id);
+        let ctx_node_ids: Vec<Value> = context_ids
+            .iter()
+            .map(|context_id| Value::String(context_entity_id_string(context_id)))
+            .collect();
 
         let scoped_edge_sql =
-            "SELECT VALUE from_id FROM prov_edge WHERE to_id = $ctx_node_id AND rel_type = $scoped_to"
+            "SELECT VALUE from_id FROM prov_edge WHERE to_id IN $ctx_node_ids AND rel_type = $scoped_to"
                 .to_string();
         let node_query = format!(
             "SELECT node_id, label, props OMIT id FROM prov_node \
@@ -143,18 +200,18 @@ impl GraphExporter {
             .store
             .db()
             .query(&node_query)
-            .bind(("ctx_node_id", ctx_node_id.clone()))
+            .bind(("ctx_node_ids", Value::Array(ctx_node_ids)))
             .bind(("scoped_to", scoped_to.to_string()))
             .await
             .map_err(map_surreal_error)?;
         let node_rows: Vec<Value> = check_and_take_zero(node_response, map_surreal_error)?;
 
         if node_rows.is_empty() {
-            tracing::debug!(context_id = %context_id, "no scoped nodes found");
+            tracing::debug!(context_id = %scope_context_id, "no scoped nodes found");
             return Ok(ExportedGraph {
                 nodes: vec![],
                 edges: vec![],
-                scope: ExportScope::Context(context_id.to_string()),
+                scope: ExportScope::Context(scope_context_id.to_string()),
             });
         }
 
@@ -203,23 +260,23 @@ impl GraphExporter {
         };
 
         let query_ms = t0.elapsed().as_millis();
-        tracing::debug!(context_id = %context_id, query_ms, "export_context_core: DONE surreal, START parse");
+        tracing::debug!(context_id = %scope_context_id, query_ms, "export_contexts_core: DONE surreal, START parse");
         let t1 = std::time::Instant::now();
 
         let mut graph = parse_surreal_export_result(
             &node_rows,
             &extra_node_rows,
             &edge_rows,
-            ExportScope::Context(context_id.to_string()),
+            ExportScope::Context(scope_context_id.to_string()),
         );
         enrich::enrich_derived_properties(&mut graph);
         let parse_ms = t1.elapsed().as_millis();
         tracing::debug!(
-            context_id = %context_id,
+            context_id = %scope_context_id,
             query_ms, parse_ms,
             nodes = graph.nodes.len(),
             edges = graph.edges.len(),
-            "export_context_core: surreal + parse"
+            "export_contexts_core: surreal + parse"
         );
 
         Ok(graph)

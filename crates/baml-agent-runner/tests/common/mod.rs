@@ -681,6 +681,22 @@ impl baml_rt_api::MermaidService for TestMermaidService {
         Ok(render_sequence_diagram(&simplified))
     }
 
+    async fn mermaid_for_context_full(
+        &self,
+        context_id: &str,
+    ) -> std::result::Result<String, baml_rt_api::MermaidError> {
+        let exporter = GraphExporter::new(self.store.clone());
+        let graph = exporter
+            .export_by_context_family(context_id)
+            .await
+            .map_err(|e| baml_rt_api::MermaidError::Other(Box::new(e)))?;
+        if graph.nodes.is_empty() {
+            return Err(baml_rt_api::MermaidError::NotFound);
+        }
+        let simplified = simplify_graph(&graph);
+        Ok(render_sequence_diagram(&simplified))
+    }
+
     async fn mermaid_for_task(
         &self,
         task_id: &str,

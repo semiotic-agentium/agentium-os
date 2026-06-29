@@ -7,6 +7,7 @@
 pub mod builder;
 pub mod external_tool_registry;
 pub mod mcp_registry;
+pub mod static_tool_registry;
 
 use std::path::Path;
 

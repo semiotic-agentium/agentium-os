@@ -180,6 +180,11 @@ filter = 'package(baml-agent-runner) and binary(runner_callback_test)'
 test-group = "runner-subprocess"
 
 [[profile.ci-merged.overrides]]
+filter = 'package(baml-agent-runner) and test(~runner_callback_resume_current_task_defers_immediate_delivery_until_turn_completes)'
+slow-timeout = { period = "360s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 1, delay = "5s" }
+
+[[profile.ci-merged.overrides]]
 filter = 'package(baml-agent-runner) and test(~runner_callback_delivery_honors_continuation_policy)'
 slow-timeout = { period = "360s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "5s" }

@@ -20,7 +20,7 @@ pub fn format_source_poll_summary(
     record_count: usize,
 ) -> String {
     format!(
-        "Host source poll: {source_kind} {source_key} — {record_count} record(s), schema {schema_version}, cursor {source_cursor}"
+        "Host event ({schema_version}) from {source_kind}:{source_key} — {record_count} record(s), cursor {source_cursor}"
     )
 }
 
@@ -68,7 +68,8 @@ pub fn host_ingress_summary_from_props(
                 prop_str(props, a2a::HOST_INGRESS_SOURCE_KIND).unwrap_or_else(|| "source".into());
             let source_key =
                 prop_str(props, a2a::HOST_INGRESS_SOURCE_KEY).unwrap_or_else(|| "unknown".into());
-            let schema = "unknown".to_string();
+            let schema = prop_str(props, a2a::HOST_INGRESS_SCHEMA_VERSION)
+                .unwrap_or_else(|| "unknown".to_string());
             let cursor = source_key.clone();
             let count = props
                 .get("a2a_host_ingress_record_count")
@@ -90,7 +91,8 @@ pub fn host_ingress_summary_from_props(
                 .unwrap_or_else(|| "unknown".into());
             let instance = prop_str(props, a2a::HOST_INGRESS_TARGET_INSTANCE)
                 .unwrap_or_else(|| "default".into());
-            let schema = "unknown".to_string();
+            let schema = prop_str(props, a2a::HOST_INGRESS_SCHEMA_VERSION)
+                .unwrap_or_else(|| "unknown".to_string());
             let source_kind =
                 prop_str(props, a2a::HOST_INGRESS_SOURCE_KIND).unwrap_or_else(|| "unknown".into());
             let source_key =
@@ -199,7 +201,7 @@ mod tests {
             "slack:C1",
             2,
         );
-        assert!(s.contains("Host source poll"));
+        assert!(s.contains("Host event (host.source-records.v1) from slack:slack:C1"));
         assert!(s.contains("2 record(s)"));
     }
 

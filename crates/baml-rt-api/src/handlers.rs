@@ -793,6 +793,71 @@ pub async fn get_mermaid_context(
     }
 }
 
+/// Get provenance graph as a Mermaid sequence diagram for an A2A context plus child A2A contexts.
+#[utoipa::path(
+    get,
+    path = "/contexts/{context_id}/mermaid/full",
+    tag = "mermaid",
+    summary = "Full Mermaid diagram by context",
+    description = "Returns the provenance subgraph for the given A2A context ID plus derived A2A child contexts as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with SurrealDB provenance.",
+    params(("context_id" = String, Path, description = "Root A2A context ID")),
+    responses(
+        (status = 200, description = "Mermaid sequenceDiagram", content_type = "text/plain"),
+        (status = 404, description = "No graph found for context"),
+        (status = 501, description = "Mermaid service not available (provenance not configured)"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn get_mermaid_context_full(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(context_id): axum::extract::Path<String>,
+) -> HttpResult<axum::response::Response> {
+    let span = spans::get_mermaid_context(&context_id);
+    let _guard = span.enter();
+    let start = Instant::now();
+    let Some(svc) = &state.mermaid else {
+        metrics::record_request("get_mermaid_context_full", "unavailable", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Mermaid service not configured",
+        ));
+    };
+    match svc.mermaid_for_context_full(&context_id).await {
+        Ok(diagram) => {
+            metrics::record_request("get_mermaid_context_full", "success", start.elapsed());
+            Ok((
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/plain; charset=utf-8",
+                )],
+                diagram,
+            )
+                .into_response())
+        }
+        Err(MermaidError::NotFound) => {
+            metrics::record_request("get_mermaid_context_full", "not_found", start.elapsed());
+            Err(problem(
+                404,
+                "Not Found",
+                format!("no graph for context {context_id}"),
+            ))
+        }
+        Err(MermaidError::Unavailable) => {
+            metrics::record_request("get_mermaid_context_full", "unavailable", start.elapsed());
+            Err(problem(
+                501,
+                "Not Implemented",
+                "Mermaid service unavailable",
+            ))
+        }
+        Err(MermaidError::Other(e)) => {
+            metrics::record_request("get_mermaid_context_full", "internal", start.elapsed());
+            Err(problem(500, "Internal Server Error", e.to_string()))
+        }
+    }
+}
+
 /// Get provenance graph as a Mermaid sequence diagram for an A2A task.
 #[utoipa::path(
     get,

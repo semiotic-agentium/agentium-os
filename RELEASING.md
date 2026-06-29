@@ -1,36 +1,64 @@
 # Releasing Agentium OS
 
-One SemVer across [`Cargo.toml`](../Cargo.toml) `[workspace.package].version` and [`deploy/helm/agentium-os/Chart.yaml`](../deploy/helm/agentium-os/Chart.yaml).
+Releases are driven by Release Please. One SemVer must stay consistent across:
+
+- `Cargo.toml` `[workspace.package].version`
+- `Cargo.lock` workspace package entries
+- `deploy/helm/agentium-os/Chart.yaml` `version` and `appVersion`
+- `.release-please-manifest.json`
+
+## Normal release flow
+
+1. Merge feature/fix PRs to `main` using Conventional Commits (`feat:`, `fix:`, etc.).
+2. Release Please opens or updates a release PR.
+3. Release PR postprocess workflow updates `Cargo.lock` on that PR.
+4. Verify release PR CI is green.
+5. Merge release PR.
+6. Release Please creates tag `vX.Y.Z` and a GitHub Release.
+7. Same Release Please workflow builds Linux binaries and uploads assets to that release.
+
+Do not manually bump versions or create release tags during normal releases.
+
+Expected release assets:
+
+- `agentium-os-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz`
+- `agentium-os-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz`
+- `SHA256SUMS`
+
+## Manual fallback
+
+Use only if Release Please is unavailable.
+
+```bash
+git checkout main
+git pull
+just bump-version patch   # or minor | major
+git add Cargo.toml Cargo.lock deploy/helm/agentium-os/Chart.yaml
+git commit -m "release: v$(just workspace-version)"
+git push origin main
+
+VERSION=$(bash scripts/release/workspace-version.sh)
+git tag "v${VERSION}"
+git push origin "v${VERSION}"
+```
+
+The tag must point at the commit containing all version and lockfile updates.
 
 ## Local k3d validation
 
 ```bash
-just up                    # cluster + build + Argo sync
-just verify-k8s-pilot-package   # authoritative CI-like validator
+just up
+just verify-k8s-pilot-package
 ```
 
 Image tags are nonces (`local-dev-…`) written to `deploy/values/generated/.last-image-tag`.
-
-## Cut a release
-
-1. Bump version:
-   ```bash
-   just bump-version patch   # or minor | major
-   git commit -am "release: v$(just workspace-version)"
-   ```
-2. Validate on k3d: `just verify-k8s-pilot-package`
-3. Tag (tag only — do not bump deploy refs until images exist):
-   ```bash
-   just publish-release vX.Y.Z
-   ```
-4. **Do not** `just release vX.Y.Z` for semver until container images exist at that tag.
 
 ## Dev deploy refs (remote GitOps)
 
 Rolling dev on `main` + `latest`:
 
 ```bash
-just publish-release              # commits track.json + deploy/values/dev/images.yaml
+just publish-release
 ```
 
 ## Remote registry publish

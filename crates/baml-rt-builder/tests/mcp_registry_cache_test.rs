@@ -18,6 +18,7 @@ use baml_rt_repository::{
     surreal_store::SurrealStore,
 };
 use baml_rt_tools::{
+    StaticToolCatalogResponse,
     mcp_cache::{read_server, write_snapshot},
     mcp_snapshot::{
         ApprovalRecord, Digest, MCP_SNAPSHOT_SCHEMA_VERSION, McpApprovalState, McpImportedTool,
@@ -28,14 +29,19 @@ use baml_rt_tools::{
 use serde_json::json;
 
 fn repository_service(store: Arc<SurrealStore>) -> Arc<RepositoryService> {
-    Arc::new(RepositoryService::new(
-        store.clone() as Arc<dyn BlobStore>,
-        store.clone() as Arc<dyn MetadataStore>,
-        store.clone() as Arc<dyn LineageStore>,
-        store.clone() as Arc<dyn SearchStore>,
-        store.clone() as Arc<dyn McpRegistryStore>,
-        store as Arc<dyn baml_rt_repository::ExternalToolRegistryStore>,
-    ))
+    let static_catalog =
+        StaticToolCatalogResponse::from_inventory(None, None).expect("project static tool catalog");
+    Arc::new(
+        RepositoryService::new(
+            store.clone() as Arc<dyn BlobStore>,
+            store.clone() as Arc<dyn MetadataStore>,
+            store.clone() as Arc<dyn LineageStore>,
+            store.clone() as Arc<dyn SearchStore>,
+            store.clone() as Arc<dyn McpRegistryStore>,
+            store as Arc<dyn baml_rt_repository::ExternalToolRegistryStore>,
+        )
+        .with_static_tool_catalog(static_catalog),
+    )
 }
 
 fn approved_tool(name: &str) -> McpImportedTool {

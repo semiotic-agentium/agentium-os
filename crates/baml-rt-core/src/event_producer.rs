@@ -39,6 +39,9 @@ pub struct ProducedEvent {
     pub task_id: Option<TaskId>,
     /// Optional caller-supplied message id for provenance threading.
     pub message_id: Option<String>,
+    /// Bounded producer registry key for poll-originated events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_key: Option<String>,
     /// Optional transport metadata.
     pub metadata: Option<Value>,
 }
@@ -68,6 +71,7 @@ impl ProducedEvent {
             context_id: None,
             task_id: None,
             message_id,
+            producer_key: None,
             metadata,
         })
     }
@@ -92,6 +96,9 @@ impl ProducedEvent {
             context_id: self.context_id,
             task_id: self.task_id,
             message_id: self.message_id,
+            source_kind: Some(self.source_kind),
+            source_key: Some(self.source_key),
+            producer_key: self.producer_key,
             metadata: self.metadata,
         }
     }
@@ -164,6 +171,7 @@ mod tests {
             context_id: None,
             task_id: None,
             message_id: Some("msg-001".into()),
+            producer_key: Some("test-producer".into()),
             metadata: None,
         }
     }
@@ -187,6 +195,15 @@ mod tests {
         assert_eq!(request.message_type.as_str(), "test.v1");
         assert_eq!(request.messages.len(), 1);
         assert_eq!(request.message_id.as_deref(), Some("msg-001"));
+        assert_eq!(
+            request.source_kind.as_ref().map(|v| v.as_str()),
+            Some("slack")
+        );
+        assert_eq!(
+            request.source_key.as_ref().map(|v| v.as_str()),
+            Some("slack:#general")
+        );
+        assert_eq!(request.producer_key.as_deref(), Some("test-producer"));
         assert!(request.context_id.is_none());
         assert!(request.task_id.is_none());
         assert!(request.metadata.is_none());

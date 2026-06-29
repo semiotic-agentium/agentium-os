@@ -26,8 +26,13 @@ use crate::{
 /// directly; it consumes approved snapshots projected into the build root.
 pub const BUILDER_EXTERNAL_TOOLS_ENV: &str = "BAML_EXTERNAL_TOOLS_DIR";
 
-/// Build a [`CompositeCatalog`] for the builder: inventory first, then
+/// Build a [`CompositeCatalog`] for the builder: static catalog first, then
 /// approved external-tool snapshots and MCP snapshots.
+///
+/// Existing no-arg callers use local [`InventoryCatalog`] behavior. New runner/file
+/// catalog paths should call [`build_builder_catalog_with_static_catalog`] and pass
+/// the fetched static catalog explicitly; endpoint/file failures must not silently
+/// fall back to local inventory at higher layers.
 pub fn build_builder_catalog() -> Result<CompositeCatalog> {
     build_builder_catalog_with_roots(None, None)
 }
@@ -40,7 +45,18 @@ pub fn build_builder_catalog_with_roots(
     mcp_root: Option<&Path>,
     external_cache_root: Option<&Path>,
 ) -> Result<CompositeCatalog> {
-    let inventory = InventoryCatalog::new();
+    build_builder_catalog_with_static_catalog(mcp_root, external_cache_root, None)
+}
+
+pub fn build_builder_catalog_with_static_catalog(
+    mcp_root: Option<&Path>,
+    external_cache_root: Option<&Path>,
+    static_catalog: Option<Box<dyn ToolCatalog>>,
+) -> Result<CompositeCatalog> {
+    let static_catalog: Box<dyn ToolCatalog> = match static_catalog {
+        Some(catalog) => catalog,
+        None => Box::new(InventoryCatalog::new()),
+    };
 
     let snapshot_external = match external_cache_root {
         Some(root) => {
@@ -67,14 +83,19 @@ pub fn build_builder_catalog_with_roots(
     };
 
     let mut existing_names: std::collections::HashSet<ToolName> = std::collections::HashSet::new();
-    for meta in inventory.iter() {
-        existing_names.insert(meta.name.clone());
+    for meta in static_catalog.iter() {
+        if !existing_names.insert(meta.name.clone()) {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "Static tool catalog name collision at build time: '{}' appears more than once.",
+                meta.name
+            )));
+        }
     }
     if let Some(ext) = &snapshot_external {
         for meta in ext.iter() {
             if !existing_names.insert(meta.name.clone()) {
                 return Err(BamlRtError::InvalidArgument(format!(
-                    "External tool snapshot name collision at build time: '{}' already exists in inventory.",
+                    "External tool snapshot name collision at build time: '{}' already exists in static tool catalog.",
                     meta.name
                 )));
             }
@@ -84,7 +105,7 @@ pub fn build_builder_catalog_with_roots(
         for meta in mcp.iter() {
             if !existing_names.insert(meta.name.clone()) {
                 return Err(BamlRtError::InvalidArgument(format!(
-                    "MCP tool name collision at build time: '{}' already exists in inventory or external snapshots.",
+                    "MCP tool name collision at build time: '{}' already exists in static tool catalog or external snapshots.",
                     meta.name
                 )));
             }
@@ -92,7 +113,7 @@ pub fn build_builder_catalog_with_roots(
     }
 
     let mut composite = CompositeCatalog::new();
-    composite.add(Box::new(inventory));
+    composite.add(static_catalog);
     if let Some(ext) = snapshot_external {
         composite.add(Box::new(ext));
     }

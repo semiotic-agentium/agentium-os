@@ -31,7 +31,7 @@ pub fn run(
 
     if let Some(cache) = snapshot_cache {
         println!(
-            "{} Resolving snapshots from offline cache {} (registry not contacted).",
+            "{} Resolving all tool catalogs from offline cache {} (registry not contacted).",
             style("Note:").yellow(),
             style(cache).dim()
         );

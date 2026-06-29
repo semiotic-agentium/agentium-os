@@ -19,7 +19,7 @@ use baml_rt_core::{
     BamlRtError, DeployedAgentLookup, DeploymentContentHash, DeploymentManager, DeploymentRecord,
     DeploymentStatus, DispatchTarget, ObservationUpdate, Result, UndeployResult,
     bus::BusStream,
-    callback_scheduling_scopes_differ_from_dispatch, context,
+    callback_scheduling_scopes_differ_from_dispatch, context, ensure_dispatch_task_scope,
     ids::{AgentId, ContextId, TaskId},
     scheduling_scope_from_dispatch_metadata,
 };
@@ -618,7 +618,7 @@ impl AgentRunner {
     pub(crate) async fn handle_dispatch_by_key(
         &self,
         key: &AgentRouteKey,
-        request: AgentDispatchRequest,
+        mut request: AgentDispatchRequest,
     ) -> Result<AgentDispatchAck> {
         let routed_agent = {
             let agents = self.agents.read().expect("RwLock poison");
@@ -637,6 +637,7 @@ impl AgentRunner {
                 BamlRtError::AgentNotFound(format!("Agent {pkg}/{inst} not found"))
             })?
         };
+        ensure_dispatch_task_scope(&mut request, key);
         let link_event = callback_dispatch_context_link_event(&request, routed_agent.agent_id());
         let dispatch_target = DispatchTarget::new(key.clone(), routed_agent.agent_id().clone());
         let dispatch_snapshot = request.clone();

@@ -333,6 +333,7 @@ impl EventProducer for RawDatasourceProducer {
                         context_id: Some(ContextId::from(envelope.context_id.as_str())),
                         task_id: None,
                         message_id: Some(item.ingress_id.to_string()),
+                        producer_key: None,
                         metadata: None,
                     });
                 }

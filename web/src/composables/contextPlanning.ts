@@ -36,7 +36,7 @@ export function useContextPlanning(
     loading.value = true;
     error.value = null;
     try {
-      const res = await fetch(`/contexts/${id}/planning`);
+      const res = await fetch(`/contexts/${encodeURIComponent(id)}/planning`);
       if (!res.ok) {
         if (res.status === 404) {
           response.value = null;

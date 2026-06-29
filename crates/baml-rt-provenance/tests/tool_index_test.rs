@@ -41,12 +41,15 @@ fn weather_tool() -> ToolFunctionMetadataExport {
             "Weather API key",
         )],
         config: None,
+        config_bundle: None,
         access: None,
         origin: baml_rt_tools::ToolOrigin::Host,
         backend: baml_rt_tools::ToolBackend::default(),
         digest: None,
         projection_semantics: None,
+        session_policy: baml_rt_tools::SessionPolicy::default(),
         event_sources: Vec::new(),
+        coordination_baml: None,
     }
 }
 

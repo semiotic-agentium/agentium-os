@@ -72,9 +72,12 @@ impl EventDispatcher {
     /// Same as [`Self::deliver_event`], optionally attributing OTLP metrics to a bounded `producer_key`.
     pub async fn deliver_event_with_producer_key(
         &self,
-        event: ProducedEvent,
+        mut event: ProducedEvent,
         producer_key: Option<&str>,
     ) -> Result<EventDeliveryOutcome> {
+        if event.producer_key.is_none() {
+            event.producer_key = producer_key.map(ToOwned::to_owned);
+        }
         let published = event.as_published_event();
         let entries = self.registry.list_agents();
         let port = RegistryDispatchPort::new(self.registry.as_ref());

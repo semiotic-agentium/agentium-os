@@ -111,6 +111,8 @@ pub mod a2a {
     /// Host source poll identity (`HostSourcePollRecorded`).
     pub const HOST_INGRESS_SOURCE_KIND: &str = "a2a:host_ingress_source_kind";
     pub const HOST_INGRESS_SOURCE_KEY: &str = "a2a:host_ingress_source_key";
+    pub const HOST_INGRESS_SCHEMA_VERSION: &str = "a2a:host_ingress_schema_version";
+    pub const HOST_INGRESS_PRODUCER_KEY: &str = "a2a:host_ingress_producer_key";
     pub const HOST_INGRESS_RECORD_COUNT: &str = "a2a:host_ingress_record_count";
     /// Routing key on host dispatch (`HostDispatchAccepted`).
     pub const HOST_INGRESS_ROUTING_KEY: &str = "a2a:host_ingress_routing_key";

@@ -58,7 +58,7 @@ watch(
       return;
     }
     try {
-      const res = await fetch(`/contexts/${ctxId}/planning`);
+      const res = await fetch(`/contexts/${encodeURIComponent(ctxId)}/planning`);
       if (res.ok) planningData.value = await res.json();
     } catch {
       // planning endpoint may not be available

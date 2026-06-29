@@ -398,17 +398,11 @@ fn emit_host_ingress_sequence(out: &mut String, node: &ExportedNode, indices: &G
         "source_poll_recorded" => {
             let source_kind = prop_str(node, a2a::HOST_INGRESS_SOURCE_KIND)
                 .unwrap_or_else(|| "source".to_string());
-            let record_count = node
-                .properties
-                .get(a2a::HOST_INGRESS_RECORD_COUNT)
-                .and_then(|v| v.as_u64())
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| "?".to_string());
-            let label = if content.is_empty() {
-                format!("source poll: {source_kind} ({record_count} records)")
-            } else {
-                content
-            };
+            let source_key = prop_str(node, a2a::HOST_INGRESS_SOURCE_KEY)
+                .unwrap_or_else(|| "unknown".to_string());
+            let schema_version = prop_str(node, a2a::HOST_INGRESS_SCHEMA_VERSION)
+                .unwrap_or_else(|| "unknown".to_string());
+            let label = format!("Host event ({schema_version}) from {source_kind}:{source_key}");
             let _ = writeln!(
                 out,
                 "    Note over {HOST_PARTICIPANT}: {}",
@@ -428,6 +422,14 @@ fn emit_host_ingress_sequence(out: &mut String, node: &ExportedNode, indices: &G
                     escape_note_content(&content)
                 );
             }
+        }
+        _ if content.starts_with("Host source poll:") => {
+            let label = "Host event (unknown) from unknown:unknown";
+            let _ = writeln!(
+                out,
+                "    Note over {HOST_PARTICIPANT}: {}",
+                escape_note_content(label)
+            );
         }
         _ if content.is_empty() => {}
         _ => {
@@ -2186,6 +2188,14 @@ mod tests {
             serde_json::Value::String("slack".to_string()),
         );
         poll_props.insert(
+            a2a::HOST_INGRESS_SOURCE_KEY.to_string(),
+            serde_json::Value::String("slack:C1".to_string()),
+        );
+        poll_props.insert(
+            a2a::HOST_INGRESS_SCHEMA_VERSION.to_string(),
+            serde_json::Value::String("host.source-records.v1".to_string()),
+        );
+        poll_props.insert(
             a2a::HOST_INGRESS_RECORD_COUNT.to_string(),
             serde_json::json!(2),
         );
@@ -2221,7 +2231,9 @@ mod tests {
             "expected Host participant: {output}"
         );
         assert!(
-            output.contains("Note over Host: \"source poll: slack (2 records)\""),
+            output.contains(
+                "Note over Host: \"Host event (host.source-records.v1) from slack:slack:C1\""
+            ),
             "expected poll note: {output}"
         );
         assert!(

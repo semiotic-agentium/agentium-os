@@ -723,6 +723,8 @@ pub enum ProvEventData {
         source_cursor: String,
         schema_version: String,
         record_count: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        producer_key: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         source_message_ts: Vec<String>,
     },
@@ -735,6 +737,8 @@ pub enum ProvEventData {
         source_kind: String,
         source_key: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        producer_key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         target_agent_id: Option<AgentId>,
     },
     /// Host dispatch to a subscriber failed (agent rejected or transport error).
@@ -745,6 +749,8 @@ pub enum ProvEventData {
         target_instance: String,
         source_kind: String,
         source_key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        producer_key: Option<String>,
         detail: String,
         failure_kind: HostDispatchFailureKind,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1888,6 +1894,10 @@ impl ProvEvent {
         })
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "event constructor mirrors the provenance event's full field set; a params struct would only duplicate the schema"
+    )]
     pub fn host_source_poll_recorded(
         context_id: ContextId,
         source_kind: String,
@@ -1895,6 +1905,7 @@ impl ProvEvent {
         source_cursor: String,
         schema_version: String,
         record_count: usize,
+        producer_key: Option<String>,
         source_message_ts: Vec<String>,
     ) -> Self {
         let poll_key = HostIngressPollKey {
@@ -1913,6 +1924,7 @@ impl ProvEvent {
                 source_cursor,
                 schema_version,
                 record_count,
+                producer_key,
                 source_message_ts,
             },
         })
@@ -1925,6 +1937,7 @@ impl ProvEvent {
         target: baml_rt_core::DispatchTarget,
         source_kind: String,
         source_key: String,
+        producer_key: Option<String>,
     ) -> Self {
         let outcome = dispatch_outcome_key(
             context_id.clone(),
@@ -1945,6 +1958,7 @@ impl ProvEvent {
                 target_instance: target.instance().to_string(),
                 source_kind,
                 source_key,
+                producer_key,
                 target_agent_id: target.agent_id,
             },
         })
@@ -1957,6 +1971,7 @@ impl ProvEvent {
             schema_version,
             target,
             source,
+            producer_key,
             detail,
             failure_kind,
         } = spec;
@@ -1986,6 +2001,7 @@ impl ProvEvent {
                 target_instance: outcome.target_instance,
                 source_kind,
                 source_key,
+                producer_key,
                 detail,
                 failure_kind,
                 target_agent_id: target.agent_id,

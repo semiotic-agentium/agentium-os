@@ -179,7 +179,8 @@ export function useEventObservation() {
 
     closeHistoryStream();
     const params = streamQueryParams(scope);
-    const url = `/contexts/${scope.contextId}/conversation-history/stream?${params.toString()}`;
+    const encodedContextId = encodeURIComponent(scope.contextId);
+    const url = `/contexts/${encodedContextId}/conversation-history/stream?${params.toString()}`;
     const stream = new EventSource(url);
     // Register before listeners so concurrent ensureHistoryStream calls close this stream.
     historyStream = stream;
@@ -262,7 +263,7 @@ export function useEventObservation() {
 
   async function fetchDiagram(ctx: string): Promise<void> {
     const seq = ++diagramFetchSeq;
-    const text = await scheduleContextMermaidDiagram(ctx);
+    const text = await scheduleContextMermaidDiagram(ctx, { full: true });
     if (seq !== diagramFetchSeq) return;
     provenanceDiagram.value = text;
   }

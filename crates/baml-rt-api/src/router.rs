@@ -243,6 +243,7 @@ fn repository_route_metric_label(matched: &MatchedPath) -> &'static str {
         "/search" => "repository_search",
         "/lineage/{hash}" => "repository_get_lineage",
         "/blobs/{hash}" => "repository_get_blob",
+        "/tools" => "repository_tool_list",
         "/mcp/servers" => "repository_mcp_list_servers",
         "/mcp/servers/{server_id}" => "repository_mcp_get_latest_snapshot",
         "/mcp/servers/{server_id}/versions" => "repository_mcp_list_server_versions",
@@ -258,6 +259,7 @@ fn repository_route_metric_label(matched: &MatchedPath) -> &'static str {
         "/external-tools/versions" => "repository_external_tool_list_versions",
         "/external-tools/snapshots/import" => "repository_external_tool_import_snapshot",
         "/external-tools/snapshots/mark-stale" => "repository_external_tool_mark_stale",
+        "/static-tools/snapshots" => "repository_static_tool_catalog",
         "/entries/{hash}/tags" => "repository_tags",
         "/publish" => "repository_publish",
         _ => "repository_unknown",
@@ -450,6 +452,7 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(handlers::list_agents))
         .routes(utoipa_axum::routes!(handlers::get_context_index))
         .routes(utoipa_axum::routes!(handlers::get_mermaid_context))
+        .routes(utoipa_axum::routes!(handlers::get_mermaid_context_full))
         .routes(utoipa_axum::routes!(handlers::get_mermaid_task))
         .routes(utoipa_axum::routes!(handlers::get_context_metrics))
         .routes(utoipa_axum::routes!(handlers::get_context_planning))

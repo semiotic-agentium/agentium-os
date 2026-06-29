@@ -4,10 +4,6 @@
 
 //! `cargo-agent-platform` CLI for scaffolding BAML tools and agents.
 //!
-// Allow unexpected cfg values from the force_link_all_tools! macro - these features
-// are passed through from baml-tool-links and checked at compile time there.
-#![allow(unexpected_cfgs)]
-//!
 //! Invoked as `cargo agent-platform <subcommand>`.
 //!
 //! # Subcommands
@@ -21,9 +17,9 @@
 //! - `deploy --hash <hash>` — Activate a deployed hash in a running runner
 //! - `undeploy --hash <hash>` — Remove an active deployed hash from a running runner
 //! - `list-deployed-instances` — List loaded agent instances from a running runner
-//! - `list-tools` — List all registered tools from the inventory
+//! - `list-tools` — List all registered tools from runner/cache catalog
 //! - `list-agents` — List all agent packages
-//! - `list-event-sources` — List event source kinds declared by tools and known schema versions
+//! - `list-event-sources` — List event source kinds declared by runner/cache tools and known schema versions
 //! - `regen` — Regenerate type declarations for all agents
 //! - `doctor` — Validate workspace integrity
 //! - `chat` — Interactive terminal chat with a deployed agent
@@ -183,6 +179,14 @@ enum Commands {
         #[arg(long)]
         subscriptions: Option<String>,
 
+        /// Repository URL used for interactive tool/source picker metadata. Wins over --snapshot-cache.
+        #[arg(long)]
+        repository_url: Option<String>,
+
+        /// Read interactive tool/source picker metadata from unified offline snapshot cache.
+        #[arg(long)]
+        snapshot_cache: Option<String>,
+
         /// Target directory (defaults to agents/<name>)
         #[arg(long)]
         output: Option<String>,
@@ -192,14 +196,30 @@ enum Commands {
         dry_run: bool,
     },
 
-    /// List all registered tools from the inventory
-    ListTools,
+    /// List tools from runner/repository catalog or offline snapshot cache
+    ListTools {
+        /// Repository URL to query when not using --snapshot-cache
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
+        repository_url: String,
+
+        /// Read tools from unified offline snapshot cache instead of repository
+        #[arg(long)]
+        snapshot_cache: Option<String>,
+    },
 
     /// List all agent packages
     ListAgents,
 
-    /// List event source kinds declared by tools and known schema versions
-    ListEventSources,
+    /// List event source kinds declared by runner/cache tools and known schema versions
+    ListEventSources {
+        /// Repository URL to query when not using --snapshot-cache
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
+        repository_url: String,
+
+        /// Read static tool catalog from unified offline snapshot cache instead of repository
+        #[arg(long)]
+        snapshot_cache: Option<String>,
+    },
 
     /// Package agents into distributable tar.gz files
     Build {
@@ -334,6 +354,17 @@ enum Commands {
         snapshot_cache: Option<String>,
     },
 
+    /// Export all approved repository tool catalogs into an offline snapshot cache
+    ExportSnapshotCache {
+        /// Repository URL to export from
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
+        repository_url: String,
+
+        /// Output snapshot-cache directory
+        #[arg(long, value_name = "DIR")]
+        output: String,
+    },
+
     /// Validate standalone external tool manifest against runtime parser
     CheckExternalTool {
         /// Path to external tool directory (contains tool-manifest.json)
@@ -431,6 +462,14 @@ enum Commands {
         /// Downgrade missing catalog entries from error to warning
         #[arg(long)]
         warn_missing_catalog: bool,
+
+        /// Repository URL to query for catalog validation. Wins over --snapshot-cache.
+        #[arg(long)]
+        repository_url: Option<String>,
+
+        /// Read tool catalog from unified offline snapshot cache instead of local inventory.
+        #[arg(long)]
+        snapshot_cache: Option<String>,
     },
 
     /// Inspect and manage external-tool snapshot cache entries
@@ -608,9 +647,6 @@ fn parse_runtime_or_default(raw: &str) -> Runtime {
 }
 
 fn main() -> anyhow::Result<()> {
-    // Force-link all tools so the inventory is complete
-    baml_tool_links::force_link_all_tools!();
-
     // When invoked as `cargo agent-platform`, Cargo passes "agent-platform" as the
     // first argument. Strip it so clap sees the actual command/flags.
     let args: Vec<String> = std::env::args()
@@ -785,6 +821,8 @@ fn main() -> anyhow::Result<()> {
             description,
             tags,
             subscriptions,
+            repository_url,
+            snapshot_cache,
             output,
             dry_run,
         } => {
@@ -808,6 +846,11 @@ fn main() -> anyhow::Result<()> {
                 None => "simple".to_string(),
             };
             let normalized_template = template.to_ascii_lowercase();
+            let picker_source = repository_url
+                .map(|url| interactive::ToolPickerSource::Repository { url })
+                .or_else(|| {
+                    snapshot_cache.map(|root| interactive::ToolPickerSource::SnapshotCache { root })
+                });
 
             // For interactive mode with basic-tools or planner, prompt for tools
             let tools = match tools {
@@ -816,7 +859,7 @@ fn main() -> anyhow::Result<()> {
                     && (normalized_template == "basic-tools"
                         || normalized_template == "planner") =>
                 {
-                    interactive::prompt_tools()?
+                    interactive::prompt_tools(picker_source.as_ref())?
                 }
                 None => None,
             };
@@ -833,7 +876,7 @@ fn main() -> anyhow::Result<()> {
                 .unwrap_or_default();
 
             let suggested_tags = if interactive {
-                interactive::suggest_agent_tags(&tool_ids)?
+                interactive::suggest_agent_tags(&tool_ids, picker_source.as_ref())?
             } else {
                 Vec::new()
             };
@@ -848,7 +891,7 @@ fn main() -> anyhow::Result<()> {
             let subscriptions = match subscriptions {
                 Some(s) => Some(s),
                 None if interactive && normalized_template != "coordinator" => {
-                    interactive::prompt_subscriptions(&tool_ids)?
+                    interactive::prompt_subscriptions(&tool_ids, picker_source.as_ref())?
                 }
                 None => None,
             };
@@ -869,11 +912,17 @@ fn main() -> anyhow::Result<()> {
             )
         }
 
-        Commands::ListTools => commands::list_tools::run(),
+        Commands::ListTools {
+            repository_url,
+            snapshot_cache,
+        } => commands::list_tools::run(&repository_url, snapshot_cache.as_deref()),
 
         Commands::ListAgents => commands::list_agents::run(),
 
-        Commands::ListEventSources => commands::list_event_sources::run(),
+        Commands::ListEventSources {
+            repository_url,
+            snapshot_cache,
+        } => commands::list_event_sources::run(&repository_url, snapshot_cache.as_deref()),
 
         Commands::Build {
             names,
@@ -939,6 +988,11 @@ fn main() -> anyhow::Result<()> {
             snapshot_cache,
         } => commands::regen::run(&names, &paths, &repository_url, snapshot_cache.as_deref()),
 
+        Commands::ExportSnapshotCache {
+            repository_url,
+            output,
+        } => commands::export_snapshot_cache::run(&repository_url, &output),
+
         Commands::CheckExternalTool { path } => commands::check_external_tool::run(&path),
 
         Commands::SandboxBindSync {
@@ -987,7 +1041,14 @@ fn main() -> anyhow::Result<()> {
         Commands::Doctor {
             ci,
             warn_missing_catalog,
-        } => commands::doctor::run(ci, warn_missing_catalog),
+            repository_url,
+            snapshot_cache,
+        } => commands::doctor::run(
+            ci,
+            warn_missing_catalog,
+            repository_url.as_deref(),
+            snapshot_cache.as_deref(),
+        ),
 
         Commands::ExternalTool { command } => match command {
             ExternalToolCommands::Enable {

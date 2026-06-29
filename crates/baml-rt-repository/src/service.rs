@@ -11,7 +11,10 @@
 use std::sync::Arc;
 
 use baml_rt_core::clock_events;
-use baml_rt_tools::{external_tools::ExternalToolSnapshot, mcp_snapshot::McpServerSnapshot};
+use baml_rt_tools::{
+    StaticToolCatalogResponse, external_tools::ExternalToolSnapshot,
+    mcp_snapshot::McpServerSnapshot,
+};
 
 use crate::{
     commands::{ForkCommand, PublishCommand, PublishOrigin, PublishResult},
@@ -39,6 +42,13 @@ pub struct RepositoryService {
     search: Arc<dyn SearchStore>,
     mcp_registry: Arc<dyn McpRegistryStore>,
     external_tool_registry: Arc<dyn ExternalToolRegistryStore>,
+    /// Static (compiled-in) tool catalog of the host process, if injected.
+    ///
+    /// The repository service owns no tool inventory; the host runner projects
+    /// its own linked `inventory` into a [`StaticToolCatalogResponse`] at
+    /// startup and injects it here so the read API can serve the slim-runner
+    /// reality. `None` for detached repository services (no inventory to serve).
+    static_tool_catalog: Option<StaticToolCatalogResponse>,
 }
 
 impl RepositoryService {
@@ -58,7 +68,21 @@ impl RepositoryService {
             search,
             mcp_registry,
             external_tool_registry,
+            static_tool_catalog: None,
         }
+    }
+
+    /// Inject the host runner's static tool catalog so the read API can serve
+    /// `GET /repository/static-tools/snapshots`. Builder-style; call once at
+    /// startup after constructing the service from stores.
+    pub fn with_static_tool_catalog(mut self, catalog: StaticToolCatalogResponse) -> Self {
+        self.static_tool_catalog = Some(catalog);
+        self
+    }
+
+    /// The injected static tool catalog, if the host runner provided one.
+    pub fn static_tool_catalog(&self) -> Option<&StaticToolCatalogResponse> {
+        self.static_tool_catalog.as_ref()
     }
 
     // -----------------------------------------------------------------------

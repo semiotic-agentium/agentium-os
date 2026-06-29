@@ -25,6 +25,7 @@ async fn query_conversation_context_with_agent_package_succeeds() {
             "cursor:1".to_string(),
             "host.source-records.v1".to_string(),
             0,
+            None,
             vec![],
         ))
         .await

@@ -27,8 +27,9 @@ export async function fetchMergedConversationHistoryPage(
     params.set("profile", "full");
     if (cursor) params.set("cursor", cursor);
 
+    const encodedContextId = encodeURIComponent(scope.contextId);
     const res = await fetch(
-      `/contexts/${scope.contextId}/conversation-history?${params.toString()}`,
+      `/contexts/${encodedContextId}/conversation-history?${params.toString()}`,
       { signal: options?.signal },
     );
     if (!res.ok) return null;

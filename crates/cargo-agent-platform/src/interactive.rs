@@ -8,14 +8,15 @@
 
 use std::collections::BTreeSet;
 
-use anyhow::{Result, bail};
-use baml_rt_tools::{InventoryCatalog, ToolCatalog};
+use anyhow::{Context, Result, bail};
+use baml_rt_tools::ToolCatalog;
 use inquire::{Confirm, MultiSelect, Select, Text};
 
+pub use crate::tool_catalog::ToolPickerSource;
 use crate::{
     event_schemas::{KNOWN_COMPATIBILITY_SOURCE_KINDS, KNOWN_EVENT_SCHEMAS},
     text::truncate_for_display,
-    tool_catalog::{load_cli_tools, load_cli_tools_for_picker},
+    tool_catalog::{load_tools, load_tools_for_picker},
 };
 
 /// Bundle type options for new-tool.
@@ -315,10 +316,16 @@ pub fn prompt_agent_description() -> Result<String> {
 const BANNED_SUGGESTED_TAGS: &[&str] = &["support", "read", "write", "system"];
 
 /// Suggest agent tags based on selected tools.
-pub fn suggest_agent_tags(selected_tools: &[String]) -> Result<Vec<String>> {
+pub fn suggest_agent_tags(
+    selected_tools: &[String],
+    source: Option<&ToolPickerSource>,
+) -> Result<Vec<String>> {
     let mut tags = BTreeSet::new();
+    let Some(source) = source else {
+        return Ok(Vec::new());
+    };
 
-    let tools = load_cli_tools()?;
+    let tools = load_tools(source)?;
     for tool_id in selected_tools {
         if let Some(tool) = tools.iter().find(|t| t.id == *tool_id) {
             for tag in &tool.tags {
@@ -390,8 +397,15 @@ pub fn prompt_template() -> Result<String> {
 }
 
 /// Prompt for tool selection (multi-select from inventory).
-pub fn prompt_tools() -> Result<Option<String>> {
-    let tools = load_cli_tools_for_picker()?;
+pub fn prompt_tools(source: Option<&ToolPickerSource>) -> Result<Option<String>> {
+    let Some(source) = source else {
+        println!(
+            "Tool picker unavailable. Pass --repository-url or --snapshot-cache to browse tools."
+        );
+        return Ok(None);
+    };
+
+    let tools = load_tools_for_picker(source)?;
 
     if tools.is_empty() {
         println!("No tools found.");
@@ -451,11 +465,44 @@ impl std::fmt::Display for SourceKindOption {
     }
 }
 
+fn load_static_catalog_for_subscriptions(
+    source: &ToolPickerSource,
+) -> Result<baml_rt_tools::StaticToolSnapshotCatalog> {
+    match source {
+        ToolPickerSource::Repository { url } => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                baml_rt_builder::static_tool_registry::fetch_static_tool_catalog(url)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "loading static tool catalog from runner/repository at {}",
+                            url.trim_end_matches('/')
+                        )
+                    })
+            })
+        }
+        ToolPickerSource::SnapshotCache { root } => {
+            baml_rt_builder::static_tool_registry::load_static_tool_catalog_from_cache(root)
+                .with_context(|| {
+                    format!(
+                        "loading static tool catalog from {}",
+                        baml_rt_builder::static_tool_registry::static_tool_catalog_path(root)
+                            .display()
+                    )
+                })
+        }
+    }
+}
+
 /// Prompt for event subscriptions.
 ///
 /// Returns the subscription string in CLI format if the user wants subscriptions,
 /// or None if they don't want to receive events.
-pub fn prompt_subscriptions(selected_tools: &[String]) -> Result<Option<String>> {
+pub fn prompt_subscriptions(
+    selected_tools: &[String],
+    source: Option<&ToolPickerSource>,
+) -> Result<Option<String>> {
     // Ask if they want to receive events
     let wants_events = Confirm::new("Does this agent need to receive events?")
         .with_default(false)
@@ -491,24 +538,26 @@ pub fn prompt_subscriptions(selected_tools: &[String]) -> Result<Option<String>>
         return Ok(None);
     }
 
-    // Collect available source kinds from selected tools + catalog
-    let catalog = InventoryCatalog::new();
+    // Collect available source kinds from selected tools + optional runner/cache static catalog.
     let mut source_options: Vec<SourceKindOption> = Vec::new();
     let mut seen_sources: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // First, add sources from tools that declare event_sources
-    for tool in catalog.iter() {
-        // Check if this tool is selected or if it declares event sources
-        let is_selected = selected_tools.iter().any(|t| t == &tool.name.to_string());
-        if is_selected || !tool.event_sources.is_empty() {
-            for source in &tool.event_sources {
-                let source_str = source.as_str().to_string();
-                if !seen_sources.contains(&source_str) {
-                    seen_sources.insert(source_str.clone());
-                    source_options.push(SourceKindOption {
-                        value: source_str,
-                        from_tool: Some(tool.name.to_string()),
-                    });
+    if let Some(source) = source {
+        let catalog = load_static_catalog_for_subscriptions(source)?;
+        // First, add sources from tools that declare event_sources
+        for tool in catalog.iter() {
+            // Check if this tool is selected or if it declares event sources
+            let is_selected = selected_tools.iter().any(|t| t == &tool.name.to_string());
+            if is_selected || !tool.event_sources.is_empty() {
+                for source in &tool.event_sources {
+                    let source_str = source.as_str().to_string();
+                    if !seen_sources.contains(&source_str) {
+                        seen_sources.insert(source_str.clone());
+                        source_options.push(SourceKindOption {
+                            value: source_str,
+                            from_tool: Some(tool.name.to_string()),
+                        });
+                    }
                 }
             }
         }

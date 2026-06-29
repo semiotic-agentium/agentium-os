@@ -22,7 +22,7 @@ baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
 baml-rt-tools-claude = { path = "../tools/claude" }
 baml-rt-mcp = { path = "../baml-rt-mcp" }
 baml-tools-system = { path = "../tools/system" }
-baml-tools-calculator = { path = "../tools/calculator" }
+baml-tools-calculator = { path = "../tools/calculator", optional = true }
 baml-tools-clickup = { path = "../tools/clickup", optional = true }
 baml-tools-github = { path = "../tools/github", optional = true }
 baml-tools-memory = { path = "../tools/memory", optional = true }
@@ -70,15 +70,23 @@ testcontainers-modules = { workspace = true }
 
 [features]
 default = []
-clickup = ["dep:baml-tools-clickup"]
-github = ["dep:baml-tools-github"]
-memory = ["dep:baml-tools-memory"]
-notion = ["dep:baml-tools-notion"]
-slack = ["dep:baml-tools-slack"]
-slack-notify = ["dep:baml-tools-slack-notify"]
-grafana-alerts = ["dep:baml-tools-grafana-alerts"]
-security-eval = ["dep:baml-tools-security-eval"]
+# Each forwards into baml-rt-api (which force-links the crate for repository-side
+# builds and forwards on to baml-rt-builder), in addition to the runner's own
+# direct force-link in main.rs. Without the api forward, a runner built with a
+# tool feature would still get a slim api and lose that tool at publish time.
+clickup = ["dep:baml-tools-clickup", "baml-rt-api/clickup"]
+github = ["dep:baml-tools-github", "baml-rt-api/github"]
+memory = ["dep:baml-tools-memory", "baml-rt-api/memory"]
+notion = ["dep:baml-tools-notion", "baml-rt-api/notion"]
+slack = ["dep:baml-tools-slack", "baml-rt-api/slack"]
+slack-notify = ["dep:baml-tools-slack-notify", "baml-rt-api/slack-notify"]
+grafana-alerts = ["dep:baml-tools-grafana-alerts", "baml-rt-api/grafana-alerts"]
+security-eval = ["dep:baml-tools-security-eval", "baml-rt-api/security-eval"]
 http-tools = ["clickup", "github", "notion", "slack", "slack-notify", "security-eval", "grafana-alerts"]
+# Demo/testing-only tools (e.g. the arithmetic `support/calculate`). Off by
+# default so a shipped runner does not expose them; enabled by `--all-features`
+# dev/CI builds and by `regen-fixtures`. NOT part of `http-tools`.
+dev-tools = ["dep:baml-tools-calculator"]
 # Compile-time sandbox provider selection (three states):
 #   feature ON              → MicrosandboxProvider (production)
 #   feature OFF + cfg(test) → MockSandboxProvider::echo() (tests)

@@ -10,6 +10,7 @@ pub mod chat;
 pub mod check_external_tool;
 pub mod deploy;
 pub mod doctor;
+pub mod export_snapshot_cache;
 pub mod external_tool;
 pub mod list_agents;
 pub mod list_deployed_instances;

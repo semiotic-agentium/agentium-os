@@ -1,6 +1,8 @@
 apiVersion: v2
 name: agentium-os
-description: Agentium OS pilot — multi-runner agent platform with shared SurrealDB provenance store
+description: >-
+  Agentium OS pilot — multi-runner agent platform with shared SurrealDB
+  provenance store
 type: application
-version: 0.1.1
-appVersion: "0.1.1"
+version: 0.1.3
+appVersion: 0.1.3

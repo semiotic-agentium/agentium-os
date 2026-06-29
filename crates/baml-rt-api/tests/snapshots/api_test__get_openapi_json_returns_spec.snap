@@ -1084,6 +1084,44 @@ expression: snapshot
           }
         }
       },
+      "/contexts/{context_id}/mermaid/full": {
+        "get": {
+          "tags": [
+            "mermaid"
+          ],
+          "summary": "Full Mermaid diagram by context",
+          "description": "Returns the provenance subgraph for the given A2A context ID plus derived A2A child contexts as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with SurrealDB provenance.",
+          "operationId": "get_mermaid_context_full",
+          "parameters": [
+            {
+              "name": "context_id",
+              "in": "path",
+              "description": "Root A2A context ID",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Mermaid sequenceDiagram",
+              "content": {
+                "text/plain": {}
+              }
+            },
+            "404": {
+              "description": "No graph found for context"
+            },
+            "500": {
+              "description": "Internal error"
+            },
+            "501": {
+              "description": "Mermaid service not available (provenance not configured)"
+            }
+          }
+        }
+      },
       "/contexts/{context_id}/metrics": {
         "get": {
           "tags": [
@@ -2152,8 +2190,26 @@ expression: snapshot
             "metadata": {
               "type": "object"
             },
+            "producer_key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "routing_key": {
               "type": "string"
+            },
+            "source_key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source_kind": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "task_id": {
               "type": [
@@ -4153,6 +4209,12 @@ expression: snapshot
             },
             "metadata": {
               "type": "object"
+            },
+            "producer_key": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "routing_key": {
               "type": "string"

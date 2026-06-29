@@ -16,9 +16,6 @@ baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
 baml-rt-repository = { path = "../baml-rt-repository" }
 
-# Centralized force-link crate - all-tools ensures complete inventory
-baml-tool-links = { path = "../baml-tool-links", features = ["all-tools"] }
-
 # CLI parsing
 clap = { workspace = true }
 

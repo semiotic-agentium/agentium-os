@@ -4,18 +4,24 @@
 
 //! `doctor` subcommand implementation.
 //!
-//! Validates workspace integrity with static checks and catalog validation.
+//! Validates workspace integrity with file checks and runner/cache catalog validation.
 
 use std::{collections::HashSet, fs, path::Path};
 
-use anyhow::{Context, Result};
-use baml_rt_tools::{InventoryCatalog, ToolCatalog};
+use anyhow::{Context, Result, bail};
+use baml_rt_tools::ToolCatalog;
 use console::style;
+use serde::Deserialize;
 
 use crate::workspace::find_workspace_root;
 
 /// Run the doctor command.
-pub fn run(ci: bool, warn_missing_catalog: bool) -> Result<()> {
+pub fn run(
+    ci: bool,
+    warn_missing_catalog: bool,
+    repository_url: Option<&str>,
+    snapshot_cache: Option<&str>,
+) -> Result<()> {
     let workspace_root = find_workspace_root()?;
     println!(
         "{} workspace root: {}",
@@ -31,7 +37,7 @@ pub fn run(ci: bool, warn_missing_catalog: bool) -> Result<()> {
     println!("{}", style("Layer 1: Static checks").bold().underlined());
     static_checks(&workspace_root, &mut errors, &mut warnings)?;
 
-    // Layer 2: Catalog checks (requires compiled inventory)
+    // Layer 2: Catalog checks (runner/repository or exported snapshot cache)
     println!();
     println!("{}", style("Layer 2: Catalog checks").bold().underlined());
     catalog_checks(
@@ -39,6 +45,8 @@ pub fn run(ci: bool, warn_missing_catalog: bool) -> Result<()> {
         &mut errors,
         &mut warnings,
         warn_missing_catalog,
+        repository_url,
+        snapshot_cache,
     )?;
 
     // Summary
@@ -77,15 +85,6 @@ fn static_checks(
 ) -> Result<()> {
     // 1. Check that all tool crate directories are in workspace members
     check_workspace_members(workspace_root, errors)?;
-
-    // 2. Check that all tool crates have matching entries in baml-tool-links/Cargo.toml
-    check_tool_links_deps(workspace_root, errors)?;
-
-    // 3. Check that all tool crates have entries in force_link_all_tools! macro
-    check_force_link_macro(workspace_root, errors)?;
-
-    // 4. Check feature forwarding in runner/builder
-    check_feature_forwarding(workspace_root, errors)?;
 
     Ok(())
 }
@@ -131,210 +130,48 @@ fn check_workspace_members(workspace_root: &Path, errors: &mut Vec<String>) -> R
     Ok(())
 }
 
-/// Check that all tool crates have matching deps in baml-tool-links.
-fn check_tool_links_deps(workspace_root: &Path, errors: &mut Vec<String>) -> Result<()> {
-    let tools_dir = workspace_root.join("crates/tools");
-    let tool_links_toml = workspace_root.join("crates/baml-tool-links/Cargo.toml");
-
-    if !tool_links_toml.exists() {
-        errors.push("baml-tool-links/Cargo.toml not found".to_string());
-        return Ok(());
-    }
-
-    let content = fs::read_to_string(&tool_links_toml)?;
-
-    // Core tools that should always be unconditional dependencies
-    // (reserved for future use in enhanced checking)
-    let _core_tools = ["calculator", "claude", "system"];
-
-    for entry in fs::read_dir(&tools_dir)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            let tool_name = entry.file_name().to_string_lossy().to_string();
-
-            // Skip internal-dev (test-only)
-            if tool_name == "internal-dev" {
-                continue;
-            }
-
-            let dep_name = format!("baml-tools-{tool_name}");
-
-            // Handle the special case where claude is "baml-rt-tools-claude"
-            let actual_dep_name = if tool_name == "claude" {
-                "baml-rt-tools-claude".to_string()
-            } else {
-                dep_name.clone()
-            };
-
-            if content.contains(&actual_dep_name) {
-                println!(
-                    "  {} {} in baml-tool-links deps",
-                    style("✓").green(),
-                    tool_name
-                );
-            } else {
-                errors.push(format!(
-                    "Tool '{}' missing from baml-tool-links/Cargo.toml dependencies",
-                    tool_name
-                ));
-            }
-        }
-    }
-
-    Ok(())
+#[derive(Debug, Deserialize)]
+struct ToolsResponse {
+    tools: Vec<ListedTool>,
 }
 
-/// Check that all tool crates have entries in force_link_all_tools! macro.
-fn check_force_link_macro(workspace_root: &Path, errors: &mut Vec<String>) -> Result<()> {
-    let tools_dir = workspace_root.join("crates/tools");
-    let lib_rs_path = workspace_root.join("crates/baml-tool-links/src/lib.rs");
-
-    if !lib_rs_path.exists() {
-        errors.push("baml-tool-links/src/lib.rs not found".to_string());
-        return Ok(());
-    }
-
-    let content = fs::read_to_string(&lib_rs_path)?;
-
-    for entry in fs::read_dir(&tools_dir)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            let tool_name = entry.file_name().to_string_lossy().to_string();
-            let crate_name = format!("baml_tools_{}", tool_name.replace('-', "_"));
-
-            // Handle special cases
-            let actual_crate_name = if tool_name == "claude" {
-                "baml_rt_tools_claude".to_string()
-            } else if tool_name == "internal-dev" {
-                "baml_tools_internal_dev".to_string()
-            } else {
-                crate_name.clone()
-            };
-
-            if content.contains(&actual_crate_name) {
-                println!(
-                    "  {} {} in force_link_all_tools! macro",
-                    style("✓").green(),
-                    tool_name
-                );
-            } else {
-                errors.push(format!(
-                    "Tool '{}' missing from force_link_all_tools! macro (expected '{}')",
-                    tool_name, actual_crate_name
-                ));
-            }
-        }
-    }
-
-    Ok(())
+#[derive(Debug, Deserialize)]
+struct ListedTool {
+    name: String,
 }
 
-/// Check that runner and builder have feature forwarding for all tools.
-fn check_feature_forwarding(workspace_root: &Path, _errors: &mut Vec<String>) -> Result<()> {
-    let tool_links_toml = workspace_root.join("crates/baml-tool-links/Cargo.toml");
-    let runner_toml = workspace_root.join("crates/baml-agent-runner/Cargo.toml");
-    let builder_toml = workspace_root.join("crates/baml-rt-builder/Cargo.toml");
-
-    let tool_links_content = fs::read_to_string(&tool_links_toml)?;
-    let runner_content = fs::read_to_string(&runner_toml)?;
-    let builder_content = fs::read_to_string(&builder_toml)?;
-
-    // Extract feature names from baml-tool-links (excluding default, http-tools, all-tools)
-    let excluded_features = ["default", "http-tools", "all-tools"];
-    let tool_features: Vec<String> = extract_features(&tool_links_content)
-        .into_iter()
-        .filter(|f| !excluded_features.contains(&f.as_str()))
-        .collect();
-
-    for feature in &tool_features {
-        let dep_name = format!("baml-tools-{feature}");
-        let forward_pattern = format!("{feature} = [\"dep:{dep_name}\"]");
-        let forward_pattern_alt = format!("{feature} = ['dep:{dep_name}']");
-
-        // Check runner
-        if runner_content.contains(&forward_pattern)
-            || runner_content.contains(&forward_pattern_alt)
-        {
-            println!(
-                "  {} {} feature forwarding in runner",
-                style("✓").green(),
-                feature
-            );
-        } else if !runner_content.contains(&format!("{feature} = ")) {
-            // Feature not present at all - may be intentional for some tools
-            println!(
-                "  {} {} not in runner (may be intentional)",
-                style("⚠").yellow(),
-                feature
-            );
-        }
-
-        // Check builder
-        if builder_content.contains(&forward_pattern)
-            || builder_content.contains(&forward_pattern_alt)
-        {
-            println!(
-                "  {} {} feature forwarding in builder",
-                style("✓").green(),
-                feature
-            );
-        } else if !builder_content.contains(&format!("{feature} = ")) {
-            println!(
-                "  {} {} not in builder (may be intentional)",
-                style("⚠").yellow(),
-                feature
-            );
-        }
-    }
-
-    Ok(())
-}
-
-/// Extract feature names from Cargo.toml content.
-fn extract_features(content: &str) -> Vec<String> {
-    let mut features = Vec::new();
-    let mut in_features = false;
-
-    for line in content.lines() {
-        if line.trim() == "[features]" {
-            in_features = true;
-            continue;
-        }
-        if in_features {
-            if line.starts_with('[') {
-                break;
-            }
-            if let Some(name) = line.split('=').next() {
-                let name = name.trim();
-                if !name.is_empty() {
-                    features.push(name.to_string());
-                }
-            }
-        }
-    }
-
-    features
-}
-
-/// Catalog checks that require the compiled inventory.
+/// Catalog checks use runner/repository metadata or an exported snapshot cache.
 fn catalog_checks(
     workspace_root: &Path,
     errors: &mut Vec<String>,
     warnings: &mut Vec<String>,
     warn_missing_catalog: bool,
+    repository_url: Option<&str>,
+    snapshot_cache: Option<&str>,
 ) -> Result<()> {
-    let catalog = InventoryCatalog::new();
-    let tool_count = catalog.iter().count();
+    let catalog_tools = match (repository_url, snapshot_cache) {
+        (Some(url), _) => Some(load_repository_tool_names(url)?),
+        (None, Some(root)) => Some(load_cache_tool_names(Path::new(root))?),
+        (None, None) => {
+            let msg =
+                "catalog tool-reference checks skipped; pass --repository-url or --snapshot-cache";
+            if warn_missing_catalog {
+                warnings.push(msg.to_string());
+                println!("  {}", style(msg).yellow());
+            } else {
+                errors.push(msg.to_string());
+            }
+            None
+        }
+    };
 
-    println!("  Found {} tools in inventory", tool_count);
+    if let Some(catalog_tools) = &catalog_tools {
+        println!("  Found {} tools in catalog", catalog_tools.len());
+    }
 
-    // Collect all tool names from inventory
-    let inventory_tools: HashSet<String> = catalog.iter().map(|t| t.name.to_string()).collect();
-
-    // Check agent manifests reference valid tools
     check_agent_manifests(
         workspace_root,
-        &inventory_tools,
+        catalog_tools.as_ref(),
         errors,
         warnings,
         warn_missing_catalog,
@@ -343,10 +180,76 @@ fn catalog_checks(
     Ok(())
 }
 
+fn load_repository_tool_names(repository_url: &str) -> Result<HashSet<String>> {
+    let url = format!("{}/tools", repository_url.trim_end_matches('/'));
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async move {
+        let response = reqwest::Client::new()
+            .get(url.as_str())
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!("GET {url} failed ({status}): {body}");
+        }
+        let parsed: ToolsResponse =
+            serde_json::from_str(&body).with_context(|| format!("parsing response from {url}"))?;
+        Ok(parsed.tools.into_iter().map(|tool| tool.name).collect())
+    })
+}
+
+fn load_cache_tool_names(root: &Path) -> Result<HashSet<String>> {
+    let mut tools = HashSet::new();
+
+    let static_catalog =
+        baml_rt_builder::static_tool_registry::load_static_tool_catalog_from_cache(root)
+            .with_context(|| {
+                format!(
+                    "loading static tool catalog from {}",
+                    baml_rt_builder::static_tool_registry::static_tool_catalog_path(root).display()
+                )
+            })?;
+    tools.extend(static_catalog.iter().map(|tool| tool.name.to_string()));
+
+    let external_root = baml_rt_tools::external_tool_cache::resolve_cache_root(root);
+    for snapshot in baml_rt_tools::external_tool_cache::read_approved_snapshots(&external_root)? {
+        tools.insert(snapshot.tool.name);
+    }
+
+    let mcp_root = baml_rt_tools::mcp_cache::resolve_cache_root(root);
+    let servers_dir = mcp_root.join("servers");
+    if servers_dir.exists() {
+        for entry in fs::read_dir(&servers_dir)
+            .with_context(|| format!("reading MCP cache servers from {}", servers_dir.display()))?
+        {
+            let entry = entry?;
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let server_id = entry.file_name().to_string_lossy().to_string();
+            let snapshot = baml_rt_tools::mcp_cache::read_snapshot(&mcp_root, &server_id)
+                .with_context(|| format!("reading MCP cache snapshot {server_id}"))?;
+            if !snapshot.approval.state.is_approved() {
+                continue;
+            }
+            tools.extend(
+                snapshot
+                    .tools
+                    .into_iter()
+                    .map(|tool| tool.platform_tool_name),
+            );
+        }
+    }
+
+    Ok(tools)
+}
+
 /// Check that agent manifests reference tools that exist in the catalog.
 fn check_agent_manifests(
     workspace_root: &Path,
-    inventory_tools: &HashSet<String>,
+    catalog_tools: Option<&HashSet<String>>,
     errors: &mut Vec<String>,
     warnings: &mut Vec<String>,
     warn_missing_catalog: bool,
@@ -382,7 +285,8 @@ fn check_agent_manifests(
                 if let Some(tools) = manifest.get("tools").and_then(|t| t.as_array()) {
                     for tool in tools {
                         if let Some(tool_name) = tool.as_str()
-                            && !inventory_tools.contains(tool_name)
+                            && let Some(catalog_tools) = catalog_tools
+                            && !catalog_tools.contains(tool_name)
                         {
                             let msg = format!(
                                 "{}: tool '{}' not found in catalog",

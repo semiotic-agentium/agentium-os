@@ -134,20 +134,8 @@ impl HostIngressRecorder for HostIngressRecorderImpl {
         let context_id = event.context_id.clone().ok_or_else(|| {
             BamlRtError::InvalidArgument("ProducedEvent missing context_id".into())
         })?;
-        let source_kind = event
-            .messages
-            .first()
-            .and_then(|m| m.get("source_kind"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let source_key = event
-            .messages
-            .first()
-            .and_then(|m| m.get("source_key"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
+        let source_kind = event.source_kind.as_str().to_string();
+        let source_key = event.source_key.as_str().to_string();
         let source_cursor = event
             .messages
             .first()
@@ -169,6 +157,7 @@ impl HostIngressRecorder for HostIngressRecorderImpl {
             source_cursor,
             event.schema_version.as_str().to_string(),
             record_count,
+            event.producer_key.clone(),
             source_message_ts,
         );
         self.store
@@ -262,6 +251,7 @@ impl HostIngressRecorder for HostIngressRecorderImpl {
             target,
             source_kind,
             source_key,
+            request.producer_key.clone(),
         );
         self.store
             .add_event_with_logging(prov_event, "host dispatch accepted")
@@ -286,6 +276,7 @@ impl HostIngressRecorder for HostIngressRecorderImpl {
             schema_version: request.message_type.clone(),
             target,
             source: HostIngressSourceRef::from_dispatch_request(request),
+            producer_key: request.producer_key.clone(),
             detail: detail.to_string(),
             failure_kind: HostDispatchFailureKind::from_transport_flag(transport_failure),
         });
