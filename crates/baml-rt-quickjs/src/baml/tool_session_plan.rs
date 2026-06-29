@@ -350,9 +350,18 @@ impl BamlRuntimeManager {
             )
             && session_id.is_none()
         {
-            return Err(BamlRtError::InvalidArgument(
-                "session fragment rejected: no open session for non-Open step".to_string(),
-            ));
+            // No live session for a non-Open step. Finish/Abort here is a no-op: the session was
+            // already closed (e.g. auto-finished after a prior Send, or the agent finishes
+            // defensively). Surface a closed status, never a lifecycle-phrased error. Anything else
+            // is a malformed plan and gets an intent-level failure (not a hard FSM error).
+            return match first {
+                ToolSessionOp::Finish { .. } => Ok(serde_json::json!({ "status": "finished" })),
+                ToolSessionOp::Abort { .. } => Ok(serde_json::json!({ "status": "aborted" })),
+                _ => Ok(send_unavailable_result(
+                    &tool_name_str,
+                    "no open session for this step",
+                )),
+            };
         }
 
         let mut last_output: Option<Value> = None;

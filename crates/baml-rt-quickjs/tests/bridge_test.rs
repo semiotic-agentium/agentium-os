@@ -1751,6 +1751,165 @@ async fn test_entry_send_projection_hides_lifecycle_shows_single_send() {
     }
 }
 
+/// Migration back-compat (I): an explicit `Finish` after the session was already closed (here:
+/// auto-finished by the prior entry Send) is a no-op, not a lifecycle error. The loop completes
+/// cleanly and terminates — it must not surface "session fragment rejected: no open session".
+#[tokio::test]
+async fn test_explicit_finish_after_auto_finish_is_noop() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use baml_rt::baml::BamlRuntimeManager;
+    use baml_rt_core::context::InvocationScope;
+    use baml_rt_quickjs::step_executor_loop::run_step_executor_loop;
+    use serde_json::json;
+
+    test_support::common::ensure_fixture_runtime_types();
+    let agent_dir =
+        test_support::common::workspace_root().join("tests/fixtures/agents/stream-baml-tool");
+    let built =
+        test_support::common::build_agent_package_to_temp(agent_dir, "stream-baml-tool").await;
+
+    let scope = InvocationScope::synthetic_task(AgentId::from_uuid(
+        UuidId::parse_str("00000000-0000-0000-0000-000000000094").unwrap(),
+    ));
+    let (context_id, message_id, task_id) = {
+        let rs = scope.as_scope();
+        let task_id = rs
+            .task_id_opt()
+            .expect("synthetic_task has task_id")
+            .clone();
+        (rs.context_id().clone(), rs.message_id().clone(), task_id)
+    };
+
+    let mut manager = BamlRuntimeManager::builder().build().unwrap();
+    manager
+        .load_schema(built.to_str().unwrap())
+        .expect("load schema");
+
+    let manifest = baml_rt_tools::ManifestToolNames::parse(&["support/calculate".to_string()])
+        .expect("parse manifest");
+    let policy = baml_rt_tools::parse_access_allowlist();
+    manager
+        .set_tool_allowlist(
+            ["support/calculate"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        )
+        .await
+        .unwrap();
+    baml_rt_tools::register_manifest_tools(manager.tool_registry().as_ref(), &manifest, &policy)
+        .unwrap();
+    manager.rebuild_function_tool_manifest();
+
+    let bus: Arc<dyn EffectEmitter> = Arc::new(BusWithEffects::new());
+    let store = SurrealStoreBuilder::in_memory_isolated()
+        .build()
+        .await
+        .expect("in-memory provenance for noop-finish e2e");
+    manager.set_effect_emitter(bus.clone());
+    let manager = Arc::new(RwLock::new(manager));
+    baml_rt::a2a_transport::install_provenance_conversation_wiring(
+        store.clone(),
+        Some(store.clone()),
+        &manager,
+        &bus,
+    )
+    .await
+    .expect("provenance + conversation wiring");
+
+    {
+        let agent = scope.as_scope().agent_id().clone();
+        store
+            .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+            .await
+            .expect("task exists");
+        store
+            .add_event(ProvEvent::task_execution_started(
+                context_id.clone(),
+                task_id.clone(),
+                agent.clone(),
+            ))
+            .await
+            .expect("task execution started");
+        store
+            .add_event(ProvEvent::message_received_task(
+                context_id.clone(),
+                task_id,
+                message_id,
+                "user".to_string(),
+                vec!["noop-finish back-compat e2e".to_string()],
+                None,
+                agent,
+                1_700_000_010_707,
+            ))
+            .await
+            .expect("message received");
+    }
+
+    // hop0: entry Send (auto-opened + auto-finished). hop1: an explicit Finish — the session is
+    // already closed, so it must be a no-op (status finished), not a "no open session" reject.
+    let call_count = Arc::new(AtomicU32::new(0));
+    let call_count_clone = call_count.clone();
+    struct SendThenExplicitFinish {
+        count: Arc<AtomicU32>,
+    }
+    #[async_trait]
+    impl baml_rt::interceptor::LLMInterceptor for SendThenExplicitFinish {
+        async fn intercept_llm_call(
+            &self,
+            _ctx: &baml_rt::interceptor::LLMCallContext,
+        ) -> baml_rt_core::Result<baml_rt::interceptor::InterceptorDecision> {
+            let n = self.count.fetch_add(1, Ordering::Relaxed);
+            let response = match n {
+                0 => json!({ "step": { "op": "Send", "tool_name": "support/calculate", "input": { "expression": { "left": 2, "operation": "Add", "right": 3 } } } }),
+                _ => json!({ "step": { "op": "Finish" } }),
+            };
+            Ok(baml_rt::interceptor::InterceptorDecision::Substitute(response))
+        }
+        async fn on_llm_call_complete(
+            &self,
+            _: &baml_rt::interceptor::LLMCallContext,
+            _: &baml_rt_core::Result<Value>,
+            _: u64,
+        ) {
+        }
+    }
+
+    {
+        let w = manager.write().await;
+        w.register_llm_interceptor(SendThenExplicitFinish {
+            count: call_count_clone,
+        })
+        .await;
+    }
+
+    let result = context::with_scope(
+        scope.as_scope().clone(),
+        run_step_executor_loop(
+            &manager,
+            scope.as_scope(),
+            "ChooseCalcTool",
+            json!({ "user_message": "what is 2 + 3?" }),
+            8,
+            None,
+        ),
+    )
+    .await
+    .expect("an explicit Finish on an already-closed session must be a no-op, not an error");
+
+    // The Finish terminated the loop (it was not rejected) and surfaced a closed status.
+    let finished = result
+        .steps
+        .iter()
+        .any(|s| s.get("status").and_then(Value::as_str) == Some("finished"));
+    assert!(
+        finished,
+        "explicit Finish should resolve to a finished no-op: {:?}",
+        result.steps
+    );
+}
+
 /// ACTIVE Finish before any Send reaches Done must surface as a contract error (has_done gate).
 #[tokio::test]
 async fn test_step_executor_loop_rejects_finish_before_send_done() {
