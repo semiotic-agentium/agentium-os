@@ -123,6 +123,7 @@ async fn host_ingress_operational_rows_render_for_compaction() {
             "slack:1:2:1".to_string(),
             "host.source-records.v1".to_string(),
             2,
+            None,
             vec!["1".to_string()],
         ))
         .await
@@ -145,7 +146,7 @@ async fn host_ingress_operational_rows_render_for_compaction() {
     let ref_table = RefTable::new();
     let rendered = render_items_with_ref_table(&items, &registry, &ref_table);
     assert!(
-        rendered.contains("Host source poll"),
+        rendered.contains("Host event (host.source-records.v1) from slack:slack:C123"),
         "operational poll row must appear in compaction render: {rendered}"
     );
     assert!(
@@ -166,6 +167,7 @@ async fn render_items_for_context_includes_operational_only_rows() {
             "slack:1:2:2".to_string(),
             "host.source-records.v1".to_string(),
             1,
+            None,
             vec!["1".to_string()],
         ))
         .await
@@ -176,7 +178,7 @@ async fn render_items_for_context_includes_operational_only_rows() {
         .await
         .expect("render");
     assert!(
-        rendered.contains("Host source poll"),
+        rendered.contains("Host event (host.source-records.v1) from slack:slack:C123"),
         "operational-only context must render via render_items_for_context: {rendered}"
     );
 }
