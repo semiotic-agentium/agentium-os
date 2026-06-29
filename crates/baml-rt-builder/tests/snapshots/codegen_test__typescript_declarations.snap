@@ -72,6 +72,7 @@ input: ArchiveSearchReadInput;
  }
 
 export interface SupportCalculateSendStep { op: "Send";
+tool_name: "support/calculate";
 input: CalculatorInput;
 citations: string[];
  }
@@ -90,7 +91,7 @@ declare function ChooseCalcToolStream(args: { user_message: string } & { __baml_
 
 declare function ChooseCalcTool__active__support_calculate(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep>;
 
-declare function ChooseCalcTool__entry(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateOpenStep>;
+declare function ChooseCalcTool__entry(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateOpenStep | SupportCalculateSendStep>;
 
 }
 

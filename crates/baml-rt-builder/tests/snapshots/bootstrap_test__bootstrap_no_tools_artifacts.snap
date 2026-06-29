@@ -572,7 +572,7 @@ class ArchivePageReadStep {
 }
 
 /// Terminal hop without a host tool session: answer from visible conversation archives only.
-/// Do not emit when you need a fresh Open/Send — use ENTRY Open or ACTIVE Send instead.
+/// Do not emit when you need to invoke a tool — emit a Send instead (eligible one-shot tools Send directly on entry; tools needing configuration Open first).
 class ReadOnlyFinishStep {
   op "ReadOnlyFinish"
   reply StructuredReply @description("User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.")
