@@ -7,12 +7,16 @@ tool system/discover_agents
   purpose: Browse available agents. You can optionally filter by query, requiredCapabilities, or matching event subscriptions. Omit filters to list all agents.
   open: DiscoverAgentsOpenInput
   send: DiscoverAgentsSendInput
+  capability: Streaming
+  invocation_mode: session
   operations: SystemDiscoverAgentsOpenStep | SystemDiscoverAgentsSendStep | SystemDiscoverAgentsSearchReadStep | SystemDiscoverAgentsPageReadStep | SystemDiscoverAgentsFinishStep | SystemDiscoverAgentsAbortStep
 
 tool system/extrospection
   purpose: Queries provenance rows across contexts and agents with compact token-aware output. Open session, send filters/grouping, then read() returns one result page.
   open: ProvenanceQueryOpenInput
   send: ProvenanceQuerySendInput
+  capability: Streaming
+  invocation_mode: session
   operations: SystemExtrospectionOpenStep | SystemExtrospectionSendStep | SystemExtrospectionSearchReadStep | SystemExtrospectionPageReadStep | SystemExtrospectionFinishStep | SystemExtrospectionAbortStep
 
 Type definitions:
@@ -132,6 +136,7 @@ type SystemDiscoverAgentsSearchReadStep = {
 
 type SystemDiscoverAgentsSendStep = {
   op: "Send"
+  tool_name: "system/discover_agents" @description("Tool this Send targets")
   input: DiscoverAgentsSendInput @description("Payload for this step.")
   citations: string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }
@@ -162,6 +167,7 @@ type SystemExtrospectionSearchReadStep = {
 
 type SystemExtrospectionSendStep = {
   op: "Send"
+  tool_name: "system/extrospection" @description("Tool this Send targets")
   input: ProvenanceQuerySendInput @description("Payload for this step.")
   citations: string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }

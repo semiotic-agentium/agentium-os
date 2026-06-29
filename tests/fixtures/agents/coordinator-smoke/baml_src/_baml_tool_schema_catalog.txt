@@ -7,18 +7,24 @@ tool system/discover_agents
   purpose: Browse available agents. You can optionally filter by query, requiredCapabilities, or matching event subscriptions. Omit filters to list all agents.
   open: DiscoverAgentsOpenInput
   send: DiscoverAgentsSendInput
+  capability: Streaming
+  invocation_mode: session
   operations: SystemDiscoverAgentsOpenStep | SystemDiscoverAgentsSendStep | SystemDiscoverAgentsSearchReadStep | SystemDiscoverAgentsPageReadStep | SystemDiscoverAgentsFinishStep | SystemDiscoverAgentsAbortStep
 
 tool system/discover_tools
   purpose: Searches registered tools by lexical rank. Open session, then send query/limit; read() returns results. Send can be called multiple times.
   open: DiscoverToolsOpenInput
   send: DiscoverToolsSendInput
+  capability: Streaming
+  invocation_mode: session
   operations: SystemDiscoverToolsOpenStep | SystemDiscoverToolsSendStep | SystemDiscoverToolsSearchReadStep | SystemDiscoverToolsPageReadStep | SystemDiscoverToolsFinishStep | SystemDiscoverToolsAbortStep
 
 tool system/internal_a2a
   purpose: Opens a conversational session to another agent. Send a message (text or parts), Read the response, then Send follow-ups or Finish. Multiple Send/Read rounds are allowed within one session — use this for multi-turn conversations with the delegated agent.
   open: InternalA2aOpenInput
   send: InternalA2aSendInput
+  capability: Streaming
+  invocation_mode: session
   operations: SystemInternalA2aOpenStep | SystemInternalA2aSendStep | SystemInternalA2aSearchReadStep | SystemInternalA2aPageReadStep | SystemInternalA2aFinishStep | SystemInternalA2aAbortStep
 
 Type definitions:
@@ -135,6 +141,7 @@ type SystemDiscoverAgentsSearchReadStep = {
 
 type SystemDiscoverAgentsSendStep = {
   op: "Send"
+  tool_name: "system/discover_agents" @description("Tool this Send targets")
   input: DiscoverAgentsSendInput @description("Payload for this step.")
   citations: string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }
@@ -165,6 +172,7 @@ type SystemDiscoverToolsSearchReadStep = {
 
 type SystemDiscoverToolsSendStep = {
   op: "Send"
+  tool_name: "system/discover_tools" @description("Tool this Send targets")
   input: DiscoverToolsSendInput @description("Payload for this step.")
   citations: string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }
@@ -195,6 +203,7 @@ type SystemInternalA2aSearchReadStep = {
 
 type SystemInternalA2aSendStep = {
   op: "Send"
+  tool_name: "system/internal_a2a" @description("Tool this Send targets")
   input: InternalA2aSendInput @description("Conversational message payload. Set text to a non-empty string. Never null, never omit text.")
   citations: string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }

@@ -80,6 +80,7 @@ input: ArchiveSearchReadInput;
  }
 
 export interface SupportNotionSendStep { op: "Send";
+tool_name: "support/notion";
 input: NotionSearchPagesInput | NotionGetPageInput | NotionGetPageBlocksInput;
 citations: string[];
  }

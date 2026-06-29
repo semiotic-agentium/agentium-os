@@ -331,6 +331,8 @@ class SupportClickupToolCard {
   tool_name "support/clickup"
   description "Interact with ClickUp: navigate workspaces (teams, spaces, lists) and manage tasks."
   session_policy "Strict"
+  capability "OneShot"
+  invocation_mode "single_shot"
   input_summary "anyOf({  } | { team_id: string } | { space_id: string } | { list_id: string } | { task_id: string } | { description?: anyOf(string | null), list_id: string, name: string, priority?: anyOf(integer | null) } | { description?: anyOf(string | null), priority?: anyOf(integer | null), status?: anyOf(string | null), task_id: string } | { confirm_delete: boolean, task_id: string })"
   tags string[] @description("Tool tags: support, clickup")
 }
@@ -342,6 +344,7 @@ class SupportClickupOpenStep {
 
 class SupportClickupSendStep {
   op "Send"
+  tool_name "support/clickup" @description("Tool this Send targets")
   input ClickUpInput @description("Payload for this step.")
   citations string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }
@@ -376,6 +379,8 @@ class SystemDiscoverAgentsToolCard {
   tool_name "system/discover_agents"
   description "Browse available agents. You can optionally filter by query, requiredCapabilities, or matching event subscriptions. Omit filters to list all agents."
   session_policy "Strict"
+  capability "Streaming"
+  invocation_mode "session"
   input_summary "{ limit?: anyOf(integer | null), offset?: anyOf(integer | null), query?: anyOf(string | null), required_capabilities?: anyOf(string[] | null), required_schema_versions?: anyOf(string[] | null), required_source_kinds?: anyOf(string[] | null) }"
   tags string[] @description("Tool tags: system, discovery")
 }
@@ -388,6 +393,7 @@ class SystemDiscoverAgentsOpenStep {
 
 class SystemDiscoverAgentsSendStep {
   op "Send"
+  tool_name "system/discover_agents" @description("Tool this Send targets")
   input DiscoverAgentsSendInput @description("Payload for this step.")
   citations string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }
@@ -422,6 +428,8 @@ class SystemDiscoverToolsToolCard {
   tool_name "system/discover_tools"
   description "Searches registered tools by lexical rank. Open session, then send query/limit; read() returns results. Send can be called multiple times."
   session_policy "Strict"
+  capability "Streaming"
+  invocation_mode "session"
   input_summary "{ limit?: anyOf(integer | null), query?: anyOf(string | null) }"
   tags string[] @description("Tool tags: system, discovery")
 }
@@ -434,6 +442,7 @@ class SystemDiscoverToolsOpenStep {
 
 class SystemDiscoverToolsSendStep {
   op "Send"
+  tool_name "system/discover_tools" @description("Tool this Send targets")
   input DiscoverToolsSendInput @description("Payload for this step.")
   citations string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }
@@ -468,6 +477,8 @@ class SystemInternalA2aToolCard {
   tool_name "system/internal_a2a"
   description "Opens a conversational session to another agent. Send a message (text or parts), Read the response, then Send follow-ups or Finish. Multiple Send/Read rounds are allowed within one session — use this for multi-turn conversations with the delegated agent."
   session_policy "MultiSend"
+  capability "Streaming"
+  invocation_mode "session"
   input_summary "{ parts: { filename?: anyOf(string | null), media_type?: anyOf(string | null), raw?: anyOf(string | null), text?: anyOf(string | null), url?: anyOf(string | null) }[] }"
   tags string[] @description("Tool tags: system, a2a")
 }
@@ -480,6 +491,7 @@ class SystemInternalA2aOpenStep {
 
 class SystemInternalA2aSendStep {
   op "Send"
+  tool_name "system/internal_a2a" @description("Tool this Send targets")
   input InternalA2aSendInput @description("Conversational message payload. Set text to a non-empty string. Never null, never omit text.")
   citations string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }
@@ -523,7 +535,7 @@ function ChooseClickUpAction__entry(
   operation_kind: string,
   prior_results: string?,
   session_context: SessionContext?
-) -> ArchivePageReadStep | ArchiveSearchReadStep | FinalResponse | ReadOnlyFinishStep | SupportClickupOpenStep {
+) -> ArchivePageReadStep | ArchiveSearchReadStep | FinalResponse | ReadOnlyFinishStep | SupportClickupOpenStep | SupportClickupSendStep {
 
   client DefaultClient
   prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
@@ -559,7 +571,7 @@ Results from previous steps (use IDs and data from here):
 {{ prior_results }}
 {% endif %}
 
-Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | FinalResponse | ReadOnlyFinishStep | SupportClickupOpenStep`.
+Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | FinalResponse | ReadOnlyFinishStep | SupportClickupOpenStep | SupportClickupSendStep`.
 
 Choose the matching object type.
 - `ArchivePageReadStep` uses fields like `input`, `op`
@@ -567,11 +579,12 @@ Choose the matching object type.
 - `FinalResponse` uses fields like `citations`, `message`, `structured_json`
 - `ReadOnlyFinishStep` uses fields like `op`, `reply`
 - `SupportClickupOpenStep` uses fields like `op`, `tool_name`
+- `SupportClickupSendStep` uses fields like `citations`, `input`, `op`, `tool_name`
 Do not mix fields from different object shapes.
 Do not add text before or after the JSON object.
 
 Phase policy:
-- Derived state rule: this entry return union excludes `Send`, `Finish`, and `Abort`.
+- Derived state rule: eligible one-shot tools may emit Send directly (runtime auto-opens and auto-finishes); Open remains valid during migration. Finish and Abort are excluded on entry.
 "#
 
 }

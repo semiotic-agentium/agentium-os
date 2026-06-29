@@ -94,6 +94,7 @@ input: ArchiveSearchReadInput;
  }
 
 export interface SupportCrmSendStep { op: "Send";
+tool_name: "support/crm";
 input: QueryAccountsInput | QueryOpportunitiesInput | GetContactInput | CreateNoteInput | DeleteRecordInput | ExportRecordsInput;
 citations: string[];
  }
@@ -121,6 +122,7 @@ input: ArchiveSearchReadInput;
  }
 
 export interface SupportEmailSendStep { op: "Send";
+tool_name: "support/email";
 input: SendEmailInput;
 citations: string[];
  }

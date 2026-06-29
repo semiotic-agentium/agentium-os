@@ -44,6 +44,7 @@ input: ArchiveSearchReadInput;
  }
 
 export interface SystemDiscoverToolsSendStep { op: "Send";
+tool_name: "system/discover_tools";
 input: DiscoverToolsSendInput;
 citations: string[];
  }

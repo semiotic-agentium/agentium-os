@@ -121,6 +121,7 @@ input: ArchiveSearchReadInput;
  }
 
 export interface SystemDiscoverAgentsSendStep { op: "Send";
+tool_name: "system/discover_agents";
 input: DiscoverAgentsSendInput;
 citations: string[];
  }
@@ -149,6 +150,7 @@ input: ArchiveSearchReadInput;
  }
 
 export interface SystemExtrospectionSendStep { op: "Send";
+tool_name: "system/extrospection";
 input: ProvenanceQuerySendInput;
 citations: string[];
  }

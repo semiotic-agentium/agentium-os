@@ -88,6 +88,7 @@ input: ArchiveSearchReadInput;
  }
 
 export interface SystemDiscoverAgentsSendStep { op: "Send";
+tool_name: "system/discover_agents";
 input: DiscoverAgentsSendInput;
 citations: string[];
  }
@@ -116,6 +117,7 @@ input: ArchiveSearchReadInput;
  }
 
 export interface SystemInternalA2aSendStep { op: "Send";
+tool_name: "system/internal_a2a";
 input: InternalA2aSendInput;
 citations: string[];
  }
