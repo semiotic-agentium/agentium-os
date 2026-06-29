@@ -9,7 +9,7 @@
 
 use serde_json::Value;
 
-use crate::tools::{ToolCapability, ToolFunctionMetadata};
+use crate::tools::{SessionPolicy, ToolCapability, ToolFunctionMetadata};
 
 /// Whether the tool's `open_input` JSON Schema allows an empty object or null-shaped open
 /// (builder: optional `initial_input`; runtime: strict auto-open before Send/Read).
@@ -90,10 +90,17 @@ pub fn schema_allows_empty_or_optional_open_input(schema: &Value) -> bool {
 
 /// Whether a tool may surface a typed `<Tool>SendStep` on the entry hop.
 ///
-/// Requires one-shot semantics and an empty/optional open payload so the runtime can auto-open.
+/// Requires:
+/// - `OneShot` + `Strict`: entry-Send auto-opens, sends, reads-to-`Done`, then auto-finishes in one
+///   host call. That single-Send-then-complete shape *is* Strict semantics — `MultiSend` tools
+///   accumulate sends before a read, which entry-Send's read-to-`Done` would cut off after the
+///   first send, and they would also never auto-finish (auto-finish is `OneShot` + `Strict`),
+///   leaving the session to dangle. So the policy must be `Strict`.
+/// - empty/optional open payload, so the runtime can auto-open with no model-chosen config.
 #[must_use]
 pub fn entry_send_eligible(tool: &ToolFunctionMetadata) -> bool {
     tool.capability == ToolCapability::OneShot
+        && tool.session_policy == SessionPolicy::Strict
         && schema_allows_empty_or_optional_open_input(&tool.open_input_schema)
 }
 
@@ -172,6 +179,16 @@ mod tests {
     #[test]
     fn entry_send_ineligible_for_streaming() {
         let tool = sample_tool(json!({}), ToolCapability::Streaming);
+        assert!(!entry_send_eligible(&tool));
+    }
+
+    #[test]
+    fn entry_send_ineligible_for_multisend() {
+        // OneShot + empty-open but MultiSend: entry-Send reads-to-Done after the first send (cutting
+        // off accumulation) and never auto-finishes (auto-finish is OneShot+Strict), so it must not
+        // surface a bare entry Send.
+        let mut tool = sample_tool(json!({}), ToolCapability::OneShot);
+        tool.session_policy = SessionPolicy::MultiSend;
         assert!(!entry_send_eligible(&tool));
     }
 

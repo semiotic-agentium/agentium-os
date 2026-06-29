@@ -1421,12 +1421,25 @@ pub struct ToolBundleMetadata {
 /// `Streaming { output }` (more to come),
 /// `Done { output }` (completion), or `Error { error }`.
 ///
-/// - **OneShot:** This tool only ever returns `Done` or `Error` from `read(input)`. One read after
-///   a `send()` returns the full result and signals completion. `ToolRegistry::execute()` (one
-///   open → send → read → finish) is allowed.
-/// - **Streaming:** This tool may return `ToolStep::Streaming` one or more times. Each read may
-///   block or buffer and does *not* indicate completion until the step is `Done`. Callers must
-///   use `open_session` and call `read(input)` in a loop until `Done`. `execute()` is disabled.
+/// Read/stream **and lifecycle** semantics. **Read `Streaming` as "not one-shot," not literally
+/// "emits chunks."** This one enum drives three things, only the first of which is about reads:
+///   1. the read-loop shape (below),
+///   2. entry-Send eligibility — `OneShot` only (see `entry_send_eligible`),
+///   3. one-shot auto-open / auto-finish sugar — `OneShot` + `SessionPolicy::Strict` only.
+///
+/// - **OneShot:** completes in a single `read(input)` after `send()` — only ever returns `Done`
+///   or `Error`, never `Streaming`. `ToolRegistry::execute()` (one open → send → read → finish)
+///   is allowed, and the tool is eligible for entry-Send auto-open/auto-finish.
+/// - **Streaming:** ANY tool that must hold an explicit / maintained session and must NOT be
+///   one-shot-auto-finished — whether because it returns `ToolStep::Streaming` one or more times
+///   (read in a loop until `Done`) OR because it is a stateful multi-read / multi-send session
+///   tool that does no chunking (e.g. external `invocation_mode=session`, which maps here even
+///   without a chunk stream). `execute()` is disabled; excluded from entry-Send and auto-finish.
+///
+/// Choosing: pick `Streaming` if the tool needs more than one `read()` OR holds state across
+/// sends, even with no chunk stream. Use `OneShot` only for a true single request/response.
+/// (A cleaner future split — a `reads_stream` flag separate from lifecycle eligibility — is
+/// parked; today both meanings live in this single enum.)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolCapability {
     #[default]
@@ -1791,8 +1804,15 @@ pub fn project_archive_action_identity(op: &str, input: &Value, schema: Option<&
 #[async_trait]
 pub trait ToolHandler: Send + Sync {
     fn metadata(&self) -> &ToolFunctionMetadata;
+    /// Read/stream semantics. **Single source of truth: [`ToolFunctionMetadata::capability`].**
+    ///
+    /// Do not override. Capability is authored upstream and threaded into metadata —
+    /// external tools: manifest `invocation_mode` (`single_shot` → `OneShot`, `session` →
+    /// `Streaming`); host tools: `BamlTool::CAPABILITY`; MCP: projection (`OneShot`). The
+    /// `execute()` gate, entry-Send eligibility, and auto-finish scoping all read the metadata
+    /// field, so a hardcoded override here would silently drift from them.
     fn capability(&self) -> ToolCapability {
-        ToolCapability::OneShot
+        self.metadata().capability
     }
     /// One-line natural language description of what the tool result contains.
     /// Used as the archive header summary and `tool_result` history item.

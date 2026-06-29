@@ -83,7 +83,7 @@ fn entry_function_body(generated: &str) -> &str {
     let entry_idx = find_phase_function(generated, "__entry").unwrap_or_else(|| {
         panic!(
             "expected an entry phase function (`__entry`) in generated baml; functions found:\n{}",
-            list_functions(&generated)
+            list_functions(generated)
         )
     });
     function_body(generated, entry_idx)

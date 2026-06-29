@@ -1322,9 +1322,15 @@ async fn test_step_executor_loop_entry_send_auto_finishes_and_resends_statelessl
         ) -> baml_rt_core::Result<baml_rt::interceptor::InterceptorDecision> {
             let n = self.count.fetch_add(1, Ordering::Relaxed);
             let response = match n {
-                0 => json!({ "step": { "op": "Send", "tool_name": "support/calculate", "input": { "expression": { "left": 2, "operation": "Add", "right": 3 } } } }),
-                1 => json!({ "step": { "op": "Send", "tool_name": "support/calculate", "input": { "expression": { "left": 4, "operation": "Add", "right": 5 } } } }),
-                2 => json!({ "op": "ReadOnlyFinish", "reply": { "parts": [{ "type": "text", "text": "7 and 9" }], "citations": [] } }),
+                0 => {
+                    json!({ "step": { "op": "Send", "tool_name": "support/calculate", "input": { "expression": { "left": 2, "operation": "Add", "right": 3 } } } })
+                }
+                1 => {
+                    json!({ "step": { "op": "Send", "tool_name": "support/calculate", "input": { "expression": { "left": 4, "operation": "Add", "right": 5 } } } })
+                }
+                2 => {
+                    json!({ "op": "ReadOnlyFinish", "reply": { "parts": [{ "type": "text", "text": "7 and 9" }], "citations": [] } })
+                }
                 _ => json!({ "message": "done" }),
             };
             Ok(baml_rt::interceptor::InterceptorDecision::Substitute(
@@ -1522,13 +1528,15 @@ async fn test_blocked_send_produces_no_effect_and_surfaces_block() {
             &self,
             _ctx: &baml_rt::interceptor::LLMCallContext,
         ) -> baml_rt_core::Result<baml_rt::interceptor::InterceptorDecision> {
-            Ok(baml_rt::interceptor::InterceptorDecision::Substitute(json!({
-                "step": {
-                    "op": "Send",
-                    "tool_name": "support/calculate",
-                    "input": { "expression": { "left": 2, "operation": "Add", "right": 3 } }
-                }
-            })))
+            Ok(baml_rt::interceptor::InterceptorDecision::Substitute(
+                json!({
+                    "step": {
+                        "op": "Send",
+                        "tool_name": "support/calculate",
+                        "input": { "expression": { "left": 2, "operation": "Add", "right": 3 } }
+                    }
+                }),
+            ))
         }
         async fn on_llm_call_complete(
             &self,
@@ -1685,10 +1693,16 @@ async fn test_entry_send_projection_hides_lifecycle_shows_single_send() {
         ) -> baml_rt_core::Result<baml_rt::interceptor::InterceptorDecision> {
             let n = self.count.fetch_add(1, Ordering::Relaxed);
             let response = match n {
-                0 => json!({ "step": { "op": "Send", "tool_name": "support/calculate", "input": { "expression": { "left": 2, "operation": "Add", "right": 3 } } } }),
-                _ => json!({ "op": "ReadOnlyFinish", "reply": { "parts": [{ "type": "text", "text": "5" }], "citations": [] } }),
+                0 => {
+                    json!({ "step": { "op": "Send", "tool_name": "support/calculate", "input": { "expression": { "left": 2, "operation": "Add", "right": 3 } } } })
+                }
+                _ => {
+                    json!({ "op": "ReadOnlyFinish", "reply": { "parts": [{ "type": "text", "text": "5" }], "citations": [] } })
+                }
             };
-            Ok(baml_rt::interceptor::InterceptorDecision::Substitute(response))
+            Ok(baml_rt::interceptor::InterceptorDecision::Substitute(
+                response,
+            ))
         }
         async fn on_llm_call_complete(
             &self,
@@ -1862,10 +1876,14 @@ async fn test_explicit_finish_after_auto_finish_is_noop() {
         ) -> baml_rt_core::Result<baml_rt::interceptor::InterceptorDecision> {
             let n = self.count.fetch_add(1, Ordering::Relaxed);
             let response = match n {
-                0 => json!({ "step": { "op": "Send", "tool_name": "support/calculate", "input": { "expression": { "left": 2, "operation": "Add", "right": 3 } } } }),
+                0 => {
+                    json!({ "step": { "op": "Send", "tool_name": "support/calculate", "input": { "expression": { "left": 2, "operation": "Add", "right": 3 } } } })
+                }
                 _ => json!({ "step": { "op": "Finish" } }),
             };
-            Ok(baml_rt::interceptor::InterceptorDecision::Substitute(response))
+            Ok(baml_rt::interceptor::InterceptorDecision::Substitute(
+                response,
+            ))
         }
         async fn on_llm_call_complete(
             &self,

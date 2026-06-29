@@ -610,7 +610,11 @@ mod entry_return_tests {
 
     use super::entry_return_type_names;
 
-    fn sample_tool(class_name: &str, capability: ToolCapability, open_input_schema: serde_json::Value) -> ToolFunctionMetadata {
+    fn sample_tool(
+        class_name: &str,
+        capability: ToolCapability,
+        open_input_schema: serde_json::Value,
+    ) -> ToolFunctionMetadata {
         ToolFunctionMetadata {
             name: baml_rt_tools::ToolName::parse("support/sample").expect("valid tool name"),
             class_name: class_name.to_string(),
@@ -686,8 +690,7 @@ mod entry_return_tests {
     #[test]
     fn archive_reads_survive_when_non_plan_types_present() {
         let tool = sample_tool("SupportCalculate", ToolCapability::OneShot, json!({}));
-        let entry_return =
-            entry_return_type_names(&[&tool], &["CoordinatorReport".to_string()]);
+        let entry_return = entry_return_type_names(&[&tool], &["CoordinatorReport".to_string()]);
         assert!(entry_return.contains(&"CoordinatorReport".to_string()));
         assert!(entry_return.contains(&"ArchiveSearchReadStep".to_string()));
         assert!(entry_return.contains(&"ArchivePageReadStep".to_string()));

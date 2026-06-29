@@ -311,7 +311,7 @@ The runtime accepts **flat** `{ "op": … }` (from per-phase functions) and **wr
 
 For a tool that is **`OneShot`** and whose **`open_input` is empty/optional**, the builder adds a typed `**<Tool>SendStep**` to the entry union (alongside `<Tool>OpenStep`, which stays during migration). The model can then **Send on the entry hop** and the runtime owns the rest of the lifecycle. This is the recommended surface for write-only / single-shot tools (slack-notify, email send, most internal tools).
 
-**What the model emits (one hop):**
+**What the model emits for the tool call (one `Send` hop — the turn then ends with a separate `ReadOnlyFinish` reply hop, so a pure one-shot is **2 model hops**, down from 3; only the Open/Finish lifecycle ops collapse):**
 
 ```json
 { "op": "Send", "tool_name": "support/slack_notify", "input": { "text": "deploy ok", "context_id": "ctx-1" } }

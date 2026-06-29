@@ -20,8 +20,8 @@ use std::{
 use async_trait::async_trait;
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_tools::{
-    BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler,
-    ToolSession, ToolSessionError, ToolStep,
+    BundleName, ToolBundle, ToolBundleMetadata, ToolFailure, ToolHandler, ToolSession,
+    ToolSessionError, ToolStep,
     bundles::BundleType,
     opaque_json_map_from_object,
     tools::{
@@ -532,10 +532,6 @@ struct ClaudeSessionToolHandler {
 impl ToolHandler for ClaudeSessionToolHandler {
     fn metadata(&self) -> &ToolFunctionMetadata {
         &self.metadata
-    }
-
-    fn capability(&self) -> ToolCapability {
-        ToolCapability::Streaming
     }
 
     fn describe_invocation(&self, content: &serde_json::Value) -> String {

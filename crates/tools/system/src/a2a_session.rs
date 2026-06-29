@@ -13,8 +13,8 @@ use baml_rt_core::{
     is_history_infrastructure_notice,
 };
 use baml_rt_tools::{
-    BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler,
-    ToolSession, ToolSessionError, ToolStep, opaque_json_map_from_object,
+    BundleName, ToolBundle, ToolBundleMetadata, ToolFailure, ToolHandler, ToolSession,
+    ToolSessionError, ToolStep, opaque_json_map_from_object,
     tools::{
         HistoryContextSessionOp, HistoryContextStatus, HistoryContextV1, ToolFunctionMetadata,
         ToolSessionContext, validate_open_input,
@@ -71,10 +71,6 @@ struct A2aSessionToolHandler {
 impl ToolHandler for A2aSessionToolHandler {
     fn metadata(&self) -> &ToolFunctionMetadata {
         &self.metadata
-    }
-
-    fn capability(&self) -> ToolCapability {
-        ToolCapability::Streaming
     }
 
     fn describe_invocation(&self, content: &Value) -> String {

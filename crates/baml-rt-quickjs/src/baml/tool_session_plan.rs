@@ -315,14 +315,17 @@ impl BamlRuntimeManager {
         // True when the runtime synthesized the Open for a bare Send fragment. Scopes auto-finish
         // (below) to the entry-Send path: an explicitly model-opened session is the model's to Finish.
         let mut auto_opened = false;
+        // Captured from the single auto-open metadata read below and reused at cleanup, so the
+        // auto-finish decision can't disagree with the auto-open decision (and we avoid a second
+        // registry lookup whose miss would silently skip the finish, leaking the session).
+        let mut auto_open_one_shot_strict = false;
         if let Some(first) = steps.first()
             && matches!(first, ToolSessionOp::Send { .. })
             && session_id.is_none()
         {
-            let can_auto_open = self
-                .state
-                .tool_registry
-                .get_metadata(&tool_name_str)
+            let metadata = self.state.tool_registry.get_metadata(&tool_name_str);
+            let can_auto_open = metadata
+                .as_ref()
                 .map(|m| open_input::schema_allows_empty_open_input(&m.open_input_schema))
                 .unwrap_or(false);
             if !can_auto_open {
@@ -334,6 +337,14 @@ impl BamlRuntimeManager {
                     "this tool requires configuration before use and cannot be invoked directly",
                 ));
             }
+            // Same `metadata` clone drives the cleanup auto-finish gate (OneShot + Strict).
+            auto_open_one_shot_strict = metadata
+                .as_ref()
+                .map(|m| {
+                    m.capability == baml_rt_tools::ToolCapability::OneShot
+                        && m.session_policy == baml_rt_tools::SessionPolicy::Strict
+                })
+                .unwrap_or(false);
             steps.insert(
                 0,
                 ToolSessionOp::Open {
@@ -869,31 +880,34 @@ impl BamlRuntimeManager {
         // next hop (a reused stale session would trigger a lifecycle error like "session already
         // has input" — which must never reach the model). An explicitly model-opened session is the
         // model's to Finish/Abort, so this is scoped to `auto_opened`.
-        if auto_opened
-            && let Some(session) = session_id.clone()
-        {
+        if auto_opened && let Some(session) = session_id.clone() {
             if send_completed {
                 // Success. OneShot+Strict closes per the stateless-resend rule so each Send stands
                 // alone; the Done output is preserved (status stays "done") and the loop continues
                 // to a ReadOnlyFinish. MultiSend keeps the session open to accumulate further sends.
                 // Streaming is excluded inherently (capability != OneShot). `@N` reads hit the
                 // global ref table, not this session, so closing never blocks a later read.
-                let one_shot_strict = self
-                    .state
-                    .tool_registry
-                    .get_metadata(&tool_name_str)
-                    .map(|m| {
-                        m.capability == baml_rt_tools::ToolCapability::OneShot
-                            && m.session_policy == baml_rt_tools::SessionPolicy::Strict
-                    })
-                    .unwrap_or(false);
-                if one_shot_strict {
+                // `auto_open_one_shot_strict` is the snapshot taken at auto-open — same metadata
+                // clone, so the finish decision can't drift from the open decision.
+                if auto_open_one_shot_strict {
                     tracing::debug!(
                         tool = %tool_name_str,
                         session_id = %session,
                         "auto-finish after Send→Done; OneShot+Strict"
                     );
-                    self.tool_session_finish(&session).await?;
+                    // Best-effort teardown: the Send already committed its effect and `last_output`
+                    // holds the Done result. A failed close (store write error, session already
+                    // gone) must NOT discard that result or surface as a lifecycle-phrased error —
+                    // log and preserve the success. A genuinely lingering session is observable in
+                    // logs/metrics; propagating here would *also* nuke the result, never fix it.
+                    if let Err(e) = self.tool_session_finish(&session).await {
+                        tracing::warn!(
+                            tool = %tool_name_str,
+                            session_id = %session,
+                            error = %e,
+                            "auto-finish teardown failed after successful Send; preserving Send result"
+                        );
+                    }
                 }
             } else {
                 // The auto-opened Send did not complete (failed and returned a failed-Send result).
@@ -904,11 +918,23 @@ impl BamlRuntimeManager {
                     session_id = %session,
                     "auto-abort after failed Send on auto-opened session"
                 );
-                self.tool_session_abort(
-                    &session,
-                    Some("auto-abort after failed Send on auto-opened session".to_string()),
-                )
-                .await?;
+                // Best-effort, same as the success branch: `last_output` already carries the
+                // failed-Send result the model acts on. A failed abort must not replace it with a
+                // different hard error — log and preserve the intent-level failure.
+                if let Err(e) = self
+                    .tool_session_abort(
+                        &session,
+                        Some("auto-abort after failed Send on auto-opened session".to_string()),
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        tool = %tool_name_str,
+                        session_id = %session,
+                        error = %e,
+                        "auto-abort teardown failed after failed Send; preserving failed-Send result"
+                    );
+                }
             }
         }
 

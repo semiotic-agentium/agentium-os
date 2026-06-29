@@ -30,7 +30,7 @@ use crate::{
         policy::{InvocationPolicy, PolicyError, QuarantineState, ToolQuota},
     },
     tool_fsm::{ToolSession, ToolSessionError, ToolStep},
-    tools::{ToolCapability, ToolFunctionMetadata, ToolHandler, ToolSessionContext},
+    tools::{ToolFunctionMetadata, ToolHandler, ToolSessionContext},
 };
 
 /// Sandbox-backed `ToolHandler`. One per tool; shared across contexts.
@@ -104,10 +104,6 @@ impl SandboxToolHandler {
 impl ToolHandler for SandboxToolHandler {
     fn metadata(&self) -> &ToolFunctionMetadata {
         &self.metadata
-    }
-
-    fn capability(&self) -> ToolCapability {
-        ToolCapability::OneShot
     }
 
     async fn open_session(

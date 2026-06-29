@@ -67,7 +67,10 @@ mod tests {
     use baml_rt_tools::{
         ToolSession,
         tool_fsm::ToolStep,
-        tools::{SessionPolicy, ToolBackend, ToolCapability, ToolOrigin, ToolSessionContext, ToolTypeSpec},
+        tools::{
+            SessionPolicy, ToolBackend, ToolCapability, ToolOrigin, ToolSessionContext,
+            ToolTypeSpec,
+        },
     };
     use serde_json::Value;
 

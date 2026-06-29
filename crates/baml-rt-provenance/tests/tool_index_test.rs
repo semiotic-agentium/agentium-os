@@ -7,7 +7,9 @@
 use std::sync::Arc;
 
 use baml_rt_provenance::index_tools;
-use baml_rt_tools::{SecretRequest, ToolCapability, ToolFunctionMetadataExport, ToolName, ToolTypeSpec};
+use baml_rt_tools::{
+    SecretRequest, ToolCapability, ToolFunctionMetadataExport, ToolName, ToolTypeSpec,
+};
 use serde_json::{Value, json};
 use test_support::testing::provenance_fixtures::build_isolated_store;
 
