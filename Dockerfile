@@ -58,6 +58,10 @@ RUN mkdir -p /data && chown -R agentium:agentium /data
 COPY --from=builder /build/target/release/baml-agent-runner /usr/local/bin/
 COPY --from=builder /build/target/release/baml-agent-builder /usr/local/bin/
 
+# Host-owned context compaction BAML (SummarizeConversationPrefix).
+COPY baml_src/host /opt/agentium/baml_src/host
+ENV BAML_HOST_SCHEMA_DIR=/opt/agentium
+
 # ONNX models for embedding/drift detection (git-lfs tracked).
 # Fail fast if LFS pointers were not resolved (e.g. missing `git lfs pull`).
 COPY models/fastembed /models/fastembed

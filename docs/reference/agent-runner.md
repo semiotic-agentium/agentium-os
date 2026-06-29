@@ -65,7 +65,7 @@ When conversation history exceeds the compaction threshold, the runner summarize
 
 Budget resolution order: client override → model override → known-model table → online metadata cache (OpenRouter) → conservative fallback. Operators configure overrides under **Settings → LLM → Compaction budgets**; resolved budgets are exposed at `GET /config/llm/model-budgets`.
 
-Set `BAML_HOST_SCHEMA_DIR` to the directory that **contains** `baml_src/host/` (typically the repository root). If unset, the runner defaults to the repo root relative to the binary build. Boot fails fast if the host schema cannot be loaded.
+Set `BAML_HOST_SCHEMA_DIR` to the directory that **contains** `baml_src/host/` (typically the repository root). If unset, the runner defaults to the repo root relative to the binary build, or `/opt/agentium` in the published container image. Boot fails fast if the host schema cannot be loaded.
 
 ## HTTP Surface
 
