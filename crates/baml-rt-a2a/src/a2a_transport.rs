@@ -18,6 +18,7 @@ use baml_rt_core::{
     ids::{AgentId, ContextId, ExternalId, MessageId, TaskId},
     stream_completion::StreamCompletion,
 };
+use baml_rt_llm_config::LlmClientConfig;
 use baml_rt_observability::{metrics, spans};
 use baml_rt_provenance::{
     ProvEvent, ProvenanceContextReader, ProvenanceEffectSubscriber, ProvenanceInterceptor,
@@ -25,12 +26,10 @@ use baml_rt_provenance::{
 };
 use baml_rt_quickjs::{
     BamlRuntimeManager, BridgeHandle, QuickJSBridge, QuickJSConfig,
-    baml_execution::ConversationContextProvider, invoke_optional_js_function_handover,
-    invoke_tool_handover,
+    invoke_optional_js_function_handover, invoke_tool_handover,
 };
 use baml_rt_tools::{
-    ToolFailure, ToolHandler, ToolName, ToolRegistry, ToolSession, ToolSessionError, ToolTypeSpec,
-    prompt_projection::{PromptProjectionItem, project_prompt_context},
+    ToolFailure, ToolHandler, ToolName, ToolSession, ToolSessionError, ToolTypeSpec,
     tools::{ToolFunctionMetadata, ToolSessionContext},
 };
 use baml_tools_system::A2aSessionBundle;
@@ -41,13 +40,13 @@ use tracing::{Instrument, Span};
 use crate::{
     a2a,
     a2a_store::{
-        ConversationContextSource, MessageLifecycleEventInput, ProvenanceWriterConversationSource,
-        TaskChunkApplier, TaskEventRecorder, TaskRepository, TaskStoreBackend, TaskUpdateEvent,
-        ensure_agent_id_in_metadata, inject_agent_id_into_chunk, now_millis,
-        record_task_store_metrics, require_context_id,
+        MessageLifecycleEventInput, TaskChunkApplier, TaskEventRecorder, TaskRepository,
+        TaskStoreBackend, TaskUpdateEvent, ensure_agent_id_in_metadata, inject_agent_id_into_chunk,
+        now_millis, record_task_store_metrics, require_context_id,
     },
     a2a_types::{JSONRPCId, Message, StreamChunkView, StreamResponse},
     auto_status::AutoWorkingStatusSubscriber,
+    conversation_context::ProjectingConversationContextProvider,
     error_classifier::{A2aErrorClassifier, ErrorClassifier},
     events::{BroadcastEventEmitter, EventEmitter},
     handlers::{DefaultTaskHandler, TaskHandler},
@@ -68,8 +67,6 @@ type LiveStreamSpawnPayload = (
     baml_rt_core::ids::ContextId,
     async_channel::Receiver<TurnInput>,
 );
-
-type BoxedArchiveReader = Box<dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>>;
 
 /// Single concrete backing store for SurrealDB mode.
 /// One instance is built from the builder's store Arc and reused as TaskStoreBackend and
@@ -376,149 +373,6 @@ impl ProvenanceWriter for SurrealRuntimeStore {
     }
 }
 
-/// Projects [`ProvenanceConversationContextItem`] rows into **wire** conversation JSON (provider payload).
-/// QuickJS turns the merged line array into BAML **`ctx.tags['conversation_transcript']`** only — there is no history array tag on prompts.
-///
-/// This is the **runtime** home for the tag pipeline: `ConversationContextSource::conversation_context`
-/// → [`to_projection_item`] ([`baml_rt_conversation::provenance_item_to_projection_item`]) →
-/// [`baml_rt_tools::prompt_projection::project_prompt_context`]. Episode assembly and
-/// `assemble_session_history` in `baml-rt-conversation` use the same `project_*` and
-/// [`baml_rt_tools::prompt_projection::ProjectedLineRole`] row rules; they are not a parallel
-/// codepath.
-///
-/// The `source` is always [`ProvenanceWriterConversationSource`] (graph-backed).
-/// Integration snapshot of the same projection path: `tests/conversation_history_snapshot.rs`
-/// (stub `ToolRegistry` for `system/discover_agents` + [`project_prompt_context`](baml_rt_tools::prompt_projection::project_prompt_context) defaults).
-struct ProjectingConversationContextProvider {
-    source: Arc<dyn ConversationContextSource>,
-    tool_registry: Arc<ToolRegistry>,
-    /// Durable provenance store — authoritative ref registry; in-process tables are cache only.
-    provenance_store: Option<Arc<baml_rt_provenance::SurrealProvenanceStore>>,
-    /// In-process cache of hydrated ref tables (invalidated after provenance writes).
-    archive_ref_tables: Option<Arc<baml_rt_tools::archive_refs::ContextRefTables>>,
-}
-
-impl ProjectingConversationContextProvider {
-    fn new(
-        source: Arc<dyn ConversationContextSource>,
-        tool_registry: Arc<ToolRegistry>,
-        provenance_store: Option<Arc<baml_rt_provenance::SurrealProvenanceStore>>,
-        archive_ref_tables: Option<Arc<baml_rt_tools::archive_refs::ContextRefTables>>,
-    ) -> Self {
-        Self {
-            source,
-            tool_registry,
-            provenance_store,
-            archive_ref_tables,
-        }
-    }
-
-    async fn project_conversation_to_json(
-        &self,
-        scope: &context::RuntimeScope,
-        item_limit: Option<usize>,
-    ) -> Result<Option<Value>> {
-        let context_id = scope.context_id();
-        let task_id = scope.task_id_opt();
-        let items = self
-            .source
-            .conversation_context_with_task(context_id, item_limit, task_id)
-            .await?;
-        tracing::debug!(
-            context_id = %context_id,
-            task_id = ?task_id.map(|t| t.as_str()),
-            item_count = items.len(),
-            item_limit = ?item_limit,
-            "project_conversation_to_json: context source returned items"
-        );
-        if items.is_empty() {
-            return Ok(None);
-        }
-
-        let projection_items = items
-            .into_iter()
-            .filter_map(to_projection_item)
-            .collect::<Vec<_>>();
-        if projection_items.is_empty() {
-            return Ok(None);
-        }
-
-        let context_id_str = context_id.as_str().to_string();
-
-        let ref_table_arc = if let Some(store) = self.provenance_store.as_ref() {
-            let prepared = baml_rt_provenance::prepare_ref_table_for_projection(
-                store,
-                context_id,
-                &projection_items,
-                self.tool_registry.as_ref(),
-            )
-            .await
-            .map_err(|e| baml_rt_core::BamlRtError::ProvenanceContextRead {
-                source: Box::new(e),
-            })?;
-            if let Some(tables) = self.archive_ref_tables.as_ref() {
-                tables.insert(context_id_str.clone(), Arc::clone(&prepared));
-            }
-            prepared
-        } else if let Some(tables) = self.archive_ref_tables.as_deref() {
-            baml_rt_tools::archive_refs::get_or_create_ref_table(tables, &context_id_str)
-        } else {
-            std::sync::Arc::new(baml_rt_tools::archive_refs::RefTable::new())
-        };
-
-        let reader: Option<BoxedArchiveReader> = self.archive_ref_tables.clone().map(|t| {
-            let ctx = context_id_str.clone();
-            let boxed: BoxedArchiveReader =
-                Box::new(move |archive_ref_str, grep_str, offset, limit| {
-                    let ref_table = baml_rt_tools::archive_refs::get_ref_table(&t, &ctx)?;
-                    baml_rt_tools::archive_read::format_session_read_from_vtable(
-                        &ref_table,
-                        archive_ref_str,
-                        grep_str,
-                        offset,
-                        limit,
-                    )
-                });
-            boxed
-        });
-
-        Ok(Some(project_prompt_context(
-            projection_items,
-            self.tool_registry.as_ref(),
-            &ref_table_arc,
-            reader.as_deref(),
-        )))
-    }
-}
-
-#[async_trait]
-impl ConversationContextProvider for ProjectingConversationContextProvider {
-    async fn conversation_history_json(
-        &self,
-        scope: &context::RuntimeScope,
-    ) -> Result<Option<Value>> {
-        self.project_conversation_to_json(
-            scope,
-            Some(baml_rt_provenance::DEFAULT_LLM_CONTEXT_ITEM_CAP),
-        )
-        .await
-    }
-
-    async fn conversation_history_json_for_intra_dedup(
-        &self,
-        scope: &context::RuntimeScope,
-    ) -> Result<Option<Value>> {
-        self.project_conversation_to_json(scope, None).await
-    }
-}
-
-/// Convert a provenance conversation item to a projection item.
-pub(crate) fn to_projection_item(
-    item: ProvenanceConversationContextItem,
-) -> Option<PromptProjectionItem> {
-    baml_rt_conversation::provenance_item_to_projection_item(item)
-}
-
 // ---------------------------------------------------------------------------
 // Provenance wiring — atomic subsystem registration
 // ---------------------------------------------------------------------------
@@ -567,6 +421,9 @@ async fn wire_provenance_subsystems(
     archive_store: Option<Arc<SurrealProvenanceStore>>,
     runtime: &RwLock<BamlRuntimeManager>,
     effect_emitter: &dyn EffectEmitter,
+    compaction_summarizer: Arc<dyn baml_rt_provenance::ConversationCompactionSummarizer>,
+    llm_config: Arc<LlmClientConfig>,
+    agent_package: Option<&str>,
 ) -> Result<ProvenanceWired> {
     tracing::debug!("wire_provenance_subsystems: begin");
 
@@ -612,6 +469,21 @@ async fn wire_provenance_subsystems(
             .await;
     }
 
+    let compaction_subscriber = archive_store.as_ref().map(|store| {
+        Arc::new(baml_rt_provenance::ContextCompactionSubscriber::new(
+            Arc::clone(store),
+            writer.clone(),
+            Arc::clone(&llm_config),
+            agent_package.map(str::to_string),
+            Arc::clone(&compaction_summarizer),
+            tool_registry.clone(),
+        ))
+    });
+
+    if let Some(subscriber) = compaction_subscriber.clone() {
+        effect_emitter.subscribe_effect_subscriber(subscriber).await;
+    }
+
     // Subsystem 2: ProvenanceInterceptor → tool pipeline of the interceptor registry.
     // IMPORTANT: interception is for influencing runtime behavior, not provenance recording.
     // Provenance writes (LLM + tool) are effect-bus only via `ProvenanceEffectSubscriber`.
@@ -624,15 +496,14 @@ async fn wire_provenance_subsystems(
     // Projects the provenance conversation graph into BAML prompt context
     // using the same tool registry and archive ref tables as drift scoring.
     {
-        let conversation_source: Arc<dyn ConversationContextSource> =
-            Arc::new(ProvenanceWriterConversationSource::new(writer.clone()));
         let mut guard = runtime.write().await;
         guard.set_conversation_context_provider(Arc::new(
-            ProjectingConversationContextProvider::new(
-                conversation_source,
+            ProjectingConversationContextProvider::from_provenance_writer(
+                writer.clone(),
                 tool_registry,
                 archive_store.clone(),
                 Some(archive_ref_tables),
+                compaction_subscriber,
             ),
         ));
     }
@@ -650,12 +521,18 @@ pub async fn install_provenance_conversation_wiring(
     archive_store: Option<Arc<SurrealProvenanceStore>>,
     runtime: &Arc<RwLock<BamlRuntimeManager>>,
     effect_emitter: &Arc<dyn EffectEmitter>,
+    compaction_summarizer: Arc<dyn baml_rt_provenance::ConversationCompactionSummarizer>,
+    llm_config: Arc<LlmClientConfig>,
+    agent_package: Option<&str>,
 ) -> Result<()> {
     wire_provenance_subsystems(
         writer,
         archive_store,
         runtime.as_ref(),
         effect_emitter.as_ref(),
+        compaction_summarizer,
+        llm_config,
+        agent_package,
     )
     .await?;
     Ok(())
@@ -688,6 +565,7 @@ pub struct A2aAgent {
     response_formatter: Arc<dyn ResponseFormatter>,
     request_router: Arc<dyn RequestRouter>,
     error_classifier: Arc<dyn ErrorClassifier>,
+    effect_emitter: Arc<dyn EffectEmitter>,
     update_tx: broadcast::Sender<TaskUpdateEvent>,
     stream_sessions: Arc<Mutex<HashMap<LiveStreamSessionKey, LiveStreamSession>>>,
 }
@@ -964,6 +842,16 @@ impl A2aAgent {
         };
         let mut ack: AgentDispatchAck = serde_json::from_value(value).map_err(BamlRtError::Json)?;
         ack = ack.with_resolved_scope(invocation_scope.as_scope());
+        if let Some(context_id) = request.context_id.clone() {
+            self.effect_emitter
+                .emit_context_history_settled(
+                    context_id,
+                    self.agent_id().clone(),
+                    baml_rt_core::bus::ContextHistorySettlementKind::HostDispatch,
+                    Some("onDispatch".to_string()),
+                )
+                .await;
+        }
         Ok(ack)
     }
 }
@@ -983,6 +871,8 @@ pub struct A2aAgentBuilder {
     a2a_session_route_mode: A2aSessionRouteMode,
     /// When set, provenance commits notify this channel so transcript consumers refresh after graph writes.
     observation_notify: Option<tokio::sync::broadcast::Sender<baml_rt_core::ObservationUpdate>>,
+    compaction_summarizer: Option<Arc<dyn baml_rt_provenance::ConversationCompactionSummarizer>>,
+    llm_client_config: Option<Arc<LlmClientConfig>>,
 }
 
 pub struct A2aAgentBuilderWithEffectEmitter {
@@ -999,6 +889,8 @@ pub struct A2aAgentBuilderWithEffectEmitter {
     a2a_session_route_mode: A2aSessionRouteMode,
     effect_emitter: Arc<dyn EffectEmitter>, // REQUIRED - enforced by typestate
     observation_notify: Option<tokio::sync::broadcast::Sender<baml_rt_core::ObservationUpdate>>,
+    compaction_summarizer: Option<Arc<dyn baml_rt_provenance::ConversationCompactionSummarizer>>,
+    llm_client_config: Option<Arc<LlmClientConfig>>,
 }
 
 /// Runtime configuration: either provided or default.
@@ -1104,6 +996,8 @@ impl A2aAgentBuilder {
             register_a2a_session_tool: RegistrationMode::Skip,
             a2a_session_route_mode: A2aSessionRouteMode::SelfAgent,
             observation_notify: None,
+            compaction_summarizer: None,
+            llm_client_config: None,
         }
     }
 
@@ -1113,6 +1007,21 @@ impl A2aAgentBuilder {
         tx: tokio::sync::broadcast::Sender<baml_rt_core::ObservationUpdate>,
     ) -> Self {
         self.observation_notify = Some(tx);
+        self
+    }
+
+    /// Host context compaction summarizer (LLM or test fixed prose).
+    pub fn with_compaction_summarizer(
+        mut self,
+        summarizer: Arc<dyn baml_rt_provenance::ConversationCompactionSummarizer>,
+    ) -> Self {
+        self.compaction_summarizer = Some(summarizer);
+        self
+    }
+
+    /// LLM client config used to resolve model-aware compaction trigger policy.
+    pub fn with_llm_client_config(mut self, config: Arc<LlmClientConfig>) -> Self {
+        self.llm_client_config = Some(config);
         self
     }
 
@@ -1235,6 +1144,8 @@ impl A2aAgentBuilder {
             a2a_session_route_mode: self.a2a_session_route_mode,
             effect_emitter: emitter,
             observation_notify: self.observation_notify,
+            compaction_summarizer: self.compaction_summarizer,
+            llm_client_config: self.llm_client_config,
         }
     }
 }
@@ -1304,6 +1215,21 @@ impl A2aAgentBuilderWithEffectEmitter {
         tx: tokio::sync::broadcast::Sender<baml_rt_core::ObservationUpdate>,
     ) -> Self {
         self.observation_notify = Some(tx);
+        self
+    }
+
+    /// Host context compaction summarizer (LLM or test fixed prose).
+    pub fn with_compaction_summarizer(
+        mut self,
+        summarizer: Arc<dyn baml_rt_provenance::ConversationCompactionSummarizer>,
+    ) -> Self {
+        self.compaction_summarizer = Some(summarizer);
+        self
+    }
+
+    /// LLM client config used to resolve model-aware compaction trigger policy.
+    pub fn with_llm_client_config(mut self, config: Arc<LlmClientConfig>) -> Self {
+        self.llm_client_config = Some(config);
         self
     }
 
@@ -1578,14 +1504,27 @@ impl A2aAgentBuilderWithEffectEmitter {
             .await;
         // Provenance: all subsystems (effect subscriber, tool interceptor, conversation
         // context) wired atomically. See `wire_provenance_subsystems` doc for the full list.
-        let provenance =
-            wire_provenance_subsystems(writer, archive_store, &runtime, effect_emitter.as_ref())
-                .await?;
+        let compaction_summarizer = self
+            .compaction_summarizer
+            .clone()
+            .unwrap_or_else(baml_rt_provenance::FixedCompactionSummarizer::test_stub);
+        let provenance = wire_provenance_subsystems(
+            writer,
+            archive_store,
+            &runtime,
+            effect_emitter.as_ref(),
+            compaction_summarizer,
+            self.llm_client_config
+                .clone()
+                .unwrap_or_else(|| Arc::new(LlmClientConfig::sensible_default())),
+            Some(agent_package.as_str()),
+        )
+        .await?;
         let request_router: Arc<dyn RequestRouter> = Arc::new(MethodBasedRouter::new(
             task_handler.clone(),
             js_invoker,
             result_pipeline.clone(),
-            self.effect_emitter,
+            effect_emitter.clone(),
             agent_id.clone(),
         ));
         let error_classifier: Arc<dyn ErrorClassifier> = Arc::new(A2aErrorClassifier);
@@ -1604,6 +1543,7 @@ impl A2aAgentBuilderWithEffectEmitter {
             response_formatter,
             request_router,
             error_classifier,
+            effect_emitter,
             update_tx,
             stream_sessions,
         };
@@ -2265,9 +2205,8 @@ impl A2aAgent {
                             tracing::debug!(
                                 "live stream synthetic-final send failed (receiver dropped)"
                             );
-                            completion = Some(StreamCompletion::ChannelClosed);
-                            break;
                         }
+                        completion = Some(StreamCompletion::ChannelClosed);
                         break;
                     };
                     if first_drain_chunk {
@@ -2465,8 +2404,9 @@ impl A2aAgent {
             }
             a2a::A2aOutcome::Stream(handle) => {
                 let mut rx = handle.receiver;
-                let synthetic_context = a2a::A2aRequest::from_value(request.clone())
-                    .ok()
+                let parsed_request = a2a::A2aRequest::from_value(request.clone()).ok();
+                let synthetic_context = parsed_request
+                    .as_ref()
                     .map(|p| p.context_id().as_str().to_string())
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "unknown-context".to_string());
@@ -2939,6 +2879,7 @@ mod tests {
         let agent = A2aAgent::builder()
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
             .with_surreal_store(store)
+            .with_compaction_summarizer(baml_rt_provenance::FixedCompactionSummarizer::test_stub())
             .build()
             .await
             .expect("agent build");
@@ -3031,6 +2972,7 @@ mod tests {
         let agent = A2aAgent::builder()
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
             .with_surreal_store(store)
+            .with_compaction_summarizer(baml_rt_provenance::FixedCompactionSummarizer::test_stub())
             .build()
             .await
             .expect("agent build");

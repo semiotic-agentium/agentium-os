@@ -8,7 +8,8 @@ const EVENTS_RS: &str = include_str!("../src/events.rs");
 const NORMALIZER_RS: &str = include_str!("../src/normalizer.rs");
 const STORE_RS: &str = include_str!("../src/store.rs");
 const EFFECT_SUBSCRIBER_RS: &str = include_str!("../src/effect_subscriber.rs");
-const A2A_TRANSPORT_RS: &str = include_str!("../../baml-rt-a2a/src/a2a_transport.rs");
+const PROJECTING_PROVIDER_RS: &str =
+    include_str!("../../baml-rt-a2a/src/conversation_context/projecting_provider.rs");
 
 #[test]
 fn provenance_events_do_not_use_value_for_core_metadata() {
@@ -58,7 +59,7 @@ fn citation_drift_uses_graph_backed_ref_hydration_when_store_wired() {
 #[test]
 fn live_conversation_projection_uses_graph_backed_ref_prepare() {
     assert!(
-        A2A_TRANSPORT_RS.contains("prepare_ref_table_for_projection"),
+        PROJECTING_PROVIDER_RS.contains("prepare_ref_table_for_projection"),
         "ProjectingConversationContextProvider must DB-sync refs before prompt projection"
     );
 }

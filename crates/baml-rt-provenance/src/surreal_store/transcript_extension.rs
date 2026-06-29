@@ -11,7 +11,7 @@ use baml_rt_conversation::{
     planning::{PlanningEventContent, PlanningEventKind},
     view::{ConversationItemContent, ProvenanceConversationContextItem},
 };
-use baml_rt_core::ids::{ActivityAnchorId, ContextId, TaskId};
+use baml_rt_core::ids::{ActivityAnchorId, ContextId, ExternalId, TaskId};
 use serde_json::Value;
 
 use super::{
@@ -77,6 +77,15 @@ impl SurrealProvenanceStore {
                 .load_planning_transcript_items(context_id, tid, existing_anchors)
                 .await?;
             items.append(&mut planning);
+        } else {
+            let indexed = self.list_context_planning_index(context_id, None).await?;
+            for row in indexed {
+                let tid = TaskId::from_external(ExternalId::new(row.task_id));
+                let mut planning = self
+                    .load_planning_transcript_items(context_id, &tid, existing_anchors)
+                    .await?;
+                items.append(&mut planning);
+            }
         }
         items.sort_by(crate::observation::cmp_transcript_items);
         Ok(items)

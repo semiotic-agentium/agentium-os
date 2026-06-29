@@ -294,6 +294,23 @@ pub enum EffectEvent {
         /// When set, provenance ties the session step to this task (task-scoped episode transcript).
         task_id: Option<TaskId>,
     },
+    /// Conversation history mutation cycle completed — transcript rows for this turn or dispatch
+    /// are persisted. Post-turn compaction evaluates against this signal (not [`A2aCompleted`] handover).
+    ContextHistorySettled {
+        context_id: ContextId,
+        agent_id: AgentId,
+        settlement: ContextHistorySettlementKind,
+        /// BAML function name for compaction policy resolution when known (e.g. chat handler).
+        function_name: Option<String>,
+    },
+}
+
+/// Why conversation history settled (post-turn compaction trigger source).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextHistorySettlementKind {
+    ChatStream,
+    HostDispatch,
 }
 
 #[derive(Debug, Clone)]
@@ -317,6 +334,7 @@ impl EffectEvent {
             EffectEvent::LlmStarted { .. } | EffectEvent::LlmCompleted { .. } => EffectKind::Llm,
             EffectEvent::A2aStarted { .. }
             | EffectEvent::A2aCompleted { .. }
+            | EffectEvent::ContextHistorySettled { .. }
             | EffectEvent::IntentResolved { .. }
             | EffectEvent::PlanGenerated { .. }
             | EffectEvent::PlanStepStatusChanged { .. } => EffectKind::A2a,
@@ -333,6 +351,7 @@ impl EffectEvent {
             | EffectEvent::LlmCompleted { context_id, .. } => context_id,
             EffectEvent::A2aStarted { context_id, .. }
             | EffectEvent::A2aCompleted { context_id, .. }
+            | EffectEvent::ContextHistorySettled { context_id, .. }
             | EffectEvent::IntentResolved { context_id, .. }
             | EffectEvent::PlanGenerated { context_id, .. }
             | EffectEvent::PlanStepStatusChanged { context_id, .. } => context_id,
@@ -351,6 +370,7 @@ impl EffectEvent {
             EffectEvent::LlmCompleted { .. } => "llm_completed",
             EffectEvent::A2aStarted { .. } => "a2a_started",
             EffectEvent::A2aCompleted { .. } => "a2a_completed",
+            EffectEvent::ContextHistorySettled { .. } => "context_history_settled",
             EffectEvent::IntentResolved { .. } => "intent_resolved",
             EffectEvent::PlanGenerated { .. } => "plan_generated",
             EffectEvent::PlanStepStatusChanged { .. } => "plan_step_status_changed",
@@ -574,6 +594,27 @@ pub trait EffectEmitter: EffectLiveness + Send + Sync {
         })
         .await?;
         Ok(token)
+    }
+
+    /// Emit [`EffectEvent::ContextHistorySettled`] after transcript rows for a turn are persisted.
+    async fn emit_context_history_settled(
+        &self,
+        context_id: ContextId,
+        agent_id: crate::ids::AgentId,
+        settlement: ContextHistorySettlementKind,
+        function_name: Option<String>,
+    ) {
+        if let Err(e) = self
+            .emit(EffectEvent::ContextHistorySettled {
+                context_id,
+                agent_id,
+                settlement,
+                function_name,
+            })
+            .await
+        {
+            tracing::warn!(error = ?e, "Failed to emit context history settled");
+        }
     }
 }
 
@@ -898,6 +939,7 @@ impl BusWithEffects {
                 EffectEvent::IntentResolved { .. }
                 | EffectEvent::PlanGenerated { .. }
                 | EffectEvent::PlanStepStatusChanged { .. } => {}
+                EffectEvent::ContextHistorySettled { .. } => {}
                 EffectEvent::ToolStreamChunk { .. } => {}
                 // Session steps don't affect in-flight counts — they're informational.
                 EffectEvent::ToolSessionStep { .. } => {}
@@ -911,7 +953,10 @@ impl BusWithEffects {
         let cloned: Vec<Arc<dyn EffectSubscriber>> = subs.iter().cloned().collect();
         drop(subs);
 
-        if matches!(event, EffectEvent::LlmCompleted { .. }) {
+        if matches!(
+            event,
+            EffectEvent::LlmCompleted { .. } | EffectEvent::ContextHistorySettled { .. }
+        ) {
             // Awaitable subscribers (e.g. `ProvenanceEffectSubscriber`) finish before
             // `emit` returns so causal-completeness contracts hold for downstream
             // reads such as `conversation_context`. Background subscribers run
@@ -1093,8 +1138,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        BusWithEffects, EffectEmitter, EffectEvent, EffectSubscriber, EffectSubscriberTier,
-        LlmEffectMetadata, Outcome, ToolNameResolution,
+        BusWithEffects, ContextHistorySettlementKind, EffectEmitter, EffectEvent, EffectSubscriber,
+        EffectSubscriberTier, LlmEffectMetadata, Outcome, ToolNameResolution,
     };
     use crate::ids::ContextId;
 
@@ -1524,6 +1569,15 @@ mod tests {
                     metadata: a2a_metadata(),
                     duration_ms: 0,
                     outcome: Outcome::Success,
+                },
+            ),
+            (
+                "context_history_settled",
+                EffectEvent::ContextHistorySettled {
+                    context_id: ctx(),
+                    agent_id: agent_id(),
+                    settlement: ContextHistorySettlementKind::ChatStream,
+                    function_name: None,
                 },
             ),
             (

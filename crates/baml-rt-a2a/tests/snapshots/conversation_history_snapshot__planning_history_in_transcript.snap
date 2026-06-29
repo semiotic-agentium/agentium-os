@@ -1,0 +1,26 @@
+---
+source: crates/baml-rt-a2a/tests/conversation_history_snapshot.rs
+expression: history
+---
+[
+  {
+    "role": "user",
+    "content": "#1 investigate checkout 5xx"
+  },
+  {
+    "role": "system",
+    "content": "#2 [planning:intent_resolved] Intent: Debug checkout 5xx errors status=resolved"
+  },
+  {
+    "role": "system",
+    "content": "#3 [planning:plan_committed] Plan committed (plan-checkout)"
+  },
+  {
+    "role": "system",
+    "content": "#4 [planning:plan_step_status_changed] Step step-discover: ready — Inspect traces and logs step=step-discover status=ready"
+  },
+  {
+    "role": "system",
+    "content": "#5 [planning:plan_step_status_changed] Step step-remediate: ready — Propose rollback if needed step=step-remediate status=ready"
+  }
+]

@@ -16,7 +16,7 @@ expression: snapshot
       "license": {
         "name": "Apache-2.0"
       },
-      "version": "0.1.1"
+      "version": "0.1.3"
     },
     "paths": {
       "/agents": {
@@ -260,6 +260,56 @@ expression: snapshot
                   }
                 }
               }
+            },
+            "401": {
+              "description": "Missing or invalid runner token"
+            },
+            "503": {
+              "description": "Config service not available"
+            }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
+        }
+      },
+      "/config/llm/model-budgets": {
+        "get": {
+          "tags": [
+            "config"
+          ],
+          "summary": "Resolved model compaction budgets for configured LLM clients.",
+          "operationId": "get_llm_model_budgets",
+          "responses": {
+            "200": {
+              "description": "Resolved compaction budgets"
+            },
+            "401": {
+              "description": "Missing or invalid runner token"
+            },
+            "503": {
+              "description": "Config service not available"
+            }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
+        }
+      },
+      "/config/llm/model-budgets/refresh": {
+        "post": {
+          "tags": [
+            "config"
+          ],
+          "summary": "Refresh online model metadata and return resolved compaction budgets.",
+          "operationId": "refresh_llm_model_budgets",
+          "responses": {
+            "200": {
+              "description": "Refreshed compaction budgets"
             },
             "401": {
               "description": "Missing or invalid runner token"
@@ -2844,6 +2894,39 @@ expression: snapshot
                   "type": "string",
                   "enum": [
                     "planning_event"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "summary",
+                "covered_event_order_start",
+                "covered_event_order_end",
+                "type"
+              ],
+              "properties": {
+                "covered_event_order_end": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "covered_event_order_start": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "expandable": {
+                  "type": "boolean"
+                },
+                "summary": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "compaction_summary"
                   ]
                 }
               }

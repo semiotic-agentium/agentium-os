@@ -194,7 +194,18 @@ pub trait ConversationContextProvider: Send + Sync {
     async fn conversation_history_json(
         &self,
         scope: &context::RuntimeScope,
+        function_name: &str,
     ) -> Result<Option<Value>>;
+
+    /// Return conversation-history payload for LLM prompt injection, including any
+    /// pre-model emergency compaction gate.
+    async fn conversation_history_json_for_llm(
+        &self,
+        scope: &context::RuntimeScope,
+        function_name: &str,
+    ) -> Result<Option<Value>> {
+        self.conversation_history_json(scope, function_name).await
+    }
 
     /// Graph read for step-executor intra buffer delta (`p_before` / `p_after`).
     ///
@@ -205,8 +216,9 @@ pub trait ConversationContextProvider: Send + Sync {
     async fn conversation_history_json_for_intra_dedup(
         &self,
         scope: &context::RuntimeScope,
+        function_name: &str,
     ) -> Result<Option<Value>> {
-        self.conversation_history_json(scope).await
+        self.conversation_history_json(scope, function_name).await
     }
 }
 
@@ -357,7 +369,10 @@ impl BamlExecutor {
         // Pre-execution interception: intercept LLM calls before they're sent
         let context_tags = match override_context_tags {
             Some(tags) => Some(tags),
-            None => self.build_conversation_context_tags(scope).await?,
+            None => {
+                self.build_conversation_context_tags(scope, function_name)
+                    .await?
+            }
         };
         let ctx_manager = self.create_ctx_manager_for_scope(scope, context_tags)?;
         let planning_step_refs = planning_step
@@ -685,16 +700,18 @@ impl BamlExecutor {
         Ok(ctx_manager)
     }
 
-    /// Raw projected line objects from the provider only (no intra-turn merge).
-    /// Uses the same cap policy as the transcript shown to the LLM (e.g. last _N_ graph items).
-    pub(crate) async fn provider_conversation_history_lines(
+    pub(crate) async fn provider_conversation_history_lines_for_llm(
         &self,
         scope: &context::RuntimeScope,
+        function_name: &str,
     ) -> Result<Vec<Value>> {
         let Some(provider) = self.conversation_context_provider.as_ref() else {
             return Ok(vec![]);
         };
-        let Some(payload) = provider.conversation_history_json(scope).await? else {
+        let Some(payload) = provider
+            .conversation_history_json_for_llm(scope, function_name)
+            .await?
+        else {
             return Ok(vec![]);
         };
         Ok(extract_conversation_array_from_payload(&payload))
@@ -704,12 +721,13 @@ impl BamlExecutor {
     pub(crate) async fn provider_conversation_history_lines_for_intra_dedup(
         &self,
         scope: &context::RuntimeScope,
+        function_name: &str,
     ) -> Result<Vec<Value>> {
         let Some(provider) = self.conversation_context_provider.as_ref() else {
             return Ok(vec![]);
         };
         let Some(payload) = provider
-            .conversation_history_json_for_intra_dedup(scope)
+            .conversation_history_json_for_intra_dedup(scope, function_name)
             .await?
         else {
             return Ok(vec![]);
@@ -740,8 +758,11 @@ impl BamlExecutor {
     pub async fn build_conversation_context_tags(
         &self,
         scope: &context::RuntimeScope,
+        function_name: &str,
     ) -> Result<Option<HashMap<String, BamlValue>>> {
-        let lines = self.provider_conversation_history_lines(scope).await?;
+        let lines = self
+            .provider_conversation_history_lines_for_llm(scope, function_name)
+            .await?;
         self.tags_from_merged_conversation_lines(lines)
     }
 

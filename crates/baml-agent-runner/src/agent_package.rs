@@ -108,6 +108,7 @@ pub(crate) struct AgentPackageBootArgs<'a> {
     pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
     pub(crate) observation_notify:
         Option<tokio::sync::broadcast::Sender<baml_rt_core::ObservationUpdate>>,
+    pub(crate) compaction_summarizer: Arc<dyn baml_rt_provenance::ConversationCompactionSummarizer>,
 }
 
 impl AgentPackage {
@@ -352,6 +353,7 @@ impl AgentPackage {
         provenance_config: &ProvenanceConfig,
         stream_idle_secs: Option<u64>,
         observation_notify: Option<tokio::sync::broadcast::Sender<baml_rt_core::ObservationUpdate>>,
+        compaction_summarizer: Arc<dyn baml_rt_provenance::ConversationCompactionSummarizer>,
     ) -> Result<JsInitialized> {
         use baml_rt_quickjs::QuickJSConfig;
 
@@ -364,25 +366,9 @@ impl AgentPackage {
             provenance_config.llm_secret_resolver(),
         )));
 
-        {
-            use baml_rt_llm_config::{LLM_CONFIG_BUNDLE_NAME, LlmClientConfig, StaticResolver};
-            let config_service = provenance_config.config_service();
-            let bundle = baml_rt_tools::BundleName::new(LLM_CONFIG_BUNDLE_NAME)
-                .expect("llm bundle name valid");
-            let llm_config = match config_service.get(&bundle).await {
-                Ok(Some(v)) => match LlmClientConfig::from_value(v) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "stored LLM config parse failed; using sensible default");
-                        LlmClientConfig::sensible_default()
-                    }
-                },
-                Ok(None) => LlmClientConfig::sensible_default(),
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to load LLM config; using sensible default");
-                    LlmClientConfig::sensible_default()
-                }
-            };
+        let llm_config_arc = {
+            use baml_rt_llm_config::{StaticResolver, load_stored_config};
+            let llm_config = load_stored_config(provenance_config.config_service().as_ref()).await;
             tracing::info!(
                 default = %llm_config.default,
                 clients = llm_config.clients.len(),
@@ -390,12 +376,14 @@ impl AgentPackage {
                 function_overrides = llm_config.overrides.agent_function.len(),
                 "LLM client config loaded for override resolution"
             );
+            let llm_config_arc = Arc::new(llm_config);
             let resolver = Arc::new(StaticResolver::new(
-                Arc::new(llm_config),
+                Arc::clone(&llm_config_arc),
                 provenance_config.llm_secret_resolver(),
             ));
             runtime_manager.set_llm_client_resolver(resolver);
-        }
+            llm_config_arc
+        };
 
         let runtime_manager_arc = Arc::new(tokio::sync::RwLock::new(runtime_manager));
         let store = provenance_config.store().clone();
@@ -416,12 +404,14 @@ impl AgentPackage {
             .with_quickjs_config(quickjs_config)
             .with_baml_helpers(true)
             .with_agent_identity(agent_package, agent_instance_id)
-            .with_surreal_store(store);
+            .with_surreal_store(store)
+            .with_llm_client_config(llm_config_arc);
         if let Some(tx) = observation_notify.clone() {
             agent_builder = agent_builder.with_observation_notify(tx);
         }
         let agent_builder =
             agent_builder.with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()));
+        let agent_builder = agent_builder.with_compaction_summarizer(compaction_summarizer);
         info!(
             agent = %self.manifest.name,
             "building QuickJS runtime and A2a bridge (often the longest boot step)"
@@ -496,6 +486,7 @@ impl AgentPackage {
                     args.provenance_config,
                     args.stream_idle_secs,
                     args.observation_notify.clone(),
+                    Arc::clone(&args.compaction_summarizer),
                 )
                 .await?;
             // Register before `initialize_js_phase`: a CPU-bound JS top-level

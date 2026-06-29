@@ -10,85 +10,26 @@ use baml_rt_core::{
     bus::{A2aEffectMetadata, A2aLivenessRole, EffectEmitter, EffectEvent},
     context::InvocationScope,
     ids::AgentId,
-    stream_completion::StreamCompletion,
 };
 use baml_rt_observability::{metrics, spans};
 use baml_rt_quickjs::{
     BridgeHandle,
-    a2a_stream::{StreamOutput, invoke_handler_handover, spawn_stream_handover},
+    a2a_stream::{StreamOutput, spawn_stream_handover},
 };
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
 use crate::{
-    a2a,
-    a2a_types::{self, StreamResponse},
+    a2a, a2a_types,
     handlers::TaskHandler,
     result_pipeline::ResultStoragePipeline,
+    stream_collector::{ChatStreamCollectorConfig, run_chat_stream_collector},
 };
 
-/// Extracts task ID string from a normalized stream chunk (task.id, statusUpdate.taskId, or message.taskId).
-fn normalized_to_stream_response(normalized: Value) -> StreamResponse {
-    serde_json::from_value(normalized).unwrap_or_default()
-}
-
-fn task_id_from_chunk(value: &Value) -> Option<String> {
-    value
-        .get("task")
-        .and_then(|t| t.get("id"))
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .or_else(|| {
-            value
-                .get("statusUpdate")
-                .and_then(|s| s.get("taskId"))
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        })
-        .or_else(|| {
-            value
-                .get("message")
-                .and_then(|m| m.get("taskId"))
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        })
-}
-
-/// Builds a stream chunk for TASK_STATE_SUBMITTED so the client FSM sees SUBMITTED before WORKING.
-/// This chunk is applied through the same pipeline as agent yields (store_result → apply_task_chunk):
-/// the task is created/recorded and SUBMITTED is written to the store and to provenance (task_exists + task_execution_started,
-/// task_status_changed). So the wire and PROV stay aligned—we record the task.
-fn make_submitted_chunk(context_id: &str, task_id: &str) -> StreamResponse {
-    serde_json::from_value(serde_json::json!({
-        "statusUpdate": {
-            "status": { "state": "TASK_STATE_SUBMITTED" },
-            "taskId": task_id,
-            "contextId": context_id
-        },
-        "task": {
-            "id": task_id,
-            "contextId": context_id,
-            "status": { "state": "TASK_STATE_SUBMITTED" }
-        }
-    }))
-    .expect("submitted chunk static JSON deserializes to StreamResponse")
-}
-
-/// Non-stream invocation: waits for JS promise to resolve and returns the result.
-///
-/// **Conversation routing:** Each call receives the invocation scope for a single A2A request
-/// (one conversation). The host ensures multiple concurrent conversations each get their own
-/// scope; the handler is invoked with that scope so messages and yielded chunks stay with the
-/// correct conversation.
+/// Stream invocation via JS handover lane: yields chunks incrementally via the returned receiver.
 #[async_trait]
 pub trait JsInvoker: Send + Sync {
-    async fn invoke_handler(
-        &self,
-        request: &a2a::A2aRequest,
-        scope: &InvocationScope,
-    ) -> Result<Value>;
-    /// Stream invocation that yields chunks incrementally via the returned receiver.
     /// Each item is (raw_chunk, Option<StreamCompletion>); last item has Some(completion).
     /// When `resume_rx` is Some (live session), the collector blocks on InputRequired for true resume.
     /// When `relay_rx` is Some (live stream), the collector drains it each iteration so tool/status chunks stay in order.
@@ -113,15 +54,6 @@ impl QuickJsInvoker {
 
 #[async_trait]
 impl JsInvoker for QuickJsInvoker {
-    async fn invoke_handler(
-        &self,
-        request: &a2a::A2aRequest,
-        scope: &InvocationScope,
-    ) -> Result<Value> {
-        let js_request = a2a::request_to_js_value(request)?;
-        invoke_handler_handover(&self.handle, scope.clone(), js_request).await
-    }
-
     async fn invoke_stream_incremental(
         &self,
         request: &a2a::A2aRequest,
@@ -203,234 +135,119 @@ impl RequestRouter for MethodBasedRouter {
                 let route_span = spans::a2a_route(request.method().as_str(), context_id.as_str());
 
                 async {
-                // Build metadata
-                let mut metadata_map = serde_json::Map::new();
-                if let Some(id) = request.id.as_ref() {
+                    // Build metadata
+                    let mut metadata_map = serde_json::Map::new();
+                    if let Some(id) = request.id.as_ref() {
+                        metadata_map.insert(
+                            "request_id".to_string(),
+                            serde_json::to_value(id).unwrap_or(Value::Null),
+                        );
+                    }
                     metadata_map.insert(
-                        "request_id".to_string(),
-                        serde_json::to_value(id).unwrap_or(Value::Null),
+                        "message_id".to_string(),
+                        Value::String(scope.message_id().as_str().to_string()),
                     );
-                }
-                metadata_map.insert(
-                    "message_id".to_string(),
-                    Value::String(scope.message_id().as_str().to_string()),
-                );
-                metadata_map.insert(
-                    "agent_id".to_string(),
-                    Value::String(scope.agent_id().as_str().to_string()),
-                );
-                if let Some(task_id) = scope.task_id_opt() {
                     metadata_map.insert(
-                        "task_id".to_string(),
-                        Value::String(task_id.as_str().to_string()),
+                        "agent_id".to_string(),
+                        Value::String(scope.agent_id().as_str().to_string()),
                     );
-                }
-                let metadata = Value::Object(metadata_map);
+                    if let Some(task_id) = scope.task_id_opt() {
+                        metadata_map.insert(
+                            "task_id".to_string(),
+                            Value::String(task_id.as_str().to_string()),
+                        );
+                    }
+                    let metadata = Value::Object(metadata_map);
 
-                let effect_metadata = A2aEffectMetadata {
-                    agent_id: self.agent_id.clone(),
-                    method: request.method().as_str().to_string(),
-                    request_id: request.id.as_ref().and_then(|id| match id {
-                        a2a_types::JSONRPCId::String(s) => Some(s.clone()),
-                        a2a_types::JSONRPCId::Integer(n) => Some(n.to_string()),
-                        a2a_types::JSONRPCId::Null => None,
-                    }),
-                    liveness_role: A2aLivenessRole::Command,
-                    metadata: metadata.clone(),
-                };
+                    let effect_metadata = A2aEffectMetadata {
+                        agent_id: self.agent_id.clone(),
+                        method: request.method().as_str().to_string(),
+                        request_id: request.id.as_ref().and_then(|id| match id {
+                            a2a_types::JSONRPCId::String(s) => Some(s.clone()),
+                            a2a_types::JSONRPCId::Integer(n) => Some(n.to_string()),
+                            a2a_types::JSONRPCId::Null => None,
+                        }),
+                        liveness_role: A2aLivenessRole::Command,
+                        metadata: metadata.clone(),
+                    };
 
-                // Emit A2A started
-                if let Err(e) = self
-                    .effect_emitter
-                    .emit(EffectEvent::A2aStarted {
-                        context_id: context_id.clone(),
-                        metadata: effect_metadata.clone(),
-                    })
-                    .await
-                {
-                    tracing::warn!(error = ?e, "Failed to emit A2A effect started");
-                }
+                    // Emit A2A started
+                    if let Err(e) = self
+                        .effect_emitter
+                        .emit(EffectEvent::A2aStarted {
+                            context_id: context_id.clone(),
+                            metadata: effect_metadata.clone(),
+                        })
+                        .await
+                    {
+                        tracing::warn!(error = ?e, "Failed to emit A2A effect started");
+                    }
 
-                // Compute result so we always emit A2aCompleted on every exit (success or failure)
-                let result = async {
-                    if request.is_stream() {
-                        // Incremental only: no internal collect. Outermost consumer (transport/SSE) drains the receiver.
-                        let resume_tx = resume_channel
-                            .as_ref()
-                            .map(|(tx, _): &(mpsc::Sender<Value>, mpsc::Receiver<Value>)| tx.clone());
+                    // Compute result so we always emit A2aCompleted on every exit (success or failure)
+                    let result = async {
+                        debug_assert!(
+                            request.is_stream(),
+                            "chat router path requires stream invocation (message.sendStream)"
+                        );
+                        let compaction_function_name =
+                            a2a::compaction_function_name_from_request(request);
+                        // Incremental only: outermost consumer (transport/SSE) drains the receiver.
+                        let resume_tx = resume_channel.as_ref().map(
+                            |(tx, _): &(mpsc::Sender<Value>, mpsc::Receiver<Value>)| tx.clone(),
+                        );
                         let resume_rx = resume_channel.map(|(_, rx)| rx);
-                        let (mut chunk_rx, abort_tx) = self
+                        let (chunk_rx, abort_tx) = self
                             .js_invoker
                             .invoke_stream_incremental(request, scope, resume_rx, relay_rx)
                             .await?;
                         let (tx, rx) = mpsc::channel(64);
-                        let pipeline = self.result_pipeline.clone();
-                        let scope = scope.clone();
-                        let inject_submitted =
-                            request.method() == a2a::A2aMethod::MessageSendStream;
+                        let collector = ChatStreamCollectorConfig {
+                            scope: scope.clone(),
+                            agent_id: self.agent_id.clone(),
+                            pipeline: self.result_pipeline.clone(),
+                            effect_emitter: self.effect_emitter.clone(),
+                            compaction_function_name,
+                            inject_submitted: request.method() == a2a::A2aMethod::MessageSendStream,
+                        };
                         tokio::spawn(async move {
-                            let router_pipeline_start = Instant::now();
-                            let mut first_stream_output = true;
-                            let mut normalizer = a2a::JsChunkNormalizer::new(&scope);
-                            let mut index = 0_usize;
-                            let mut last_completion = None;
-                            let mut submitted_sent = false;
-                            while let Some(output) = chunk_rx.recv().await {
-                                if first_stream_output {
-                                    first_stream_output = false;
-                                    let wait = router_pipeline_start.elapsed();
-                                    metrics::record_live_stream_phase_duration(
-                                        "router_first_handover_output",
-                                        wait,
-                                    );
-                                    metrics::record_live_stream_event("router_first_js_output");
-                                    tracing::debug!(
-                                        context_id = %scope.context_id().as_str(),
-                                        wait_ms = wait.as_millis(),
-                                        "stream router: first output from QuickJS handover channel"
-                                    );
-                                }
-                                let (raw_chunk, completion, is_relay) = match &output {
-                                    StreamOutput::Chunk(v) => (v.clone(), None, false),
-                                    StreamOutput::RelayChunk(v) => (v.clone(), None, true),
-                                    StreamOutput::Terminal(v, c) => (v.clone(), Some(*c), false),
-                                };
-                                last_completion = completion;
-                                match normalizer.normalize_value(raw_chunk) {
-                                    Ok(mut normalized) => {
-                                        if is_relay
-                                            && let Some(obj) = normalized.as_object_mut()
-                                        {
-                                            obj.insert(
-                                                "__toolStreamChunk".to_string(),
-                                                serde_json::Value::Bool(true),
-                                            );
-                                        }
-                                        // Emit SUBMITTED first for client FSM; same pipeline so store and PROV record the task.
-                                        if inject_submitted && !submitted_sent {
-                                            let context_id_str = scope.context_id().as_str();
-                                            let task_id_opt = scope
-                                                .task_id_opt()
-                                                .map(|t| t.as_str().to_string())
-                                                .or_else(|| task_id_from_chunk(&normalized));
-                                            if let Some(ref task_id_str) = task_id_opt {
-                                                let submitted_chunk = make_submitted_chunk(
-                                                    context_id_str,
-                                                    task_id_str,
-                                                );
-                                                let submitted_wire =
-                                                    serde_json::to_value(&submitted_chunk)
-                                                        .unwrap_or(Value::Null);
-                                                if pipeline
-                                                    .store_result(&submitted_wire)
-                                                    .await
-                                                    .is_ok()
-                                                    && tx
-                                                        .send((submitted_chunk, 0, None))
-                                                        .await
-                                                        .is_ok()
-                                                {
-                                                    submitted_sent = true;
-                                                    index = 1;
-                                                }
-                                            }
-                                        }
-                                        if let Err(e) = pipeline.store_result(&normalized).await {
-                                            tracing::warn!(
-                                                error = %e,
-                                                "stream: store_result failed for chunk; still forwarding to client"
-                                            );
-                                        }
-                                        let sr = normalized_to_stream_response(normalized.clone());
-                                        if tx.send((sr, index, completion)).await.is_err() {
-                                            break;
-                                        }
-                                        index += 1;
-                                    }
-                                    Err(e) => {
-                                        let err_chunk = normalized_to_stream_response(
-                                            serde_json::json!({"error": e.to_string()}),
-                                        );
-                                        if tx.send((
-                                            err_chunk,
-                                            index,
-                                            Some(StreamCompletion::SemanticFinal),
-                                        ))
-                                        .await
-                                        .is_err()
-                                        {
-                                            tracing::debug!("stream error send failed (receiver dropped)");
-                                        }
-                                        break;
-                                    }
-                                }
-                                // Only exit on terminal completions; InputRequired leaves the stream open for resume.
-                                if completion
-                                    .as_ref()
-                                    .is_some_and(|c| c.is_wire_final())
-                                {
-                                    break;
-                                }
-                            }
-                            if last_completion.is_none() && !tx.is_closed()
-                                && tx.send((
-                                    StreamResponse::default(),
-                                    index,
-                                    Some(StreamCompletion::ChannelClosed),
-                                ))
-                                .await
-                                .is_err()
-                            {
-                                tracing::debug!("stream channel-closed send failed (receiver dropped)");
-                            }
+                            run_chat_stream_collector(chunk_rx, tx, collector).await;
                         });
                         Ok(a2a::A2aOutcome::Stream(a2a::StreamHandle {
                             receiver: rx,
                             resume_tx,
                             abort_tx,
                         }))
-                    } else {
-                        let mut normalizer = a2a::JsChunkNormalizer::new(scope);
-                        let result = self.js_invoker.invoke_handler(request, scope).await?;
-                        let normalized = normalizer.normalize_value(result)?;
-                        self.result_pipeline.store_result(&normalized).await?;
-                        Ok(a2a::A2aOutcome::Response(normalized))
                     }
-                }
-                .instrument(spans::a2a_js_invoke(
-                    request.method().as_str(),
-                    request.invocation,
-                ))
-                .await;
+                    .instrument(spans::a2a_js_invoke(
+                        request.method().as_str(),
+                        request.invocation,
+                    ))
+                    .await;
 
-                let duration = start.elapsed();
-                let duration_ms = duration.as_millis() as u64;
-                let outcome = Outcome::from(result.is_ok());
-                let mode = if request.is_stream() {
-                    "stream"
-                } else {
-                    "non_stream"
-                };
-                let result_str = if outcome.is_success() {
-                    "success"
-                } else {
-                    "error"
-                };
-                metrics::record_quickjs_invoke(mode, result_str, duration);
-                if let Err(e) = self
-                    .effect_emitter
-                    .emit(EffectEvent::A2aCompleted {
-                        context_id: context_id.clone(),
-                        metadata: effect_metadata,
-                        duration_ms,
-                        outcome,
-                    })
-                    .await
-                {
-                    tracing::warn!(error = ?e, "Failed to emit A2A effect completed");
-                }
+                    let duration = start.elapsed();
+                    let duration_ms = duration.as_millis() as u64;
+                    let outcome = Outcome::from(result.is_ok());
+                    let mode = "stream";
+                    let result_str = if outcome.is_success() {
+                        "success"
+                    } else {
+                        "error"
+                    };
+                    metrics::record_quickjs_invoke(mode, result_str, duration);
+                    if let Err(e) = self
+                        .effect_emitter
+                        .emit(EffectEvent::A2aCompleted {
+                            context_id: context_id.clone(),
+                            metadata: effect_metadata,
+                            duration_ms,
+                            outcome,
+                        })
+                        .await
+                    {
+                        tracing::warn!(error = ?e, "Failed to emit A2A effect completed");
+                    }
 
-                result
+                    result
                 }
                 .instrument(route_span)
                 .await
@@ -465,13 +282,6 @@ mod tests {
 
     #[async_trait]
     impl JsInvoker for MockJsInvoker {
-        async fn invoke_handler(
-            &self,
-            _request: &a2a::A2aRequest,
-            _scope: &InvocationScope,
-        ) -> Result<Value> {
-            Ok(Value::Null)
-        }
         async fn invoke_stream_incremental(
             &self,
             _request: &a2a::A2aRequest,

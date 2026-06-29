@@ -20,14 +20,25 @@ pub enum TranscriptProjectionProfile {
     OperatorTimeline,
     /// Agent prompt assembly: index rows only (no extension enrichment).
     AgentPromptIndex,
+    /// Agent prompt with latest compaction summary + recent tail.
+    AgentPromptCompacted,
     /// Live SSE delta tail: index rows only.
     LiveStructuralDelta,
+    /// Full chronological history ignoring compaction boundaries.
+    ReplayFull,
+    /// Compaction audit rows (summary + covered range metadata).
+    CompactionAudit,
 }
 
 impl TranscriptProjectionProfile {
     #[must_use]
     pub const fn enrich_from_graph_extensions(self) -> bool {
         matches!(self, Self::OperatorTimeline)
+    }
+
+    #[must_use]
+    pub const fn uses_compaction(self) -> bool {
+        matches!(self, Self::AgentPromptCompacted)
     }
 }
 

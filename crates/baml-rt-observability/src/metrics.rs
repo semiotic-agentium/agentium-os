@@ -313,6 +313,106 @@ pub fn record_provenance_write(event_kind: &str, result: &str, duration: Duratio
     provenance_write_histogram().record(duration.as_millis() as f64, attributes);
 }
 
+static CONTEXT_COMPACTION_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static CONTEXT_COMPACTION_DURATION_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static CONTEXT_COMPACTION_BYTES_BEFORE_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static CONTEXT_COMPACTION_BYTES_AFTER_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static CONTEXT_COMPACTION_COVERED_ROWS_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+
+fn context_compaction_counter() -> &'static Counter<u64> {
+    CONTEXT_COMPACTION_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("baml_rt.context_compaction.attempt_total")
+            .init()
+    })
+}
+
+fn context_compaction_duration_histogram() -> &'static Histogram<f64> {
+    CONTEXT_COMPACTION_DURATION_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.context_compaction.duration_ms")
+            .init()
+    })
+}
+
+fn context_compaction_bytes_before_histogram() -> &'static Histogram<f64> {
+    CONTEXT_COMPACTION_BYTES_BEFORE_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.context_compaction.prompt_bytes_before")
+            .init()
+    })
+}
+
+fn context_compaction_bytes_after_histogram() -> &'static Histogram<f64> {
+    CONTEXT_COMPACTION_BYTES_AFTER_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.context_compaction.prompt_bytes_after")
+            .init()
+    })
+}
+
+fn context_compaction_covered_rows_histogram() -> &'static Histogram<f64> {
+    CONTEXT_COMPACTION_COVERED_ROWS_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.context_compaction.covered_rows")
+            .init()
+    })
+}
+
+/// Labels and measurements for a context compaction attempt.
+pub struct ContextCompactionMetrics<'a> {
+    pub trigger: &'a str,
+    pub result: &'a str,
+    pub reason: Option<&'a str>,
+    pub summarizer_backend: &'a str,
+    pub model: &'a str,
+    pub provider: &'a str,
+    pub budget_source: &'a str,
+    pub budget_freshness: &'a str,
+    pub duration: Duration,
+    pub pre_prompt_bytes: u64,
+    pub post_prompt_bytes: u64,
+    pub covered_rows: u64,
+}
+
+/// Record a host context compaction attempt (post-turn, pre-model emergency, or manual).
+pub fn record_context_compaction(metrics: ContextCompactionMetrics<'_>) {
+    let ContextCompactionMetrics {
+        trigger,
+        result,
+        reason,
+        summarizer_backend,
+        model,
+        provider,
+        budget_source,
+        budget_freshness,
+        duration,
+        pre_prompt_bytes,
+        post_prompt_bytes,
+        covered_rows,
+    } = metrics;
+    let mut attributes = vec![
+        KeyValue::new("trigger", trigger.to_string()),
+        KeyValue::new("result", result.to_string()),
+        KeyValue::new("summarizer", summarizer_backend.to_string()),
+        KeyValue::new("model", model.to_string()),
+        KeyValue::new("provider", provider.to_string()),
+        KeyValue::new("budget_source", budget_source.to_string()),
+        KeyValue::new("budget_freshness", budget_freshness.to_string()),
+    ];
+    if let Some(reason) = reason {
+        attributes.push(KeyValue::new("reason", reason.to_string()));
+    }
+    let attributes = attributes.as_slice();
+    context_compaction_counter().add(1, attributes);
+    context_compaction_duration_histogram().record(duration.as_millis() as f64, attributes);
+    if result == "success" {
+        context_compaction_bytes_before_histogram().record(pre_prompt_bytes as f64, attributes);
+        context_compaction_bytes_after_histogram().record(post_prompt_bytes as f64, attributes);
+        context_compaction_covered_rows_histogram().record(covered_rows as f64, attributes);
+    }
+}
+
 static PROVENANCE_SEQUENCE_RENDER_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 static PROVENANCE_SEQUENCE_RENDER_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
 

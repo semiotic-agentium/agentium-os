@@ -264,6 +264,7 @@ fn provenance_mentions_clickup_tool(items: &[ProvenanceConversationContextItem])
         ConversationItemContent::Message { .. } => false,
         ConversationItemContent::Operational(_) => false,
         ConversationItemContent::Planning(_) => false,
+        ConversationItemContent::CompactionSummary { .. } => false,
     })
 }
 

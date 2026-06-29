@@ -50,6 +50,7 @@ async fn run_stream_test(k: u32) -> Vec<Value> {
         .with_effect_emitter(std::sync::Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(baml_rt::QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .with_surreal_store(store)
+        .with_compaction_summarizer(baml_rt_provenance::FixedCompactionSummarizer::test_stub())
         .build()
         .await
         .unwrap();

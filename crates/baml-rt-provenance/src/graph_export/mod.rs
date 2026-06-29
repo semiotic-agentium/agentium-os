@@ -812,6 +812,15 @@ fn derive_display_name(label: &str, props: &HashMap<String, serde_json::Value>) 
             let tool = prop_str("tool_name").unwrap_or_default();
             format!("⚡ {tool} {op}")
         }
+        Some(GraphNodeLabel::ContextCompaction) => {
+            let trigger = prop_str("compaction_trigger").unwrap_or_default();
+            format!("🗜️ Context compaction [{trigger}]")
+        }
+        Some(GraphNodeLabel::CompactionSummary) => {
+            let summary = prop_str("summary_text").unwrap_or_default();
+            let preview: String = summary.chars().take(48).collect();
+            format!("📋 Compaction summary {preview}")
+        }
         None => label.to_string(),
     }
 }

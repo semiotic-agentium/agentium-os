@@ -2673,6 +2673,116 @@ fn normalize_event_with_registry(
                 )?;
             }
         }
+        ProvEventData::ContextCompactionRecorded {
+            covered_event_order_start,
+            covered_event_order_end,
+            covered_node_ids,
+            summary_text,
+            trigger,
+            recent_tail_retention,
+            pre_row_count,
+            post_row_count,
+            pre_prompt_bytes,
+            post_prompt_bytes,
+            source_render_hash,
+            excluded_unresolved,
+            ..
+        } => {
+            use crate::types::{ProvActivityId, ProvEntityId, ProvNodeRef};
+            let activity_id = ProvActivityId::from_write_time_node_id(format!(
+                "context-compaction:{}",
+                event.id().as_str()
+            ));
+            let summary_entity_id = ProvEntityId::from_write_time_node_id(format!(
+                "compaction-summary:{}",
+                event.id().as_str()
+            ));
+            let mut activity_attrs = base_attrs(event);
+            activity_attrs.insert(
+                "covered_event_order_start".to_string(),
+                Value::Number((*covered_event_order_start).into()),
+            );
+            activity_attrs.insert(
+                "covered_event_order_end".to_string(),
+                Value::Number((*covered_event_order_end).into()),
+            );
+            activity_attrs.insert(
+                "compaction_trigger".to_string(),
+                Value::String(trigger.as_wire_str().to_string()),
+            );
+            activity_attrs.insert(
+                "recent_tail_retention".to_string(),
+                Value::Number((*recent_tail_retention as u64).into()),
+            );
+            activity_attrs.insert(
+                "pre_row_count".to_string(),
+                Value::Number((*pre_row_count).into()),
+            );
+            activity_attrs.insert(
+                "post_row_count".to_string(),
+                Value::Number((*post_row_count).into()),
+            );
+            activity_attrs.insert(
+                "pre_prompt_bytes".to_string(),
+                Value::Number((*pre_prompt_bytes).into()),
+            );
+            activity_attrs.insert(
+                "post_prompt_bytes".to_string(),
+                Value::Number((*post_prompt_bytes).into()),
+            );
+            activity_attrs.insert(
+                "source_render_hash".to_string(),
+                Value::String(source_render_hash.clone()),
+            );
+            activity_attrs.insert(
+                "excluded_unresolved".to_string(),
+                Value::Bool(*excluded_unresolved),
+            );
+            activity_attrs.insert(
+                "covered_node_ids".to_string(),
+                Value::Array(
+                    covered_node_ids
+                        .iter()
+                        .map(|id| Value::String(id.clone()))
+                        .collect(),
+                ),
+            );
+            activity_attrs.insert(
+                prov::LABEL.to_string(),
+                Value::String("ContextCompaction".to_string()),
+            );
+            doc.insert_activity(
+                activity_id.clone(),
+                Activity {
+                    start_time_ms: Some(event.timestamp_ms()),
+                    end_time_ms: Some(event.timestamp_ms()),
+                    prov_type: None,
+                    attributes: activity_attrs,
+                },
+            );
+            let mut summary_attrs = base_attrs(event);
+            summary_attrs.insert(
+                "summary_text".to_string(),
+                Value::String(summary_text.clone()),
+            );
+            summary_attrs.insert(
+                prov::LABEL.to_string(),
+                Value::String("CompactionSummary".to_string()),
+            );
+            doc.insert_entity(
+                summary_entity_id.clone(),
+                Entity {
+                    prov_type: None,
+                    attributes: summary_attrs,
+                },
+            );
+            insert_was_generated_by(
+                &mut doc,
+                ProvNodeRef::Entity(summary_entity_id),
+                activity_id,
+                Some(event.timestamp_ms()),
+            );
+        }
     }
 
     Ok(NormalizedProv {
@@ -2772,6 +2882,20 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
                 activity_anchor: event.id().as_str().to_string(),
                 reason: "host ingress events must carry context_id".to_string(),
             });
+        }
+        ProvEventData::ContextCompactionRecorded { summary_text, .. } => {
+            if event.context_id_opt().is_none() {
+                return Err(ProvenanceError::InvalidEvent {
+                    activity_anchor: event.id().as_str().to_string(),
+                    reason: "ContextCompactionRecorded must carry context_id".to_string(),
+                });
+            }
+            if summary_text.trim().is_empty() {
+                return Err(ProvenanceError::InvalidEvent {
+                    activity_anchor: event.id().as_str().to_string(),
+                    reason: "ContextCompactionRecorded summary_text must be non-empty".to_string(),
+                });
+            }
         }
         _ => {}
     }

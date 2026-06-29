@@ -55,6 +55,7 @@ async fn setup_fixture_agent(name: &str) -> (A2aAgent, PathBuf) {
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
         .with_surreal_store(test_surreal_store().await)
+        .with_compaction_summarizer(baml_rt_provenance::FixedCompactionSummarizer::test_stub())
         .build()
         .await
         .expect("build fixture agent");

@@ -61,10 +61,11 @@ pub use backoff::ExponentialBackoff;
 pub use baml_rt_citation::Citation;
 pub use blocking_task::join_error_message;
 pub use bus::{
-    A2aEffectMetadata, A2aKind, Bus, BusApi, BusStream, BusWithEffects, Command, DomainEvent,
-    EffectEmitter, EffectEvent, EffectKind, EffectLiveness, EffectRuntime, EffectStartToken,
-    EffectSubscriber, EffectSubscriberTier, Envelope, InFlightCounts, LlmEffectMetadata, LlmKind,
-    LlmUsage, Payload, Subscriber, ToolEffectMetadata, ToolKind, bus_stream_channel,
+    A2aEffectMetadata, A2aKind, Bus, BusApi, BusStream, BusWithEffects, Command,
+    ContextHistorySettlementKind, DomainEvent, EffectEmitter, EffectEvent, EffectKind,
+    EffectLiveness, EffectRuntime, EffectStartToken, EffectSubscriber, EffectSubscriberTier,
+    Envelope, InFlightCounts, LlmEffectMetadata, LlmKind, LlmUsage, Payload, Subscriber,
+    ToolEffectMetadata, ToolKind, bus_stream_channel,
 };
 pub use callback_store::{
     CallbackDeliveryGate, CallbackStore, CancelCallbackSelector, ScheduleCallbackRequest,

@@ -132,8 +132,12 @@ impl LLMInterceptor for HistorySnapshotInterceptor {
                 .expect("step_intra slice mutex poisoned")
                 .clone();
             let g = self.manager.read().await;
-            g.merged_conversation_history_lines_json(&ctx.runtime_scope, &supplement)
-                .await
+            g.merged_conversation_history_lines_json(
+                &ctx.runtime_scope,
+                &ctx.function_id.full_name(),
+                &supplement,
+            )
+            .await
         }?;
         self.per_llm
             .lock()
@@ -215,6 +219,11 @@ async fn step_executor_intra_turn_merged_conversation_grows_per_llm_hop() {
         Some(store.clone()),
         &manager,
         &bus,
+        Arc::new(baml_rt_provenance::FixedCompactionSummarizer::new(
+            "Prior conversation was compacted; continue from recent context.",
+        )),
+        Arc::new(baml_rt_llm_config::LlmClientConfig::sensible_default()),
+        None,
     )
     .await
     .expect("provenance + conversation wiring");
@@ -293,22 +302,17 @@ async fn step_executor_intra_turn_merged_conversation_grows_per_llm_hop() {
         .collect();
     for (hop, rows) in as_arrays.iter().enumerate() {
         assert_transcript_rows_spec_clean(rows);
-        assert!(
-            !rows.is_empty(),
-            "hop {hop} merged transcript must not be empty"
-        );
+        if hop == 0 {
+            assert!(
+                !rows.is_empty(),
+                "first LLM hop must include graph-backed conversation rows"
+            );
+        }
     }
     let lengths: Vec<usize> = as_arrays.iter().map(|a| a.len()).collect();
-    for w in lengths.windows(2) {
-        assert!(
-            w[1] >= w[0],
-            "merged conversation must not shrink between hops: {:?}",
-            lengths
-        );
-    }
     assert!(
-        lengths.first().copied().unwrap_or(0) < lengths.last().copied().unwrap_or(0),
-        "merged conversation should grow across the run: {:?}",
+        lengths.iter().copied().max().unwrap_or(0) > lengths.iter().copied().min().unwrap_or(0),
+        "merged conversation should grow at least once across the run: {:?}",
         lengths
     );
 

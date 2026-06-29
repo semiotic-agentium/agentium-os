@@ -49,6 +49,24 @@ Example (empty registry at start; deploy after publish):
 | `--stream-idle-secs <SECS>` | `900` | Idle timeout for streaming tool sessions |
 | `--invoke <AGENT> <FUNCTION> <JSON_ARGS>` | unset | One-shot invoke mode for a JS function |
 
+## Context compaction (host BAML)
+
+When conversation history exceeds the compaction threshold, the runner summarizes sealed prefix rows via the host-owned BAML function `SummarizeConversationPrefix` (`baml_src/host/context_compaction.baml`). The LLM returns prose only; `@N`/`#N` wire refs from the source transcript are appended deterministically in Rust before the compaction record is written. LLM routing uses the agent's stored `LlmClientConfig` (same resolver as agent BAML hops).
+
+**Triggering** is model-aware and resolved from the `llm` config bundle:
+
+- **Post-turn** (`ContextHistorySettled`): runs after a history mutation cycle completes — A2A chat stream terminal (`InputRequired`, semantic final, channel closed) or host `onDispatch` ack. Evaluates against the **final** transcript for that cycle (not `A2aCompleted` stream handover). Defers mid-turn on `awaiting_input` only; settlement after `InputRequired` is allowed. Pre-model emergency compaction covers prompt overflow when post-turn defers.
+- **Pre-model emergency** (`conversation_history_json_for_llm` read): runs when full agent-prompt byte estimate exceeds the resolved model emergency budget for the effective BAML function.
+- **Manual operator** (future API): bypasses threshold checks with `force`, but safety gates still apply unless explicitly overridden.
+
+**History kinds:** compaction is history-kind agnostic — chat messages, host ingress operational rows (`role=host`), ingress user rows, planning events, and tool/session rows all contribute to prefix selection and summarizer input. Live in-progress planning steps stay verbatim in the retained tail; sealed intents/plans are summarizable.
+
+**Invariants (I1–I6):** settlement timing, history-kind coverage, planning preservation, prompt boundedness under sustained chat or event intake, pre-model emergency fallback, and R9 append-only graph with compaction on agent read only.
+
+Budget resolution order: client override → model override → known-model table → online metadata cache (OpenRouter) → conservative fallback. Operators configure overrides under **Settings → LLM → Compaction budgets**; resolved budgets are exposed at `GET /config/llm/model-budgets`.
+
+Set `BAML_HOST_SCHEMA_DIR` to the directory that **contains** `baml_src/host/` (typically the repository root). If unset, the runner defaults to the repo root relative to the binary build, or `/opt/agentium` in the published container image. Boot fails fast if the host schema cannot be loaded.
+
 ## HTTP Surface
 
 When `--serve-http` is set, the runner exposes:

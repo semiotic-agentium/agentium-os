@@ -79,11 +79,69 @@ export interface LlmRetryPolicyDef {
   strategy?: unknown;
 }
 
+pub interface ModelBudgetOverride {
+  context_window_tokens?: number;
+  trigger_ratio?: number;
+  emergency_ratio?: number;
+  output_reserve_tokens?: number;
+}
+
+export interface CompactionBudgetDefaults {
+  trigger_ratio?: number;
+  emergency_ratio?: number;
+  output_reserve_tokens?: number;
+  recent_tail_retention?: number;
+  item_threshold?: number;
+  defer_while_in_flight?: boolean;
+  defer_while_awaiting_input?: boolean;
+}
+
+export interface ModelBudgetSourceConfig {
+  openrouter?: boolean;
+  models_dev?: boolean;
+  litellm?: boolean;
+  cache_ttl_secs?: number;
+}
+
+export interface LlmCompactionConfig {
+  defaults?: CompactionBudgetDefaults;
+  model_overrides?: Record<string, ModelBudgetOverride>;
+  client_overrides?: Record<string, ModelBudgetOverride>;
+  online_sources?: ModelBudgetSourceConfig;
+}
+
 export interface LlmClientConfig {
   default: string;
   clients: Record<string, LlmClientDef>;
   overrides: LlmOverrides;
   retry_policies?: Record<string, LlmRetryPolicyDef>;
+  compaction?: LlmCompactionConfig;
+}
+
+export type BudgetSource =
+  | "configured"
+  | "known"
+  | "openrouter"
+  | "models_dev"
+  | "litellm"
+  | "fallback";
+
+export interface ModelContextBudget {
+  model_id: string;
+  provider: string;
+  client_name: string;
+  context_window_tokens: number;
+  safe_prompt_tokens: number;
+  emergency_prompt_tokens: number;
+  output_reserve_tokens: number;
+  source: BudgetSource;
+  freshness: string;
+  warning?: string | null;
+}
+
+export interface ResolvedClientBudgets {
+  clients: ModelContextBudget[];
+  refreshed_at_ms?: number | null;
 }
 
 export const LLM_BUNDLE_NAME = "llm";

@@ -165,6 +165,28 @@ pub async fn prepare_ref_table_for_projection(
                 }
                 history_entries.push((item.activity_anchor.clone(), "tool_call".to_string(), desc));
             }
+            PromptProjectionContent::Planning(plan) => {
+                if plan.summary.trim().is_empty() {
+                    continue;
+                }
+                let mut body = format!("[planning:{}] {}", plan.kind.as_wire_str(), plan.summary);
+                if let Some(ref detail) = plan.detail
+                    && !detail.trim().is_empty()
+                {
+                    body.push_str(&format!(" — {detail}"));
+                }
+                history_entries.push((item.activity_anchor.clone(), "plan".to_string(), body));
+            }
+            PromptProjectionContent::CompactionSummary { summary, .. } => {
+                if summary.trim().is_empty() {
+                    continue;
+                }
+                history_entries.push((
+                    item.activity_anchor.clone(),
+                    "compaction".to_string(),
+                    summary.clone(),
+                ));
+            }
             _ => {}
         }
     }

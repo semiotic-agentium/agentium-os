@@ -93,6 +93,7 @@ fn known_property_keys() -> HashSet<&'static str> {
         a2a::STEP_ID,
         a2a::TASK_ID,
         a2a::CONTEXT_ID,
+        a2a::SUMMARY_TEXT,
         a2a::DURATION_MS,
         a2a::ACTIVITY_OUTCOME,
         a2a::REASON,

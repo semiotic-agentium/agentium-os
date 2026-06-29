@@ -10,17 +10,8 @@ expression: "&redact_stochastic_strings(&report)"
         "content": "<redacted-#ref> intra turn merged snapshot"
       }
     ],
+    [],
     [
-      {
-        "role": "user",
-        "content": "<redacted-#ref> intra turn merged snapshot"
-      }
-    ],
-    [
-      {
-        "role": "user",
-        "content": "<redacted-#ref> intra turn merged snapshot"
-      },
       {
         "role": "tool",
         "content": "<redacted-#ref> using calculator for arithmetic"

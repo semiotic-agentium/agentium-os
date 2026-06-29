@@ -756,6 +756,43 @@ pub enum ProvEventData {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target_agent_id: Option<AgentId>,
     },
+    /// Host compacted a sealed transcript prefix into a summary for agent-facing projection.
+    ContextCompactionRecorded {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<TaskId>,
+        covered_event_order_start: u64,
+        covered_event_order_end: u64,
+        covered_node_ids: Vec<String>,
+        summary_text: String,
+        trigger: ContextCompactionTrigger,
+        recent_tail_retention: usize,
+        pre_row_count: u64,
+        post_row_count: u64,
+        pre_prompt_bytes: u64,
+        post_prompt_bytes: u64,
+        source_render_hash: String,
+        excluded_unresolved: bool,
+    },
+}
+
+/// Why host context compaction ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextCompactionTrigger {
+    PostTurnThreshold,
+    PreModelEmergency,
+    ManualOperator,
+}
+
+impl ContextCompactionTrigger {
+    #[must_use]
+    pub const fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::PostTurnThreshold => "post_turn_threshold",
+            Self::PreModelEmergency => "pre_model_emergency",
+            Self::ManualOperator => "manual_operator",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1968,6 +2005,48 @@ impl ProvEvent {
                 detail,
                 failure_kind,
                 target_agent_id: target.agent_id,
+            },
+        })
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "compaction event mirrors full audit payload"
+    )]
+    pub fn context_compaction_recorded_global(
+        context_id: ContextId,
+        task_id: Option<TaskId>,
+        covered_event_order_start: u64,
+        covered_event_order_end: u64,
+        covered_node_ids: Vec<String>,
+        summary_text: String,
+        trigger: ContextCompactionTrigger,
+        recent_tail_retention: usize,
+        pre_row_count: u64,
+        post_row_count: u64,
+        pre_prompt_bytes: u64,
+        post_prompt_bytes: u64,
+        source_render_hash: String,
+        excluded_unresolved: bool,
+    ) -> Self {
+        ProvEvent::Global(GlobalEvent {
+            id: next_activity_anchor_id(),
+            context_id,
+            timestamp_ms: now_millis(),
+            data: ProvEventData::ContextCompactionRecorded {
+                task_id,
+                covered_event_order_start,
+                covered_event_order_end,
+                covered_node_ids,
+                summary_text,
+                trigger,
+                recent_tail_retention,
+                pre_row_count,
+                post_row_count,
+                pre_prompt_bytes,
+                post_prompt_bytes,
+                source_render_hash,
+                excluded_unresolved,
             },
         })
     }

@@ -112,6 +112,7 @@ async fn test_concurrent_stream_phase_matrix_regression_under_load() {
                 .with_stream_concurrency(Some(12))
                 .with_stream_collector_idle_secs(Some(5)),
         )
+        .with_compaction_summarizer(baml_rt_provenance::FixedCompactionSummarizer::test_stub())
         .build()
         .await
         .unwrap();
@@ -263,6 +264,7 @@ async fn test_streaming_tool_failure_mid_stream() {
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .with_surreal_store(store)
+        .with_compaction_summarizer(baml_rt_provenance::FixedCompactionSummarizer::test_stub())
         .build()
         .await
         .unwrap();
@@ -332,6 +334,7 @@ async fn test_allowlist_violation_during_stream() {
         .with_surreal_store(store)
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
+        .with_compaction_summarizer(baml_rt_provenance::FixedCompactionSummarizer::test_stub())
         .build()
         .await
         .unwrap();

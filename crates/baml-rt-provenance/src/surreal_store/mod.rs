@@ -68,6 +68,7 @@
 mod agent_runtime_index;
 mod archive_ref;
 mod builder;
+mod context_compaction_index;
 mod context_picker_index;
 mod context_planning_batch;
 mod context_planning_index;

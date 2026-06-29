@@ -145,9 +145,43 @@ impl BamlRuntimeManager {
         self.log_invoke_baml_start(function_name, &args);
         // Verify function exists
         self.require_function_name(function_name)?;
-        let merged_tags = self.build_conversation_context_tags(scope).await?;
+        let merged_tags = self
+            .build_conversation_context_tags(scope, function_name)
+            .await?;
         self.invoke_baml_core(scope, function_name, args, merged_tags)
             .await
+    }
+
+    /// Host utility BAML: no conversation context tags, no tool-result follow-up.
+    pub async fn invoke_host_function(
+        &self,
+        scope: &context::RuntimeScope,
+        function_name: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.log_invoke_baml_start(function_name, &args);
+        self.require_function_name(function_name)?;
+        let empty_tags = HashMap::new();
+        let executor = self
+            .state
+            .executor
+            .as_ref()
+            .ok_or_else(|| BamlRtError::BamlRuntime("BAML runtime not loaded".to_string()))?;
+        let (result, completion) = executor
+            .execute_function(
+                scope,
+                function_name,
+                args,
+                Some(self.state.interceptor_registry.clone()),
+                None,
+                &self.state.function_tool_manifest,
+                Some(empty_tags),
+            )
+            .await?;
+        if let Some(h) = completion {
+            h.complete(Outcome::Success, None).await;
+        }
+        Ok(result)
     }
 
     /// Step-executor hop: same as [`Self::invoke_function`], with loop-local
@@ -163,7 +197,11 @@ impl BamlRuntimeManager {
         self.log_invoke_baml_start(function_name, &args);
         self.require_function_name(function_name)?;
         let merged_tags = self
-            .build_conversation_context_tags_with_intra(scope, conversation_intra_supplement)
+            .build_conversation_context_tags_with_intra(
+                scope,
+                function_name,
+                conversation_intra_supplement,
+            )
             .await?;
         self.invoke_baml_core(scope, function_name, args, merged_tags)
             .await

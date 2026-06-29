@@ -90,6 +90,7 @@ pub(crate) struct AgentRunnerConfig {
     pub(crate) sandbox_bind_roots: Vec<std::path::PathBuf>,
     pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
     pub(crate) observation_notify: Option<broadcast::Sender<ObservationUpdate>>,
+    pub(crate) compaction_summarizer: Arc<dyn baml_rt_provenance::ConversationCompactionSummarizer>,
 }
 
 /// Agent runner host: manages agents and composes the tool catalogue at startup.
@@ -119,6 +120,7 @@ pub(crate) struct AgentRunner {
     /// When set, wrapped provenance writes notify the operator `/conversation-history` stream after commit.
     pub(crate) observation_notify: Option<broadcast::Sender<ObservationUpdate>>,
     pub(crate) host_ingress_recorder: Arc<dyn baml_rt_core::HostIngressRecorder>,
+    pub(crate) compaction_summarizer: Arc<dyn baml_rt_provenance::ConversationCompactionSummarizer>,
 }
 
 impl AgentRunner {
@@ -147,6 +149,7 @@ impl AgentRunner {
             host_ingress_recorder: Arc::new(crate::services::HostIngressRecorderImpl::new(
                 provenance_store,
             )),
+            compaction_summarizer: config.compaction_summarizer,
         })
     }
 
@@ -438,6 +441,7 @@ impl AgentRunner {
                 sandbox_bind_roots: self.sandbox_bind_roots(),
                 runtime_progress: self.runtime_progress.clone(),
                 observation_notify: self.observation_notify_tx(),
+                compaction_summarizer: Arc::clone(&self.compaction_summarizer),
             })
             .await?;
         let manifest = package.manifest().clone();
