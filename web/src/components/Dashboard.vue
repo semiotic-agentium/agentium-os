@@ -5,9 +5,10 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import type { AgentDiscoveryEntry, ChatMessage, ContextMetricsResponse } from "../types/a2a";
-import type { ContextPlanningResponse, ProvenanceGroupHotspot } from "../types/provenance";
+import type { ProvenanceGroupHotspot } from "../types/provenance";
+import { useContextPlanning } from "../composables/contextPlanning";
 import { useMermaidRenderer } from "../composables/useMermaidRenderer";
 import { useTheme } from "../composables/useTheme";
 import {
@@ -48,29 +49,13 @@ const emit = defineEmits<{
 }>();
 
 // ── Planning (optional provenance-backed tasks only) ────────────────────────
-const planningData = ref<ContextPlanningResponse | null>(null);
-
-watch(
-  () => props.contextId,
-  async (ctxId) => {
-    if (!ctxId) {
-      planningData.value = null;
-      return;
-    }
-    try {
-      const res = await fetch(`/contexts/${encodeURIComponent(ctxId)}/planning`);
-      if (res.ok) planningData.value = await res.json();
-    } catch {
-      // planning endpoint may not be available
-    }
-  },
-  { immediate: true },
-);
+const contextIdRef = computed(() => props.contextId);
+const { tasks: planningTasks } = useContextPlanning(contextIdRef);
 
 const planningStatus = computed(() => {
-  const tasks = planningData.value?.tasks ?? [];
-  if (tasks.length === 0) return null;
-  const task = tasks[0]!;
+  const taskList = planningTasks.value;
+  if (taskList.length === 0) return null;
+  const task = taskList[0]!;
   const intent = task.currentIntent?.description ?? null;
   const summary = task.stepSummary;
   const total = summary?.total ?? 0;

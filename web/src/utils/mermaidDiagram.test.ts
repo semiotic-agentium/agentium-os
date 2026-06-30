@@ -36,7 +36,10 @@ describe("fetchContextMermaidDiagram", () => {
       vi.fn().mockResolvedValue({ ok: true, text: async () => body }),
     );
     await expect(fetchContextMermaidDiagram("ctx-1")).resolves.toBe(body);
-    expect(vi.mocked(fetch)).toHaveBeenCalledWith("/contexts/ctx-1/mermaid");
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      "/contexts/ctx-1/mermaid",
+      expect.objectContaining({ headers: expect.any(Headers) }),
+    );
   });
 
   it("uses full endpoint when requested", async () => {
@@ -45,7 +48,10 @@ describe("fetchContextMermaidDiagram", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(fetchContextMermaidDiagram("ctx-1", { full: true })).resolves.toBe(body);
-    expect(fetchMock).toHaveBeenCalledWith("/contexts/ctx-1/mermaid/full");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/contexts/ctx-1/mermaid/full",
+      expect.objectContaining({ headers: expect.any(Headers) }),
+    );
   });
 
   it("encodes context IDs in path segments", async () => {
@@ -58,6 +64,7 @@ describe("fetchContextMermaidDiagram", () => {
     await fetchContextMermaidDiagram("a2a:ctx-1:pkg/default:task");
     expect(fetchMock).toHaveBeenCalledWith(
       "/contexts/a2a%3Actx-1%3Apkg%2Fdefault%3Atask/mermaid",
+      expect.objectContaining({ headers: expect.any(Headers) }),
     );
   });
 
@@ -105,8 +112,16 @@ describe("fetchContextMermaidDiagram", () => {
       fetchContextMermaidDiagram("ctx-scope", { full: true }),
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock).toHaveBeenNthCalledWith(1, "/contexts/ctx-scope/mermaid");
-    expect(fetchMock).toHaveBeenNthCalledWith(2, "/contexts/ctx-scope/mermaid/full");
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/contexts/ctx-scope/mermaid",
+      expect.objectContaining({ headers: expect.any(Headers) }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/contexts/ctx-scope/mermaid/full",
+      expect.objectContaining({ headers: expect.any(Headers) }),
+    );
   });
 });
 

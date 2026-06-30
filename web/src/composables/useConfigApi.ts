@@ -3,8 +3,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { ref } from "vue";
+import { instanceFetch, readInstanceErrorBody } from "./instanceApi";
 import type {
   ConfigVersionDto,
+  ModelContextBudget,
+  ResolvedClientBudgets,
   SecretOverviewEntryDto,
   SecretRequestDto,
   ToolConfigDto,
@@ -41,7 +44,7 @@ export function useConfigApi() {
   > {
     loading.value = true;
     try {
-      const res = await fetch("/config");
+      const res = await instanceFetch("/config");
       if (res.status === 503) {
         return {
           error: {
@@ -89,7 +92,7 @@ export function useConfigApi() {
   ): Promise<{ data: ToolConfigDto } | { error: ConfigApiError }> {
     loading.value = true;
     try {
-      const res = await fetch(`/config/${encodeURIComponent(bundleName)}`);
+      const res = await instanceFetch(`/config/${encodeURIComponent(bundleName)}`);
       if (res.status === 503) {
         return {
           error: {
@@ -141,7 +144,7 @@ export function useConfigApi() {
       if (expectedVersion !== undefined) {
         hdrs["If-Match"] = String(expectedVersion);
       }
-      const res = await fetch(`/config/${encodeURIComponent(bundleName)}`, {
+      const res = await instanceFetch(`/config/${encodeURIComponent(bundleName)}`, {
         method: "PUT",
         headers: hdrs,
         body: JSON.stringify(body),
@@ -160,7 +163,7 @@ export function useConfigApi() {
     toolName: string,
   ): Promise<{ data: SecretRequestDto[] } | { error: ConfigApiError }> {
     try {
-      const res = await fetch(`/config/${encodeURIComponent(toolName)}/secret-requests`);
+      const res = await instanceFetch(`/config/${encodeURIComponent(toolName)}/secret-requests`);
       if (!res.ok) {
         return { error: await parseProblem(res) };
       }
@@ -182,7 +185,7 @@ export function useConfigApi() {
     linkFrom: string,
   ): Promise<{ success: true } | { error: ConfigApiError }> {
     try {
-      const res = await fetch(`/config/secrets/${encodeURIComponent(name)}`, {
+      const res = await instanceFetch(`/config/secrets/${encodeURIComponent(name)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ link_from: linkFrom.trim() }),
@@ -206,7 +209,7 @@ export function useConfigApi() {
     name: string,
   ): Promise<{ success: true } | { error: ConfigApiError }> {
     try {
-      const res = await fetch(`/config/secrets/${encodeURIComponent(name)}`, {
+      const res = await instanceFetch(`/config/secrets/${encodeURIComponent(name)}`, {
         method: "DELETE",
       });
       if (res.status === 204) {
@@ -226,7 +229,7 @@ export function useConfigApi() {
 
   async function fetchStoreKeys(): Promise<{ data: string[] } | { error: ConfigApiError }> {
     try {
-      const res = await fetch("/config/secrets/store-keys");
+      const res = await instanceFetch("/config/secrets/store-keys");
       if (!res.ok) {
         return { error: await parseProblem(res) };
       }
@@ -248,7 +251,7 @@ export function useConfigApi() {
   > {
     loading.value = true;
     try {
-      const res = await fetch("/config/secrets-overview");
+      const res = await instanceFetch("/config/secrets-overview");
       if (res.status === 503) {
         return {
           error: {
@@ -294,7 +297,7 @@ export function useConfigApi() {
   ): Promise<{ data: ConfigVersionDto[] } | { error: ConfigApiError }> {
     loading.value = true;
     try {
-      const res = await fetch(`/config/${encodeURIComponent(bundleName)}/versions`);
+      const res = await instanceFetch(`/config/${encodeURIComponent(bundleName)}/versions`);
       if (!res.ok) return { error: await parseProblem(res) };
       const data = (await res.json()) as ConfigVersionDto[];
       return { data };
@@ -311,6 +314,60 @@ export function useConfigApi() {
     }
   }
 
+  async function fetchModelBudgets(): Promise<
+    { data: ModelContextBudget[] } | { error: ConfigApiError }
+  > {
+    try {
+      const res = await instanceFetch("/config/llm/model-budgets");
+      if (!res.ok) {
+        return {
+          error: {
+            status: res.status,
+            title: "Failed to load budgets",
+            detail: await readInstanceErrorBody(res, 200),
+          },
+        };
+      }
+      const data = (await res.json()) as ResolvedClientBudgets;
+      return { data: data.clients ?? [] };
+    } catch (e) {
+      return {
+        error: {
+          status: 0,
+          title: "Network Error",
+          detail: e instanceof Error ? e.message : String(e),
+        },
+      };
+    }
+  }
+
+  async function refreshModelBudgets(): Promise<
+    { data: ModelContextBudget[] } | { error: ConfigApiError }
+  > {
+    try {
+      const res = await instanceFetch("/config/llm/model-budgets/refresh", { method: "POST" });
+      if (!res.ok) {
+        return {
+          error: {
+            status: res.status,
+            title: "Refresh failed",
+            detail: await readInstanceErrorBody(res, 200),
+          },
+        };
+      }
+      const data = (await res.json()) as { budgets: ResolvedClientBudgets };
+      return { data: data.budgets?.clients ?? [] };
+    } catch (e) {
+      return {
+        error: {
+          status: 0,
+          title: "Network Error",
+          detail: e instanceof Error ? e.message : String(e),
+        },
+      };
+    }
+  }
+
   return {
     loading,
     fetchConfigList,
@@ -322,5 +379,7 @@ export function useConfigApi() {
     fetchStoreKeys,
     putSecret,
     deleteSecret,
+    fetchModelBudgets,
+    refreshModelBudgets,
   };
 }

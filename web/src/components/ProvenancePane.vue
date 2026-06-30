@@ -33,6 +33,7 @@ import type { DrilldownParams } from "./provenance/ExploreTab.vue";
 import type { LlmPromptOperation } from "../types/a2a";
 import RunStatusIndicator from "./RunStatusIndicator.vue";
 import { IDLE_RUN_STATUS, type OperatorRunStatus } from "../operator/runStatus";
+import { fetchEpisodeTextBlob } from "../composables/useEpisodeApi";
 
 const TRACES_STORAGE_KEY = "agentium:showTraces";
 
@@ -324,35 +325,22 @@ function onDrillToDriftCalls(taskId: string) {
 // ── Episode download ───────────────────────────────────────────────────────
 
 async function downloadEpisodeText(taskId: string) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15_000);
-  let response: Response;
-  try {
-    response = await fetch(`/tasks/${encodeURIComponent(taskId)}/episode/text`, {
-      signal: controller.signal,
-    });
-  } catch (error) {
-    if ((error as Error).name === "AbortError") {
+  const result = await fetchEpisodeTextBlob(taskId);
+  if (!result.ok) {
+    if (result.aborted) {
       toast.error("Episode download timed out — the task graph may still be populating.");
+    } else if (result.status === 404) {
+      toast.error(
+        "No episode transcript yet for this task — wait for dispatch to finish, then retry.",
+      );
+    } else if (result.status !== undefined) {
+      toast.error(`Episode download failed (${result.status}).`);
     } else {
       toast.error("Episode download failed — check the runner and try again.");
     }
     return;
-  } finally {
-    clearTimeout(timer);
   }
-  if (!response.ok) {
-    if (response.status === 404) {
-      toast.error(
-        "No episode transcript yet for this task — wait for dispatch to finish, then retry.",
-      );
-    } else {
-      toast.error(`Episode download failed (${response.status}).`);
-    }
-    return;
-  }
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
+  const url = URL.createObjectURL(result.blob);
   const link = document.createElement("a");
   link.href = url;
   link.download = `episode-${taskId}.txt`;

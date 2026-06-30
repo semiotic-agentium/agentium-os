@@ -4,7 +4,7 @@
 
 /** Scoped URL params for chat vs Event Console (legacy `agentPackage` fallback). */
 
-export type ViewName = "dashboard" | "chat" | "events" | "settings";
+export type ViewName = "dashboard" | "agents" | "chat" | "events" | "settings";
 
 export type ChatRouteState = {
   agentPackage: string | null;
@@ -31,7 +31,13 @@ const EVENT_INSTANCE = "eventAgentInstance";
 const EVENT_CONTEXT = "eventContextId";
 
 export function parseView(raw: string | null): ViewName {
-  if (raw === "chat" || raw === "events" || raw === "settings" || raw === "dashboard") {
+  if (
+    raw === "chat" ||
+    raw === "agents" ||
+    raw === "events" ||
+    raw === "settings" ||
+    raw === "dashboard"
+  ) {
     return raw;
   }
   return "chat";

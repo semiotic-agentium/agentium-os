@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { computed, ref, watch } from "vue";
+import { instanceFetch } from "./instanceApi";
 import type { AgentDiscoveryEntry, ContextPickerPage, ConversationHistoryOption } from "../types/a2a";
 import {
   readEventConsoleRouteFromUrl,
@@ -330,7 +331,7 @@ function createEventConsoleState() {
   );
 
   async function fetchAgents(): Promise<void> {
-    const res = await fetch("/agents");
+    const res = await instanceFetch("/agents");
     if (!res.ok) {
       agents.value = [];
       return;
@@ -339,7 +340,7 @@ function createEventConsoleState() {
   }
 
   async function fetchMessageShapes(): Promise<void> {
-    const res = await fetch("/message-shapes");
+    const res = await instanceFetch("/message-shapes");
     if (!res.ok) {
       messageShapes.value = [];
       return;
@@ -589,7 +590,7 @@ function createEventConsoleState() {
         dispatchPhase.value = "failed";
         return report;
       }
-      const res = await fetch("/event-dispatch/validate", {
+      const res = await instanceFetch("/event-dispatch/validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(buildValidateBody()),
@@ -644,7 +645,7 @@ function createEventConsoleState() {
     dispatchPhase.value = "publishing";
     try {
       syncScopeFromPreview();
-      const res = await fetch("/events/publish", {
+      const res = await instanceFetch("/events/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(previewRecord),
@@ -713,7 +714,7 @@ function createEventConsoleState() {
       params.set("eventOnly", "true");
       // Do not pass agentPackage here: scoped Message ops are too slow on large graphs
       // and the picker times out. Transcript/provenance reads still filter by agent.
-      const res = await fetch(`/contexts?${params.toString()}`, {
+      const res = await instanceFetch(`/contexts?${params.toString()}`, {
         signal: controller.signal,
       });
       if (!res.ok) {

@@ -12,6 +12,10 @@ import { useConfirm } from "../composables/useConfirm";
 const { deployments, loading, error, fetchDeployments, deploy, undeploy } = useDeployApi();
 const { confirm } = useConfirm();
 
+const emit = defineEmits<{
+  chatAgent: [agentName: string];
+}>();
+
 const showDeployForm = ref(false);
 const deployHash = ref("");
 const deployName = ref("");
@@ -113,7 +117,7 @@ function formatDate(isoStr: string): string {
     <div v-if="loading && deployments.length === 0" class="deployment-empty">Loading...</div>
 
     <div v-else-if="deployments.length === 0" class="deployment-empty">
-      No agents deployed. Use the Deploy button or <code>baml-agent-builder publish</code>.
+      No agents deployed. Load an agent folder above or use deploy-by-hash.
     </div>
 
     <table v-else class="deployment-table">
@@ -123,7 +127,7 @@ function formatDate(isoStr: string): string {
           <th>Status</th>
           <th>Hash</th>
           <th>Deployed</th>
-          <th></th>
+          <th>Actions</th>
         </tr>
       </thead>
       <tbody>
@@ -140,6 +144,13 @@ function formatDate(isoStr: string): string {
           <td class="deploy-hash" :title="d.content_hash">{{ d.content_hash.slice(0, 16) }}...</td>
           <td>{{ formatDate(d.deployed_at) }}</td>
           <td>
+            <button
+              class="btn btn--sm btn--secondary"
+              title="Open in Chat"
+              @click="emit('chatAgent', d.agent_name)"
+            >
+              Chat
+            </button>
             <button
               class="btn btn--sm btn--ghost"
               title="Undeploy"

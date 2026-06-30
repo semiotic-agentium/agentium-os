@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { computed, onUnmounted, ref } from "vue";
+import { resolveInstanceUrl } from "./instanceApi";
 import type { ChatMessage, ConversationHistoryPage, HistoryHydrateState } from "../types/a2a";
 import type { ConversationHistoryIngressMode } from "../chat/conversationHistorySync";
 import { fetchMergedConversationHistoryPage } from "../chat/fetchConversationHistoryPage";
@@ -181,7 +182,7 @@ export function useEventObservation() {
     const params = streamQueryParams(scope);
     const encodedContextId = encodeURIComponent(scope.contextId);
     const url = `/contexts/${encodedContextId}/conversation-history/stream?${params.toString()}`;
-    const stream = new EventSource(url);
+    const stream = new EventSource(resolveInstanceUrl(url));
     // Register before listeners so concurrent ensureHistoryStream calls close this stream.
     historyStream = stream;
     historyStreamKey = key;

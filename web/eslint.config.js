@@ -63,4 +63,21 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    files: ["src/components/**/*.{ts,vue}", "src/App.vue"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/composables/instanceApi", "**/composables/instanceApi.ts"],
+              message:
+                "Use domain composables (useAgentsApi, useConfigApi, useEpisodeApi, …) instead of instanceApi.",
+            },
+          ],
+        },
+      ],
+    },
+  },
 );

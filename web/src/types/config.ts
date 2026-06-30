@@ -79,7 +79,7 @@ export interface LlmRetryPolicyDef {
   strategy?: unknown;
 }
 
-pub interface ModelBudgetOverride {
+export interface ModelBudgetOverride {
   context_window_tokens?: number;
   trigger_ratio?: number;
   emergency_ratio?: number;

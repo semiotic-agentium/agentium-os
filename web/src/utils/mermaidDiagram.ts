@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /** True when text looks like a Mermaid sequence diagram from the runner export API. */
+import { instanceFetch, InstanceHttpError } from "../composables/instanceApi";
+
 export function looksLikeMermaidDiagram(text: string): boolean {
   return /^\s*sequenceDiagram\b/m.test(text.trim());
 }
@@ -37,13 +39,13 @@ async function fetchContextMermaidDiagramInner(
   options?: MermaidFetchOptions,
 ): Promise<string> {
   try {
-    const res = await fetch(mermaidUrl(contextId, options));
-    if (!res.ok) {
-      return "";
-    }
-    const text = await res.text();
+    const text = await instanceFetch(mermaidUrl(contextId, options)).then(async (res) => {
+      if (!res.ok) return "";
+      return res.text();
+    });
     return looksLikeMermaidDiagram(text) ? text : "";
-  } catch {
+  } catch (e) {
+    if (e instanceof InstanceHttpError) return "";
     return "";
   }
 }

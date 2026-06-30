@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { onUnmounted, ref, type Ref } from "vue";
+import { instanceFetch } from "./instanceApi";
 import type { EpisodeSnapshot } from "../types/provenance";
 
 export interface EpisodeStreamState {
@@ -52,7 +53,7 @@ export function useEpisodeStream(): EpisodeStreamController {
 
     try {
       const url = `/tasks/${taskId}/episode/stream`;
-      const response = await fetch(url, {
+      const response = await instanceFetch(url, {
         method: "GET",
         headers: { Accept: "text/event-stream" },
         signal: controller.signal,

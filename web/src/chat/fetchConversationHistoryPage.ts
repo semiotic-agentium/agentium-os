@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { ConversationHistoryPage } from "../types/a2a";
+import { instanceFetch } from "../composables/instanceApi";
 import {
   observationScopeQueryParams,
   type ObservationScope,
@@ -28,7 +29,7 @@ export async function fetchMergedConversationHistoryPage(
     if (cursor) params.set("cursor", cursor);
 
     const encodedContextId = encodeURIComponent(scope.contextId);
-    const res = await fetch(
+    const res = await instanceFetch(
       `/contexts/${encodedContextId}/conversation-history?${params.toString()}`,
       { signal: options?.signal },
     );

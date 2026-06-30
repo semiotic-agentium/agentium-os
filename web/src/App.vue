@@ -32,7 +32,42 @@ import { useConfirm } from "./composables/useConfirm";
 import { parseMermaidBlocks } from "./utils/parseMermaid";
 import type { AgentDiscoveryEntry, ChatMessage, LlmPromptOperation } from "./types/a2a";
 import type { ProvenancePaneTab } from "./composables/useDashboardViewModel";
+import AgentLoadView from "./components/AgentLoadView.vue";
+import InstanceConnectionShell from "./components/InstanceConnectionShell.vue";
+import { useInstanceClient } from "./composables/useInstanceClient";
+import { useAgentsApi } from "./composables/useAgentsApi";
 import { deriveChatRunStatus } from "./operator/runStatus";
+
+const { isConnected, hostLabel, tryAutoConnect } = useInstanceClient();
+const { pingInstance } = useAgentsApi();
+const showConnectionEditor = ref(false);
+
+async function onConnected(): Promise<void> {
+  showConnectionEditor.value = false;
+  await checkHealth();
+  if (activeClient.value) {
+    await activeClient.value.fetchAgents();
+  }
+  await applyRouteStateFromUrl();
+  if (view.value === "chat") syncChatRouteToUrl(false);
+}
+
+function openConnectionEditor(): void {
+  showConnectionEditor.value = true;
+}
+
+async function onAgentsLoaded(): Promise<void> {
+  await activeClient.value?.fetchAgents();
+}
+
+async function onChatWithAgent(agentName: string): Promise<void> {
+  view.value = "chat";
+  await activeClient.value?.fetchAgents();
+  const match = activeClient.value?.agents.value.find((a) => a.agent_package === agentName);
+  if (match) {
+    await handleSelectAgent(match);
+  }
+}
 
 /** First inline mermaid block in agent messages (stops at first hit). */
 function firstInlineMermaidDiagram(messages: ChatMessage[]): string | null {
@@ -166,7 +201,7 @@ const { theme, toggle: toggleTheme } = useTheme();
 const { createQuery } = useProvenanceOps();
 
 // Active view — chat is the landing page; dashboard is a debug/metrics surface
-const view = ref<"dashboard" | "chat" | "events" | "settings">("chat");
+const view = ref<"dashboard" | "agents" | "chat" | "events" | "settings">("chat");
 
 const isApplyingRouteState = ref(false);
 let lastRouteKey = "";
@@ -327,19 +362,18 @@ const systemOnline = ref(true);
 let healthTimer: ReturnType<typeof setInterval> | null = null;
 
 async function checkHealth() {
-  try {
-    const res = await fetch("/agents", { method: "GET" });
-    systemOnline.value = res.ok;
-  } catch {
-    systemOnline.value = false;
-  }
+  systemOnline.value = await pingInstance();
 }
 
 onMounted(() => {
-  void applyRouteStateFromUrl().then(() => {
-    if (view.value === "chat") syncChatRouteToUrl(false);
+  void tryAutoConnect().then((ok) => {
+    if (ok) {
+      void applyRouteStateFromUrl().then(() => {
+        if (view.value === "chat") syncChatRouteToUrl(false);
+      });
+      checkHealth();
+    }
   });
-  checkHealth();
   healthTimer = setInterval(checkHealth, 30_000);
   window.addEventListener("popstate", onPopState);
 });
@@ -347,6 +381,16 @@ onMounted(() => {
 onUnmounted(() => {
   if (healthTimer) clearInterval(healthTimer);
   window.removeEventListener("popstate", onPopState);
+});
+
+watch(view, (next) => {
+  if (typeof window === "undefined") return;
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("view") !== next) {
+    params.set("view", next);
+    const url = `${window.location.pathname}?${params.toString()}`;
+    window.history.replaceState(null, "", url);
+  }
 });
 
 watch(view, (next, prev) => {
@@ -373,15 +417,24 @@ watch(
   <div class="app">
     <a href="#main-content" class="sr-only-focusable">Skip to main content</a>
     <Navbar
+      v-if="isConnected && !showConnectionEditor"
       :view="view"
       :agent-count="agents.length"
       :theme="theme"
       :system-online="systemOnline"
+      :instance-host="hostLabel"
       @change-view="view = $event"
       @toggle-theme="toggleTheme"
+      @edit-connection="openConnectionEditor"
     />
 
     <div id="main-content" class="app-content-area">
+      <InstanceConnectionShell
+        v-if="!isConnected || showConnectionEditor"
+        @connected="onConnected"
+      />
+
+      <template v-else>
       <ErrorBoundary v-if="view === 'dashboard'">
         <Dashboard
           :agents="agents"
@@ -396,6 +449,10 @@ watch(
           @open-settings="view = 'settings'"
           @go-chat="onDashboardGoChat"
         />
+      </ErrorBoundary>
+
+      <ErrorBoundary v-else-if="view === 'agents'">
+        <AgentLoadView @agent-loaded="onAgentsLoaded" @chat-agent="onChatWithAgent" />
       </ErrorBoundary>
 
       <ErrorBoundary v-else-if="view === 'chat'">
@@ -461,6 +518,7 @@ watch(
       <ErrorBoundary v-else-if="view === 'settings'">
         <SettingsView />
       </ErrorBoundary>
+      </template>
     </div>
     <ToastContainer />
     <ConfirmDialog />

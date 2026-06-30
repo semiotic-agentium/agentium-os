@@ -4,6 +4,7 @@
 
 import type { ComputedRef, InjectionKey, Ref } from "vue";
 import { computed, ref, watch } from "vue";
+import { InstanceHttpError, instanceFetchJson } from "./instanceApi";
 import { buildPlanStepDescriptionLookup } from "../chat/planStepLookup";
 import type { ContextPlanningResponse, ContextPlanningTaskSnapshot } from "../types/provenance";
 
@@ -36,16 +37,14 @@ export function useContextPlanning(
     loading.value = true;
     error.value = null;
     try {
-      const res = await fetch(`/contexts/${encodeURIComponent(id)}/planning`);
-      if (!res.ok) {
-        if (res.status === 404) {
-          response.value = null;
-          return;
-        }
-        throw new Error(`Planning request failed: ${res.status}`);
-      }
-      response.value = (await res.json()) as ContextPlanningResponse;
+      response.value = await instanceFetchJson<ContextPlanningResponse>(
+        `/contexts/${encodeURIComponent(id)}/planning`,
+      );
     } catch (e) {
+      if (e instanceof InstanceHttpError && e.status === 404) {
+        response.value = null;
+        return;
+      }
       error.value = (e as Error).message;
     } finally {
       loading.value = false;

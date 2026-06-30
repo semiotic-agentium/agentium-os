@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { ref, watch, type ComputedRef, type Ref } from "vue";
+import { instanceFetch, resolveInstanceUrl } from "./instanceApi";
 import type { ObservationBundle } from "../types/provenance";
 
 export type { ObservationBundle };
@@ -124,7 +125,7 @@ export function useContextObserve(options: {
       loading.value = true;
       error.value = null;
       try {
-        const res = await fetch(url, { signal: controller.signal });
+        const res = await instanceFetch(url, { signal: controller.signal });
         if (!res.ok) throw new Error(`observe failed: ${res.status}`);
         applyBundle((await res.json()) as ObservationBundle);
       } catch (e) {
@@ -171,7 +172,7 @@ export function useContextObserve(options: {
 
     loading.value = true;
     error.value = null;
-    const stream = new EventSource(url);
+    const stream = new EventSource(resolveInstanceUrl(url));
     eventSource = stream;
     streamUrl = url;
     eventSource.addEventListener("snapshot", (ev) => {

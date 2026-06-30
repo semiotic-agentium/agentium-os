@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { ref, computed, type Ref } from "vue";
+import { instanceFetch, resolveInstanceUrl } from "./instanceApi";
 
 /** Per-request page size for GET/stream conversation-history (must match server default chunking). */
 const CONVERSATION_HISTORY_PAGE_SIZE = 50;
@@ -232,7 +233,7 @@ export function useA2aClient() {
     params.set("limit", String(CONVERSATION_HISTORY_PAGE_SIZE));
     const encodedContextId = encodeURIComponent(_contextId.value);
     const url = `/contexts/${encodedContextId}/conversation-history/stream?${params.toString()}`;
-    const stream = new EventSource(url);
+    const stream = new EventSource(resolveInstanceUrl(url));
 
     stream.addEventListener("snapshot", (ev) => {
       try {
@@ -290,7 +291,7 @@ export function useA2aClient() {
 
   async function fetchAgents(): Promise<void> {
     try {
-      const res = await fetch("/agents");
+      const res = await instanceFetch("/agents");
       if (!res.ok) {
         agents.value = [];
         selectedAgent.value = null;
@@ -328,7 +329,7 @@ export function useA2aClient() {
       params.set("limit", "100");
       params.set("chatOnly", "true");
       params.set("agentPackage", selectedAgent.value.agent_package);
-      const response = await fetch(`/contexts?${params.toString()}`);
+      const response = await instanceFetch(`/contexts?${params.toString()}`);
       if (!response.ok) {
         conversationHistoryOptions.value = [];
         return;
@@ -500,7 +501,7 @@ export function useA2aClient() {
     _abortController = controller;
 
     try {
-      const response = await fetch(url, {
+      const response = await instanceFetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),
@@ -887,7 +888,7 @@ export function useA2aClient() {
   async function fetchContextMetrics(): Promise<void> {
     if (!_contextId.value) return;
     try {
-      const res = await fetch(`/contexts/${encodeURIComponent(_contextId.value)}/metrics`);
+      const res = await instanceFetch(`/contexts/${encodeURIComponent(_contextId.value)}/metrics`);
       if (res.ok) {
         contextMetrics.value = await res.json();
       }
@@ -923,7 +924,7 @@ export function useA2aClient() {
         params.set("limit", String(PAGE_LIMIT));
         if (cursor) params.set("cursor", cursor);
         const encodedContextId = encodeURIComponent(contextId);
-        const response = await fetch(
+        const response = await instanceFetch(
           `/contexts/${encodedContextId}/conversation-history?${params.toString()}`,
         );
         if (!response.ok) {

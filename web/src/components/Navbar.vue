@@ -5,18 +5,20 @@ SPDX-License-Identifier: Apache-2.0
 -->
 
 <script setup lang="ts">
-type View = "dashboard" | "chat" | "events" | "settings";
+type View = "dashboard" | "agents" | "chat" | "events" | "settings";
 
 defineProps<{
   view: View;
   agentCount: number;
   theme: string;
   systemOnline: boolean;
+  instanceHost?: string;
 }>();
 
 const emit = defineEmits<{
   changeView: [view: View];
   toggleTheme: [];
+  editConnection: [];
 }>();
 </script>
 
@@ -38,7 +40,7 @@ const emit = defineEmits<{
         <polyline points="4 17 10 11 4 5" />
         <line x1="12" y1="19" x2="20" y2="19" />
       </svg>
-      <span class="brand-name">Agentium</span>
+      <span class="brand-name">Agentium Console</span>
     </div>
 
     <!-- View tabs -->
@@ -65,6 +67,30 @@ const emit = defineEmits<{
           <rect x="3" y="14" width="7" height="7" />
         </svg>
         Dashboard
+      </button>
+      <button
+        :class="['nav-tab', { active: view === 'agents' }]"
+        role="tab"
+        :aria-selected="view === 'agents'"
+        @click="emit('changeView', 'agents')"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M12 8V4H8" />
+          <rect x="4" y="4" width="16" height="16" rx="2" />
+          <path d="M2 14h2" />
+          <path d="M20 14h2" />
+          <path d="M15 13v2" />
+          <path d="M9 13v2" />
+        </svg>
+        Agents
       </button>
       <button
         :class="['nav-tab', { active: view === 'chat' }]"
@@ -134,6 +160,16 @@ const emit = defineEmits<{
 
     <!-- Right: status pills + theme toggle -->
     <div class="navbar-right">
+      <button
+        v-if="instanceHost"
+        type="button"
+        class="status-pill status-pill--clickable"
+        :title="`Connected to ${instanceHost}. Click to change.`"
+        @click="emit('editConnection')"
+      >
+        <span class="status-dot"></span>
+        {{ instanceHost }}
+      </button>
       <span class="status-pill">
         <span class="status-dot"></span>
         {{ agentCount }} Active Agent{{ agentCount !== 1 ? "s" : "" }}

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { computed, onUnmounted, ref, type ComputedRef, type Ref } from "vue";
+import { instanceFetch } from "./instanceApi";
 import type {
   ProvenanceGroupHotspot,
   ProvenanceQueryParams,
@@ -188,7 +189,7 @@ export function useProvenanceOps() {
         const search = toSearchParams(params);
         const path = `/provenance/${resource.value.replace("_", "-")}`;
         const url = search.toString() ? `${path}?${search.toString()}` : path;
-        const response = await fetch(url, { signal: abortController.signal });
+        const response = await instanceFetch(url, { signal: abortController.signal });
         if (!response.ok) {
           let detail = `${response.status}`;
           try {

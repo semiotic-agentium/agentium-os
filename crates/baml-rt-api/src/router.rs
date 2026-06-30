@@ -35,6 +35,7 @@ use baml_rt_router::auth::{ClusterAuthConfig, ClusterAuthLayer};
 use baml_rt_tools::{InventoryCatalog, ToolCatalog};
 use serde_json::json;
 use tower_http::{
+    cors::{Any, CorsLayer},
     services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
@@ -243,7 +244,6 @@ fn repository_route_metric_label(matched: &MatchedPath) -> &'static str {
         "/search" => "repository_search",
         "/lineage/{hash}" => "repository_get_lineage",
         "/blobs/{hash}" => "repository_get_blob",
-        "/tools" => "repository_tool_list",
         "/mcp/servers" => "repository_mcp_list_servers",
         "/mcp/servers/{server_id}" => "repository_mcp_get_latest_snapshot",
         "/mcp/servers/{server_id}/versions" => "repository_mcp_list_server_versions",
@@ -259,7 +259,6 @@ fn repository_route_metric_label(matched: &MatchedPath) -> &'static str {
         "/external-tools/versions" => "repository_external_tool_list_versions",
         "/external-tools/snapshots/import" => "repository_external_tool_import_snapshot",
         "/external-tools/snapshots/mark-stale" => "repository_external_tool_mark_stale",
-        "/static-tools/snapshots" => "repository_static_tool_catalog",
         "/entries/{hash}/tags" => "repository_tags",
         "/publish" => "repository_publish",
         _ => "repository_unknown",
@@ -452,7 +451,6 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(handlers::list_agents))
         .routes(utoipa_axum::routes!(handlers::get_context_index))
         .routes(utoipa_axum::routes!(handlers::get_mermaid_context))
-        .routes(utoipa_axum::routes!(handlers::get_mermaid_context_full))
         .routes(utoipa_axum::routes!(handlers::get_mermaid_task))
         .routes(utoipa_axum::routes!(handlers::get_context_metrics))
         .routes(utoipa_axum::routes!(handlers::get_context_planning))
@@ -498,10 +496,6 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(config_handlers::delete_secret))
         .routes(utoipa_axum::routes!(config_handlers::put_config))
         .routes(utoipa_axum::routes!(config_handlers::delete_config))
-        .routes(utoipa_axum::routes!(config_handlers::get_llm_model_budgets))
-        .routes(utoipa_axum::routes!(
-            config_handlers::refresh_llm_model_budgets
-        ))
         .routes(utoipa_axum::routes!(handlers::post_deploy))
         .routes(utoipa_axum::routes!(handlers::post_undeploy))
         .routes(utoipa_axum::routes!(handlers::get_deployments))
@@ -709,7 +703,31 @@ pub fn api_router_with_services_and_deploy(
         router = router.nest("/repository", repo_router);
     }
 
+    if let Some(cors) = optional_cors_layer() {
+        router = router.layer(cors);
+    }
+
     router
+}
+
+/// Opt-in CORS for standalone dev consoles (`AGENTIUM_CORS_ORIGINS=http://localhost:5173,...`).
+fn optional_cors_layer() -> Option<CorsLayer> {
+    let raw = std::env::var("AGENTIUM_CORS_ORIGINS").ok()?;
+    let origins: Vec<_> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    if origins.is_empty() {
+        return None;
+    }
+    Some(
+        CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods(Any)
+            .allow_headers(Any),
+    )
 }
 
 /// Run the HTTP server with the full [`ApiServerConfig`].

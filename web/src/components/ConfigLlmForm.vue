@@ -6,13 +6,14 @@ SPDX-License-Identifier: Apache-2.0
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
+import { useAgentsApi } from "../composables/useAgentsApi";
+import { useConfigApi } from "../composables/useConfigApi";
 import type { AgentDiscoveryEntry } from "../types/a2a";
 import type {
   LlmClientConfig,
   LlmClientDef,
   ModelBudgetOverride,
   ModelContextBudget,
-  ResolvedClientBudgets,
 } from "../types/config";
 import { LLM_PROVIDERS } from "../types/config";
 
@@ -50,16 +51,11 @@ watch(
 // ── Agent discovery ──
 
 const discoveredAgents = ref<AgentDiscoveryEntry[]>([]);
+const { fetchAgents } = useAgentsApi();
+const { fetchModelBudgets, refreshModelBudgets } = useConfigApi();
 
 onMounted(async () => {
-  try {
-    const res = await fetch("/agents");
-    if (res.ok) {
-      discoveredAgents.value = (await res.json()) as AgentDiscoveryEntry[];
-    }
-  } catch {
-    // non-fatal
-  }
+  discoveredAgents.value = await fetchAgents();
   await loadBudgets();
 });
 
@@ -69,35 +65,24 @@ const budgetRefreshing = ref(false);
 
 async function loadBudgets() {
   budgetLoadError.value = null;
-  try {
-    const res = await fetch("/config/llm/model-budgets");
-    if (!res.ok) {
-      budgetLoadError.value = `Failed to load budgets (${res.status})`;
-      return;
-    }
-    const data = (await res.json()) as ResolvedClientBudgets;
-    resolvedBudgets.value = data.clients ?? [];
-  } catch {
-    budgetLoadError.value = "Failed to load compaction budgets";
+  const result = await fetchModelBudgets();
+  if ("error" in result) {
+    budgetLoadError.value = result.error.detail ?? result.error.title;
+    return;
   }
+  resolvedBudgets.value = result.data;
 }
 
 async function refreshBudgetMetadata() {
   budgetRefreshing.value = true;
   budgetLoadError.value = null;
-  try {
-    const res = await fetch("/config/llm/model-budgets/refresh", { method: "POST" });
-    if (!res.ok) {
-      budgetLoadError.value = `Refresh failed (${res.status})`;
-      return;
-    }
-    const data = (await res.json()) as { budgets: ResolvedClientBudgets };
-    resolvedBudgets.value = data.budgets?.clients ?? [];
-  } catch {
-    budgetLoadError.value = "Refresh failed";
-  } finally {
-    budgetRefreshing.value = false;
+  const result = await refreshModelBudgets();
+  if ("error" in result) {
+    budgetLoadError.value = result.error.detail ?? result.error.title;
+  } else {
+    resolvedBudgets.value = result.data;
   }
+  budgetRefreshing.value = false;
 }
 
 function formatTokens(n: number): string {
@@ -133,7 +118,7 @@ function setClientBudgetOverride(clientName: string, patch: ModelBudgetOverride)
   ensureCompaction();
   const overrides = { ...(local.value.compaction?.client_overrides ?? {}) };
   const merged = { ...overrides[clientName], ...patch };
-  const hasValues = Object.values(merged).some((v) => v !== undefined && v !== null && v !== "");
+  const hasValues = Object.values(merged).some((v) => v !== undefined && v !== null);
   if (hasValues) {
     overrides[clientName] = merged;
   } else {

@@ -64,21 +64,40 @@ describe("useContextObserve", () => {
   });
 
   it("force refresh bypasses dedupe when prior fetch completed", async () => {
+    let resolveFetch!: (value: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveFetch = resolve;
+          }),
+      ),
+    );
+
     const contextId = ref("ctx-1");
     const active = ref(false);
 
-    const { refresh } = useContextObserve({
+    const { refresh, loading } = useContextObserve({
       contextId,
       active,
     });
 
-    await Promise.resolve();
-    await Promise.resolve();
-    const callsAfterMount = vi.mocked(fetch).mock.calls.length;
+    await vi.waitFor(() => expect(vi.mocked(fetch).mock.calls.length).toBe(1));
+    resolveFetch({
+      ok: true,
+      json: async () => ({
+        contextId: "ctx-1",
+        version: "v1",
+        planning: null,
+        llmOps: null,
+        toolOps: null,
+      }),
+    } as Response);
+    await vi.waitFor(() => expect(loading.value).toBe(false));
 
     refresh();
-    await Promise.resolve();
-    expect(vi.mocked(fetch).mock.calls.length).toBe(callsAfterMount + 1);
+    await vi.waitFor(() => expect(vi.mocked(fetch).mock.calls.length).toBe(2));
   });
 
   it("force refresh coalesces while the same observe GET is in flight", async () => {

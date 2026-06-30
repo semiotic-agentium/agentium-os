@@ -45,6 +45,9 @@ function onMousedown(e: MouseEvent, id: string) {
         aria-label="Loading"
       ></span>
       <span class="chat-tab-title">{{ tab.title }}</span>
+      <span v-if="tab.client.selectedAgent.value" class="chat-tab-agent">
+        {{ tab.client.selectedAgent.value.agent_package }}
+      </span>
       <button
         v-if="tabs.length > 1"
         class="chat-tab-close"

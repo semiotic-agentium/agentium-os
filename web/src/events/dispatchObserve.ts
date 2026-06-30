@@ -13,6 +13,7 @@ import type {
   ObservationSource,
   PreviewProducedEvent,
 } from "../types/events";
+import { instanceFetch } from "../composables/instanceApi";
 import { INGRESS_WIRE_BODY_DELIMITER } from "./ingressWireBody";
 
 export type { ObservationSource };
@@ -184,7 +185,7 @@ export function buildOperatorPublishTraceMessages(input: {
 export async function resolveDispatchUnitTaskId(
   contextId: string,
 ): Promise<string | null> {
-  const res = await fetch(`/contexts/${encodeURIComponent(contextId)}/planning`);
+  const res = await instanceFetch(`/contexts/${encodeURIComponent(contextId)}/planning`);
   if (!res.ok) return null;
   const data = (await res.json()) as { allTaskIds?: string[] };
   const ids = data.allTaskIds ?? [];
