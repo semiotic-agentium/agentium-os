@@ -164,6 +164,7 @@ fn entry_return_type_names(
 ) -> Vec<String> {
     let open_types: Vec<String> = candidates
         .iter()
+        .filter(|t| !entry_send_eligible(t))
         .map(|t| SessionTypeNames::open_step(&t.class_name))
         .collect();
     let send_types: Vec<String> = candidates
@@ -653,10 +654,10 @@ mod entry_return_tests {
     }
 
     #[test]
-    fn eligible_one_shot_gets_open_and_send_on_entry() {
+    fn eligible_one_shot_gets_send_only_on_entry() {
         let tool = sample_tool("SupportCalculate", ToolCapability::OneShot, json!({}));
         let entry_return = entry_return_type_names(&[&tool], &[]);
-        assert!(entry_return.contains(&"SupportCalculateOpenStep".to_string()));
+        assert!(!entry_return.contains(&"SupportCalculateOpenStep".to_string()));
         assert!(entry_return.contains(&"SupportCalculateSendStep".to_string()));
         assert!(entry_return.contains(&"ArchiveSearchReadStep".to_string()));
         assert!(entry_return.contains(&"ArchivePageReadStep".to_string()));

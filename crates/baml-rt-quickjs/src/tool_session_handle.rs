@@ -327,6 +327,12 @@ impl ToolSessionExecutionHandle {
         None
     }
 
+    pub(crate) fn open_input_for_session(&self, session_id: &ToolSessionId) -> Option<Value> {
+        self.tool_session_scopes
+            .get(session_id)
+            .map(|entry| entry.open_input.clone())
+    }
+
     /// Tool name from an already-open session for this exact [`context::RuntimeScope`], if any.
     ///
     /// Polymorphic BAML session plans omit `selected_tool` on Send/Read after Open; the runtime

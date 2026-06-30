@@ -140,6 +140,36 @@ impl BamlRuntimeManager {
         }
     }
 
+    async fn reopen_logical_session_after_stale_close(
+        &self,
+        plan_scope: &context::RuntimeScope,
+        tool_name_str: &str,
+        stale_session: &ToolSessionId,
+    ) -> Result<ToolSessionId> {
+        let open_input = self
+            .tool_session_handle()
+            .open_input_for_session(stale_session)
+            .unwrap_or_else(open_input::empty_open_input);
+        if let Err(e) = self.tool_session_finish(stale_session).await {
+            tracing::warn!(
+                tool = %tool_name_str,
+                stale_session_id = %stale_session,
+                error = %e,
+                "failed to finish stale logical session before reopening; continuing with fresh session"
+            );
+        }
+        let fresh = self
+            .open_tool_session(plan_scope, tool_name_str, open_input)
+            .await?;
+        tracing::warn!(
+            tool = %tool_name_str,
+            stale_session_id = %stale_session,
+            fresh_session_id = %fresh,
+            "reopened fresh logical session after stale MCP close"
+        );
+        Ok(fresh)
+    }
+
     /// Live [`RefTable`] first; on miss, optional Surreal [`SurrealProvenanceStore`](baml_rt_provenance::SurrealProvenanceStore).
     async fn resolve_archive_entry(
         &self,
@@ -307,7 +337,7 @@ impl BamlRuntimeManager {
         scope: &context::RuntimeScope,
         tool_name: baml_rt_tools::ToolName,
         plan: ToolSessionPlan,
-        _source_baml_function: Option<&str>,
+        source_baml_function: Option<&str>,
         _invocation_args: Option<&Value>,
     ) -> Result<Value> {
         let tool_name_str = tool_name.to_string();
@@ -316,12 +346,28 @@ impl BamlRuntimeManager {
 
         let plan_scope = scope.clone();
         let mut steps = vec![first_step];
+        let first_is_send = matches!(steps.first(), Some(ToolSessionOp::Send { .. }));
+        let from_entry_phase = source_baml_function
+            .map(|name| name.ends_with("__entry"))
+            .unwrap_or(false);
+        let tool_metadata = self.state.tool_registry.get_metadata(&tool_name_str);
+        let tool_one_shot_strict = tool_metadata
+            .as_ref()
+            .map(|m| {
+                m.capability == baml_rt_tools::ToolCapability::OneShot
+                    && m.session_policy == baml_rt_tools::SessionPolicy::Strict
+            })
+            .unwrap_or(false);
         // Strict linear mode: exactly one fragment per invocation.
-        // If this fragment is not Open, try to reuse an existing session.
-        let mut session_id: Option<ToolSessionId> = self
-            .tool_session_handle()
-            .find_existing_session_for_scope_and_tool(&plan_scope, &tool_name_str)
-            .await;
+        // Active-phase continuations reuse the existing logical session. Entry-phase direct Sends
+        // are standalone calls and must allocate fresh logical result slots for Send↔Result isolation.
+        let mut session_id: Option<ToolSessionId> = if first_is_send && from_entry_phase {
+            None
+        } else {
+            self.tool_session_handle()
+                .find_existing_session_for_scope_and_tool(&plan_scope, &tool_name_str)
+                .await
+        };
         if let Some(existing) = &session_id {
             tracing::debug!(
                 tool_name = %tool_name_str,
@@ -357,8 +403,7 @@ impl BamlRuntimeManager {
             && matches!(first, ToolSessionOp::Send { .. })
             && session_id.is_none()
         {
-            let metadata = self.state.tool_registry.get_metadata(&tool_name_str);
-            let can_auto_open = metadata
+            let can_auto_open = tool_metadata
                 .as_ref()
                 .map(|m| open_input::schema_allows_empty_open_input(&m.open_input_schema))
                 .unwrap_or(false);
@@ -372,13 +417,7 @@ impl BamlRuntimeManager {
                 ));
             }
             // Same `metadata` clone drives the cleanup auto-finish gate (OneShot + Strict).
-            auto_open_one_shot_strict = metadata
-                .as_ref()
-                .map(|m| {
-                    m.capability == baml_rt_tools::ToolCapability::OneShot
-                        && m.session_policy == baml_rt_tools::SessionPolicy::Strict
-                })
-                .unwrap_or(false);
+            auto_open_one_shot_strict = tool_one_shot_strict;
             steps.insert(
                 0,
                 ToolSessionOp::Open {
@@ -560,7 +599,7 @@ impl BamlRuntimeManager {
                             .tool_session_handle()
                             .tool_session_send_blocking(
                                 &active_session,
-                                normalize_plan_input(serde_json::Value::Null)?,
+                                normalized.clone(),
                                 &plan_scope,
                                 &self.state.archive_ref_tables,
                                 chunk_timeout,
@@ -601,6 +640,17 @@ impl BamlRuntimeManager {
                                 if retry_classified {
                                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                                     host_attempt += 1;
+                                    if failure.classified.code == "mcp_logical_session_closed" {
+                                        let fresh = self
+                                            .reopen_logical_session_after_stale_close(
+                                                &plan_scope,
+                                                &tool_name_str,
+                                                &active_session,
+                                            )
+                                            .await?;
+                                        session_id = Some(fresh.clone());
+                                        active_session = fresh;
+                                    }
                                     send_outcome = self
                                         .tool_session_handle()
                                         .tool_session_send_blocking(
@@ -927,11 +977,15 @@ impl BamlRuntimeManager {
             }
         }
 
-        // Clean up a session the runtime auto-opened for a bare Send so it never dangles into the
-        // next hop (a reused stale session would trigger a lifecycle error like "session already
-        // has input" — which must never reach the model). An explicitly model-opened session is the
-        // model's to Finish/Abort, so this is scoped to `auto_opened`.
-        if auto_opened && let Some(session) = session_id.clone() {
+        // Clean up one-shot strict sessions after Send→Done so stale logical result slots never
+        // dangle into next hop. Auto-opened direct Sends always stand alone; explicit Open for a
+        // one-shot strict tool also closes here because MCP read() has already closed its logical
+        // session and only the transport connection should remain reusable.
+        let should_auto_finish_one_shot = (auto_opened && auto_open_one_shot_strict)
+            || (!auto_opened && tool_one_shot_strict && send_completed);
+        if let Some(session) = session_id.clone()
+            && (auto_opened || should_auto_finish_one_shot)
+        {
             if send_completed {
                 // Success. OneShot+Strict closes per the stateless-resend rule so each Send stands
                 // alone; the Done output is preserved (status stays "done") and the loop continues
@@ -940,10 +994,11 @@ impl BamlRuntimeManager {
                 // global ref table, not this session, so closing never blocks a later read.
                 // `auto_open_one_shot_strict` is the snapshot taken at auto-open — same metadata
                 // clone, so the finish decision can't drift from the open decision.
-                if auto_open_one_shot_strict {
+                if should_auto_finish_one_shot {
                     tracing::debug!(
                         tool = %tool_name_str,
                         session_id = %session,
+                        auto_opened,
                         "auto-finish after Send→Done; OneShot+Strict"
                     );
                     // Best-effort teardown: the Send already committed its effect and `last_output`
