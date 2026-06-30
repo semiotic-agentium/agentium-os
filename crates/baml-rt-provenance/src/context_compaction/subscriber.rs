@@ -17,10 +17,12 @@ use baml_rt_llm_config::{
 use baml_rt_tools::tools::ToolRegistry;
 
 use super::{
-    compactor::ContextCompactionService,
+    compactor::build_compaction_record,
     prepare::prepare_compaction,
     render::estimate_compaction_prompt_bytes,
-    summarizer::{ConversationCompactionSummarizer, compaction_runtime_scope},
+    summarizer::{
+        ConversationCompactionSummarizer, compaction_runtime_scope, invoke_summarizer_with_retry,
+    },
     trigger::{
         CompactionSafetySignals, CompactionTriggerDecision, CompactionTriggerInput,
         CompactionTriggerSource, evaluate_compaction_trigger,
@@ -275,7 +277,7 @@ impl ContextCompactionSubscriber {
                 return;
             }
             Ok(CompactionAttempt::Skipped) => ("skipped", Some("empty_prefix")),
-            Ok(CompactionAttempt::SummarizeFailed) => ("summarize_failed", None),
+            Ok(CompactionAttempt::SummarizeFailed { reason }) => ("summarize_failed", Some(reason)),
             Err(_) => ("error", Some("prepare_error")),
         };
         record_trigger_outcome(TriggerOutcomeRecord {
@@ -322,28 +324,29 @@ impl ContextCompactionSubscriber {
         };
 
         let scope = compaction_runtime_scope(request);
-        let summary = match self
-            .summarizer
-            .summarize_prefix(&scope, &prepared.input)
-            .await
-        {
-            Ok(summary) => summary,
-            Err(err) => {
-                tracing::warn!(
-                    context_id = %context_id,
-                    agent_id = %request.agent_id,
-                    error = %err,
-                    "compaction summarization failed"
-                );
-                return Ok(CompactionAttempt::SummarizeFailed);
-            }
-        };
+        let summary =
+            match invoke_summarizer_with_retry(self.summarizer.as_ref(), &scope, &prepared.input)
+                .await
+            {
+                Ok(summary) => summary,
+                Err(err) => {
+                    tracing::warn!(
+                        context_id = %context_id,
+                        agent_id = %request.agent_id,
+                        error = %err,
+                        "compaction summarization failed"
+                    );
+                    return Ok(CompactionAttempt::SummarizeFailed {
+                        reason: err.metric_label(),
+                    });
+                }
+            };
 
         let post_prompt_bytes = summary.len() as u64;
         let mut record = prepared.record;
         record.post_prompt_bytes = post_prompt_bytes;
         record.summary_text = summary.clone();
-        let event = ContextCompactionService::build_record(record, summary);
+        let event = build_compaction_record(record, summary);
 
         self.writer.add_event(event).await.map_err(|err| {
             tracing::warn!(
@@ -409,7 +412,9 @@ fn record_trigger_outcome(record: TriggerOutcomeRecord<'_>) {
 
 enum CompactionAttempt {
     Skipped,
-    SummarizeFailed,
+    SummarizeFailed {
+        reason: &'static str,
+    },
     Succeeded {
         pre_prompt_bytes: u64,
         post_prompt_bytes: u64,

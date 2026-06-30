@@ -2,6 +2,7 @@ function SummarizeConversationPrefix(
   transcript_prefix: string,
   active_planning_digest: string?,
   recent_tail_preview: string?,
+  validation_feedback: string?,
 ) -> string {
   client DefaultClient
   prompt #"
@@ -21,6 +22,19 @@ function SummarizeConversationPrefix(
     Be specific over general — keep exact names and values rather than
     paraphrasing them away. Do not invent information not present in the
     transcript. Write dense, plain prose.
+
+    When citing transcript handles, use only `@N` / `#N` refs that appear in
+    the transcript below — do not invent ref numbers. Prefer paraphrasing;
+    cite handles only when a specific archived or history row must remain
+    addressable in later turns.
+
+    {% if validation_feedback %}
+    Your previous summary was rejected by the host validator:
+    {{ validation_feedback }}
+
+    Rewrite the summary. Remove or replace any invalid `@N` / `#N` handles,
+    or omit refs and paraphrase instead. Do not repeat the same invalid refs.
+    {% endif %}
 
     {% if active_planning_digest %}
     Current plan and obligations (must remain actionable in your summary):

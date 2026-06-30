@@ -51,7 +51,7 @@ Example (empty registry at start; deploy after publish):
 
 ## Context compaction (host BAML)
 
-When conversation history exceeds the compaction threshold, the runner summarizes sealed prefix rows via the host-owned BAML function `SummarizeConversationPrefix` (`baml_src/host/context_compaction.baml`). The LLM returns prose only; `@N`/`#N` wire refs from the source transcript are appended deterministically in Rust before the compaction record is written. LLM routing uses the agent's stored `LlmClientConfig` (same resolver as agent BAML hops).
+When conversation history exceeds the compaction threshold, the runner summarizes sealed prefix rows via the host-owned BAML function `SummarizeConversationPrefix` (`baml_src/host/context_compaction.baml`). The LLM returns prose only; Rust wraps it in a `[conversation summary]` envelope and **validates** any `#N`/`@N`/`@prefix/local` handles cited in the summary against the conversation ref table hydrated at prepare time. [`invoke_summarizer_with_retry`](../../crates/baml-rt-provenance/src/context_compaction/summarizer.rs) runs up to two attempts per trigger; on validation failure the second attempt passes the validator error as `validation_feedback` in the BAML prompt. If both attempts fail, compaction is skipped for that trigger (`summarize_failed` metric with reason `validation`) and is retried on the next `ContextHistorySettled` event. Covered prefix rows remain in the provenance graph regardless. LLM routing uses the agent's stored `LlmClientConfig` (same resolver as agent BAML hops).
 
 **Triggering** is model-aware and resolved from the `llm` config bundle:
 

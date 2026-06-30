@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Compaction summary merge, validation, and provenance event assembly.
+//! Compaction summary formatting, ref validation, and provenance event assembly.
 
-use std::collections::HashSet;
+use baml_rt_tools::{archive_refs::RefTable, citations::unresolved_wire_citations};
 
 use super::types::ContextCompactionRecord;
 use crate::{
@@ -12,135 +12,114 @@ use crate::{
     events::ProvEvent,
 };
 
-/// Extract `#N` and `@N` refs from text (base handles only; line suffixes ignored).
+/// Wrap LLM prose in the compaction summary envelope.
 #[must_use]
-pub fn extract_wire_refs(text: &str) -> HashSet<String> {
-    let mut out = HashSet::new();
-    let mut i = 0;
-    let bytes = text.as_bytes();
-    while i < bytes.len() {
-        if bytes[i] == b'#' || bytes[i] == b'@' {
-            let kind = bytes[i];
-            i += 1;
-            let start = i;
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-            if i > start {
-                let n = std::str::from_utf8(&bytes[start..i]).unwrap_or("");
-                out.insert(format!("{}{}", kind as char, n));
-            }
-            continue;
-        }
-        i += 1;
-    }
-    out
+fn format_compaction_summary(prose_body: &str) -> String {
+    format!("[conversation summary]\n{}", prose_body.trim())
 }
 
-/// Merge LLM (or fixed) prose with a deterministic ref appendix from the source transcript.
-#[must_use]
-pub fn merge_compaction_summary(prose_body: &str, source_rendered: &str) -> String {
-    let mut refs: Vec<String> = extract_wire_refs(source_rendered).into_iter().collect();
-    refs.sort();
-    let body = prose_body.trim();
-    let ref_clause = if refs.is_empty() {
-        String::new()
-    } else {
-        format!("\nPreserved refs: {}", refs.join(", "))
-    };
-    format!("[conversation summary]\n{body}{ref_clause}")
+/// Format envelope and validate cited refs. Called by all summarizer backends.
+pub fn finalize_compaction_summary(prose: &str, ref_table: &RefTable) -> Result<String> {
+    let summary = format_compaction_summary(prose);
+    let unresolved = unresolved_wire_citations(&summary, ref_table);
+    if unresolved.is_empty() {
+        return Ok(summary);
+    }
+    Err(ProvenanceError::InvalidEvent {
+        activity_anchor: "compaction-summary".to_string(),
+        reason: format!(
+            "compaction summary cites unresolved wire refs: {}",
+            unresolved.join(", ")
+        ),
+    })
 }
 
-/// Reject summaries that drop any `#N` or `@N` handle present in the source transcript.
-pub fn validate_summary_preserves_wire_refs(summary: &str, source: &str) -> Result<()> {
-    let source_refs = extract_wire_refs(source);
-    if source_refs.is_empty() {
-        return Ok(());
-    }
-    let summary_refs = extract_wire_refs(summary);
-    let missing: Vec<_> = source_refs.difference(&summary_refs).cloned().collect();
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(ProvenanceError::InvalidEvent {
-            activity_anchor: "compaction-summary".to_string(),
-            reason: format!(
-                "compaction summary dropped wire refs: {}",
-                missing.join(", ")
-            ),
-        })
-    }
-}
-
-/// Host service: validate and emit compaction provenance events.
-pub struct ContextCompactionService;
-
-impl ContextCompactionService {
-    /// Deterministic finalize: merge refs + validate. Called by all summarizer backends.
-    pub fn finalize_summary(prose: &str, source_rendered: &str) -> Result<String> {
-        let merged = merge_compaction_summary(prose, source_rendered);
-        validate_summary_preserves_wire_refs(&merged, source_rendered)?;
-        Ok(merged)
-    }
-
-    pub fn build_record(mut record: ContextCompactionRecord, summary_text: String) -> ProvEvent {
-        record.summary_text = summary_text.clone();
-        record.post_prompt_bytes = summary_text.len() as u64;
-        ProvEvent::context_compaction_recorded_global(
-            record.context_id,
-            record.task_id,
-            record.covered_event_order_start,
-            record.covered_event_order_end,
-            record.covered_node_ids,
-            summary_text,
-            record.trigger,
-            record.recent_tail_retention,
-            record.pre_row_count,
-            record.post_row_count,
-            record.pre_prompt_bytes,
-            record.post_prompt_bytes,
-            record.source_render_hash,
-            record.excluded_unresolved,
-        )
-    }
+/// Assemble the compaction provenance event from a prepared record and final summary text.
+pub fn build_compaction_record(
+    mut record: ContextCompactionRecord,
+    summary_text: String,
+) -> ProvEvent {
+    record.summary_text = summary_text.clone();
+    record.post_prompt_bytes = summary_text.len() as u64;
+    ProvEvent::context_compaction_recorded_global(
+        record.context_id,
+        record.task_id,
+        record.covered_event_order_start,
+        record.covered_event_order_end,
+        record.covered_node_ids,
+        summary_text,
+        record.trigger,
+        record.recent_tail_retention,
+        record.pre_row_count,
+        record.post_row_count,
+        record.pre_prompt_bytes,
+        record.post_prompt_bytes,
+        record.source_render_hash,
+        record.excluded_unresolved,
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    use baml_rt_tools::archive_refs::{ArchiveEntry, HistoryEntry, RefTable};
+
     use super::*;
 
     #[test]
-    fn extract_wire_refs_finds_hash_and_archive() {
-        let refs = extract_wire_refs("user: #1 and @2 @12:L3");
-        assert!(refs.contains("#1"));
-        assert!(refs.contains("@2"));
-        assert!(refs.contains("@12"));
-        assert!(!refs.contains("@12:L3"));
-    }
-
-    #[test]
-    fn merge_appends_all_source_refs() {
-        let source = "user: read @12 and @3\nassistant: done #1";
-        let merged = merge_compaction_summary("condensed prose", source);
-        assert!(merged.contains("condensed prose"));
-        assert!(merged.contains("@12"));
-        assert!(merged.contains("@3"));
-        assert!(merged.contains("#1"));
-        validate_summary_preserves_wire_refs(&merged, source).expect("valid");
-    }
-
-    #[test]
-    fn merge_omits_ref_clause_when_empty() {
-        let merged = merge_compaction_summary("no refs here", "plain text");
-        assert!(!merged.contains("Preserved refs:"));
-    }
-
-    #[test]
-    fn finalize_summary_appends_refs_from_source_when_prose_omits_them() {
-        let source = "tool: @7 blob";
+    fn finalize_allows_prose_without_citations() {
+        let table = RefTable::new();
         let summary =
-            ContextCompactionService::finalize_summary("no refs", source).expect("merged refs");
-        assert!(summary.contains("@7"));
-        validate_summary_preserves_wire_refs(&summary, source).expect("valid");
+            finalize_compaction_summary("paraphrased without handles", &table).expect("valid");
+        assert!(summary.starts_with("[conversation summary]\n"));
+        assert!(!summary.contains("Preserved refs:"));
+    }
+
+    #[test]
+    fn finalize_resolves_archive_history_and_composite_refs() {
+        let table = RefTable::new();
+        table.insert_virtual_archive(
+            1,
+            ArchiveEntry::new(
+                baml_rt_tools::archive_read::render_to_lines(&serde_json::json!({"x": 1})),
+                "tool/ns".into(),
+                None,
+                "evt-archive".into(),
+                "tool_result".into(),
+            ),
+        );
+        table.insert_virtual_archive_ref(
+            baml_rt_tools::archive_read::ShortRef::new_prefixed(2, 5),
+            ArchiveEntry::new(
+                baml_rt_tools::archive_read::render_to_lines(&serde_json::json!({"y": 2})),
+                "tool/ns".into(),
+                None,
+                "evt-composite".into(),
+                "tool_result".into(),
+            ),
+        );
+        table.insert_virtual_history(
+            2,
+            HistoryEntry::new("evt-history".into(), "message".into()),
+            "hello",
+        );
+        finalize_compaction_summary("see @1, @2/5, and #2", &table).expect("all refs resolve");
+    }
+
+    #[test]
+    fn finalize_rejects_unresolved_handles() {
+        let table = RefTable::new();
+        let err =
+            finalize_compaction_summary("stale @7 reference", &table).expect_err("unresolved");
+        assert!(
+            err.to_string().contains("@7"),
+            "error should name unresolved ref: {err}"
+        );
+    }
+
+    #[test]
+    fn finalize_allows_omitting_source_refs() {
+        let table = RefTable::new();
+        let summary = finalize_compaction_summary("no refs", &table).expect("valid summary");
+        assert!(summary.contains("no refs"));
     }
 }

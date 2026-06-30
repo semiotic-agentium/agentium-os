@@ -4,7 +4,10 @@
 
 //! Types for host-owned context/history compaction provenance events.
 
+use std::sync::Arc;
+
 use baml_rt_core::ids::{ActivityAnchorId, AgentId, ContextId, TaskId};
+use baml_rt_tools::archive_refs::RefTable;
 use serde::{Deserialize, Serialize};
 
 pub use crate::events::ContextCompactionTrigger;
@@ -19,10 +22,12 @@ pub struct CompactionRequest {
 /// Prepared prefix handed to any summarizer backend.
 #[derive(Debug, Clone)]
 pub struct CompactionPrefixInput {
-    /// Rendered transcript of the sealed prefix (LLM input + ref extraction source).
+    /// Rendered transcript of the sealed prefix (LLM input).
     pub source_rendered: String,
     pub active_planning_digest: Option<String>,
     pub recent_tail_preview: Option<String>,
+    /// Hydrated ref table for validating wire refs cited in the summary.
+    pub ref_table: Arc<RefTable>,
 }
 
 /// Latest compaction head for a context (optionally task-scoped).

@@ -20,7 +20,7 @@ use crate::{
 
 /// One hydrated rendering context for a stable item set.
 pub struct CompactionRenderContext {
-    ref_table: Arc<RefTable>,
+    pub ref_table: Arc<RefTable>,
 }
 
 impl CompactionRenderContext {

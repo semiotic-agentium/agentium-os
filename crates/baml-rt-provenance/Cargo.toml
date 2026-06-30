@@ -32,6 +32,7 @@ uuid = { workspace = true }
 surrealdb = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
 insta = { workspace = true, features = ["json"] }
 tempfile = { workspace = true }
 test-support = { path = "../test-support" }

@@ -6,14 +6,19 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use baml_rt_conversation::view::{ConversationItemContent, ProvenanceConversationContextItem};
-use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId};
+use baml_rt_core::{
+    context::RuntimeScope,
+    ids::{AgentId, ContextId, ExternalId, MessageId},
+};
 use baml_rt_llm_config::{LlmClientConfig, ModelBudgetOverride};
 use baml_rt_provenance::{
-    CompactionRequest, CompactionTriggerInput, CompactionTriggerSource,
-    ContextCompactionSubscriber, DEFAULT_COMPACTION_ITEM_THRESHOLD, DEFAULT_LLM_CONTEXT_ITEM_CAP,
-    DEFAULT_RECENT_TAIL_RETENTION, FixedCompactionSummarizer, ProvenanceContextReader,
-    ProvenanceQueryApi, ProvenanceWriter, render_items_with_ref_table,
+    CompactionPrefixInput, CompactionRequest, CompactionSummarizeError, CompactionTriggerInput,
+    CompactionTriggerSource, ContextCompactionSubscriber, ConversationCompactionSummarizer,
+    DEFAULT_COMPACTION_ITEM_THRESHOLD, DEFAULT_LLM_CONTEXT_ITEM_CAP, DEFAULT_RECENT_TAIL_RETENTION,
+    FixedCompactionSummarizer, ProvenanceContextReader, ProvenanceQueryApi, ProvenanceWriter,
+    finalize_compaction_summary, render_items_with_ref_table,
 };
 use baml_rt_tools::{
     archive_refs::RefTable, prompt_projection::project_prompt_context, tools::ToolRegistry,
@@ -124,12 +129,8 @@ async fn agent_prompt_read_applies_compaction_head_after_write() {
         "compaction summary uses wire format"
     );
     assert!(
-        head.summary_text.contains("Preserved refs:"),
-        "compaction summary includes deterministic ref appendix"
-    );
-    assert!(
-        head.summary_text.contains("@1"),
-        "compaction summary preserves @1 from source"
+        !head.summary_text.contains("Preserved refs:"),
+        "compaction summary must not inject deterministic ref appendix"
     );
 
     let full_after = store.conversation_context(&ctx, None).await.expect("full");
@@ -184,7 +185,7 @@ async fn agent_prompt_read_applies_compaction_head_after_write() {
         rows.first()
             .and_then(|r| r.get("content"))
             .and_then(|c| c.as_str())
-            .is_some_and(|c| c.contains("[compaction summary") && c.contains("Preserved refs:")),
+            .is_some_and(|c| c.contains("[compaction summary")),
         "first projected row must be compaction summary: {history}"
     );
     assert_eq!(
@@ -192,6 +193,228 @@ async fn agent_prompt_read_applies_compaction_head_after_write() {
         agent_after_len,
         "every compacted item must project to a transcript row"
     );
+}
+
+#[tokio::test]
+async fn compaction_rejects_summary_citing_unresolved_ref() {
+    let store = build_isolated_store().await;
+    let ctx = provenance_context_id(1_800_011);
+    let agent_id = provenance_agent_id();
+    let message_count = DEFAULT_COMPACTION_ITEM_THRESHOLD + 1;
+
+    seed_user_messages(&store, &ctx, &agent_id, message_count, "status ping @1").await;
+
+    let writer: Arc<dyn ProvenanceWriter> = Arc::clone(&store) as Arc<dyn ProvenanceWriter>;
+    let summarizer = Arc::new(FixedCompactionSummarizer::new(
+        "User repeatedly asked about status ping @1",
+    ));
+    let llm_config = LlmClientConfig::sensible_default();
+    let subscriber = ContextCompactionSubscriber::new(
+        Arc::clone(&store),
+        writer,
+        Arc::new(llm_config),
+        None,
+        summarizer,
+        Arc::new(ToolRegistry::new()),
+    );
+    let request = CompactionRequest {
+        context_id: ctx.clone(),
+        agent_id: agent_id.clone(),
+    };
+    subscriber
+        .evaluate_and_compact(
+            &request,
+            CompactionTriggerInput {
+                source: CompactionTriggerSource::PostTurn,
+                item_count: message_count,
+                prompt_bytes: 0,
+                safety: Default::default(),
+                force: false,
+            },
+            "default",
+        )
+        .await;
+
+    let head = store
+        .latest_compaction_head(&ctx, None)
+        .await
+        .expect("head query");
+    assert!(
+        head.is_none(),
+        "summary citing unresolved @1 must not write compaction head"
+    );
+}
+
+/// Always fails validation until `allow_success` is set (exhausts in-trigger retries each settlement).
+struct ValidationGatedSummarizer {
+    ok_prose: String,
+    allow_success: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ValidationGatedSummarizer {
+    fn new(ok_prose: impl Into<String>) -> Arc<Self> {
+        Arc::new(Self {
+            ok_prose: ok_prose.into(),
+            allow_success: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })
+    }
+}
+
+#[async_trait]
+impl ConversationCompactionSummarizer for ValidationGatedSummarizer {
+    fn backend_label(&self) -> &'static str {
+        "validation-gated-test"
+    }
+
+    async fn summarize_prefix_attempt(
+        &self,
+        _scope: &RuntimeScope,
+        input: &CompactionPrefixInput,
+        _validation_feedback: Option<String>,
+    ) -> Result<String, CompactionSummarizeError> {
+        if !self.allow_success.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(CompactionSummarizeError::Validation(
+                "compaction summary cites unresolved wire refs: @1".into(),
+            ));
+        }
+        finalize_compaction_summary(&self.ok_prose, &input.ref_table)
+            .map_err(|e| CompactionSummarizeError::Validation(e.to_string()))
+    }
+}
+
+#[tokio::test]
+async fn compaction_retries_on_next_settlement_after_validation_failure() {
+    let store = build_isolated_store().await;
+    let ctx = provenance_context_id(1_800_012);
+    let agent_id = provenance_agent_id();
+    let message_count = DEFAULT_COMPACTION_ITEM_THRESHOLD + 1;
+
+    seed_user_messages(&store, &ctx, &agent_id, message_count, "status ping").await;
+
+    let writer: Arc<dyn ProvenanceWriter> = Arc::clone(&store) as Arc<dyn ProvenanceWriter>;
+    let summarizer =
+        ValidationGatedSummarizer::new("User asked about status ping; continue from recent tail.");
+    let allow_success = Arc::clone(&summarizer.allow_success);
+    let llm_config = LlmClientConfig::sensible_default();
+    let subscriber = ContextCompactionSubscriber::new(
+        Arc::clone(&store),
+        writer,
+        Arc::new(llm_config),
+        None,
+        summarizer,
+        Arc::new(ToolRegistry::new()),
+    );
+    let request = CompactionRequest {
+        context_id: ctx.clone(),
+        agent_id: agent_id.clone(),
+    };
+    let trigger = CompactionTriggerInput {
+        source: CompactionTriggerSource::PostTurn,
+        item_count: message_count,
+        prompt_bytes: 0,
+        safety: Default::default(),
+        force: false,
+    };
+
+    subscriber
+        .evaluate_and_compact(&request, trigger, "default")
+        .await;
+    assert!(
+        store
+            .latest_compaction_head(&ctx, None)
+            .await
+            .expect("head query")
+            .is_none(),
+        "first settlement must not write head when validation fails"
+    );
+
+    allow_success.store(true, std::sync::atomic::Ordering::SeqCst);
+    subscriber
+        .evaluate_and_compact(&request, trigger, "default")
+        .await;
+    let head = store
+        .latest_compaction_head(&ctx, None)
+        .await
+        .expect("head query")
+        .expect("second settlement should compact after prior failure");
+    assert!(
+        head.summary_text.contains("[conversation summary]"),
+        "head: {:?}",
+        head.summary_text
+    );
+}
+
+#[tokio::test]
+async fn compaction_recovers_within_settlement_when_retry_fixes_validation() {
+    struct FeedbackThenRecover;
+
+    #[async_trait]
+    impl ConversationCompactionSummarizer for FeedbackThenRecover {
+        fn backend_label(&self) -> &'static str {
+            "feedback-then-recover"
+        }
+
+        async fn summarize_prefix_attempt(
+            &self,
+            _scope: &RuntimeScope,
+            input: &CompactionPrefixInput,
+            validation_feedback: Option<String>,
+        ) -> Result<String, CompactionSummarizeError> {
+            if validation_feedback.is_none() {
+                return Err(CompactionSummarizeError::Validation(
+                    "compaction summary cites unresolved wire refs: @9".into(),
+                ));
+            }
+            finalize_compaction_summary(
+                "User asked about status ping; continue from recent tail.",
+                &input.ref_table,
+            )
+            .map_err(|e| CompactionSummarizeError::Validation(e.to_string()))
+        }
+    }
+
+    let store = build_isolated_store().await;
+    let ctx = provenance_context_id(1_800_013);
+    let agent_id = provenance_agent_id();
+    let message_count = DEFAULT_COMPACTION_ITEM_THRESHOLD + 1;
+
+    seed_user_messages(&store, &ctx, &agent_id, message_count, "status ping").await;
+
+    let writer: Arc<dyn ProvenanceWriter> = Arc::clone(&store) as Arc<dyn ProvenanceWriter>;
+    let summarizer = Arc::new(FeedbackThenRecover);
+    let subscriber = ContextCompactionSubscriber::new(
+        Arc::clone(&store),
+        writer,
+        Arc::new(LlmClientConfig::sensible_default()),
+        None,
+        summarizer,
+        Arc::new(ToolRegistry::new()),
+    );
+    let request = CompactionRequest {
+        context_id: ctx.clone(),
+        agent_id: agent_id.clone(),
+    };
+
+    subscriber
+        .evaluate_and_compact(
+            &request,
+            CompactionTriggerInput {
+                source: CompactionTriggerSource::PostTurn,
+                item_count: message_count,
+                prompt_bytes: 0,
+                safety: Default::default(),
+                force: false,
+            },
+            "default",
+        )
+        .await;
+
+    let head = store
+        .latest_compaction_head(&ctx, None)
+        .await
+        .expect("head query")
+        .expect("in-trigger validation retry should compact on first settlement");
+    assert!(head.summary_text.contains("[conversation summary]"));
 }
 
 #[tokio::test]

@@ -19,10 +19,7 @@ pub mod types;
 pub use baml_rt_llm_config::{
     CompactionTriggerPolicy, resolve_compaction_trigger_policy, trigger_policy_from_budget,
 };
-pub use compactor::{
-    ContextCompactionService, extract_wire_refs, merge_compaction_summary,
-    validate_summary_preserves_wire_refs,
-};
+pub use compactor::{build_compaction_record, finalize_compaction_summary};
 pub use digest::{format_planning_digest, format_tail_preview};
 pub use partition::partition_items_for_compaction;
 pub use prepare::{CompactionPrepareError, PreparedCompaction, prepare_compaction};
@@ -35,8 +32,9 @@ pub use render::{
 };
 pub use subscriber::{ContextCompactionSubscriber, resolve_safety_signals};
 pub use summarizer::{
-    CompactionSummarizeError, ConversationCompactionSummarizer, FixedCompactionSummarizer,
-    HOST_COMPACTION_BAML_FUNCTION, compaction_runtime_scope,
+    COMPACTION_VALIDATION_RETRY_LIMIT, CompactionSummarizeError, ConversationCompactionSummarizer,
+    FixedCompactionSummarizer, HOST_COMPACTION_BAML_FUNCTION, compaction_runtime_scope,
+    invoke_summarizer_with_retry, summarize_with_validation_retry,
 };
 pub use trigger::{
     CompactionDeferReason, CompactionSafetySignals, CompactionSkipReason,

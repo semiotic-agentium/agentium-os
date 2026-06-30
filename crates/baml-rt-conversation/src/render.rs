@@ -515,8 +515,17 @@ fn format_parsed_episode_citation(c: &ParsedCitation, prefix: &EpisodeRefPrefix)
             let core = format!("{p}#{n}");
             if *negated { format!("!{core}") } else { core }
         }
-        ParsedCitation::Archive { n, lines, negated } => {
-            let mut core = format!("{p}@{n}");
+        ParsedCitation::Archive {
+            prefix,
+            local,
+            lines,
+            negated,
+        } => {
+            let mut core = if *prefix == 1 {
+                format!("{p}@{local}")
+            } else {
+                format!("{p}@{prefix}/{local}")
+            };
             if let Some(r) = lines {
                 core.push_str(":L");
                 if r.start() == r.end() {
