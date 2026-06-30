@@ -30,6 +30,19 @@ builder scaffold --name my-agent --template basic
 - `--template` - Template type (basic, advanced, etc.)
 - `--output-dir` - Target directory (default: current)
 
+#### `bootstrap` (`baml-agent-builder`)
+
+Scaffold a new agent package with manifest, BAML prompt stub, and `src/index.ts`:
+
+```bash
+cargo run -p baml-rt-builder --bin baml-agent-builder -- bootstrap ./my-agent \
+  --name "My Agent" \
+  --description "Short description" \
+  --no-tools
+```
+
+Then `lint`, customize `src/index.ts` / `baml_src/`, and `publish`. Deterministic eval smoke: [`verify-bootstrap-eval.sh`](../../scripts/verify-bootstrap-eval.sh) and fixture [`bootstrap-echo-eval`](../../tests/fixtures/agents/bootstrap-echo-eval/).
+
 #### `chat`
 Interactive chat session with an agent.
 

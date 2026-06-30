@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "name": "session-tool-eval",
+  "entry_point": "src/index.ts",
+  "signature": "session-tool-eval@1.0.0",
+  "tools": [
+    "test/synthetic_session_eval"
+  ],
+  "discovery": {
+    "description": "Fixture: imperative openToolSession loop against synthetic session eval tool (requires LLM + test tool in runner build)",
+    "capabilities": []
+  },
+  "tags": [
+    "fixture",
+    "eval"
+  ]
+}

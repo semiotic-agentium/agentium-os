@@ -28,6 +28,21 @@ This runs Vitest + `vue-tsc` build, starts a runner if needed, checks console AP
 
 Equivalent: `just verify-agentium-console`
 
+## Bootstrap a new agent + eval
+
+Create a package with the builder, load it on the server, and run a deterministic A2A eval (no LLM keys):
+
+```bash
+cargo run -p baml-rt-builder --bin baml-agent-builder -- bootstrap ./my-agent \
+  --name "My Agent" --description "What it does" --no-tools
+
+# CI smoke (fresh bootstrap + committed fixture):
+./scripts/verify-bootstrap-eval.sh
+# or: just verify-bootstrap-eval
+```
+
+Committed eval fixture: `tests/fixtures/agents/bootstrap-echo-eval` — returns `eval:pass:<user text>` on `message.sendStream`. Patch `src/index.ts` after bootstrap for deterministic eval (see fixture). LLM eval: `tests/fixtures/agents/session-tool-eval` (needs model + synthetic tool in runner build).
+
 ## Dev mode A — co-served (simplest)
 
 Single origin; console auto-connects to the runner serving it.
@@ -128,5 +143,6 @@ Vue components          no direct instanceApi imports (ESLint enforced)
 ## Related
 
 - [`verify-runner-http.sh`](../../scripts/verify-runner-http.sh) — broader runner HTTP smoke (A2A stream)
+- [`verify-bootstrap-eval.sh`](../../scripts/verify-bootstrap-eval.sh) — bootstrap + publish + deploy + A2A eval
 - [`repository-api-contract.md`](../reference/repository-api-contract.md) — publish payload shape
 - [`sdk-cli.md`](../reference/sdk-cli.md) — `baml-agent-builder publish`

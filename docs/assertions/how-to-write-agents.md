@@ -598,7 +598,8 @@ Details: [citable-history-and-checked-citations.md](citable-history-and-checked-
 | [task-lifecycle-demo](../tests/fixtures/agents/task-lifecycle-demo/)                 | **A2A DSL**: `awaitInput`, sequential lifecycle, `__chat_register({ run })`.                                                                                        |
 | [coordinator-agent](../agents/coordinator-agent/) (product)                                   | ReAct coordinator: classify + `awaitInput`; `submitIntent` before discovery; execution session for plan synthesis (`MakeStructuredPlan`); second session for delegation + `CoordinatorSynthesizeReply`; history via `conversation_transcript`; `StructuredReply`. |
 | [stream-baml-tool](../tests/fixtures/agents/stream-baml-tool/)                       | Minimal single-tool FSM (calculator).                                                                                                                               |
-| [session-tool-eval](../tests/fixtures/agents/session-tool-eval/)                     | Imperative `openToolSession` loop.                                                                                                                                  |
+| [bootstrap-echo-eval](../tests/fixtures/agents/bootstrap-echo-eval/)               | Bootstrap layout + deterministic A2A eval (`eval:pass:…`, no LLM).                                                                                                  |
+| [session-tool-eval](../tests/fixtures/agents/session-tool-eval/)                     | Imperative `openToolSession` loop (LLM + synthetic session tool).                                                                                                                                  |
 
 
 Fixtures evolve with the runtime; prefer the **principles** in this doc over copying structure verbatim.

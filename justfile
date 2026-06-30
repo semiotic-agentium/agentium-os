@@ -182,6 +182,14 @@ verify-agentium-console *args='':
     chmod +x scripts/verify-agentium-console.sh
     exec ./scripts/verify-agentium-console.sh {{args}}
 
+# Bootstrap new agent + deterministic A2A eval (no LLM keys required).
+verify-bootstrap-eval *args='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    chmod +x scripts/verify-bootstrap-eval.sh
+    exec ./scripts/verify-bootstrap-eval.sh {{args}}
+
 # Start local OpenTelemetry stack (Collector + Prometheus + Tempo + Grafana).
 otel-up:
     ./scripts/otel-stack.sh up

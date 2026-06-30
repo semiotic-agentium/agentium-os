@@ -140,7 +140,6 @@ Routes are divided into tiers:
 | `POST /deploy` | Deploy agent by hash |
 | `POST /undeploy` | Undeploy agent |
 | `GET /deployments` | List deployments |
-| `POST /eval/sessions` | Create ephemeral eval model-override session (`X-Agentium-Eval-Session` on subsequent A2A) |
 | `POST /control/migrate` | Agent migration |
 | `GET /cluster/agents` | Cluster agent listing |
 | `POST /cluster/deploy` | Cluster-wide deploy fan-out |
