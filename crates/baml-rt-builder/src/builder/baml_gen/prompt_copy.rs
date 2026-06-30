@@ -125,7 +125,7 @@ class ProvenancePlanStep {{
 }}
 
 class ArchiveLedgerEntry {{
-  archive_ref string @alias("ref") @description("Archive handle, e.g. @7")
+  archive_ref string @description("Archive handle, e.g. @7")
   header string @description("Compact tool/action identity for this Send, without result body")
 }}
 

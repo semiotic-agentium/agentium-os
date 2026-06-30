@@ -140,7 +140,7 @@ pub fn render_ts_declarations(
                 last_archive_ref?: string;
                 last_output_header?: string;
                 last_completion?: string;
-                archives?: Array<{ ref: string; header: string }>;
+                archives?: Array<{ archive_ref: string; header: string }>;
             }
         );
         tokens.line();

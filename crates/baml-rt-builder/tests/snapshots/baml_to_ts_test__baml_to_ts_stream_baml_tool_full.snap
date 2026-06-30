@@ -469,7 +469,7 @@ export interface SessionContext {
     last_archive_ref?: string;
     last_output_header?: string;
     last_completion?: string;
-    archives?: Array<{ ref: string; header: string }>;
+    archives?: Array<{ archive_ref: string; header: string }>;
 }
 
 /** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */

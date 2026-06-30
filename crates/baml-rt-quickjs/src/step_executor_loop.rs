@@ -169,7 +169,7 @@ struct LastStepContext {
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
 struct ArchiveLedgerEntry {
-    r#ref: String,
+    archive_ref: String,
     header: String,
 }
 
@@ -345,11 +345,14 @@ fn update_archive_ledger(archives: &mut Vec<ArchiveLedgerEntry>, step: &LastStep
     else {
         return;
     };
-    if archives.iter().any(|entry| entry.r#ref == *archive_ref) {
+    if archives
+        .iter()
+        .any(|entry| entry.archive_ref == *archive_ref)
+    {
         return;
     }
     archives.push(ArchiveLedgerEntry {
-        r#ref: archive_ref.clone(),
+        archive_ref: archive_ref.clone(),
         header: strip_archive_header_for_ledger(header),
     });
     if archives.len() > SESSION_CONTEXT_ARCHIVE_LEDGER_CAP {
@@ -856,7 +859,7 @@ mod session_context_wire_tests {
             last_output_header: Some("@1 · \"tool: Send\" · 1L · 10B".to_string()),
             last_completion: Some("DONE".to_string()),
             archives: vec![super::ArchiveLedgerEntry {
-                r#ref: "@1".to_string(),
+                archive_ref: "@1".to_string(),
                 header: "tool: Send".to_string(),
             }],
         })
@@ -866,7 +869,7 @@ mod session_context_wire_tests {
         assert_eq!(v["status"], "done");
         assert_eq!(v["last_step_op"], "send");
         assert_eq!(v["last_completion"], "DONE");
-        assert_eq!(v["archives"][0]["ref"], "@1");
+        assert_eq!(v["archives"][0]["archive_ref"], "@1");
     }
 
     #[test]
@@ -886,7 +889,7 @@ mod session_context_wire_tests {
         assert_eq!(v["contract_version"], "session_context_v3");
         assert_eq!(v["session_open"], false);
         assert_eq!(v["status"], "result_ready");
-        assert_eq!(v["archives"][0]["ref"], "@7");
+        assert_eq!(v["archives"][0]["archive_ref"], "@7");
         assert_eq!(
             v["archives"][0]["header"],
             "mcp/grafana/query_prometheus:Send(expr=\"up\")"
