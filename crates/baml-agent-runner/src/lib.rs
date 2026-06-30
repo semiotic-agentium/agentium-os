@@ -2,10 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! BAML Agent Runner
+//! Agentium platform runtime library.
 //!
 //! Starts the runner, restores previously-deployed agents from --state-dir,
-//! and serves HTTP / stdio / event poll loop.
+//! and serves HTTP / stdio / event poll loop. Invoked via `agentium serve`.
 
 #![recursion_limit = "256"]
 
@@ -70,7 +70,7 @@ use baml_tools_slack as _;
 use baml_tools_slack_notify as _;
 use baml_tools_system::callback_delivery_gate::install_callback_delivery_gate;
 use callback_delivery::RunnerCallbackDeliveryGate;
-use clap::Parser;
+pub use config::Cli as RunnerCli;
 use config::{Cli, ProvenanceDb, parse_surreal_credentials, provenance_config_builder};
 use serde_json::Value;
 use services::{
@@ -81,11 +81,8 @@ use services::{
 use stdio::unix_timestamp_secs;
 use tracing::{error, info, warn};
 
-/// Resolve `--claude-workspaces-base` to a canonical path before the async
-/// runtime starts, then pass the resolved value through config (no env vars).
-fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    let claude_workspaces_base = cli.claude_workspaces_base.as_ref().map(|base| {
+fn resolve_claude_workspaces_base(cli: &Cli) -> Option<PathBuf> {
+    cli.claude_workspaces_base.as_ref().map(|base| {
         let absolute = if base.is_absolute() {
             base.clone()
         } else {
@@ -95,12 +92,16 @@ fn main() -> anyhow::Result<()> {
         };
         if let Err(e) = std::fs::create_dir_all(&absolute) {
             let path = absolute.display();
-            eprintln!("Error: Cannot create Claude workspaces base {path}: {e}");
-            std::process::exit(1);
+            panic!("Cannot create Claude workspaces base {path}: {e}");
         }
         std::fs::canonicalize(&absolute).unwrap_or(absolute)
-    });
-    tokio_main(cli, claude_workspaces_base)
+    })
+}
+
+/// Start the Agentium platform (HTTP / stdio / event poll loop).
+pub async fn run(cli: Cli) -> anyhow::Result<()> {
+    let claude_workspaces_base = resolve_claude_workspaces_base(&cli);
+    run_inner(cli, claude_workspaces_base).await
 }
 
 /// Reject cluster endpoints that are not routable from other pods.
@@ -125,8 +126,7 @@ fn validate_cluster_endpoint(endpoint: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::main]
-async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow::Result<()> {
+async fn run_inner(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow::Result<()> {
     // Load dotenv before tracing/OTEL bootstrap so OTEL_* from .env are visible
     // to `init_tracing()` and exporter wiring.
     let dotenv_result = dotenvy::dotenv();

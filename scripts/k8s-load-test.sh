@@ -24,7 +24,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/e2e-k8s/lib.sh"
 
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-BUILDER_BIN="${CARGO_TARGET_DIR:-${REPO_ROOT}/target}/release/baml-agent-builder"
+BUILDER_BIN="${CARGO_TARGET_DIR:-target}/release/agentium""
 
 SCENARIOS="local_a2a,forwarded_a2a,split_dual_runner"
 CONCURRENCY="1,8,32"

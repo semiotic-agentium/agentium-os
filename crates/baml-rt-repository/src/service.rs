@@ -433,6 +433,34 @@ impl RepositoryService {
         self.blobs.put(hash, data).await
     }
 
+    /// Persist server-generated dev artifacts for a published package hash.
+    pub async fn put_dev_artifacts(
+        &self,
+        package_hash: &ContentHash,
+        bundle: &crate::dev_artifacts::DevArtifactsBundle,
+    ) -> Result<()> {
+        let blob_hash = crate::dev_artifacts::dev_artifacts_blob_hash(package_hash);
+        let bytes = serde_json::to_vec(bundle).map_err(|e| RepositoryError::StorageWrite {
+            source: Box::new(e),
+        })?;
+        self.blobs.put(&blob_hash, &bytes).await
+    }
+
+    /// Load dev artifacts for a published package hash.
+    pub async fn get_dev_artifacts(
+        &self,
+        package_hash: &ContentHash,
+    ) -> Result<Option<crate::dev_artifacts::DevArtifactsBundle>> {
+        let blob_hash = crate::dev_artifacts::dev_artifacts_blob_hash(package_hash);
+        let Some(bytes) = self.blobs.get(&blob_hash).await? else {
+            return Ok(None);
+        };
+        let bundle = serde_json::from_slice(&bytes).map_err(|e| RepositoryError::StorageRead {
+            source: Box::new(e),
+        })?;
+        Ok(Some(bundle))
+    }
+
     // -----------------------------------------------------------------------
     // Lineage
     // -----------------------------------------------------------------------

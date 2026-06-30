@@ -55,7 +55,7 @@ pub fn run(
     let tool_dir = workspace_root.join(format!("crates/tools/{name}"));
     if tool_dir.exists() {
         bail!(
-            "Error: tool crate already exists at {}\nHint: choose a different tool name or remove the existing directory.\nNext step: run `cargo agent-platform list-tools` to inspect existing tool IDs.",
+            "Error: tool crate already exists at {}\nHint: choose a different tool name or remove the existing directory.\nNext step: run `agentium list-tools` to inspect existing tool IDs.",
             tool_dir.display()
         );
     }
@@ -165,7 +165,7 @@ pub fn run(
     println!("{}", style("Applying changes...").cyan());
     writer.commit().map_err(|e| {
         anyhow!(
-            "Error: failed to apply staged changes.\nCause: {e}\nHint: this can happen when workspace files drift from expected structure.\nNext step: run `cargo agent-platform doctor --ci` and retry."
+            "Error: failed to apply staged changes.\nCause: {e}\nHint: this can happen when workspace files drift from expected structure.\nNext step: run `agentium doctor --ci` and retry."
         )
     })?;
 
@@ -236,7 +236,7 @@ fn patch_file<P: Patcher>(
 
     let patched = patcher.patch_for_tool(&content, tool_name).map_err(|e| {
         anyhow!(
-            "Error: failed to patch {}\nCause: {e}\nHint: this usually means the file format drifted from the expected template.\nNext step: inspect this file and run `cargo agent-platform doctor`.",
+            "Error: failed to patch {}\nCause: {e}\nHint: this usually means the file format drifted from the expected template.\nNext step: inspect this file and run `agentium doctor`.",
             path.display()
         )
     })?;
@@ -324,6 +324,49 @@ fn capitalize_first(s: &str) -> String {
         Some(first) => first.to_uppercase().chain(chars).collect(),
         None => String::new(),
     }
+}
+
+/// CLI-facing entry: resolves interactive prompts then runs the scaffolder.
+pub struct NewStaticToolCli {
+    pub name: Option<String>,
+    pub bundle: Option<String>,
+    pub access: Option<String>,
+    pub description: Option<String>,
+    pub dry_run: bool,
+}
+
+pub fn run_cli(cmd: NewStaticToolCli) -> Result<()> {
+    use crate::interactive;
+
+    let interactive_mode = cmd.name.is_none();
+    let name = match cmd.name {
+        Some(n) => n,
+        None => interactive::prompt_tool_name()?,
+    };
+    let bundle = match cmd.bundle {
+        Some(b) => b,
+        None if interactive_mode => interactive::prompt_bundle()?,
+        None => "support".to_string(),
+    };
+    let access = match cmd.access {
+        Some(a) => a,
+        None if interactive_mode => interactive::prompt_access()?,
+        None => "read".to_string(),
+    };
+    let description = match cmd.description {
+        Some(d) => d,
+        None if interactive_mode => interactive::prompt_tool_description()?,
+        None => String::new(),
+    };
+    let dry_run = if interactive_mode { false } else { cmd.dry_run };
+    run(
+        &name,
+        &bundle,
+        &access,
+        &description,
+        dry_run,
+        interactive_mode,
+    )
 }
 
 #[cfg(test)]

@@ -96,6 +96,10 @@ pub fn run(
     let authenticated = runner_token.is_some();
     let published = publish_agent(agent_dir, repository_url, rationale, origin, runner_token)?;
     let content_hash = published.result.hash.as_str();
+    let runner_url = repository_url
+        .trim_end_matches('/')
+        .strip_suffix("/repository")
+        .unwrap_or(repository_url.trim_end_matches('/'));
 
     println!("{}", style("Source published successfully.").green().bold());
     println!("  agent dir: {}", style(agent_dir).cyan());
@@ -113,13 +117,15 @@ pub fn run(
     println!("{}", style("To deploy this agent, run:").yellow());
     if authenticated {
         println!(
-            "  cargo agent-platform deploy --hash {} --runner-token \"$RUNNER_TOKEN\"",
-            style(content_hash).cyan()
+            "  agentium deploy --hash {} --url {} --runner-token \"$RUNNER_TOKEN\"",
+            style(content_hash).cyan(),
+            style(runner_url).dim()
         );
     } else {
         println!(
-            "  cargo agent-platform deploy --hash {}",
-            style(content_hash).cyan()
+            "  agentium deploy --hash {} --url {}",
+            style(content_hash).cyan(),
+            style(runner_url).dim()
         );
     }
 

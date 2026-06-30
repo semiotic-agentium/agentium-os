@@ -31,6 +31,7 @@ spec:
             capabilities:
               drop: ["ALL"]
           args:
+            - serve
             - --serve-http
             - "0.0.0.0:{{ .Values.runner.service.headless.port }}"
             - --surreal-endpoint

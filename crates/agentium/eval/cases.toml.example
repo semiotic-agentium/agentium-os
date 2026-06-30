@@ -1,0 +1,23 @@
+[defaults]
+agent = "task-lifecycle-demo"
+model = "x-ai/grok-4.3"
+context_id = "eval-lifecycle-1"
+
+[[case]]
+id = "lifecycle-review-path"
+mode = "chat"
+
+[[case.turns]]
+send = "lifecycle-demo"
+assert.task_states = ["TASK_STATE_WORKING", "TASK_STATE_INPUT_REQUIRED"]
+assert.contains = ["Task started."]
+
+[[case.turns]]
+send = "review-path"
+assert.contains = ["Review path selected."]
+
+[[case]]
+id = "smoke-one-shot"
+mode = "chat"
+input = "hello"
+assert.contains = ["hello"]

@@ -75,7 +75,7 @@ run `check-external-tool`, and run a framed
 You can also call the command directly:
 
 ```bash
-cargo run -q -p cargo-agent-platform -- sandbox-bind-sync \
+cargo run -q -p agentium -- sandbox-bind-sync \
   --tool-dir . \
   --rootfs ./.tmp/bind-rootfs \
   --dockerfile adapter/Dockerfile \
@@ -89,4 +89,3 @@ adapter binary can't run directly on the host).
 
 `adapter/tool-adapter` is a generated transport shim (TSRPC <-> raw stdio).
 You usually only edit the scaffolded language source (`main.py`, `src/main.rs`, etc.).
-

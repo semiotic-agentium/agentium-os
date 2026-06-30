@@ -205,7 +205,7 @@ for ((i=0; i<replicas; i++)); do
   pod_url="http://localhost:${pod_port}"
   wait_pilot_port_forward_ready "$pod_pid" "$pod_port" "$pod_pf_log"
 
-  publish_output="$(cargo run -q -p cargo-agent-platform -- publish \
+  publish_output="$(cargo run -q -p agentium -- publish \
     --agent-dir "$FIXTURE_PATH" \
     --repository-url "${pod_url}/repository" \
     --runner-token "$RUNNER_TOKEN" 2>&1)" || {

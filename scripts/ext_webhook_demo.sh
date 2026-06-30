@@ -85,7 +85,7 @@ case "$cmd" in
         echo "    Terminal 2: scripts/ext_webhook_demo.sh push      # deploy the consumer agent (once)"
         echo "    Terminal 2: scripts/ext_webhook_demo.sh trigger   # POST a deploy-health event"
         exec env RUST_LOG="${RUST_LOG:-info,baml_rt_a2a=debug}" \
-            cargo run -p baml-agent-runner -- \
+            cargo run -p agentium -- serve -- \
             --serve-http "127.0.0.1:${PORT}" \
             --runner-config "$DATASOURCE_CONFIG" \
             --state-dir "$STATE_DIR" \
@@ -95,7 +95,7 @@ case "$cmd" in
         ;;
     push)
         log_step "Publishing + deploying ${AGENT_DIR} into ${RUNNER_URL}"
-        exec cargo run -q -p cargo-agent-platform -- push \
+        exec cargo run -q -p agentium -- push \
             --agents "$AGENT_DIR" \
             --repository-url "$REPOSITORY_URL" \
             --url "$RUNNER_URL" \

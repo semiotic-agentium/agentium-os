@@ -33,11 +33,29 @@
 /// design rationale and #428 for the operational tracker.
 pub const FALLBACK_TEST_MODEL: &str = "x-ai/grok-4.3";
 
+tokio::task_local! {
+    static EVAL_MODEL_OVERRIDE: Option<String>;
+}
+
+/// Run `f` with an ephemeral eval-scoped model override (does not mutate process env).
+pub async fn with_eval_model_override<F, T>(model: Option<String>, f: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    EVAL_MODEL_OVERRIDE.scope(model, f).await
+}
+
 /// The model the workspace's `llm-tests` lane should target.
 ///
 /// Reads `BAML_TEST_MODEL`. When the variable is unset or empty, returns
-/// [`FALLBACK_TEST_MODEL`].
+/// [`FALLBACK_TEST_MODEL`]. Eval runs may set a task-local override via
+/// [`with_eval_model_override`].
 pub fn test_model_default() -> String {
+    if let Ok(Some(model)) = EVAL_MODEL_OVERRIDE.try_with(|m| m.clone())
+        && !model.is_empty()
+    {
+        return model;
+    }
     match std::env::var("BAML_TEST_MODEL") {
         Ok(s) if !s.is_empty() => s,
         _ => FALLBACK_TEST_MODEL.to_string(),

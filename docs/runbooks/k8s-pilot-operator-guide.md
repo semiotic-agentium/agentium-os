@@ -21,7 +21,7 @@ The supported install surface is the Helm chart at [`deploy/helm/agentium-os/`](
 - Kubernetes cluster ≥ 1.24 with a default `StorageClass`.
 - Helm 3.x, `kubectl`, `curl`, `jq`.
 - Docker (or compatible) to build the runner image.
-- Rust toolchain (stable) to run the `cargo agent-platform` CLI. Installed from the repository root.
+- Rust toolchain (stable) to run the `agentium` CLI. Installed from the repository root.
 - Repo checkout. All commands below are run from the repository root.
 
 The Agentium runner image is not published to a public registry. Operators build and push their own image.
@@ -151,7 +151,7 @@ curl -sf http://localhost:18080/readyz  && echo ok
 Publish the `dispatch-echo` fixture and deploy it in one step using the authenticated CLI path from [#220](https://github.com/semiotic-agentium/agent-platform/issues/220):
 
 ```bash
-cargo run -p cargo-agent-platform -- push \
+cargo run -p agentium -- push \
   --agents tests/fixtures/agents/dispatch-echo \
   --url http://localhost:18080 \
   --repository-url http://localhost:18080/repository \
@@ -292,7 +292,7 @@ If `observability.enabled` is `true` and `observability.otlpEndpoint` points at 
 | `readyz` returns 503 for more than a minute | `kubectl -n agentium logs statefulset/agentium-agentium-os-runner` | SurrealDB not up, or runner cannot reach it. Verify `surrealdb-credentials` keys match `values.yaml` (`username`/`password`). |
 | `401 authentication required` from publish/deploy | `kubectl -n agentium get secret runner-token -o yaml` | `RUNNER_TOKEN` missing or wrong. Re-export from the secret (see Step 2). |
 | `400 routing_key must be non-empty` on dispatch | request body | Ensure `routing_key` and `message_type` are present and non-empty strings. |
-| `/agents` is empty after publish+deploy | runner logs, `cargo agent-platform list-deployed-instances --url http://localhost:18080` | Deploy silently failed or ran on the other pod. Check both pods (Step 10). |
+| `/agents` is empty after publish+deploy | runner logs, `agentium list-deployed-instances --url http://localhost:18080` | Deploy silently failed or ran on the other pod. Check both pods (Step 10). |
 | LLM-backed agents fail with `secret not resolved` | runner logs | `fnox.toml` in the ConfigMap does not have a `default = "..."` for the required key. Update the ConfigMap, then `kubectl -n agentium rollout restart statefulset/agentium-agentium-os-runner`. |
 | `scripts/k8s-pilot-cleese-chapman.sh` times out after deploy | script output, runner logs | The LLM-backed path can stall on provider latency or cold starts. Re-run once. If it repeats, inspect `fnox-config`, runner connectivity, and the provider account. |
 

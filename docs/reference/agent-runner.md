@@ -1,6 +1,8 @@
-# Agent Runner
+# Agent Runner (HTTP API)
 
-`baml-agent-runner` is the A2A host: QuickJS + BAML, optional HTTP and/or stdio, embedded agent repository, and deploy-by-hash. **Positional package paths are not accepted** — add agents with `baml-agent-builder publish` (which POSTs to `/repository/publish` and can `POST /deploy`) or call `POST /deploy` yourself.
+The platform host runs as **`agentium serve`** (library: `baml-agent-runner`). It is the A2A host: QuickJS + BAML, optional HTTP and/or stdio, embedded agent repository, and deploy-by-hash. **Positional package paths are not accepted** — add agents with `agentium install agent` (POST `/repository/publish` + `POST /deploy`) or call `POST /deploy` yourself.
+
+For CLI flags and local dev, see [`agentium-cli.md`](agentium-cli.md).
 
 It supports:
 
@@ -12,7 +14,8 @@ It supports:
 ## Build
 
 ```bash
-cargo build -p baml-agent-runner --all-features --release
+cargo build -p agentium --all-features --release
+# or: just build-release
 ```
 
 For local development, `--all-features` is usually safest to avoid missing tool bundle features.
@@ -20,13 +23,13 @@ For local development, `--all-features` is usually safest to avoid missing tool 
 ## Run
 
 ```bash
-./target/release/baml-agent-runner [flags]
+./target/release/agentium serve [flags]
 ```
 
 Example (empty registry at start; deploy after publish):
 
 ```bash
-./target/release/baml-agent-runner \
+./target/release/agentium serve \
   --serve-http 127.0.0.1:18080 \
   --repository-url http://127.0.0.1:18080/repository \
   --state-dir ./.runner-state \
@@ -117,7 +120,7 @@ Routes are divided into tiers:
 | `POST /event-dispatch/validate` | Draft validation |
 | `GET /message-shapes` | Event Console registry |
 | `GET /contexts/*`, `GET /tasks/*/episode*` | Conversation history, provenance, metrics |
-| `GET /repository/*` (read paths) | Repository reads when mounted |
+| `GET /repository/*` (read paths) | Repository reads when mounted, including `GET /repository/dev-artifacts` |
 
 **Operator-authenticated (require `X-Runner-Token` when token configured; fail-closed in cluster without token):**
 
@@ -132,6 +135,7 @@ Routes are divided into tiers:
 | `POST /deploy` | Deploy agent by hash |
 | `POST /undeploy` | Undeploy agent |
 | `GET /deployments` | List deployments |
+| `POST /eval/sessions` | Create ephemeral eval model-override session (`X-Agentium-Eval-Session` on subsequent A2A) |
 | `POST /control/migrate` | Agent migration |
 | `GET /cluster/agents` | Cluster agent listing |
 | `POST /cluster/deploy` | Cluster-wide deploy fan-out |
@@ -183,7 +187,7 @@ Operators can read this line to confirm what cap is active without grepping sour
 Typical flow:
 
 1. Start runner with `--serve-http` and repository flags (see above).
-2. `baml-agent-builder publish --agent-dir ... --repository-url http://127.0.0.1:18080/repository --deploy-url http://127.0.0.1:18080` (or `POST /deploy` with the printed `content_hash`).
+2. `agentium install agent --path agents/clickup-agent --url http://127.0.0.1:18080` (or `agentium publish` then `agentium deploy` with the printed hash).
 
 ## End-to-End Example
 
@@ -192,8 +196,7 @@ Typical flow:
 Start runner:
 
 ```bash
-./target/debug/baml-agent-runner \
-  --a2a-stdio \
+agentium serve \
   --serve-http 127.0.0.1:18080 \
   --repository-url http://127.0.0.1:18080/repository \
   --state-dir ./.runner-state \
@@ -204,10 +207,10 @@ Start runner:
 Publish source:
 
 ```bash
-baml-agent-builder publish \
-  --agent-dir agents/clickup-agent \
-  --repository-url http://127.0.0.1:18080/repository \
-  --deploy-url http://127.0.0.1:18080
+agentium install agent \
+  --path agents/clickup-agent \
+  --url http://127.0.0.1:18080 \
+  --runner-token "$RUNNER_TOKEN"
 ```
 
 Deploy by content hash (the hash printed in publish result):
@@ -224,20 +227,12 @@ In cluster mode, operator actions require `X-Runner-Token`. The token is provisi
 
 **Using the CLI (recommended):**
 
-Both `cargo agent-platform` and `baml-agent-builder` accept `--runner-token` (or `RUNNER_TOKEN` env) for authenticated operator access. See `docs/reference/sdk-cli.md` for full flag reference.
+Both `agentium` subcommands accept `--runner-token` (or `RUNNER_TOKEN` env) for authenticated operator access. See [`agentium-cli.md`](agentium-cli.md).
 
 ```bash
-# Publish and deploy via cargo agent-platform
-cargo agent-platform push \
-  --agents agents/clickup-agent \
+agentium install agent \
+  --path agents/clickup-agent \
   --url http://localhost:18080 \
-  --runner-token "$RUNNER_TOKEN"
-
-# Publish and deploy via baml-agent-builder
-baml-agent-builder publish \
-  --agent-dir agents/clickup-agent \
-  --repository-url http://localhost:18080/repository \
-  --deploy-url http://localhost:18080 \
   --runner-token "$RUNNER_TOKEN"
 ```
 

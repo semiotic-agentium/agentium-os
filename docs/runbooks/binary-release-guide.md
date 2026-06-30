@@ -21,9 +21,9 @@ Each target builds **natively** on its own architecture — no cross-compilation
 
 ### Shipped binaries
 
-- `baml-agent-runner` (features: http-tools, memory, sandbox-provider)
-- `baml-agent-builder` (features: http-tools, memory)
-- `cargo-agent-platform` (default features)
+- `agentium` (features: http-tools, memory, sandbox-provider, dev-tools) — platform host + developer SDK
+
+Legacy separate `baml-agent-runner` and `cargo-agent-platform` release artifacts are no longer produced.
 
 ## Release artifacts
 
@@ -76,10 +76,8 @@ Reproducible builds via the `release-dist` Cargo profile:
 sudo apt-get install build-essential pkg-config libssl-dev \
   libdbus-1-dev libcap-ng-dev clang libclang-dev llvm-dev lld
 
-# Build release binaries
-cargo build --profile release-dist --features http-tools,memory,sandbox-provider -p baml-agent-runner
-cargo build --profile release-dist --features http-tools,memory -p baml-rt-builder
-cargo build --profile release-dist -p cargo-agent-platform
+# Build release binary
+cargo build --profile release-dist --features http-tools,memory,sandbox-provider,dev-tools -p agentium
 
 # Or use the release scripts
 scripts/release/build-release-binaries.sh  # host target

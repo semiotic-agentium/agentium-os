@@ -24,7 +24,7 @@ resolver wiring, and live `tools/call` over stdio.
      examples/external-mcp-servers/meteo-mcp/mcp-servers.json.tmpl \
      > ~/.agentium-os/mcp-servers.json
 
-   cargo agent-platform mcp enable meteo \
+   agentium mcp enable meteo \
      --config ~/.agentium-os/mcp-servers.json \
      --repository-url http://127.0.0.1:18080/repository \
      --yes
@@ -45,10 +45,10 @@ BAML_REGISTRY_URL=http://127.0.0.1:18080/repository \
     --output /tmp/meteo-mcp-agent.tar.gz
 ```
 
-With `cargo agent-platform`:
+With `agentium`:
 
 ```bash
-cargo agent-platform build \
+agentium build \
   --path examples/agents/meteo-mcp-agent \
   --repository-url http://127.0.0.1:18080/repository
 ```
@@ -61,7 +61,7 @@ projected from the approved registry snapshot (`McpMeteoGetMeteo`,
 ## Run
 
 ```bash
-baml-agent-builder publish \
+agentium install agent \
   --agent-dir examples/agents/meteo-mcp-agent \
   --repository-url http://127.0.0.1:18080/repository \
   --deploy-url http://127.0.0.1:18080 \

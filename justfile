@@ -11,7 +11,7 @@ provenance_coordinator_claude_notion_db := "coordinator-claude-notion-provenance
 # Default HTTP bind for `just` recipes. Port 8080 is a frequent conflict (e.g. inference gateways that 503
 # every route until a huge model loads). To use 8080, change the assignment below to `127.0.0.1:8080`.
 runner_http_bind := "127.0.0.1:18080"
-# Runner: options only — no positional packages. Agents load via `baml-agent-builder publish` + POST /deploy.
+# Runner: options only — no positional packages. Agents load via `agentium install agent` + POST /deploy.
 runner_base_url := "http://" + runner_http_bind
 repository_url := runner_base_url + "/repository"
 # Seconds to wait for runner HTTP before publish/push (runner init + large restore can exceed 60s).
@@ -27,8 +27,7 @@ otel_protocol := "grpc"
 
 # Binaries (build with `just build` / `just build-release`; paths default to release).
 # Respect CARGO_TARGET_DIR when present (.env sets it in some dev setups).
-builder_bin := "${CARGO_TARGET_DIR:-target}/release/baml-agent-builder"
-runner_bin := "${CARGO_TARGET_DIR:-target}/release/baml-agent-runner"
+agentium_bin := "${CARGO_TARGET_DIR:-target}/release/agentium"
 
 # Regenerate `_baml_runtime.baml` + `src/baml-runtime.d.ts` for every fixture under `tests/fixtures/agents/` and agent under `agents/`. Requires all tool crates (same as build-release).
 regen-fixtures:
@@ -105,10 +104,9 @@ build-release:
     set -a
     [ -f .env ] && . ./.env
     set +a
-    cargo build --release -p baml-rt-builder --bin baml-agent-builder --all-features
-    cargo build --release -p baml-agent-runner --all-features
+    cargo build --release -p agentium --all-features
 
-# Build the runner in release mode (default; matches `runner_bin`).
+# Build agentium in release mode (default; matches `agentium_bin`).
 # Note: build does not require OTEL env vars; export wiring is runtime-only.
 build:
     #!/usr/bin/env bash
@@ -117,9 +115,9 @@ build:
     set -a
     [ -f .env ] && . ./.env
     set +a
-    cargo build --release -p baml-agent-runner --all-features
+    cargo build --release -p agentium --all-features
 
-# Build the runner in debug mode (binary: target/debug/baml-agent-runner).
+# Build the runner in debug mode (binary: target/debug/agentium).
 build-debug:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -127,7 +125,7 @@ build-debug:
     set -a
     [ -f .env ] && . ./.env
     set +a
-    cargo build -p baml-agent-runner --all-features
+    cargo build -p agentium --all-features
 
 # Run bare runner (HTTP + stdio) with OTEL defaults suitable for local docker observability stack.
 # Override by exporting OTEL_* in your shell or .env.
@@ -138,7 +136,7 @@ runner: build
     cd "$(git rev-parse --show-toplevel)"
     WEB=()
     [ -d web/dist ] && WEB=(--web-dir web/dist)
-    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio "${WEB[@]}"
+    exec {{agentium_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio "${WEB[@]}"
 
 # Same as `runner`, but persists provenance to `provenance.db` (SurrealKV on disk).
 runner-provenance: build
@@ -147,7 +145,7 @@ runner-provenance: build
     cd "$(git rev-parse --show-toplevel)"
     WEB=()
     [ -d web/dist ] && WEB=(--web-dir web/dist)
-    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio "${WEB[@]}"
+    exec {{agentium_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio "${WEB[@]}"
 
 # Profile runner CPU hotspots with flamegraph.
 # Requires: cargo-flamegraph (`cargo install flamegraph`) and Linux perf permissions.
@@ -159,7 +157,7 @@ profile-runner:
     set -a
     [ -f .env ] && . ./.env
     set +a
-    cargo flamegraph --release -p baml-agent-runner --bin baml-agent-runner -- \
+    cargo flamegraph --release -p agentium --bin agentium -- \
       --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
 
 # Build Vue/Vite SPA to web/dist (`npm ci` + `npm run build`). Required for recipes that pass `--web-dir web/dist`.
@@ -280,9 +278,9 @@ clickup-agent: build-release
     set +a
     (
       ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-      {{builder_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
-    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
+    exec {{agentium_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
 
 # Same as clickup-agent, but persists provenance to provenance.db.
 clickup-agent-provenance: build-release
@@ -294,9 +292,9 @@ clickup-agent-provenance: build-release
     set +a
     (
       ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-      {{builder_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
-    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
+    exec {{agentium_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
 
 # Rebuilds notion-agent and runs it via a2a stdio.
 notion-agent: build-release
@@ -308,9 +306,9 @@ notion-agent: build-release
     set +a
     (
       ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-      {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
-    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
+    exec {{agentium_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
 
 # Same as notion-agent, but persists provenance to provenance.db.
 notion-agent-provenance: build-release
@@ -322,9 +320,9 @@ notion-agent-provenance: build-release
     set +a
     (
       ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-      {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
-    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
+    exec {{agentium_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
 
 # Rebuilds slack-agent and runs it via a2a stdio. Requires: just build-release (http-tools via --all-features)
 slack-agent: build-release
@@ -336,9 +334,9 @@ slack-agent: build-release
     set +a
     (
       ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-      {{builder_bin}} publish --agent-dir agents/slack-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/slack-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
-    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
+    exec {{agentium_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
 
 # Same as slack-agent, but persists provenance to provenance.db.
 slack-agent-provenance: build-release
@@ -350,9 +348,9 @@ slack-agent-provenance: build-release
     set +a
     (
       ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-      {{builder_bin}} publish --agent-dir agents/slack-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/slack-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
-    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
+    exec {{agentium_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
 
 # Rebuilds coordinator + notion + clickup and runs coordinator stack via a2a stdio.
 coordinator-agent: build-release
@@ -364,11 +362,11 @@ coordinator-agent: build-release
     set +a
     (
       ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-      {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-      {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-      {{builder_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
-    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
+    exec {{agentium_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
 
 # Same as coordinator-agent stack, but adds claude-session + workspace coordinator-agent publish and persists provenance.
 coordinator-agent-provenance: build-release
@@ -380,12 +378,12 @@ coordinator-agent-provenance: build-release
     set +a
     (
       ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-      {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-      {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-      {{builder_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-      {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
-    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
+    exec {{agentium_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
 
 # Rebuilds claude-session-agent and runs it via a2a stdio.
 claude-session-agent: build-release
@@ -397,9 +395,9 @@ claude-session-agent: build-release
     set +a
     (
       ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-      {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
-    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
+    exec {{agentium_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
 
 # Same as claude-session-agent, but persists provenance to provenance.db.
 claude-session-agent-provenance: build-release
@@ -411,9 +409,9 @@ claude-session-agent-provenance: build-release
     set +a
     (
       ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-      {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
-    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
+    exec {{agentium_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
 
 # Rebuilds coordinator-agent + notion and runs with provenance and UI (HTTP only).
 coordinator-notion: web-build build-release
@@ -423,12 +421,12 @@ coordinator-notion: web-build build-release
     set -a
     [ -f .env ] && . ./.env
     set +a
-    {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --web-dir web/dist &
+    {{agentium_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --web-dir web/dist &
     runner_pid=$!
     trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
     ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-    {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-    {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{agentium_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{agentium_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     wait "$runner_pid"
 
 # Coordinator-agent + Claude session + Notion, HTTP + provenance + web UI.
@@ -439,13 +437,13 @@ coordinator-claude-notion: web-build build-release
     set -a
     [ -f .env ] && . ./.env
     set +a
-    {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_coordinator_claude_notion_db}} --web-dir web/dist &
+    {{agentium_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_coordinator_claude_notion_db}} --web-dir web/dist &
     runner_pid=$!
     trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
     ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-    {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-    {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-    {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{agentium_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{agentium_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{agentium_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     wait "$runner_pid"
 
 # Full local dev stack: all primary dev agent packages, web UI, provenance.
@@ -457,17 +455,17 @@ dev-all-agents: web-build build-release
     set -a
     [ -f .env ] && . ./.env
     set +a
-    {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --web-dir web/dist &
+    {{agentium_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --web-dir web/dist &
     runner_pid=$!
     trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
     ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-    {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-    {{builder_bin}} publish --agent-dir tests/fixtures/agents/security-eval-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-    {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-    {{builder_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-    {{builder_bin}} publish --agent-dir agents/extrospection-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-    {{builder_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-    {{builder_bin}} publish --agent-dir agents/slack-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{agentium_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{agentium_bin}} publish --agent-dir tests/fixtures/agents/security-eval-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{agentium_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{agentium_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{agentium_bin}} publish --agent-dir agents/extrospection-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{agentium_bin}} publish --agent-dir agents/notion-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{agentium_bin}} publish --agent-dir agents/slack-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     wait "$runner_pid"
 
 # Rebuilds coordinator-agent + claude-session + extrospection + clickup + security-eval and runs them with provenance (HTTP only, no stdio).
@@ -478,15 +476,15 @@ coordinator-claude-extrospection-clickup: build-release
     set -a
     [ -f .env ] && . ./.env
     set +a
-    {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} &
+    {{agentium_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} &
     runner_pid=$!
     trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
     ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-    {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-    {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-    {{builder_bin}} publish --agent-dir agents/extrospection-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-    {{builder_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-    {{builder_bin}} publish --agent-dir tests/fixtures/agents/security-eval-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{agentium_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{agentium_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{agentium_bin}} publish --agent-dir agents/extrospection-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{agentium_bin}} publish --agent-dir agents/clickup-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+    {{agentium_bin}} publish --agent-dir tests/fixtures/agents/security-eval-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     wait "$runner_pid"
 
 # Rebuilds coordinator-agent + claude-session + extrospection + security-eval and runs them via a2a stdio.
@@ -499,12 +497,12 @@ coordinator-claude-extrospection: build-release
     set +a
     (
       ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-      {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-      {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-      {{builder_bin}} publish --agent-dir agents/extrospection-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-      {{builder_bin}} publish --agent-dir tests/fixtures/agents/security-eval-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/extrospection-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir tests/fixtures/agents/security-eval-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
-    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
+    exec {{agentium_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
 
 # Same as coordinator-claude-extrospection, but persists provenance to provenance.db.
 coordinator-claude-extrospection-provenance: build-release
@@ -516,12 +514,12 @@ coordinator-claude-extrospection-provenance: build-release
     set +a
     (
       ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-      {{builder_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-      {{builder_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-      {{builder_bin}} publish --agent-dir agents/extrospection-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
-      {{builder_bin}} publish --agent-dir tests/fixtures/agents/security-eval-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/coordinator-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/claude-session-demo --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir agents/extrospection-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
+      {{agentium_bin}} publish --agent-dir tests/fixtures/agents/security-eval-agent --repository-url {{repository_url}} --deploy-url {{runner_base_url}}
     ) &
-    exec {{runner_bin}} --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
+    exec {{agentium_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
 
 # Deprecated names: these stacks publish `agents/coordinator-agent`, not the removed persona fixture.
 alias persona-notion := coordinator-notion
@@ -553,17 +551,17 @@ echo-sandbox-demo:
     echo
     echo "Runner will start in foreground; auto-push will run after HTTP is ready."
     echo "Then in another shell, run chat:"
-    echo "  cargo run -p cargo-agent-platform -- chat --agent echo-agent --url {{runner_base_url}}"
+    echo "  cargo run -p agentium -- chat --agent echo-agent --url {{runner_base_url}}"
     echo
 
     (
       ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
       echo "[echo-sandbox-demo] pushing agents/echo-agent..."
-      cargo run -p cargo-agent-platform -- push --agents agents/echo-agent --url {{runner_base_url}}
+      cargo run -p agentium -- push --agents agents/echo-agent --url {{runner_base_url}}
       echo "[echo-sandbox-demo] push completed."
     ) &
 
-    exec cargo run -p baml-agent-runner --all-features -- --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
+    exec cargo run -p agentium --all-features -- serve  --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
 
 # Runs the HTTP Notion demo script (starts runner if needed and streams one request).
 notion-demo:
@@ -640,15 +638,15 @@ test-inventory:
 
 # SDK CLI: workspace integrity check
 doctor:
-    cargo run --release -p cargo-agent-platform -- doctor
+    cargo run --release -p agentium -- doctor
 
 # SDK CLI: list all registered tools
 list-tools:
-    cargo run --release -p cargo-agent-platform -- list-tools
+    cargo run --release -p agentium -- list-tools
 
 # SDK CLI: list all agent packages
 list-agents:
-    cargo run --release -p cargo-agent-platform -- list-agents
+    cargo run --release -p agentium -- list-agents
 
 # Run E2E k8s tests against a real k3d cluster (Argo CD + local registry).
 e2e-k8s:

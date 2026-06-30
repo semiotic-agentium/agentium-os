@@ -84,7 +84,7 @@ jobs:
             crates/baml-rt-api/src/openapi.rs \
             crates/baml-agent-runner/src/main.rs \
             crates/baml-agent-runner/src/deployment_state.rs \
-            crates/cargo-agent-platform/src/main.rs \
+            crates/agentium/src/main.rs \
             2>/dev/null) || true
           [ -z "$API_DIFF" ] && API_DIFF="No changes"
 
@@ -115,7 +115,7 @@ jobs:
           Path → doc routing when code changes:
           - crates/baml-rt-api/src/router.rs, handlers.rs → docs/reference/agent-runner.md
           - crates/baml-agent-runner/** deploy/restore → docs/reference/deployment-lifecycle-contract.md
-          - crates/cargo-agent-platform/** → docs/reference/sdk-cli.md
+          - crates/agentium/** → docs/reference/sdk-cli.md
           - crates/baml-rt-mcp/**, repository MCP routes → docs/reference/agentium-mcp-support.md
           - **/metrics.rs, effect_metrics.rs → docs/reference/metrics-inventory.md
           - deploy/helm/agentium-os/** → docs/runbooks/k8s-pilot-operator-guide.md

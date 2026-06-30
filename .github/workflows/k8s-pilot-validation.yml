@@ -84,7 +84,7 @@ jobs:
 
       - name: Install OS deps
         # build-essential / pkg-config / libssl-dev / libclang-dev / lld
-        # are needed by `cargo run -p cargo-agent-platform` during the
+        # are needed by `cargo run -p agentium` during the
         # smoke step. zstd + git-lfs hydrate the embedded ONNX models the
         # Dockerfile copies into the runtime image.
         run: |

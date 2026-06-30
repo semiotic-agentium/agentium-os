@@ -118,11 +118,11 @@ The chart provisions a single SurrealDB instance shared by every runner crate. E
 
 | Namespace    | Database       | Owner                  | Contents                                            |
 | ------------ | -------------- | ---------------------- | --------------------------------------------------- |
-| `cluster`    | `registry`     | `baml-agent-runner`    | `cluster_runners`, `cluster_agent_placements`       |
+| `cluster`    | `registry`     | `agentium serve`       | `cluster_runners`, `cluster_agent_placements`       |
 | `provenance` | `store`        | `baml-rt-provenance`   | provenance graph (nodes, edges, payloads, archives) |
 | `config`     | `store`        | `baml-rt-config`       | tool configuration and secrets overview             |
 | `baml`       | `repository`   | `baml-rt-repository`   | content-addressable agent package archive           |
-| `baml`       | `runner_state` | `baml-agent-runner`    | deployment state                                    |
+| `baml`       | `runner_state` | `agentium serve`       | deployment state                                    |
 
 The authoritative list lives at `scripts/e2e-k8s/lib.sh:SURREAL_KNOWN_NAMESPACES`; update it (and this table) when a crate adds a new namespace.
 

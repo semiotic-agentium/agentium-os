@@ -45,7 +45,8 @@ use crate::{
     ClusterHeartbeatHealth, ContextIndexService, ContextMetricsService, ConversationHistoryService,
     EpisodeService, HeartbeatStatus, MermaidService, PlanningService, ProvenanceOpsService,
     RuntimeProgressMeter, cluster_agents, cluster_agents::ClusterDirectoryService, cluster_deploy,
-    config_handlers, external_tool_enable, handlers, metrics, otel_middleware, repository_publish,
+    config_handlers, eval_handlers, external_tool_enable, handlers, metrics, otel_middleware,
+    repository_publish,
 };
 
 /// Cluster-mode topology: either standalone (single runner, no peer awareness)
@@ -131,6 +132,8 @@ pub struct ApiState {
     pub runtime_progress: Arc<RuntimeProgressMeter>,
     /// Canonical host publish spine (poll lineage + fan-out + transport failures).
     pub host_publish: Option<Arc<baml_rt_core::HostPublishService>>,
+    /// Ephemeral eval model-override sessions (`POST /eval/sessions`).
+    pub eval_sessions: Arc<crate::sdk_state::EvalSessionStore>,
 }
 
 async fn serve_openapi_json(
@@ -505,6 +508,7 @@ pub fn api_router_with_services_and_deploy(
         .routes(utoipa_axum::routes!(handlers::post_deploy))
         .routes(utoipa_axum::routes!(handlers::post_undeploy))
         .routes(utoipa_axum::routes!(handlers::get_deployments))
+        .routes(utoipa_axum::routes!(eval_handlers::post_eval_session))
         .routes(utoipa_axum::routes!(handlers::post_migrate))
         .routes(utoipa_axum::routes!(cluster_agents::get_cluster_agents))
         .routes(utoipa_axum::routes!(cluster_deploy::post_cluster_deploy))
@@ -639,6 +643,7 @@ pub fn api_router_with_services_and_deploy(
         cluster,
         runtime_progress,
         host_publish,
+        eval_sessions: crate::sdk_state::EvalSessionStore::new(),
     });
 
     let mut router = api_router
@@ -680,7 +685,14 @@ pub fn api_router_with_services_and_deploy(
     }
     if let Some(repo_service) = repository_service {
         // Read-only repository routes: public (agents, entries, lineage, blobs, search).
-        let repo_read = baml_rt_repository::repository_read_router(repo_service.clone());
+        let dev_artifacts_router = axum::Router::new()
+            .route(
+                "/dev-artifacts",
+                axum::routing::get(eval_handlers::get_dev_artifacts),
+            )
+            .with_state(repo_service.clone());
+        let repo_read = baml_rt_repository::repository_read_router(repo_service.clone())
+            .merge(dev_artifacts_router);
 
         // Mutation repository routes: operator-authenticated (fork, tags, publish).
         let publish_router = axum::Router::new()

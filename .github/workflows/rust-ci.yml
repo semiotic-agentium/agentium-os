@@ -458,8 +458,8 @@ jobs:
 
       - name: Sandbox sidecar parity checks (bind + OCI)
         run: |
-          cargo test -p cargo-agent-platform write_runtime_sidecars_materializes_expected_files --locked -- --ignored --nocapture
-          cargo test -p cargo-agent-platform sandbox_oci_prepare --locked -- --ignored --nocapture
+          cargo test -p agentium write_runtime_sidecars_materializes_expected_files --locked -- --ignored --nocapture
+          cargo test -p agentium sandbox_oci_prepare --locked -- --ignored --nocapture
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
 

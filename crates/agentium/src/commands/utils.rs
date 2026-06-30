@@ -15,6 +15,7 @@ pub const HTTP_OP_LIST_DEPLOYED_INSTANCES: &str = "List deployed instances";
 /// Resolved operator token for authenticated CLI operations.
 ///
 /// Wraps a non-empty, validated token string. Debug impl redacts the value.
+#[derive(Clone)]
 pub struct RunnerToken(String);
 
 impl std::fmt::Debug for RunnerToken {
@@ -162,6 +163,21 @@ impl AgentPlatform {
             serde_json::from_str::<Resp>(&body)
                 .with_context(|| format!("Failed to parse {op_name} response: {body}"))
         })
+    }
+
+    pub fn block_on<F, T>(&self, future: F) -> T
+    where
+        F: std::future::Future<Output = T>,
+    {
+        self.runtime.block_on(future)
+    }
+
+    pub fn http_client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
+    pub fn runner_token_ref(&self) -> Option<&RunnerToken> {
+        self.runner_token.as_ref()
     }
 }
 

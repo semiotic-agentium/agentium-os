@@ -29,13 +29,12 @@ ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=lld"
 ENV CARGO_PROFILE_RELEASE_LTO=thin
 ENV CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
 
-RUN cargo build --release -p baml-agent-runner --features http-tools \
-    && cargo build --release -p baml-rt-builder --features http-tools --bin baml-agent-builder
+RUN cargo build --release -p agentium --features http-tools,memory,sandbox-provider,dev-tools
 
 # Stage 2: Slim runtime image.
 #
-# Node.js is needed at runtime because baml-agent-builder compiles
-# TypeScript when agents are published via POST /deploy.
+# Node.js is needed at runtime because repository publish compiles
+# TypeScript when agents are published via POST /repository/publish.
 FROM debian:bookworm-slim AS runtime
 
 ARG VERSION=dev
@@ -55,8 +54,7 @@ ENV NPM_CONFIG_CACHE=/tmp/npm-cache
 RUN groupadd -r agentium && useradd -r -g agentium -d /data -s /sbin/nologin agentium
 RUN mkdir -p /data && chown -R agentium:agentium /data
 
-COPY --from=builder /build/target/release/baml-agent-runner /usr/local/bin/
-COPY --from=builder /build/target/release/baml-agent-builder /usr/local/bin/
+COPY --from=builder /build/target/release/agentium /usr/local/bin/
 
 # Host-owned context compaction BAML (SummarizeConversationPrefix).
 COPY baml_src/host /opt/agentium/baml_src/host
@@ -78,5 +76,5 @@ USER 1000
 
 EXPOSE 18080
 
-ENTRYPOINT ["baml-agent-runner"]
+ENTRYPOINT ["agentium", "serve"]
 CMD ["--serve-http", "0.0.0.0:18080"]

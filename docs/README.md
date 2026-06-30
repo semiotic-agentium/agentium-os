@@ -34,7 +34,7 @@ System-as-is: APIs, contracts, and current behavior.
 | Doc | Purpose |
 |-----|---------|
 | [agent-runner.md](reference/agent-runner.md) | Runner CLI, HTTP API, deploy, auth tiers |
-| [sdk-cli.md](reference/sdk-cli.md) | `cargo-agent-platform` command reference |
+| [agentium-cli.md](reference/agentium-cli.md) | `agentium` command reference (`serve`, install, eval, …) |
 | [host-tool-guide.md](reference/host-tool-guide.md) | External, sandbox, and static host tools |
 | [agentium-mcp-support.md](reference/agentium-mcp-support.md) | MCP config, registry, build, runtime, pooling |
 | [repository-api-contract.md](reference/repository-api-contract.md) | Publish/entries/blob HTTP contract |

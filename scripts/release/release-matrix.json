@@ -5,21 +5,9 @@
   ],
   "binaries": [
     {
-      "package": "baml-agent-runner",
-      "bin": "baml-agent-runner",
-      "features": ["http-tools", "memory", "sandbox-provider"],
-      "ship": true
-    },
-    {
-      "package": "baml-rt-builder",
-      "bin": "baml-agent-builder",
-      "features": ["http-tools", "memory"],
-      "ship": true
-    },
-    {
-      "package": "cargo-agent-platform",
-      "bin": "cargo-agent-platform",
-      "features": [],
+      "package": "agentium",
+      "bin": "agentium",
+      "features": ["http-tools", "memory", "sandbox-provider", "dev-tools"],
       "ship": true
     }
   ]

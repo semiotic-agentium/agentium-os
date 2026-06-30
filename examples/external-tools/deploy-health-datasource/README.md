@@ -33,7 +33,7 @@ boot, because webhook routes are mounted at startup.
 ```bash
 ./examples/external-tools/deploy-health-datasource/run_runner.sh
 # equivalently, from the repo root:
-#   cargo run -p baml-agent-runner -- \
+#   cargo run -p agentium -- serve -- \
 #     --runner-config examples/external-tools/deploy-health-datasource/runner.toml \
 #     --serve-http 127.0.0.1:18080 \
 #     --event-poll-interval-secs 1

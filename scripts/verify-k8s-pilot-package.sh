@@ -19,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/e2e-k8s/lib.sh"
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-BUILDER_BIN="${CARGO_TARGET_DIR:-${REPO_ROOT}/target}/release/baml-agent-builder"
+BUILDER_BIN="${CARGO_TARGET_DIR:-target}/release/agentium""
 
 SKIP_BUILD=false
 KEEP_CLUSTER=false

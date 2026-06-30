@@ -31,7 +31,7 @@ POST webhook → runner enqueue → producer drain → dispatch → THIS agent.o
 ## Build
 
 ```bash
-cargo agent-platform build --path examples/agents/deploy-health-consumer
+agentium build --path examples/agents/deploy-health-consumer
 ```
 
 ## Run the full two-part demo
@@ -40,7 +40,7 @@ cargo agent-platform build --path examples/agents/deploy-health-consumer
    can be deployed into it):
 
    ```bash
-   cargo run -p baml-agent-runner -- \
+   cargo run -p agentium -- serve -- \
      --serve-http 127.0.0.1:18087 \
      --runner-config examples/external-tools/deploy-health-datasource/runner.toml \
      --state-dir ./.runner-state-demo \

@@ -72,7 +72,7 @@ demos — see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ```bash
 just check-host          # Linux deps + TypeScript 6 on PATH
-just build-release       # baml-agent-builder + baml-agent-runner
+just build-release       # agentium (platform host + SDK)
 ```
 
 ### Local runner (+ chat UI)
@@ -121,7 +121,7 @@ Operator install path: [`docs/runbooks/k8s-pilot-operator-guide.md`](docs/runboo
 ```bash
 just fmt
 just clippy
-just doctor              # workspace integrity (cargo-agent-platform)
+just doctor              # workspace integrity (agentium)
 just test-unit           # no API keys
 just test                # CI-parity nextest (needs OPENROUTER_API_KEY for LLM lane)
 ```

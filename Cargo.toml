@@ -2,7 +2,7 @@
 members = [
   "crates/baml-agent-runner",
   "crates/baml-derive-tests",
-  "crates/cargo-agent-platform",
+  "crates/agentium",
   "crates/baml-tool-links",
   "crates/integrations/clickup-client",
   "crates/integrations/github-client",

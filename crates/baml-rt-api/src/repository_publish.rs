@@ -40,15 +40,16 @@ pub async fn publish_with_build(
         repository_version = next_version,
         "building repository artifact"
     );
-    let built: Arc<[u8]> = Arc::from(
-        build_artifact(source_versioned, svc.clone())
+    let (built, dev_artifacts): (Arc<[u8]>, Option<baml_rt_repository::DevArtifactsBundle>) = {
+        let (bytes, artifacts) = build_artifact(source_versioned, svc.clone())
             .await
             .map_err(|e| {
                 HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR)
                     .title("Artifact build failed")
-                    .detail(e.to_string())
-            })?,
-    );
+                    .detail(format!("stage=build: {}", e))
+            })?;
+        (Arc::from(bytes), artifacts)
+    };
 
     let parse_bytes = Arc::clone(&built);
     let (_, extracted) =
@@ -90,13 +91,19 @@ pub async fn publish_with_build(
         .await
         .map_err(HttpApiProblem::from)?;
 
+    if let Some(artifacts) = dev_artifacts {
+        svc.put_dev_artifacts(&result.hash, &artifacts)
+            .await
+            .map_err(HttpApiProblem::from)?;
+    }
+
     Ok(Json(result))
 }
 
 async fn build_artifact(
     source: SourceBundle,
     svc: Arc<RepositoryService>,
-) -> anyhow::Result<Vec<u8>> {
+) -> anyhow::Result<(Vec<u8>, Option<baml_rt_repository::DevArtifactsBundle>)> {
     let handle = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || handle.block_on(build_artifact_inner(&source, svc)))
         .await
@@ -106,7 +113,7 @@ async fn build_artifact(
 async fn build_artifact_inner(
     source: &SourceBundle,
     svc: Arc<RepositoryService>,
-) -> anyhow::Result<Vec<u8>> {
+) -> anyhow::Result<(Vec<u8>, Option<baml_rt_repository::DevArtifactsBundle>)> {
     let workspace = unique_temp_dir("baml-repository-publish");
     fs::create_dir_all(&workspace)?;
 
@@ -141,12 +148,29 @@ async fn build_artifact_inner(
             .map_err(anyhow::Error::from)?;
 
         let bytes = fs::read(&output)?;
-        Ok::<_, anyhow::Error>(bytes)
+        let dev_artifacts = read_dev_artifacts(&workspace, build_dir.as_path());
+        Ok::<_, anyhow::Error>((bytes, dev_artifacts))
     }
     .await;
 
     let _ = fs::remove_dir_all(&workspace);
     result
+}
+
+fn read_dev_artifacts(
+    workspace: &Path,
+    build_dir: &Path,
+) -> Option<baml_rt_repository::DevArtifactsBundle> {
+    let prelude = fs::read_to_string(workspace.join("baml_src/_baml_runtime.baml"))
+        .or_else(|_| fs::read_to_string(build_dir.join("baml_src/_baml_runtime.baml")))
+        .ok()?;
+    let dts = fs::read_to_string(workspace.join("src/baml-runtime.d.ts"))
+        .or_else(|_| fs::read_to_string(build_dir.join("src/baml-runtime.d.ts")))
+        .ok()?;
+    Some(baml_rt_repository::DevArtifactsBundle {
+        baml_runtime: prelude,
+        baml_runtime_dts: dts,
+    })
 }
 
 fn materialize_source_bundle(source: &SourceBundle, root: &Path) -> anyhow::Result<()> {
