@@ -59,6 +59,7 @@ Install, test, demo, and operate.
 | [k8s-pilot-load-testing.md](runbooks/k8s-pilot-load-testing.md) | Load-test harness contract |
 | [task-daemon.md](runbooks/task-daemon.md) | Task-daemon user guide |
 | [host-tool-quickstart.md](runbooks/host-tool-quickstart.md) | Sandboxed external tool + agent checklist |
+| [agentium-console.md](runbooks/agentium-console.md) | Local dev, Vite proxy, Agents load flow, verification |
 | [coordinator-demo.md](runbooks/coordinator-demo.md) | Coordinator delegation demo |
 | [notion-demo.md](runbooks/notion-demo.md) | Notion agent demo |
 | [slack-it-requirements.md](runbooks/slack-it-requirements.md) | Slack Business+ IT questionnaire |
@@ -86,4 +87,4 @@ Co-located with implementation; linked from reference or assertions as needed.
 | Operator / K8s | [k8s-pilot-operator-guide.md](runbooks/k8s-pilot-operator-guide.md) → [agent-runner.md](reference/agent-runner.md) |
 | Observability | [metrics-inventory.md](reference/metrics-inventory.md) → OTel guides |
 | Testing | [testing-handbook.md](assertions/testing-handbook.md) → [e2e-k8s.md](runbooks/e2e-k8s.md) |
-| Operator UI | [`web/README.md`](../web/README.md) → provenance + chat views |
+| Operator UI | [agentium-console.md](runbooks/agentium-console.md) → [`web/README.md`](../web/README.md) |

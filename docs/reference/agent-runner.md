@@ -4,7 +4,9 @@ The platform host runs as **`agentium serve`** (library: `baml-agent-runner`). I
 
 For CLI flags and local dev, see [`agentium-cli.md`](agentium-cli.md).
 
-The **Agentium Console** (`web/`) is a standalone Vue client for the same HTTP API. Connect with instance URL + optional `X-Runner-Token`, load agents via **Agents** (folder upload → `POST /repository/publish` → `POST /deploy`), then chat and observe. See [`web/README.md`](../../web/README.md). For Vite dev on another origin, set `AGENTIUM_CORS_ORIGINS` (comma-separated) on the runner.
+The **Agentium Console** (`web/`) is a standalone Vue client for the same HTTP API. Connect with instance URL + optional `X-Runner-Token`, load agents via **Agents** (folder upload → `POST /repository/publish` → `POST /deploy`), then chat and observe. See [`web/README.md`](../../web/README.md) and the [`agentium-console` runbook](../runbooks/agentium-console.md). For Vite dev on another origin, set `AGENTIUM_CORS_ORIGINS` (comma-separated) on the runner.
+
+Quick local verify: `./scripts/verify-agentium-console.sh` or `just verify-agentium-console`.
 
 It supports:
 

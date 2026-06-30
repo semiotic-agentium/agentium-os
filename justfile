@@ -174,6 +174,14 @@ web-build:
     npm ci
     npm run build
 
+# Agentium Console: web tests/build + runner routes + publish/deploy parity with Agents view.
+verify-agentium-console *args='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    chmod +x scripts/verify-agentium-console.sh
+    exec ./scripts/verify-agentium-console.sh {{args}}
+
 # Start local OpenTelemetry stack (Collector + Prometheus + Tempo + Grafana).
 otel-up:
     ./scripts/otel-stack.sh up
