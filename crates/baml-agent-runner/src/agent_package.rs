@@ -367,22 +367,58 @@ impl AgentPackage {
         )));
 
         let llm_config_arc = {
-            use baml_rt_llm_config::{StaticResolver, load_stored_config};
-            let llm_config = load_stored_config(provenance_config.config_service().as_ref()).await;
-            tracing::info!(
-                default = %llm_config.default,
-                clients = llm_config.clients.len(),
-                agent_overrides = llm_config.overrides.agent.len(),
-                function_overrides = llm_config.overrides.agent_function.len(),
-                "LLM client config loaded for override resolution"
-            );
-            let llm_config_arc = Arc::new(llm_config);
-            let resolver = Arc::new(StaticResolver::new(
-                Arc::clone(&llm_config_arc),
-                provenance_config.llm_secret_resolver(),
-            ));
-            runtime_manager.set_llm_client_resolver(resolver);
-            llm_config_arc
+            use baml_rt_llm_config::{LLM_CONFIG_BUNDLE_NAME, LlmClientConfig, StaticResolver};
+            let config_service = provenance_config.config_service();
+            let bundle = baml_rt_tools::BundleName::new(LLM_CONFIG_BUNDLE_NAME)
+                .expect("llm bundle name valid");
+            let stored_llm_config = match config_service.get(&bundle).await {
+                Ok(Some(v)) => match LlmClientConfig::from_value(v) {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "stored LLM config parse failed; using platform fallback only");
+                        None
+                    }
+                },
+                Ok(None) => None,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to load LLM config; using platform fallback only");
+                    None
+                }
+            };
+
+            match stored_llm_config {
+                Some(llm_config) => {
+                    tracing::info!(
+                        default = %llm_config.default,
+                        clients = llm_config.clients.len(),
+                        agent_overrides = llm_config.overrides.agent.len(),
+                        function_overrides = llm_config.overrides.agent_function.len(),
+                        "stored LLM client config loaded for override resolution"
+                    );
+                    let llm_config_arc = Arc::new(llm_config);
+                    let resolver = Arc::new(StaticResolver::new(
+                        Arc::clone(&llm_config_arc),
+                        provenance_config.llm_secret_resolver(),
+                    ));
+                    runtime_manager.set_llm_client_resolver(resolver);
+                    llm_config_arc
+                }
+                None => {
+                    let fallback_config = LlmClientConfig::sensible_default();
+                    tracing::info!(
+                        default = %fallback_config.default,
+                        clients = fallback_config.clients.len(),
+                        "no stored LLM client config; platform fallback will apply only to functions without BAML client config"
+                    );
+                    let fallback_config_arc = Arc::new(fallback_config);
+                    let fallback_resolver = Arc::new(StaticResolver::new(
+                        Arc::clone(&fallback_config_arc),
+                        provenance_config.llm_secret_resolver(),
+                    ));
+                    runtime_manager.set_llm_fallback_client_resolver(fallback_resolver);
+                    fallback_config_arc
+                }
+            }
         };
 
         let runtime_manager_arc = Arc::new(tokio::sync::RwLock::new(runtime_manager));
