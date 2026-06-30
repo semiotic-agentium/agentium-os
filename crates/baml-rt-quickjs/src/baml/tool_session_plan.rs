@@ -10,7 +10,7 @@ use baml_rt_tools::{ToolFailure, should_host_retry, tool_failure_to_baml_tool_ex
 use super::{BamlRuntimeManager, ToolSessionOp, ToolSessionPlan, manager_prelude::*, open_input};
 use crate::{
     provenance_errors::map_archive_provenance_err,
-    tool_session_handle::{SendResult, ToolSessionSendBlockingOutcome},
+    tool_session_handle::{SendResult, ToolSessionSendBlockingOutcome, send_signature},
 };
 
 /// Recoverable miss: LLM cited `@N` before it exists, wrong index, or stale session — return as
@@ -88,6 +88,23 @@ fn send_done_json(send_result: &SendResult) -> Value {
         "output": send_result.header,
         "archive_ref": send_result.archive_ref.to_string(),
         "result": send_result.output.clone(),
+    })
+}
+
+fn duplicate_send_json(
+    archive_ref: baml_rt_tools::archive_read::ShortRef,
+    header: String,
+) -> Value {
+    serde_json::json!({
+        "status": "duplicate",
+        "op": "DuplicateSend",
+        "archive_ref": archive_ref.to_string(),
+        "output": header,
+        "duplicate": true,
+        "message": format!(
+            "Identical Send already materialized as {archive_ref}; read it instead of re-issuing."
+        ),
+        "result": Value::Null,
     })
 }
 
@@ -319,6 +336,23 @@ impl BamlRuntimeManager {
         // auto-finish decision can't disagree with the auto-open decision (and we avoid a second
         // registry lookup whose miss would silently skip the finish, leaking the session).
         let mut auto_open_one_shot_strict = false;
+        if let Some(ToolSessionOp::Send { input, .. }) = steps.first() {
+            let normalized = normalize_plan_input(input.clone())?;
+            let signature = send_signature(&tool_name_str, &normalized);
+            let ref_table = baml_rt_tools::archive_refs::get_or_create_ref_table(
+                &self.state.archive_ref_tables,
+                plan_scope.context_id().as_str(),
+            );
+            if let Some((archive_ref, header)) = ref_table.find_by_send_signature(&signature) {
+                tracing::warn!(
+                    tool = %tool_name_str,
+                    archive_ref = %archive_ref,
+                    "FSM step: duplicate Send suppressed"
+                );
+                return Ok(duplicate_send_json(archive_ref, header));
+            }
+        }
+
         if let Some(first) = steps.first()
             && matches!(first, ToolSessionOp::Send { .. })
             && session_id.is_none()
@@ -477,6 +511,23 @@ impl BamlRuntimeManager {
                         )
                     })?;
                     let normalized = normalize_plan_input(input)?;
+                    let signature = send_signature(&tool_name_str, &normalized);
+                    let ref_table = baml_rt_tools::archive_refs::get_or_create_ref_table(
+                        &self.state.archive_ref_tables,
+                        plan_scope.context_id().as_str(),
+                    );
+                    if let Some((archive_ref, header)) =
+                        ref_table.find_by_send_signature(&signature)
+                    {
+                        tracing::warn!(
+                            tool = %tool_name_str,
+                            archive_ref = %archive_ref,
+                            "FSM step: duplicate Send suppressed"
+                        );
+                        last_output = Some(duplicate_send_json(archive_ref, header));
+                        send_completed = true;
+                        continue;
+                    }
                     let chunk_timeout = std::time::Duration::from_secs(300);
                     let mut active_session = current_session.clone();
 
