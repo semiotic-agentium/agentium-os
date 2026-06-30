@@ -62,6 +62,7 @@
 
 pub use baml_rt_citation::{
     Citation, CitationKind, CitationParseError, ParsedCitation, parse_citations, parsed_citations,
+    scan_wire_citations,
 };
 
 /// A citation resolved to its full content from a `RefTable`.
@@ -111,7 +112,7 @@ impl ResolvedCitation {
         citation: &ParsedCitation,
         ref_table: &crate::archive_refs::RefTable,
     ) -> Option<Self> {
-        use crate::archive_read::{HistoryRef, ShortRef};
+        use crate::archive_read::HistoryRef;
 
         match citation {
             ParsedCitation::History { n, negated } => {
@@ -131,8 +132,13 @@ impl ResolvedCitation {
                     lines: None,
                 })
             }
-            ParsedCitation::Archive { n, lines, negated } => {
-                let s_ref = ShortRef::new(*n);
+            ParsedCitation::Archive {
+                prefix,
+                local,
+                lines,
+                negated,
+            } => {
+                let s_ref = crate::archive_read::ShortRef::new_prefixed(*prefix, *local);
                 let entry = ref_table.get(s_ref)?;
                 let content = if let Some(range) = lines {
                     // Extract only the requested line range (1-based, inclusive).
@@ -148,7 +154,7 @@ impl ResolvedCitation {
                     entry.content.lines().collect::<Vec<_>>().join("\n")
                 };
                 Some(Self {
-                    n: *n,
+                    n: *local,
                     kind: CitationKind::Archive,
                     negated: *negated,
                     activity_anchor: entry.activity_anchor.clone(),
@@ -159,6 +165,27 @@ impl ResolvedCitation {
             }
         }
     }
+}
+
+/// Whether a scanned wire citation token resolves in `ref_table`.
+#[must_use]
+pub fn wire_citation_resolves(token: &str, ref_table: &crate::archive_refs::RefTable) -> bool {
+    ParsedCitation::parse(token)
+        .ok()
+        .and_then(|parsed| ResolvedCitation::resolve(&parsed, ref_table))
+        .is_some()
+}
+
+/// Return unresolved citation tokens cited in `text` (sorted, deduplicated).
+#[must_use]
+pub fn unresolved_wire_citations(
+    text: &str,
+    ref_table: &crate::archive_refs::RefTable,
+) -> Vec<String> {
+    scan_wire_citations(text)
+        .into_iter()
+        .filter(|token| !wire_citation_resolves(token, ref_table))
+        .collect()
 }
 
 /// Operating mode for citation enforcement.
@@ -340,6 +367,50 @@ mod tests {
         let empty = RefTable::new();
         assert!(
             ResolvedCitation::resolve(&ParsedCitation::parse("#99").unwrap(), &empty).is_none()
+        );
+    }
+
+    #[test]
+    fn wire_citation_resolves_flat_and_composite_archive() {
+        use crate::{
+            archive_read::render_to_lines,
+            archive_refs::{ArchiveEntry, HistoryEntry, RefTable},
+        };
+
+        let table = RefTable::new();
+        table.insert_virtual_archive(
+            3,
+            ArchiveEntry::new(
+                render_to_lines(&serde_json::json!({"x": 1})),
+                "tool/ns".into(),
+                None,
+                "evt-archive".into(),
+                "tool_result".into(),
+            ),
+        );
+        table.insert_virtual_archive_ref(
+            crate::archive_read::ShortRef::new_prefixed(2, 5),
+            ArchiveEntry::new(
+                render_to_lines(&serde_json::json!({"y": 2})),
+                "tool/ns".into(),
+                None,
+                "evt-composite".into(),
+                "tool_result".into(),
+            ),
+        );
+        table.insert_virtual_history(
+            2,
+            HistoryEntry::new("evt-history".into(), "message".into()),
+            "hello",
+        );
+
+        assert!(wire_citation_resolves("@3", &table));
+        assert!(wire_citation_resolves("@2/5", &table));
+        assert!(wire_citation_resolves("#2", &table));
+        assert!(!wire_citation_resolves("@7", &table));
+        assert_eq!(
+            unresolved_wire_citations("see @3 and phantom @9", &table),
+            vec!["@9".to_string()]
         );
     }
 }

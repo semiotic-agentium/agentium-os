@@ -4,6 +4,8 @@
 
 //! Prepare compaction inputs from store reads (pure orchestration split from subscriber).
 
+use std::sync::Arc;
+
 use baml_rt_llm_config::CompactionTriggerPolicy;
 use baml_rt_tools::tools::ToolRegistry;
 use sha2::{Digest, Sha256};
@@ -77,6 +79,7 @@ pub async fn prepare_compaction(
         source_rendered: source_rendered.clone(),
         active_planning_digest: format_planning_digest(&prefix_items),
         recent_tail_preview: tail_preview,
+        ref_table: Arc::clone(&render_context.ref_table),
     };
 
     let mut hasher = Sha256::new();

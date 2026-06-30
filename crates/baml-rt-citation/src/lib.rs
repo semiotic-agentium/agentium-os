@@ -119,9 +119,12 @@ pub enum ParsedCitation {
         /// `true` when the `!` prefix is present: this entry *contradicts* the decision.
         negated: bool,
     },
-    /// `@N`, `@N:L`, `@N:L1-L2` (and their `!`-prefixed negation forms).
+    /// `@N`, `@prefix/local`, `@N:L`, `@prefix/local:L1-L2` (and `!`-prefixed negation forms).
     Archive {
-        n: u32,
+        /// Archive namespace (`1` for legacy flat `@N`).
+        prefix: u32,
+        /// Monotonic index within `prefix`.
+        local: u32,
         /// Line range (1-based, inclusive). `None` = entire archive content.
         lines: Option<RangeInclusive<usize>>,
         /// `true` when the `!` prefix is present: this archive entry *contradicts* the decision.
@@ -146,25 +149,20 @@ impl ParsedCitation {
         }
 
         if let Some(rest) = body.strip_prefix('@') {
-            if let Some((ref_part, line_part)) = rest.split_once(':') {
-                let n = ref_part.parse::<u32>().map_err(|_| {
-                    CitationParseError::invalid(format!("invalid archive ref number in: '{s}'"))
-                })?;
-                let lines = parse_line_range(line_part).map_err(|e| {
-                    CitationParseError::invalid(format!("invalid line range in '{s}': {e}"))
-                })?;
-                return Ok(Self::Archive {
-                    n,
-                    lines: Some(lines),
-                    negated,
-                });
-            }
-            let n = rest
-                .parse::<u32>()
-                .map_err(|_| CitationParseError::invalid(format!("invalid archive ref: '{s}'")))?;
+            let (ref_part, line_part) = match rest.split_once(':') {
+                Some((ref_part, line_part)) => (ref_part, Some(line_part)),
+                None => (rest, None),
+            };
+            let (prefix, local) = parse_archive_ref_part(ref_part).map_err(|reason| {
+                CitationParseError::invalid(format!("invalid archive ref in '{s}': {reason}"))
+            })?;
+            let lines = line_part.map(parse_line_range).transpose().map_err(|e| {
+                CitationParseError::invalid(format!("invalid line range in '{s}': {e}"))
+            })?;
             return Ok(Self::Archive {
-                n,
-                lines: None,
+                prefix,
+                local,
+                lines,
                 negated,
             });
         }
@@ -174,11 +172,21 @@ impl ParsedCitation {
         )))
     }
 
-    /// The raw ref number (the `N` in `#N` or `@N`).
+    /// The raw ref number (the `N` in `#N`, or the local index in `@N` / `@prefix/local`).
     #[must_use]
     pub fn n(&self) -> u32 {
         match self {
-            Self::History { n, .. } | Self::Archive { n, .. } => *n,
+            Self::History { n, .. } => *n,
+            Self::Archive { local, .. } => *local,
+        }
+    }
+
+    /// Archive namespace (`1` for legacy flat `@N`).
+    #[must_use]
+    pub fn archive_prefix(&self) -> Option<u32> {
+        match self {
+            Self::History { .. } => None,
+            Self::Archive { prefix, .. } => Some(*prefix),
         }
     }
 
@@ -201,6 +209,28 @@ impl ParsedCitation {
 ///
 /// The `L` prefix is canonical in current prompt surfaces (`@N:L1-L2`), but the bare
 /// numeric form remains accepted for backward compatibility with older stored citations.
+fn parse_archive_ref_part(part: &str) -> Result<(u32, u32), String> {
+    if part.is_empty() {
+        return Err("empty archive ref".to_string());
+    }
+    if let Some((prefix_raw, local_raw)) = part.split_once('/') {
+        if prefix_raw.is_empty() || local_raw.is_empty() {
+            return Err(format!("invalid composite archive ref: '{part}'"));
+        }
+        let prefix = prefix_raw
+            .parse::<u32>()
+            .map_err(|_| format!("bad archive prefix: '{prefix_raw}'"))?;
+        let local = local_raw
+            .parse::<u32>()
+            .map_err(|_| format!("bad archive local index: '{local_raw}'"))?;
+        return Ok((prefix, local));
+    }
+    let local = part
+        .parse::<u32>()
+        .map_err(|_| format!("bad archive ref number: '{part}'"))?;
+    Ok((1, local))
+}
+
 fn parse_line_range(s: &str) -> Result<RangeInclusive<usize>, String> {
     let normalized = s
         .strip_prefix('L')
@@ -265,9 +295,84 @@ pub fn parsed_citations(citations: &[Citation]) -> Vec<ParsedCitation> {
     citations.iter().map(Citation::parsed).collect()
 }
 
+/// Scan free text for wire citation tokens (`#N`, `@N`, `@N:L`, `@p/k`, optional `!` prefix).
+///
+/// Uses longest-match at each `#` / `@` start so `@2/5` is not truncated to `@2`.
+#[must_use]
+pub fn scan_wire_citations(text: &str) -> Vec<String> {
+    let mut found = std::collections::BTreeSet::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some(start) = citation_start(bytes, i)
+            && let Some(token) = longest_citation_at(text, start)
+        {
+            let advance = token.len();
+            found.insert(token);
+            i = start.saturating_add(advance.max(1));
+            continue;
+        }
+        i += 1;
+    }
+    found.into_iter().collect()
+}
+
+fn citation_start(bytes: &[u8], i: usize) -> Option<usize> {
+    if bytes[i] == b'!' && i + 1 < bytes.len() {
+        return match bytes[i + 1] {
+            b'#' | b'@' => Some(i),
+            _ => None,
+        };
+    }
+    if bytes[i] == b'#' || bytes[i] == b'@' {
+        return Some(i);
+    }
+    None
+}
+
+fn longest_citation_at(text: &str, start: usize) -> Option<String> {
+    let max_end = (start + 48).min(text.len());
+    let mut best: Option<String> = None;
+    for end in (start + 2)..=max_end {
+        if end < text.len() && is_citation_body_char(text.as_bytes()[end]) {
+            continue;
+        }
+        let candidate = &text[start..end];
+        if is_valid_wire_citation_token(candidate) {
+            best = Some(candidate.to_string());
+        }
+    }
+    best
+}
+
+fn is_citation_body_char(b: u8) -> bool {
+    b.is_ascii_digit() || b == b'/' || b == b':' || b == b'-' || b == b'L' || b == b'l'
+}
+
+fn is_valid_wire_citation_token(token: &str) -> bool {
+    ParsedCitation::parse(token).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scan_wire_citations_matrix() {
+        assert_eq!(scan_wire_citations("plain text"), Vec::<String>::new());
+        assert_eq!(
+            scan_wire_citations("user: #1 and @2 @12:L3"),
+            vec!["#1".to_string(), "@12:L3".to_string(), "@2".to_string()]
+        );
+        assert_eq!(
+            scan_wire_citations("see @2/5 and !@3/7"),
+            vec!["!@3/7".to_string(), "@2/5".to_string()]
+        );
+        assert_eq!(
+            scan_wire_citations("negated !#4 ref"),
+            vec!["!#4".to_string()]
+        );
+    }
 
     #[test]
     fn citation_parse_and_try_new_matrix() {
@@ -288,7 +393,8 @@ mod tests {
         assert_eq!(
             range,
             ParsedCitation::Archive {
-                n: 4,
+                prefix: 1,
+                local: 4,
                 lines: Some(2..=5),
                 negated: false
             }
@@ -297,8 +403,18 @@ mod tests {
         assert_eq!(
             ParsedCitation::parse("@4:L2").unwrap(),
             ParsedCitation::Archive {
-                n: 4,
+                prefix: 1,
+                local: 4,
                 lines: Some(2..=2),
+                negated: false
+            }
+        );
+        assert_eq!(
+            ParsedCitation::parse("@2/5").unwrap(),
+            ParsedCitation::Archive {
+                prefix: 2,
+                local: 5,
+                lines: None,
                 negated: false
             }
         );
