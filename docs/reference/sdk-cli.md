@@ -41,7 +41,7 @@ cargo run -p baml-rt-builder --bin baml-agent-builder -- bootstrap ./my-agent \
   --no-tools
 ```
 
-Then `lint`, customize `src/index.ts` / `baml_src/`, and `publish`. Deterministic eval smoke: [`verify-bootstrap-eval.sh`](../../scripts/verify-bootstrap-eval.sh) and fixture [`bootstrap-echo-eval`](../../tests/fixtures/agents/bootstrap-echo-eval/).
+Then `lint`, customize `src/index.ts` / `baml_src/`, and `publish`. Ephemeral bootstrap smoke: [`verify-bootstrap-eval.sh`](../../scripts/verify-bootstrap-eval.sh) (temp dir only).
 
 #### `chat`
 Interactive chat session with an agent.

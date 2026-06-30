@@ -4,12 +4,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify agent bootstrap + deterministic eval (A2A) against a local runner.
+# Exploratory/CI smoke: temp-dir bootstrap → patch deterministic echo → publish → deploy → A2A.
+# No committed agent fixture — everything under VERIFY_TMP is discarded after the run.
 #
-# 1. Fresh `baml-agent-builder bootstrap` → patch index.ts → publish → deploy → A2A eval
-# 2. Committed fixture `bootstrap-echo-eval` → publish → deploy → A2A eval
-#
-# Usage: ./scripts/verify-bootstrap-eval.sh [--skip-bootstrap]
+# Usage: ./scripts/verify-bootstrap-eval.sh
 # Env: BIND (default 127.0.0.1:18080), same VERIFY_* vars as verify-agentium-console.sh
 
 set -euo pipefail
@@ -18,11 +16,6 @@ cd "$(dirname "$0")/.."
 BIND="${BIND:-127.0.0.1:18080}"
 RUNNER_URL="http://${BIND}"
 REPOSITORY_URL="${RUNNER_URL}/repository"
-FIXTURE="${VERIFY_BOOTSTRAP_FIXTURE:-tests/fixtures/agents/bootstrap-echo-eval}"
-SKIP_FRESH_BOOTSTRAP=false
-for arg in "$@"; do
-  if [[ "$arg" == "--skip-bootstrap" ]]; then SKIP_FRESH_BOOTSTRAP=true; fi
-done
 
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
 BUILDER_BIN="${VERIFY_BUILDER_BIN:-$CARGO_TARGET_DIR/debug/baml-agent-builder}"
@@ -31,6 +24,7 @@ RUNNER_BIN="${VERIFY_RUNNER_BIN:-$CARGO_TARGET_DIR/debug/baml-agent-runner}"
 VERIFY_TMP="${VERIFY_RUNNER_TMPDIR:-$(mktemp -d "${TMPDIR:-/tmp}/bootstrap-eval-XXXXXX")}"
 STATE_DIR="${VERIFY_RUNNER_STATE_DIR:-$VERIFY_TMP/state}"
 REPO_DIR="${VERIFY_RUNNER_REPOSITORY_DIR:-$VERIFY_TMP/repository}"
+BOOT_DIR="${VERIFY_TMP}/bootstrap-agent"
 mkdir -p "$STATE_DIR" "$REPO_DIR"
 
 RUNNER_PID=""
@@ -39,7 +33,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "=== Bootstrap + eval verification ==="
+echo "=== Bootstrap + eval verification (ephemeral agent) ==="
 
 ensure_runner() {
   if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "${RUNNER_URL}/agents" 2>/dev/null | grep -q 200; then
@@ -73,6 +67,10 @@ publish_deploy_dir() {
     --deploy-url "$RUNNER_URL" >/dev/null
 }
 
+agent_package_name() {
+  jq -r .name "${BOOT_DIR}/manifest.json"
+}
+
 eval_a2a() {
   local package="$1"
   local user_text="$2"
@@ -99,8 +97,7 @@ eval_a2a() {
 }
 
 patch_deterministic_index() {
-  local agent_root="$1"
-  cat >"${agent_root}/src/index.ts" <<'EOF'
+  cat >"${BOOT_DIR}/src/index.ts" <<'EOF'
 /// <reference path="./baml-runtime.d.ts" />
 __chat_register({
   run: async (ctx) => {
@@ -114,30 +111,18 @@ EOF
 
 ensure_runner
 
-if [[ "$SKIP_FRESH_BOOTSTRAP" != "true" ]]; then
-  echo "[1/2] Fresh bootstrap → publish → deploy → A2A eval"
-  BOOT_DIR="${VERIFY_TMP}/fresh-bootstrap-agent"
-  rm -rf "$BOOT_DIR"
-  mkdir -p "$BOOT_DIR"
-  cargo build -p baml-rt-builder -q --bin baml-agent-builder
-  "$BUILDER_BIN" bootstrap "$BOOT_DIR" \
-    --name "Bootstrap Echo Eval" \
-    --description "Fresh bootstrap eval smoke" \
-    --no-tools
-  patch_deterministic_index "$BOOT_DIR"
-  publish_deploy_dir "$BOOT_DIR"
-  eval_a2a "bootstrap-echo-eval" "fresh-bootstrap-probe" "eval:pass:fresh-bootstrap-probe"
-else
-  echo "[1/2] Fresh bootstrap: skipped (--skip-bootstrap)"
-fi
-
-echo "[2/2] Committed fixture ${FIXTURE} → publish → deploy → A2A eval"
-if [[ ! -d "$FIXTURE" ]]; then
-  echo "Fixture missing: $FIXTURE" >&2
-  exit 1
-fi
-publish_deploy_dir "$FIXTURE"
-eval_a2a "bootstrap-echo-eval" "fixture-probe" "eval:pass:fixture-probe"
+echo "Bootstrap → publish → deploy → A2A eval (temp dir: ${BOOT_DIR})"
+rm -rf "$BOOT_DIR"
+mkdir -p "$BOOT_DIR"
+cargo build -p baml-rt-builder -q --bin baml-agent-builder
+"$BUILDER_BIN" bootstrap "$BOOT_DIR" \
+  --name "Bootstrap Eval Smoke" \
+  --description "Ephemeral bootstrap eval smoke" \
+  --no-tools
+patch_deterministic_index
+PKG="$(agent_package_name)"
+publish_deploy_dir "$BOOT_DIR"
+eval_a2a "$PKG" "bootstrap-probe" "eval:pass:bootstrap-probe"
 
 echo ""
-echo "Bootstrap + eval verification passed."
+echo "Bootstrap + eval verification passed (agent was not written to the repo)."

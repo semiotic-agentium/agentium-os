@@ -13,7 +13,7 @@ Full walkthrough: [`docs/runbooks/agentium-console.md`](../docs/runbooks/agentiu
 
 Runs Vitest, production build, runner route checks, and publish+deploy of `task-lifecycle-demo` (same HTTP contract as **Agents → Load agent**).
 
-**Bootstrap + eval:** `./scripts/verify-bootstrap-eval.sh` or `just verify-bootstrap-eval` — scaffolds a fresh agent, publish/deploy, and A2A eval via `bootstrap-echo-eval` (no LLM keys). See [`docs/runbooks/agentium-console.md`](../docs/runbooks/agentium-console.md).
+**Bootstrap + eval (exploratory smoke):** `./scripts/verify-bootstrap-eval.sh` or `just verify-bootstrap-eval` — temp-dir bootstrap, publish/deploy, deterministic A2A eval (no fixture committed to the repo). See [`docs/runbooks/agentium-console.md`](../docs/runbooks/agentium-console.md).
 
 ## Two ways to run
 

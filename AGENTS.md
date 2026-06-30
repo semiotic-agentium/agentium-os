@@ -10,7 +10,7 @@ Use `baml_src/` for shared example schemas, and `crates/test-support` for common
 - `just runner`: build and start the local runner on `127.0.0.1:18080`.
 - `just web-build`: install web dependencies and build the Vite app in `web/dist`.
 - `just verify-agentium-console`: Vitest + build + runner API checks (Agents load parity).
-- `just verify-bootstrap-eval`: bootstrap → publish → deploy → deterministic A2A eval.
+- `just verify-bootstrap-eval`: temp-dir bootstrap → publish → deploy → deterministic A2A eval smoke.
 - `just fmt`: run workspace formatting.
 - `just clippy`: run `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
 - `just test`: run the full `cargo nextest` LLM and non-LLM suites with CI-like flags.

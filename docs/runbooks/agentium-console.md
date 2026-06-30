@@ -30,18 +30,18 @@ Equivalent: `just verify-agentium-console`
 
 ## Bootstrap a new agent + eval
 
-Create a package with the builder, load it on the server, and run a deterministic A2A eval (no LLM keys):
+Create a package with the builder, load it on the server, and run smoke checks:
 
 ```bash
 cargo run -p baml-rt-builder --bin baml-agent-builder -- bootstrap ./my-agent \
   --name "My Agent" --description "What it does" --no-tools
 
-# CI smoke (fresh bootstrap + committed fixture):
+# Exploratory CI smoke (temp agent only — nothing committed to the repo):
 ./scripts/verify-bootstrap-eval.sh
 # or: just verify-bootstrap-eval
 ```
 
-Committed eval fixture: `tests/fixtures/agents/bootstrap-echo-eval` — returns `eval:pass:<user text>` on `message.sendStream`. Patch `src/index.ts` after bootstrap for deterministic eval (see fixture). LLM eval: `tests/fixtures/agents/session-tool-eval` (needs model + synthetic tool in runner build).
+The verify script bootstraps under `/tmp`, patches `src/index.ts` to a deterministic echo (`eval:pass:…`), publish+deploys, and sends one A2A message. For LLM-backed agents, customize `src/index.ts` / BAML after bootstrap instead.
 
 ## Dev mode A — co-served (simplest)
 
