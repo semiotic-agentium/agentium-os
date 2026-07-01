@@ -187,6 +187,7 @@ verify_no_warn_logs() {
 
 main() {
   preflight
+  ensure_agentium_bin
   build_image
   create_or_reuse_cluster
   if ((${#EXTRA_VALUES[@]} > 0)); then
@@ -199,7 +200,6 @@ main() {
   if ! verify_pod_image_digests; then
     exit 4
   fi
-  ensure_agentium_bin
   if ! run_smoke; then
     exit 2
   fi

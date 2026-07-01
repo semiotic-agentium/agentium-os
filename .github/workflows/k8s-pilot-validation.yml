@@ -70,7 +70,7 @@ jobs:
       needs.changes.outputs.trusted == 'true' &&
       (github.event_name == 'workflow_dispatch' ||
        needs.changes.outputs.pilot == 'true')
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       # rust-cache needs write to save cache entries; the changes job
       # only runs paths-filter and inherits read-only.
