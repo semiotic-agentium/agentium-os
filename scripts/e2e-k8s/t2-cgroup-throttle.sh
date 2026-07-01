@@ -33,7 +33,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/lib.sh"
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BUILDER_BIN="${CARGO_TARGET_DIR:-target}/release/agentium""
+BUILDER_BIN="${CARGO_TARGET_DIR:-${REPO_ROOT}/target}/release/agentium"
 
 THROTTLE_OVERLAY="${REPO_ROOT}/deploy/helm/agentium-os/examples/cpu-throttle-test-values.yaml"
 FIXTURE_NAME="cpu-peg-agent"

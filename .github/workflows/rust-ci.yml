@@ -96,7 +96,8 @@ jobs:
       - name: Install OS build deps
         run: |
           sudo apt-get install -y \
-            build-essential pkg-config libssl-dev libclang-dev clang llvm-dev util-linux lld \
+            build-essential pkg-config libssl-dev libdbus-1-dev libcap-ng-dev \
+            libclang-dev clang llvm-dev util-linux lld \
             zstd git-lfs
 
       - name: Configure LIBCLANG_PATH for bindgen (hirofa-quickjs-sys)
@@ -303,7 +304,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential pkg-config libssl-dev libclang-dev clang llvm-dev util-linux lld \
+            build-essential pkg-config libssl-dev libdbus-1-dev libcap-ng-dev \
+            libclang-dev clang llvm-dev util-linux lld \
             zstd git-lfs
 
       - name: Configure LIBCLANG_PATH for bindgen (hirofa-quickjs-sys)
