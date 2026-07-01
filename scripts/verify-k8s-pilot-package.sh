@@ -115,6 +115,22 @@ build_image() {
     -t "${IMAGE_NAME}:${IMAGE_TAG}" "$REPO_ROOT"
 }
 
+ensure_agentium_bin() {
+  if [[ -x "$BUILDER_BIN" ]]; then
+    log_info "agentium already built at ${BUILDER_BIN}"
+    return
+  fi
+  log_step "Building agentium for k8s-pilot-smoke (stable toolchain; avoids nightly ICE on host publish)"
+  (
+    cd "$REPO_ROOT"
+    RUSTUP_TOOLCHAIN=stable cargo build --release -p agentium --all-features
+  )
+  if [[ ! -x "$BUILDER_BIN" ]]; then
+    log_fail "Build completed but ${BUILDER_BIN} is missing"
+    exit 1
+  fi
+}
+
 create_or_reuse_cluster() {
   log_step "Creating k3d cluster '${CLUSTER_NAME}'"
   if k3d cluster list -o json 2>/dev/null | grep -q "\"name\":\"${CLUSTER_NAME}\""; then
@@ -138,6 +154,7 @@ run_smoke() {
   (
     cd "$REPO_ROOT"
     RUNNER_TOKEN="$E2E_TOKEN" \
+    AGENTIUM_BIN="$BUILDER_BIN" \
     K8S_PILOT_PF_LOG_DIR="$LOG_DIR" \
       bash "${REPO_ROOT}/scripts/k8s-pilot-smoke.sh" "${smoke_args[@]}"
   )
@@ -182,6 +199,7 @@ main() {
   if ! verify_pod_image_digests; then
     exit 4
   fi
+  ensure_agentium_bin
   if ! run_smoke; then
     exit 2
   fi

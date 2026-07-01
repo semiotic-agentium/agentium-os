@@ -145,7 +145,7 @@ build_for_target() {
     echo "build-release-binaries: ${cmd[*]}"
     (
       cd "$root"
-      "${cmd[@]}"
+      RUSTUP_TOOLCHAIN=stable "${cmd[@]}"
     )
   done < <(
     RELEASE_BUILD_MANIFEST="$manifest" python3 <<'PY'

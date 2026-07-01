@@ -101,7 +101,12 @@ done
 require_cmd kubectl
 require_cmd curl
 require_cmd jq
-require_cmd cargo
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+AGENTIUM_BIN="${AGENTIUM_BIN:-${CARGO_TARGET_DIR:-${REPO_ROOT}/target}/release/agentium}"
+if [[ ! -x "$AGENTIUM_BIN" ]]; then
+  fail "agentium binary not found at ${AGENTIUM_BIN} (build with: RUSTUP_TOOLCHAIN=stable cargo build --release -p agentium --all-features)" 1
+fi
 
 if [[ ! -d "$FIXTURE_PATH" ]]; then
   fail "fixture directory not found: $FIXTURE_PATH (run from repository root)" 1
@@ -205,7 +210,7 @@ for ((i=0; i<replicas; i++)); do
   pod_url="http://localhost:${pod_port}"
   wait_pilot_port_forward_ready "$pod_pid" "$pod_port" "$pod_pf_log"
 
-  publish_output="$(cargo run -q -p agentium -- publish \
+  publish_output="$("$AGENTIUM_BIN" publish \
     --agent-dir "$FIXTURE_PATH" \
     --repository-url "${pod_url}/repository" \
     --runner-token "$RUNNER_TOKEN" 2>&1)" || {
