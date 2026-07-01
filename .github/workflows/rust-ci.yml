@@ -421,7 +421,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config libclang-dev clang llvm-dev lld
+          sudo apt update && sudo apt install -y build-essential pkg-config libclang-dev clang llvm-dev lld libdbus-1-dev libcap-ng-dev
 
       - name: Configure LIBCLANG_PATH for bindgen (hirofa-quickjs-sys)
         run: bash scripts/ci/set-libclang-path.sh
