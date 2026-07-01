@@ -1271,6 +1271,11 @@ async fn test_step_executor_loop_entry_send_auto_finishes_and_resends_statelessl
         Some(store.clone()),
         &manager,
         &bus,
+        Arc::new(baml_rt_provenance::FixedCompactionSummarizer::new(
+            "Prior conversation was compacted; continue from recent context.",
+        )),
+        Arc::new(baml_rt_llm_config::LlmClientConfig::sensible_default()),
+        None,
     )
     .await
     .expect("provenance + conversation wiring");
@@ -1456,6 +1461,11 @@ async fn test_blocked_send_produces_no_effect_and_surfaces_block() {
         Some(store.clone()),
         &manager,
         &bus,
+        Arc::new(baml_rt_provenance::FixedCompactionSummarizer::new(
+            "Prior conversation was compacted; continue from recent context.",
+        )),
+        Arc::new(baml_rt_llm_config::LlmClientConfig::sensible_default()),
+        None,
     )
     .await
     .expect("provenance + conversation wiring");
@@ -1647,6 +1657,11 @@ async fn test_entry_send_projection_hides_lifecycle_shows_single_send() {
         Some(store.clone()),
         &manager,
         &bus,
+        Arc::new(baml_rt_provenance::FixedCompactionSummarizer::new(
+            "Prior conversation was compacted; continue from recent context.",
+        )),
+        Arc::new(baml_rt_llm_config::LlmClientConfig::sensible_default()),
+        None,
     )
     .await
     .expect("provenance + conversation wiring");
@@ -1739,7 +1754,7 @@ async fn test_entry_send_projection_hides_lifecycle_shows_single_send() {
     let no_supplement: Vec<Value> = Vec::new();
     let merged = {
         let g = manager.read().await;
-        g.merged_conversation_history_lines_json(scope.as_scope(), &no_supplement)
+        g.merged_conversation_history_lines_json(scope.as_scope(), "ChooseCalcTool", &no_supplement)
             .await
             .expect("merged conversation history")
     };
@@ -1828,6 +1843,11 @@ async fn test_explicit_finish_after_auto_finish_is_noop() {
         Some(store.clone()),
         &manager,
         &bus,
+        Arc::new(baml_rt_provenance::FixedCompactionSummarizer::new(
+            "Prior conversation was compacted; continue from recent context.",
+        )),
+        Arc::new(baml_rt_llm_config::LlmClientConfig::sensible_default()),
+        None,
     )
     .await
     .expect("provenance + conversation wiring");
