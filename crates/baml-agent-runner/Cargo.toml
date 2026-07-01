@@ -10,6 +10,10 @@ license = "MIT"
 name = "baml_agent_runner"
 path = "src/lib.rs"
 
+[[bin]]
+name = "baml-agent-runner"
+path = "src/bin/baml-agent-runner.rs"
+
 [dependencies]
 baml-rt-a2a = { path = "../baml-rt-a2a" }
 baml-rt-api = { path = "../baml-rt-api" }

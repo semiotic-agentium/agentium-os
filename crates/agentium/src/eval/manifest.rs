@@ -110,7 +110,3 @@ pub fn load_manifest(path: &std::path::Path) -> Result<EvalManifest> {
     let raw = std::fs::read_to_string(path)?;
     Ok(toml::from_str(&raw)?)
 }
-
-pub fn default_manifest_path() -> std::path::PathBuf {
-    std::path::PathBuf::from("eval/cases.toml")
-}

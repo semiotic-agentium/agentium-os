@@ -73,18 +73,18 @@ pub fn run_eval(
         .unwrap_or_else(|| cfg.runner_base_url().to_string());
     let http = AgentPlatform::new(runner_token.clone())?;
 
-    if opts.deploy {
-        if let Some(path) = &opts.agent_path {
-            crate::commands::install::install_agent(
-                Some(&path.to_string_lossy()),
-                None,
-                None,
-                Some(&base_url),
-                "eval run",
-                crate::commands::publish::PublishOriginArg::Iteration,
-                runner_token,
-            )?;
-        }
+    if opts.deploy
+        && let Some(path) = &opts.agent_path
+    {
+        crate::commands::install::install_agent(
+            Some(&path.to_string_lossy()),
+            None,
+            None,
+            Some(&base_url),
+            "eval run",
+            crate::commands::publish::PublishOriginArg::Iteration,
+            runner_token,
+        )?;
     }
 
     let run_id = format!("run-{}", unix_now());
@@ -96,10 +96,10 @@ pub fn run_eval(
     let mut failed = 0usize;
 
     for case in &manifest.case {
-        if let Some(filter) = &opts.case_filter {
-            if !filter.iter().any(|id| id == &case.id) {
-                continue;
-            }
+        if let Some(filter) = &opts.case_filter
+            && !filter.iter().any(|id| id == &case.id)
+        {
+            continue;
         }
         let agent = manifest
             .defaults

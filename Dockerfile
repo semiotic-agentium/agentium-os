@@ -6,7 +6,8 @@
 FROM rust:1.86-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential pkg-config libssl-dev libclang-dev lld \
+    build-essential pkg-config libssl-dev libdbus-1-dev libcap-ng-dev \
+    libclang-dev lld \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
@@ -41,7 +42,7 @@ ARG VERSION=dev
 LABEL org.opencontainers.image.version="${VERSION}"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates libssl3 curl \
+    ca-certificates libssl3 libdbus-1-3 libcap-ng0 curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
