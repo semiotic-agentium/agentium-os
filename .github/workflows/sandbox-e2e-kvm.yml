@@ -149,7 +149,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config lld libcap-ng-dev
+          sudo apt update && sudo apt install -y build-essential pkg-config lld libdbus-1-dev libcap-ng-dev
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
