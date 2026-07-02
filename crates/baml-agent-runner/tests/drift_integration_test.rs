@@ -234,6 +234,10 @@ async fn test_store() -> Arc<SurrealProvenanceStore> {
 async fn build_agent(
     interceptor: CountingInterceptor,
 ) -> (Arc<A2aAgent>, Arc<SurrealProvenanceStore>) {
+    // Drift scoring is opt-in process-wide (default off). These integration
+    // tests exist to exercise the drift pipeline, so opt in here — otherwise
+    // the subscriber loads no embedding model and every row scores `n/a`.
+    baml_rt_provenance::effect_subscriber::set_drift_enabled(true);
     test_support::common::ensure_fixture_runtime_types();
     let agent_dir =
         test_support::common::workspace_root().join("tests/fixtures/agents/security-eval-agent");

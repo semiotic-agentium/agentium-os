@@ -51,6 +51,48 @@ Example (empty registry at start; deploy after publish):
 | `--claude-workspaces-base <DIR>` | unset | Workspace root for claude/dev sessions |
 | `--stream-idle-secs <SECS>` | `900` | Idle timeout for streaming tool sessions |
 | `--invoke <AGENT> <FUNCTION> <JSON_ARGS>` | unset | One-shot invoke mode for a JS function |
+| `--enable-provenance-drift` | `false` | Enable provenance drift scoring with a local embedding model. Requires `BAML_MODELS_DIR` or downloadable models. Also implied when a non-empty `BAML_MODELS_DIR` is set. |
+
+## Provenance drift scoring (opt-in)
+
+Drift scoring (citation/plan drift, cross-encoder step scoring) runs a local
+fastembed ONNX model. It is **disabled by default** — the runner loads no model,
+attempts no download, requires no `BAML_MODELS_DIR`, and emits no missing-model
+warning. Other provenance events (graph writes, conversation projection) run
+unchanged; drift scoring simply no-ops.
+
+**Default (no model required):**
+
+```bash
+agentium serve --serve-http 127.0.0.1:18080
+```
+
+**Enable drift scoring** — either pass the flag or set a non-empty
+`BAML_MODELS_DIR` (either signal turns it on):
+
+```bash
+# Local model tree (offline). BAML_MODELS_DIR alone also enables scoring.
+just download-models
+BAML_MODELS_DIR=./models agentium serve --enable-provenance-drift
+
+# Flag only, no BAML_MODELS_DIR: model resolves from a workspace models/ tree
+# or is auto-downloaded to ~/.cache/fastembed on first use (~600MB embedding +
+# ~100MB reranker; needs network egress).
+agentium serve --enable-provenance-drift
+```
+
+**Model resolution when enabled:**
+
+- **`BAML_MODELS_DIR` set** → the model **must** load from `$BAML_MODELS_DIR/fastembed`.
+  If that tree is missing, holds git-LFS pointer stubs, or has no `.onnx` weights,
+  boot **fails fast** — it does **not** silently fall back to a network autodownload.
+  An explicitly configured models path is a hard contract; a broken one is surfaced,
+  not masked.
+- **No `BAML_MODELS_DIR`** → resolves from a workspace `models/` tree, else
+  auto-downloads to `~/.cache/fastembed` on first use.
+
+Any hard-fail error names `--enable-provenance-drift`, `BAML_MODELS_DIR`, and
+`just download-models`.
 
 ## Context compaction (host BAML)
 
