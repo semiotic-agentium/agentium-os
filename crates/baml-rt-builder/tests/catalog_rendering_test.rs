@@ -148,15 +148,19 @@ async fn catalog_includes_every_manifest_tool_step_kind() {
     let root = build_calculator_agent().await;
     let catalog = read_catalog_text(root.path());
 
-    for ty in [
+    assert!(
+        catalog.contains("type SupportCalculateSendStep = {"),
+        "catalog must render the one-shot Send operation type: \n{catalog}"
+    );
+
+    for stale in [
         "type SupportCalculateOpenStep = {",
-        "type SupportCalculateSendStep = {",
         "type SupportCalculateFinishStep = {",
         "type SupportCalculateAbortStep = {",
     ] {
         assert!(
-            catalog.contains(ty),
-            "catalog must render the stable operation type `{ty}`: \n{catalog}"
+            !catalog.contains(stale),
+            "one-shot tool catalog must not expose legacy FSM operation type `{stale}`: \n{catalog}"
         );
     }
 
@@ -228,7 +232,7 @@ async fn phase_function_prompts_place_contract_after_history_and_task_body() {
         .find("The user said: { user_message }")
         .expect("entry prompt must include the stripped task body");
     let contract_pos = entry_body
-        .find("Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateOpenStep | SupportCalculateSendStep`.")
+        .find("Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateSendStep`.")
         .expect("entry prompt must bind the compact contract after history");
 
     assert!(
@@ -387,9 +391,13 @@ async fn entry_function_return_union_includes_send_step() {
 
     assert!(
         entry_body.contains(
-            ") -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateOpenStep | SupportCalculateSendStep {"
+            ") -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateSendStep {"
         ),
-        "entry function signature must include SupportCalculateSendStep alongside Open: {entry_body}"
+        "one-shot entry function signature must expose Send plus read-only/archive options: {entry_body}"
+    );
+    assert!(
+        !entry_body.contains("SupportCalculateOpenStep"),
+        "one-shot entry function signature must not expose legacy Open: {entry_body}"
     );
 }
 
@@ -401,9 +409,13 @@ async fn entry_prompt_discriminator_includes_send() {
 
     assert!(
         entry_body.contains(
-            r#"Use `op` as the discriminator: "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead" | "Send"."#
+            r#"Use `op` as the discriminator: "PageRead" | "ReadOnlyFinish" | "SearchRead" | "Send"."#
         ),
-        "entry compact contract must expose Send as a legal discriminator: {entry_body}"
+        "one-shot entry compact contract must expose only legal Send/read discriminators: {entry_body}"
+    );
+    assert!(
+        !entry_body.contains(r#""Open" |"#),
+        "one-shot entry compact contract must not expose Open discriminator: {entry_body}"
     );
 }
 
