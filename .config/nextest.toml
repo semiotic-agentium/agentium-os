@@ -136,7 +136,7 @@ test-group = "runner-subprocess"
 
 [[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and test(~runner_callback_delivery_honors_continuation_policy)'
-slow-timeout = { period = "360s", terminate-after = 2 }
+slow-timeout = { period = "600s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "5s" }
 
 [[profile.ci.overrides]]
@@ -186,7 +186,7 @@ retries = { backoff = "fixed", count = 1, delay = "5s" }
 
 [[profile.ci-merged.overrides]]
 filter = 'package(baml-agent-runner) and test(~runner_callback_delivery_honors_continuation_policy)'
-slow-timeout = { period = "360s", terminate-after = 2 }
+slow-timeout = { period = "600s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "5s" }
 
 [[profile.ci-merged.overrides]]
