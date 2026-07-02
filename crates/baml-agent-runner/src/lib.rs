@@ -732,7 +732,8 @@ async fn run_inner(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow:
             .ok()
             .filter(|s| !s.trim().is_empty())
         {
-            if let Err(reason) = baml_rt_embedding::validate_models_dir(std::path::Path::new(&dir)) {
+            if let Err(reason) = baml_rt_embedding::validate_models_dir(std::path::Path::new(&dir))
+            {
                 anyhow::bail!(
                     "provenance drift scoring enabled, but BAML_MODELS_DIR is invalid: {dir} ({reason})\n\
                      Run `just download-models` or set BAML_MODELS_DIR to a valid models directory.\n\

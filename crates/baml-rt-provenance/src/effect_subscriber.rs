@@ -116,7 +116,9 @@ pub async fn warm_global_drift_models() {
     // Opt-in only. Default runs skip ONNX init entirely — no download attempt,
     // no "missing model" warning. Enabled via `set_drift_enabled(true)` at boot.
     if !drift_enabled() {
-        tracing::debug!("provenance drift scoring disabled; skipping embedding model initialization");
+        tracing::debug!(
+            "provenance drift scoring disabled; skipping embedding model initialization"
+        );
         return;
     }
 

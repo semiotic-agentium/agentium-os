@@ -91,7 +91,10 @@ pub fn validate_models_dir(base: &Path) -> Result<(), String> {
             "{} contains only git-LFS pointer stubs, not real ONNX weights (run `git lfs pull` or `just download-models`)",
             fastembed.display()
         )),
-        OnnxStatus::NoOnnx => Err(format!("{} contains no .onnx model files", fastembed.display())),
+        OnnxStatus::NoOnnx => Err(format!(
+            "{} contains no .onnx model files",
+            fastembed.display()
+        )),
     }
 }
 
