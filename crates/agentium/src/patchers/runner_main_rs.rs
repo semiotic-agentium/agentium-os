@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Patcher for baml-agent-runner/src/main.rs to force-link new optional tools.
+//! Patcher for baml-agent-runner/src/lib.rs to force-link new optional tools.
 
 use std::path::{Path, PathBuf};
 
@@ -14,7 +14,7 @@ pub struct RunnerMainRsPatcher;
 
 impl Patcher for RunnerMainRsPatcher {
     fn file_path(&self, workspace_root: &Path) -> PathBuf {
-        workspace_root.join("crates/baml-agent-runner/src/main.rs")
+        workspace_root.join("crates/baml-agent-runner/src/lib.rs")
     }
 
     fn patch_for_tool(&self, content: &str, tool_name: &str) -> Result<String> {
@@ -27,10 +27,12 @@ impl Patcher for RunnerMainRsPatcher {
         let mut lines: Vec<String> = content.lines().map(ToString::to_string).collect();
         let insert_at = lines
             .iter()
-            .position(|line| line.trim() == "use baml_tools_system::SystemBundle;")
+            .rposition(|line| {
+                line.contains(" as _;") && line.trim_start().starts_with("use baml_tools_")
+            })
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Could not find insertion point (use baml_tools_system::SystemBundle;) in runner main.rs"
+                    "Could not find insertion point (use baml_tools_* as _;) in runner lib.rs"
                 )
             })?;
 

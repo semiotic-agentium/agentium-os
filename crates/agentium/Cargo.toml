@@ -1,28 +1,28 @@
 [package]
-name = "cargo-agent-platform"
+name = "agentium"
 version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }
 publish = false
-description = "CLI tool for scaffolding BAML tools and agents"
+description = "Agentium — unified platform host and developer SDK"
 
 [[bin]]
-name = "cargo-agent-platform"
+name = "agentium"
 path = "src/main.rs"
 
 [dependencies]
-# Workspace runtime crates
+baml-agent-runner = { path = "../baml-agent-runner", features = ["http-tools", "memory", "sandbox-provider", "dev-tools"] }
 baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
 baml-rt-repository = { path = "../baml-rt-repository" }
-
-# CLI parsing
+baml-rt-builder = { path = "../baml-rt-builder" }
+baml-rt-api = { path = "../baml-rt-api" }
+baml-rt-provenance = { path = "../baml-rt-provenance" }
+baml-rt-embedding = { path = "../baml-rt-embedding" }
+baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 clap = { workspace = true }
-
-# TOML editing (format-preserving)
+toml = "0.8"
 toml_edit = "0.22"
-
-# General utilities
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
@@ -34,22 +34,19 @@ reqwest-eventsource = "0.6"
 futures-util = { workspace = true }
 uuid = { workspace = true }
 sha2 = { workspace = true }
-
-# Terminal output formatting
 console = "0.15"
 indicatif = "0.17"
-
-# Interactive prompts
 inquire = "0.7"
-
-# Builder for run_bootstrap and regen functionality
-baml-rt-builder = { path = "../baml-rt-builder" }
-
-# Async runtime for bootstrap and regen
 tokio = { workspace = true }
-
-# Temp files for regen sync
 tempfile = { workspace = true }
+dirs = "6"
+
+[features]
+default = ["http-tools", "memory", "sandbox-provider", "dev-tools"]
+http-tools = ["baml-agent-runner/http-tools"]
+memory = ["baml-agent-runner/memory"]
+sandbox-provider = ["baml-agent-runner/sandbox-provider"]
+dev-tools = ["baml-agent-runner/dev-tools"]
 
 [dev-dependencies]
 axum = { workspace = true }

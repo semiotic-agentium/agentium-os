@@ -249,7 +249,7 @@ pub fn run(
     );
     println!(
         "  3. Run {} to package the agent",
-        style("cargo agent-platform build --path <agent-dir>").dim()
+        style("agentium install agent --path <agent-dir>").dim()
     );
 
     Ok(())
@@ -697,6 +697,97 @@ fn run_type_generation(output_dir: &Path) -> Result<()> {
     generate_result?;
 
     Ok(())
+}
+
+/// CLI-facing entry: resolves interactive prompts then runs the scaffolder.
+pub struct NewAgentCli {
+    pub name: Option<String>,
+    pub tools: Option<String>,
+    pub template: Option<String>,
+    pub description: Option<String>,
+    pub tags: Option<String>,
+    pub subscriptions: Option<String>,
+    pub repository_url: Option<String>,
+    pub snapshot_cache: Option<String>,
+    pub output: Option<String>,
+    pub dry_run: bool,
+}
+
+pub fn run_cli(cmd: NewAgentCli) -> Result<()> {
+    use crate::interactive::{self, ToolPickerSource};
+
+    let interactive_mode = cmd.name.is_none();
+    let name = match cmd.name {
+        Some(n) => n,
+        None => interactive::prompt_agent_name()?,
+    };
+    let description = match cmd.description {
+        Some(d) => d,
+        None if interactive_mode => interactive::prompt_agent_description()?,
+        None => String::new(),
+    };
+    let template = match cmd.template {
+        Some(t) => t,
+        None if interactive_mode => interactive::prompt_template()?,
+        None => "simple".to_string(),
+    };
+    let normalized_template = template.to_ascii_lowercase();
+    let picker_source = cmd
+        .repository_url
+        .clone()
+        .map(|url| ToolPickerSource::Repository { url })
+        .or_else(|| {
+            cmd.snapshot_cache
+                .clone()
+                .map(|root| ToolPickerSource::SnapshotCache { root })
+        });
+    let tools = match cmd.tools {
+        Some(t) => Some(t),
+        None if interactive_mode
+            && (normalized_template == "basic-tools" || normalized_template == "planner") =>
+        {
+            interactive::prompt_tools(picker_source.as_ref())?
+        }
+        None => None,
+    };
+    let tool_ids: Vec<String> = tools
+        .as_ref()
+        .map(|t| {
+            t.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let suggested_tags = if interactive_mode {
+        interactive::suggest_agent_tags(&tool_ids, picker_source.as_ref())?
+    } else {
+        Vec::new()
+    };
+    let tags = match cmd.tags {
+        Some(t) => Some(t),
+        None if interactive_mode => interactive::prompt_agent_tags(&suggested_tags)?,
+        None => None,
+    };
+    let subscriptions = match cmd.subscriptions {
+        Some(s) => Some(s),
+        None if interactive_mode && normalized_template != "coordinator" => {
+            interactive::prompt_subscriptions(&tool_ids, picker_source.as_ref())?
+        }
+        None => None,
+    };
+    let dry_run = if interactive_mode { false } else { cmd.dry_run };
+    run(
+        &name,
+        tools.as_deref(),
+        &template,
+        &description,
+        tags.as_deref(),
+        subscriptions.as_deref(),
+        cmd.output.as_deref(),
+        dry_run,
+        interactive_mode,
+    )
 }
 
 #[cfg(test)]

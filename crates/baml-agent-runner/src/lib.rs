@@ -2,10 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! BAML Agent Runner
+//! Agentium platform runtime library.
 //!
 //! Starts the runner, restores previously-deployed agents from --state-dir,
-//! and serves HTTP / stdio / event poll loop.
+//! and serves HTTP / stdio / event poll loop. Invoked via `agentium serve`.
 
 #![recursion_limit = "256"]
 
@@ -70,7 +70,7 @@ use baml_tools_slack as _;
 use baml_tools_slack_notify as _;
 use baml_tools_system::callback_delivery_gate::install_callback_delivery_gate;
 use callback_delivery::RunnerCallbackDeliveryGate;
-use clap::Parser;
+pub use config::Cli as RunnerCli;
 use config::{Cli, ProvenanceDb, parse_surreal_credentials, provenance_config_builder};
 use serde_json::Value;
 use services::{
@@ -81,11 +81,8 @@ use services::{
 use stdio::unix_timestamp_secs;
 use tracing::{error, info, warn};
 
-/// Resolve `--claude-workspaces-base` to a canonical path before the async
-/// runtime starts, then pass the resolved value through config (no env vars).
-fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    let claude_workspaces_base = cli.claude_workspaces_base.as_ref().map(|base| {
+fn resolve_claude_workspaces_base(cli: &Cli) -> Option<PathBuf> {
+    cli.claude_workspaces_base.as_ref().map(|base| {
         let absolute = if base.is_absolute() {
             base.clone()
         } else {
@@ -95,12 +92,16 @@ fn main() -> anyhow::Result<()> {
         };
         if let Err(e) = std::fs::create_dir_all(&absolute) {
             let path = absolute.display();
-            eprintln!("Error: Cannot create Claude workspaces base {path}: {e}");
-            std::process::exit(1);
+            panic!("Cannot create Claude workspaces base {path}: {e}");
         }
         std::fs::canonicalize(&absolute).unwrap_or(absolute)
-    });
-    tokio_main(cli, claude_workspaces_base)
+    })
+}
+
+/// Start the Agentium platform (HTTP / stdio / event poll loop).
+pub async fn run(cli: Cli) -> anyhow::Result<()> {
+    let claude_workspaces_base = resolve_claude_workspaces_base(&cli);
+    run_inner(cli, claude_workspaces_base).await
 }
 
 /// Reject cluster endpoints that are not routable from other pods.
@@ -125,8 +126,7 @@ fn validate_cluster_endpoint(endpoint: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::main]
-async fn tokio_main(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow::Result<()> {
+async fn run_inner(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow::Result<()> {
     // Load dotenv before tracing/OTEL bootstrap so OTEL_* from .env are visible
     // to `init_tracing()` and exporter wiring.
     let dotenv_result = dotenvy::dotenv();
@@ -1131,18 +1131,12 @@ mod tests {
             .build()
     }
 
-    async fn test_deployment_state() -> (
-        tempfile::TempDir,
-        Arc<deployment_state::DeploymentStateStore>,
-    ) {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("runner_state.db");
-        let state = Arc::new(
-            deployment_state::DeploymentStateStore::open(&path)
+    async fn test_deployment_state() -> Arc<deployment_state::DeploymentStateStore> {
+        Arc::new(
+            deployment_state::DeploymentStateStore::open_in_memory()
                 .await
                 .expect("deployment state"),
-        );
-        (dir, state)
+        )
     }
 
     async fn build_test_agent() -> baml_rt_a2a::A2aAgent {
@@ -1295,7 +1289,7 @@ globalThis.onChatMessage = async function(_message) {
     #[tokio::test]
     async fn test_runner_registry_list_agents_empty() {
         let prov = test_provenance_config().await;
-        let (_dir, state) = test_deployment_state().await;
+        let state = test_deployment_state().await;
         let runner = make_runner(prov, state);
         let registry = RunnerRegistry(Arc::clone(&runner));
         use baml_rt_core::AgentLister as _;
@@ -1306,7 +1300,7 @@ globalThis.onChatMessage = async function(_message) {
     async fn test_internal_a2a_router_self_routing_rejected() {
         use baml_rt_core::{AgentInstanceId, AgentPackageName, AgentRouteKey};
         let prov = test_provenance_config().await;
-        let (_dir, state) = test_deployment_state().await;
+        let state = test_deployment_state().await;
         let runner = make_runner(prov, state);
         let router = runner.internal_a2a_router().clone();
         let pkg = AgentPackageName::parse("my-agent").unwrap();
@@ -1342,7 +1336,7 @@ globalThis.onChatMessage = async function(_message) {
             AgentInstanceId, AgentPackageName, AgentRouteKey, collect_a2a_stream_one_shot,
         };
         let prov = test_provenance_config().await;
-        let (_dir, state) = test_deployment_state().await;
+        let state = test_deployment_state().await;
         let runner = make_runner(prov, state);
 
         let agent = build_test_agent().await;
@@ -1384,7 +1378,7 @@ globalThis.onChatMessage = async function(_message) {
     async fn test_draining_agent_rejects_a2a_request() {
         use baml_rt_core::{AgentInstanceId, AgentPackageName, AgentRouteKey, BamlRtError};
         let prov = test_provenance_config().await;
-        let (_dir, state) = test_deployment_state().await;
+        let state = test_deployment_state().await;
         let runner = make_runner(prov, state);
 
         let agent = build_test_agent().await;
@@ -1450,7 +1444,7 @@ globalThis.onChatMessage = async function(_message) {
     async fn test_route_cluster_resolver_none_returns_not_found() {
         use baml_rt_core::{AgentInstanceId, AgentPackageName, AgentRouteKey};
         let prov = test_provenance_config().await;
-        let (_dir, state) = test_deployment_state().await;
+        let state = test_deployment_state().await;
         let runner = make_runner(prov, state);
 
         // Wire a mock resolver that returns None (agent not in cluster).
@@ -1493,7 +1487,7 @@ globalThis.onChatMessage = async function(_message) {
     async fn test_route_cluster_resolver_error_propagates() {
         use baml_rt_core::{AgentInstanceId, AgentPackageName, AgentRouteKey};
         let prov = test_provenance_config().await;
-        let (_dir, state) = test_deployment_state().await;
+        let state = test_deployment_state().await;
         let runner = make_runner(prov, state);
 
         // Wire a mock resolver that returns a transient error.
@@ -1540,7 +1534,7 @@ globalThis.onChatMessage = async function(_message) {
     async fn test_deploy_by_hash_returns_already_deployed_for_existing() {
         use baml_rt_core::{AgentInstanceId, AgentPackageName, AgentRouteKey, DeploymentManager};
         let prov = test_provenance_config().await;
-        let (_dir, state) = test_deployment_state().await;
+        let state = test_deployment_state().await;
         let runner = make_runner(prov, state);
 
         // Manually insert a booted agent with a known content_hash to simulate
@@ -1587,7 +1581,7 @@ globalThis.onChatMessage = async function(_message) {
     async fn restore_dedupe_removes_superseded_deployment_row() {
         use baml_rt_core::{DeploymentContentHash, DeploymentRecord, DeploymentStatus};
 
-        let (_dir, store) = test_deployment_state().await;
+        let store = test_deployment_state().await;
         let h_old: DeploymentContentHash = "c".repeat(64).parse().expect("hash");
         let h_new: DeploymentContentHash = "d".repeat(64).parse().expect("hash");
 
@@ -1637,7 +1631,7 @@ globalThis.onChatMessage = async function(_message) {
     #[tokio::test]
     async fn test_prepare_a2a_request_explicit_agent_name() {
         let prov = test_provenance_config().await;
-        let (_dir, state) = test_deployment_state().await;
+        let state = test_deployment_state().await;
         let runner = make_runner(prov, state);
 
         let agent = build_test_agent().await;
@@ -1660,7 +1654,7 @@ globalThis.onChatMessage = async function(_message) {
     #[tokio::test]
     async fn test_prepare_a2a_request_method_prefix_routing() {
         let prov = test_provenance_config().await;
-        let (_dir, state) = test_deployment_state().await;
+        let state = test_deployment_state().await;
         let runner = make_runner(prov, state);
 
         let agent = build_test_agent().await;
@@ -1682,7 +1676,7 @@ globalThis.onChatMessage = async function(_message) {
     #[tokio::test]
     async fn test_prepare_a2a_request_implicit_single_agent() {
         let prov = test_provenance_config().await;
-        let (_dir, state) = test_deployment_state().await;
+        let state = test_deployment_state().await;
         let runner = make_runner(prov, state);
 
         let agent = build_test_agent().await;
@@ -1705,7 +1699,7 @@ globalThis.onChatMessage = async function(_message) {
     async fn test_run_a2a_loop_handles_valid_request() {
         use baml_rt_core::{AgentInstanceId, AgentPackageName, AgentRouteKey};
         let prov = test_provenance_config().await;
-        let (_dir, state) = test_deployment_state().await;
+        let state = test_deployment_state().await;
         let runner = make_runner(prov, state);
 
         let agent = build_test_agent().await;
@@ -1750,7 +1744,7 @@ globalThis.onChatMessage = async function(_message) {
     #[tokio::test]
     async fn test_run_a2a_loop_plaintext_wraps_message() {
         let prov = test_provenance_config().await;
-        let (_dir, state) = test_deployment_state().await;
+        let state = test_deployment_state().await;
         let runner = make_runner(prov, state);
 
         let agent = build_test_agent().await;

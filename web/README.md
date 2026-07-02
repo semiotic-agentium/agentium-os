@@ -65,7 +65,7 @@ From the repo root, `just web-build` runs `npm ci && npm run build` so the runne
 To start a runner that the UI can talk to, see the project root `CLAUDE.md` and `deploy/helm/agentium-os/README.md`. Locally:
 
 ```bash
-cargo run -p baml-agent-runner   # serves HTTP on 127.0.0.1:18080 by default
+cargo run -p agentium -- serve   # serves HTTP on 127.0.0.1:18080 by default
 ```
 
 ## Authentication

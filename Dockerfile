@@ -6,7 +6,8 @@
 FROM rust:1.86-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential pkg-config libssl-dev libclang-dev lld \
+    build-essential pkg-config libssl-dev libdbus-1-dev libcap-ng-dev \
+    libclang-dev lld \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
@@ -29,20 +30,19 @@ ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=lld"
 ENV CARGO_PROFILE_RELEASE_LTO=thin
 ENV CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
 
-RUN cargo build --release -p baml-agent-runner --features http-tools \
-    && cargo build --release -p baml-rt-builder --features http-tools --bin baml-agent-builder
+RUN cargo build --release -p agentium --features http-tools,memory,sandbox-provider,dev-tools
 
 # Stage 2: Slim runtime image.
 #
-# Node.js is needed at runtime because baml-agent-builder compiles
-# TypeScript when agents are published via POST /deploy.
+# Node.js is needed at runtime because repository publish compiles
+# TypeScript when agents are published via POST /repository/publish.
 FROM debian:bookworm-slim AS runtime
 
 ARG VERSION=dev
 LABEL org.opencontainers.image.version="${VERSION}"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates libssl3 curl \
+    ca-certificates libssl3 libdbus-1-3 libcap-ng0 curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
@@ -55,8 +55,7 @@ ENV NPM_CONFIG_CACHE=/tmp/npm-cache
 RUN groupadd -r agentium && useradd -r -g agentium -d /data -s /sbin/nologin agentium
 RUN mkdir -p /data && chown -R agentium:agentium /data
 
-COPY --from=builder /build/target/release/baml-agent-runner /usr/local/bin/
-COPY --from=builder /build/target/release/baml-agent-builder /usr/local/bin/
+COPY --from=builder /build/target/release/agentium /usr/local/bin/
 
 # Host-owned context compaction BAML (SummarizeConversationPrefix).
 COPY baml_src/host /opt/agentium/baml_src/host
@@ -78,5 +77,5 @@ USER 1000
 
 EXPOSE 18080
 
-ENTRYPOINT ["baml-agent-runner"]
+ENTRYPOINT ["agentium", "serve"]
 CMD ["--serve-http", "0.0.0.0:18080"]

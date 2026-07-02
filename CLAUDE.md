@@ -33,7 +33,7 @@ API keys: `fnox.toml` in project root (via `FnoxFileSecretResolver`). LLM test m
 | Rust review canon | [`docs/assertions/production-rust.md`](docs/assertions/production-rust.md) |
 | Testing philosophy | [`docs/assertions/testing-handbook.md`](docs/assertions/testing-handbook.md) |
 | Runner / HTTP API | [`docs/reference/agent-runner.md`](docs/reference/agent-runner.md) |
-| CLI (`cargo-agent-platform`) | [`docs/reference/sdk-cli.md`](docs/reference/sdk-cli.md) |
+| CLI (`agentium`) | [`docs/reference/agentium-cli.md`](docs/reference/agentium-cli.md) |
 | Host tools / MCP | [`docs/reference/host-tool-guide.md`](docs/reference/host-tool-guide.md), [`docs/reference/agentium-mcp-support.md`](docs/reference/agentium-mcp-support.md) |
 | K8s operator | [`docs/runbooks/k8s-pilot-operator-guide.md`](docs/runbooks/k8s-pilot-operator-guide.md) |
 | OTel metrics | [`docs/reference/metrics-inventory.md`](docs/reference/metrics-inventory.md) |
@@ -53,8 +53,8 @@ API keys: `fnox.toml` in project root (via `FnoxFileSecretResolver`). LLM test m
 | baml-rt-repository | Content-addressable agent packages |
 | baml-rt-api | HTTP API surface |
 | baml-rt-builder | Agent build pipeline |
-| baml-agent-runner | A2A host binary |
-| cargo-agent-platform | CLI for scaffold/publish/deploy/chat |
+| baml-agent-runner | A2A host library (boot via `agentium serve`) |
+| agentium | Unified platform + developer SDK binary |
 
 Full crate tree and runtime flows: [`README.md`](README.md).
 

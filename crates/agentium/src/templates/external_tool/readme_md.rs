@@ -215,7 +215,7 @@ rootfs, write `tool-manifest.lock.json`, materialize adapter sidecar bundle
 You can also call the command directly:
 
 ```bash
-cargo run -q -p cargo-agent-platform -- sandbox-bind-sync \
+agentium sandbox-bind-sync \
   --tool-dir . \
   --image local-sandbox:latest \
   --force \
@@ -250,7 +250,7 @@ Materialize bind rootfs externally, then sync the local runtime lock + digest:
 
 ```bash
 ROOTFS=/abs/path/to/rootfs
-cargo run -q -p cargo-agent-platform -- sandbox-bind-sync \
+agentium sandbox-bind-sync \
   --tool-dir . \
   --rootfs "$ROOTFS" \
   --check

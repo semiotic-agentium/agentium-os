@@ -113,7 +113,7 @@ function formatDate(isoStr: string): string {
     <div v-if="loading && deployments.length === 0" class="deployment-empty">Loading...</div>
 
     <div v-else-if="deployments.length === 0" class="deployment-empty">
-      No agents deployed. Use the Deploy button or <code>baml-agent-builder publish</code>.
+      No agents deployed. Use the Deploy button or <code>agentium install agent</code>.
     </div>
 
     <table v-else class="deployment-table">

@@ -47,36 +47,36 @@ set -euo pipefail
 #   3) writes tool-manifest.lock.json (gitignored) with the host bind path
 #   4) validates metadata via `check-external-tool` (with --check)
 
-run_agent_platform() {{
+run_agentium() {{
   local subcmd="${{1:-}}"
   shift || true
 
-  if [[ -n "${{AGENT_PLATFORM_CMD:-}}" ]]; then
+  if [[ -n "${{AGENTIUM_CMD:-}}" ]]; then
     # shellcheck disable=SC2206
-    local cmd=( $AGENT_PLATFORM_CMD )
+    local cmd=( $AGENTIUM_CMD )
     "${{cmd[@]}}" "$subcmd" "$@"
     return
   fi
 
-  if cargo agent-platform "$subcmd" --help >/dev/null 2>&1; then
-    cargo agent-platform "$subcmd" "$@"
+  if agentium "$subcmd" --help >/dev/null 2>&1; then
+    agentium "$subcmd" "$@"
     return
   fi
 
-  if cargo run -q -p cargo-agent-platform -- "$subcmd" --help >/dev/null 2>&1; then
-    cargo run -q -p cargo-agent-platform -- "$subcmd" "$@"
+  if cargo run -q -p agentium -- "$subcmd" --help >/dev/null 2>&1; then
+    cargo run -q -p agentium -- "$subcmd" "$@"
     return
   fi
 
   cat >&2 <<'EOF'
-Could not find a compatible cargo-agent-platform command.
+Could not find a compatible agentium command.
 
 Tried:
-  1) cargo agent-platform <subcommand>
-  2) cargo run -q -p cargo-agent-platform -- <subcommand>
+  1) agentium <subcommand>
+  2) cargo run -q -p agentium -- <subcommand>
 
 You can override command resolution with:
-  export AGENT_PLATFORM_CMD='cargo run -q -p cargo-agent-platform --'
+  export AGENTIUM_CMD='cargo run -q -p agentium --'
 (or another explicit command that supports sandbox-bind-sync)
 EOF
   exit 1
@@ -152,7 +152,7 @@ if [[ $FORCE -eq 1 ]]; then
   args+=(--force)
 fi
 
-run_agent_platform "${{args[@]}}"
+run_agentium "${{args[@]}}"
 
 echo "Bind runtime lock written and validated."
 echo "  tool:           {tool_id}"

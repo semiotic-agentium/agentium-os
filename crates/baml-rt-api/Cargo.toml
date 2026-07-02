@@ -50,6 +50,7 @@ bytes = { workspace = true }
 reqwest = { workspace = true }
 anyhow = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }

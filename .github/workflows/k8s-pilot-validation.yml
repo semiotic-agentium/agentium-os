@@ -70,7 +70,7 @@ jobs:
       needs.changes.outputs.trusted == 'true' &&
       (github.event_name == 'workflow_dispatch' ||
        needs.changes.outputs.pilot == 'true')
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       # rust-cache needs write to save cache entries; the changes job
       # only runs paths-filter and inherits read-only.
@@ -84,12 +84,13 @@ jobs:
 
       - name: Install OS deps
         # build-essential / pkg-config / libssl-dev / libclang-dev / lld
-        # are needed by `cargo run -p cargo-agent-platform` during the
+        # are needed by `cargo run -p agentium` during the
         # smoke step. zstd + git-lfs hydrate the embedded ONNX models the
         # Dockerfile copies into the runtime image.
         run: |
           sudo apt-get install -y \
-            build-essential pkg-config libssl-dev libclang-dev lld \
+            build-essential pkg-config libssl-dev libdbus-1-dev libcap-ng-dev \
+            libclang-dev lld \
             curl jq ca-certificates git-lfs zstd
 
       - name: Install Rust (stable)

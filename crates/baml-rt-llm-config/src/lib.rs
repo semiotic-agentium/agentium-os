@@ -48,4 +48,4 @@ pub use secret_resolver::{
     strip_placeholder_prefix,
 };
 pub use store_loader::load_stored_config;
-pub use test_model::{FALLBACK_TEST_MODEL, test_model_default};
+pub use test_model::{FALLBACK_TEST_MODEL, test_model_default, with_eval_model_override};

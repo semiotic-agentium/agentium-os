@@ -75,18 +75,18 @@ pub(crate) struct RunnerConfig {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "baml-agent-runner")]
+#[command(name = "agentium serve")]
 #[command(version)]
 #[command(
-    about = "Run the BAML agent server. Agents are deployed exclusively via the repository API.",
-    long_about = "Starts the runner and restores any previously-deployed agents from --state-dir.\n\
-                  \nTo add agents, use `baml-agent-builder publish` or POST /deploy.\n\
+    about = "Run the Agentium platform. Agents are deployed exclusively via the repository API.",
+    long_about = "Starts the platform and restores any previously-deployed agents from --state-dir.\n\
+                  \nTo add agents, use `agentium install agent` or POST /deploy.\n\
                   Positional package paths are no longer accepted — all deployment goes through the repository.\n\
                   \nDeployment rows (what GET /agents lists after boot) live under --state-dir/state.db.\n\
                   Clearing or resetting --provenance-db alone does not undeploy agents; use POST /undeploy,\n\
                   remove state.db, or wipe the entire --state-dir."
 )]
-pub(crate) struct Cli {
+pub struct Cli {
     /// Repository base URL used for hash-based deploy/restore (e.g. http://127.0.0.1:18080/repository).
     #[arg(
         long,

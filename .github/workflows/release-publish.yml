@@ -99,7 +99,7 @@ jobs:
 
       - name: Inspect runner binary (arch + static ONNX)
         run: |
-          bin=target/aarch64-unknown-linux-gnu/release-dist/baml-agent-runner
+          bin=target/aarch64-unknown-linux-gnu/release-dist/agentium
           file "$bin"
           echo "=== dynamic NEEDED libs ==="
           readelf -d "$bin" | grep NEEDED || true

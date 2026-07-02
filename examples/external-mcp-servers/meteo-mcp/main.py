@@ -8,7 +8,7 @@
 
 Speaks the Model Context Protocol 2025-06-18 over stdin/stdout so it can be
 driven by `baml-agent-runner` after operator approval via
-`cargo agent-platform mcp enable meteo`. Exposes a single tool, `get_meteo`,
+`agentium mcp enable meteo`. Exposes a single tool, `get_meteo`,
 whose input schema is the same as the in-tree `dev/meteo-tool` external
 tool — kept identical so the meteo-mcp-agent BAML prompts can be a near
 mechanical copy of meteo-agent's.

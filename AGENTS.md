@@ -6,8 +6,8 @@ This repository is a Rust workspace centered on `crates/`, which holds the runti
 Use `baml_src/` for shared example schemas, and `crates/test-support` for common test helpers instead of copying setup code.
 
 ## Build, Test, and Development Commands
-- `just build` or `just build-debug`: build `baml-agent-runner` in release or debug mode.
-- `just runner`: build and start the local runner on `127.0.0.1:18080`.
+- `just build` or `just build-debug`: build `agentium` in release or debug mode.
+- `just runner`: build and start the local platform on `127.0.0.1:18080` (`agentium serve`).
 - `just web-build`: install web dependencies and build the Vite app in `web/dist`.
 - `just fmt`: run workspace formatting.
 - `just clippy`: run `cargo clippy --workspace --all-targets --all-features -- -D warnings`.

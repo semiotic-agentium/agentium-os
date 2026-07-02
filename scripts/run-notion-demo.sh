@@ -39,11 +39,11 @@ if [ -f .env ]; then
 fi
 
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
-BUILDER_BIN="${NOTION_DEMO_BUILDER_BIN:-$CARGO_TARGET_DIR/debug/baml-agent-builder}"
+BUILDER_BIN="${CARGO_TARGET_DIR:-target}/release/agentium"
 
 cargo build -p baml-rt-builder --features http-tools --bin baml-agent-builder
 cargo build -p baml-agent-runner --features http-tools
-RUNNER_BIN="${NOTION_DEMO_RUNNER_BIN:-$CARGO_TARGET_DIR/debug/baml-agent-runner}"
+RUNNER_BIN="${CARGO_TARGET_DIR:-target}/release/agentium"
 if [ ! -x "$RUNNER_BIN" ]; then
   echo "Runner binary not found: $RUNNER_BIN" >&2
   exit 1

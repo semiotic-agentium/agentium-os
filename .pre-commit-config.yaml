@@ -21,6 +21,7 @@ repos:
         # tokenizer/config blobs must not be rewritten by EOF normalization.
         exclude: ^models/fastembed/
       - id: check-yaml
+        exclude: ^deploy/helm/
       - id: check-json
       - id: check-toml
       - id: check-added-large-files

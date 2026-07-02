@@ -58,7 +58,7 @@ KEEP_DEPLOYED=0
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-CLI_BIN="${CARGO_TARGET_DIR:-${REPO_ROOT}/target}/debug/cargo-agent-platform"
+CLI_BIN="${CARGO_TARGET_DIR:-${REPO_ROOT}/target}/debug/agentium"
 
 RUNNER_STS=""
 RUNNER_POD_0=""
@@ -194,8 +194,8 @@ ensure_fnox_openrouter_default() {
 }
 
 build_cli() {
-  log "building cargo-agent-platform CLI"
-  (cd "$REPO_ROOT" && cargo build -q -p cargo-agent-platform)
+  log "building agentium CLI"
+  (cd "$REPO_ROOT" && cargo build -q -p agentium)
 }
 
 publish_agent() {

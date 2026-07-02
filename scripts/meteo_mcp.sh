@@ -34,7 +34,7 @@ Commands:
   prepare   Render config, enable registry schema, and package the agent locally
   runner    Render config, then start baml-agent-runner on $HTTP_BIND
   push      Enable registry schema, then publish+deploy $AGENT_DIR to $RUNNER_URL
-  chat      Run push, then connect to $AGENT_NAME with cargo-agent-platform chat
+  chat      Run push, then connect to $AGENT_NAME with agentium chat
   review    Show registry state for the meteo MCP server
 
 Typical flow:
@@ -71,7 +71,7 @@ builder() {
 }
 
 agent_platform() {
-    cargo run -q -p cargo-agent-platform -- "$@"
+    cargo run -q -p agentium -- "$@"
 }
 
 render_config() {
@@ -142,7 +142,7 @@ case "$cmd" in
         render_config
         log_step "Starting baml-agent-runner on $HTTP_BIND"
         echo "    In another terminal, run: scripts/meteo_mcp.sh chat"
-        exec cargo run -p baml-agent-runner --all-features -- \
+        exec cargo run -p agentium -- serve --all-features -- \
             --a2a-stdio \
             --serve-http "$HTTP_BIND" \
             --provenance-db provenance.db
@@ -153,7 +153,7 @@ case "$cmd" in
     chat)
         push_agent
         log_step "Connecting to $AGENT_NAME"
-        exec cargo run -q -p cargo-agent-platform -- chat --agent "$AGENT_NAME" --url "$RUNNER_URL"
+        exec cargo run -q -p agentium -- chat --agent "$AGENT_NAME" --url "$RUNNER_URL"
         ;;
     review)
         review

@@ -13,7 +13,7 @@ use std::{
 use axum::{
     Extension, Json,
     extract::{Query, State},
-    http::StatusCode as AxumStatus,
+    http::{HeaderMap, StatusCode as AxumStatus},
     response::{
         IntoResponse,
         sse::{Event, KeepAlive, Sse},
@@ -47,6 +47,7 @@ use crate::{
         ConversationHistoryRequestParseError,
     },
     episode::EpisodeSnapshotDto,
+    eval_handlers::lookup_eval_session,
     mermaid::MermaidError,
     metrics,
     observation::{
@@ -631,6 +632,7 @@ pub async fn post_migrate(
 pub async fn post_a2a(
     State(state): State<Arc<ApiState>>,
     ingress_ext: Option<Extension<IngressServiceInstanceId>>,
+    headers: HeaderMap,
     axum::extract::Path((agent_package, agent_instance_id)): axum::extract::Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> HttpResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
@@ -695,11 +697,20 @@ pub async fn post_a2a(
         ));
     }
 
-    match state
-        .registry
-        .handle_a2a_stream(&key, A2aWireRequest::from(body))
-        .await
-    {
+    let eval_model = headers
+        .get("X-Agentium-Eval-Session")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|id| lookup_eval_session(state.as_ref(), id))
+        .and_then(|spec| spec.model);
+
+    let wire = A2aWireRequest::from(body);
+    let run = async { state.registry.handle_a2a_stream(&key, wire).await };
+    let stream_result = match eval_model {
+        Some(model) => baml_rt_llm_config::with_eval_model_override(Some(model), run).await,
+        None => run.await,
+    };
+
+    match stream_result {
         Ok(mut stream) => {
             let start_time = start;
             let key_metrics = key.clone();

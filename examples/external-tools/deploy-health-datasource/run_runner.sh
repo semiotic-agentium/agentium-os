@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 cd "$REPO_ROOT"
 
-exec cargo run -p baml-agent-runner -- \
+exec cargo run -p agentium -- serve -- \
   --runner-config examples/external-tools/deploy-health-datasource/runner.toml \
   --serve-http 127.0.0.1:18080 \
   --event-poll-interval-secs 1

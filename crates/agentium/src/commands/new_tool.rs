@@ -452,6 +452,110 @@ fn set_executable_bits(output_dir: &Path, files: &[GeneratedFile]) -> Result<()>
     Ok(())
 }
 
+/// CLI-facing entry: resolves interactive prompts then runs the scaffolder.
+pub struct NewToolCli {
+    pub name: Option<String>,
+    pub bundle: Option<String>,
+    pub lang: Language,
+    pub access: Option<Access>,
+    pub runtime: Runtime,
+    pub invocation_mode: InvocationMode,
+    pub sandbox_source: SandboxSource,
+    pub sandbox_image: Option<String>,
+    pub sandbox_entrypoint: Vec<String>,
+    pub generate_docker: bool,
+    pub description: Option<String>,
+    pub output: Option<String>,
+    pub dry_run: bool,
+}
+
+pub fn run_cli(cmd: NewToolCli) -> Result<()> {
+    use crate::{
+        cli::{parse_access_or_default, parse_language_or_default, parse_runtime_or_default},
+        interactive,
+        templates::external_tool::DEFAULT_BUNDLE,
+    };
+
+    let interactive_mode = cmd.name.is_none();
+    let name = match cmd.name {
+        Some(n) => n,
+        None => interactive::prompt_tool_name()?,
+    };
+    let bundle = match cmd.bundle {
+        Some(b) => b,
+        None if interactive_mode => interactive::prompt_external_tool_bundle()?,
+        None => DEFAULT_BUNDLE.to_string(),
+    };
+    let access = match cmd.access {
+        Some(a) => a,
+        None if interactive_mode => {
+            parse_access_or_default(&interactive::prompt_external_tool_access()?)
+        }
+        None => Access::Read,
+    };
+    let description = match cmd.description {
+        Some(d) => d,
+        None if interactive_mode => interactive::prompt_tool_description()?,
+        None => String::new(),
+    };
+    let output = match cmd.output {
+        Some(o) => Some(o),
+        None if interactive_mode => Some(interactive::prompt_external_tool_output(&name)?),
+        None => None,
+    };
+    let lang = if interactive_mode {
+        parse_language_or_default(&interactive::prompt_external_tool_language()?)
+    } else {
+        cmd.lang
+    };
+    let runtime = if interactive_mode {
+        parse_runtime_or_default(&interactive::prompt_external_tool_runtime()?)
+    } else {
+        cmd.runtime
+    };
+    let (sandbox_image, sandbox_entrypoint) = if runtime == Runtime::Sandbox {
+        let entrypoint = if interactive_mode {
+            interactive::prompt_external_tool_sandbox_entrypoint()?
+        } else {
+            cmd.sandbox_entrypoint
+        };
+        match cmd.sandbox_source {
+            SandboxSource::Oci => {
+                let image = match cmd.sandbox_image {
+                    Some(v) if !interactive_mode => v,
+                    _ => interactive::prompt_external_tool_sandbox_image()?,
+                };
+                (Some(image), entrypoint)
+            }
+            SandboxSource::Bind => (None, entrypoint),
+        }
+    } else {
+        (None, Vec::new())
+    };
+    let mode = if interactive_mode {
+        RunMode::Confirm
+    } else if cmd.dry_run {
+        RunMode::DryRun
+    } else {
+        RunMode::Apply
+    };
+    run(NewToolRunArgs {
+        name: &name,
+        bundle: &bundle,
+        lang,
+        access,
+        runtime,
+        invocation_mode: cmd.invocation_mode,
+        sandbox_source: cmd.sandbox_source,
+        sandbox_image: sandbox_image.as_deref(),
+        sandbox_entrypoint: &sandbox_entrypoint,
+        generate_docker: cmd.generate_docker,
+        description: &description,
+        output: output.as_deref(),
+        mode,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use baml_rt_tools::external_tools::{ExternalToolManifest, SandboxImageRef, ToolRuntime};

@@ -1569,6 +1569,48 @@ expression: snapshot
           ]
         }
       },
+      "/eval/sessions": {
+        "post": {
+          "tags": [
+            "eval"
+          ],
+          "summary": "POST /eval/sessions — ephemeral model override scope for eval runs.",
+          "operationId": "post_eval_session",
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalSessionSpec"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Eval session created",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/EvalSessionCreated"
+                  }
+                }
+              }
+            },
+            "401": {
+              "description": "Missing or invalid runner token"
+            },
+            "500": {
+              "description": "Internal error"
+            }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
+        }
+      },
       "/event-dispatch/validate": {
         "post": {
           "tags": [
@@ -3671,6 +3713,40 @@ expression: snapshot
               "items": {
                 "$ref": "#/components/schemas/EpisodeEntryDto"
               }
+            }
+          }
+        },
+        "EvalSessionCreated": {
+          "type": "object",
+          "required": [
+            "eval_session_id"
+          ],
+          "properties": {
+            "eval_session_id": {
+              "type": "string"
+            }
+          }
+        },
+        "EvalSessionSpec": {
+          "type": "object",
+          "required": [
+            "agent"
+          ],
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "client": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         },

@@ -25,6 +25,7 @@ axum = { workspace = true }
 http-api-problem = { workspace = true }
 utoipa = { workspace = true }
 opentelemetry = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

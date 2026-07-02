@@ -12,46 +12,20 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use baml_rt_core::{correlation::generate_correlation_id, parse_a2a_sse_json_rpc_chunks};
+use baml_rt_core::correlation::generate_correlation_id;
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
-use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
 
 use super::{
+    a2a_http::{
+        self, AuthenticatedHttp, SendStreamParams, extract_rpc_error, is_failure_state,
+        is_terminal, send_message_stream, terminal_state_from_chunk,
+    },
     agent_discovery::AgentDiscoveryEntry,
     utils::{build_http_client, join_url},
 };
-
-#[derive(Debug, Serialize)]
-struct JsonRpcRequest<'a> {
-    jsonrpc: &'static str,
-    method: &'static str,
-    id: &'a str,
-    params: SendMessageParams<'a>,
-}
-
-#[derive(Debug, Serialize)]
-struct SendMessageParams<'a> {
-    message: Message<'a>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Message<'a> {
-    message_id: &'a str,
-    context_id: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    task_id: Option<&'a str>,
-    role: &'static str,
-    parts: Vec<Part<'a>>,
-}
-
-#[derive(Debug, Serialize)]
-struct Part<'a> {
-    text: &'a str,
-}
 
 /// Parameters for one chat turn request.
 struct SseRequest<'a> {
@@ -106,8 +80,7 @@ fn tagged_error(tag: &'static str, message: impl Into<String>) -> anyhow::Error 
 }
 
 fn extract_chunk_or_result(value: &Value) -> Option<&Value> {
-    let result = value.get("result")?;
-    result.get("chunk").or(Some(result))
+    a2a_http::extract_chunk_or_result(value)
 }
 
 fn parts_text(message: &Value) -> Option<String> {
@@ -142,6 +115,7 @@ fn extract_agent_message_snapshot(chunk: &Value) -> Option<(String, String)> {
 }
 
 fn waiting_state_from_chunk(chunk: &Value) -> Option<AwaitingState> {
+    let chunk = extract_chunk_or_result(chunk).unwrap_or(chunk);
     match terminal_state_from_chunk(chunk) {
         Some("TASK_STATE_INPUT_REQUIRED" | "input_required" | "INPUT_REQUIRED") => {
             Some(AwaitingState::InputRequired)
@@ -206,46 +180,6 @@ fn extract_task_id_from_chunk(chunk: &Value) -> Option<String> {
         })
 }
 
-fn extract_rpc_error(value: &Value) -> Option<String> {
-    let error = value.get("error")?;
-    let message = error
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown rpc error");
-    let code = error.get("code").and_then(Value::as_i64);
-    let details = error
-        .get("data")
-        .and_then(|d| d.get("details"))
-        .and_then(Value::as_str);
-
-    let mut parts = Vec::new();
-    parts.push(message.to_string());
-    if let Some(c) = code {
-        parts.push(format!("code={c}"));
-    }
-    if let Some(d) = details
-        && !d.trim().is_empty()
-    {
-        parts.push(format!("details={d}"));
-    }
-    Some(parts.join(" | "))
-}
-
-fn terminal_state_from_chunk(chunk: &Value) -> Option<&str> {
-    chunk
-        .get("task")
-        .and_then(|t| t.get("status"))
-        .and_then(|s| s.get("state"))
-        .and_then(Value::as_str)
-        .or_else(|| {
-            chunk
-                .get("statusUpdate")
-                .and_then(|s| s.get("status"))
-                .and_then(|s| s.get("state"))
-                .and_then(Value::as_str)
-        })
-}
-
 fn terminal_message_from_chunk(chunk: &Value) -> Option<String> {
     chunk
         .get("task")
@@ -259,42 +193,6 @@ fn terminal_message_from_chunk(chunk: &Value) -> Option<String> {
                 .and_then(|s| s.get("message"))
                 .and_then(|m| m.as_str().map(ToOwned::to_owned).or_else(|| parts_text(m)))
         })
-}
-
-fn is_terminal(value: &Value) -> bool {
-    if value
-        .get("result")
-        .and_then(|r| r.get("final"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    matches!(
-        extract_chunk_or_result(value).and_then(terminal_state_from_chunk),
-        Some(
-            "TASK_STATE_COMPLETED"
-                | "TASK_STATE_FAILED"
-                | "TASK_STATE_CANCELED"
-                | "TASK_STATE_REJECTED"
-                | "completed"
-                | "failed"
-                | "canceled"
-                | "rejected"
-        )
-    )
-}
-
-fn is_failure_state(state: &str) -> bool {
-    matches!(
-        state,
-        "TASK_STATE_FAILED"
-            | "TASK_STATE_CANCELED"
-            | "TASK_STATE_REJECTED"
-            | "failed"
-            | "canceled"
-            | "rejected"
-    )
 }
 
 fn format_time_line(ms: u128) -> String {
@@ -392,54 +290,35 @@ async fn send_message_http(
     spinner: Option<&ProgressBar>,
 ) -> Result<ChatTurnResult> {
     let started = Instant::now();
-    let url = join_url(
-        req.base_url,
-        &format!("/agents/{}/{}/a2a", req.agent, req.instance),
-    );
-
-    let rpc_req = JsonRpcRequest {
-        jsonrpc: "2.0",
-        method: "message.sendStream",
-        id: req.correlation_id,
-        params: SendMessageParams {
-            message: Message {
-                message_id: req.message_id,
-                context_id: req.context_id,
-                task_id: req.task_id,
-                role: "ROLE_USER",
-                parts: vec![Part {
-                    text: req.message_text,
-                }],
-            },
-        },
+    let auth = AuthenticatedHttp {
+        client: req.client,
+        runner_token: None,
+        eval_session: None,
     };
+    let stream = send_message_stream(
+        &auth,
+        &SendStreamParams {
+            base_url: req.base_url,
+            agent: req.agent,
+            instance: req.instance,
+            context_id: req.context_id,
+            task_id: req.task_id,
+            text: req.message_text,
+            message_id: Some(req.message_id),
+            correlation_id: Some(req.correlation_id),
+        },
+    )
+    .await
+    .map_err(|e| tagged_error("HTTP", format!("{e:#}")))?;
 
-    let response = req
-        .client
-        .post(&url)
-        .header("content-type", "application/json")
-        .json(&rpc_req)
-        .send()
-        .await
-        .with_context(|| format!("Failed to POST chat turn to {url}"))?;
-
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(tagged_error(
-            "HTTP",
-            format!("Chat request failed ({status}) at {url}: {body}"),
-        ));
-    }
-
-    let events: Vec<Value> = parse_a2a_sse_json_rpc_chunks(&body)
-        .map_err(|e| tagged_error("SSE", format!("Invalid /a2a SSE response: {e}")))?;
-
+    let events = stream.events;
     let mut printed_by_message_id: HashMap<String, String> = HashMap::new();
     let mut active_message_id: Option<String> = None;
     let mut printed_any = false;
     let mut awaiting_state: Option<AwaitingState> = None;
-    let mut latest_task_id = req.task_id.map(ToOwned::to_owned);
+    let mut latest_task_id = stream
+        .task_id
+        .or_else(|| req.task_id.map(ToOwned::to_owned));
 
     for event in events {
         if req.verbose {

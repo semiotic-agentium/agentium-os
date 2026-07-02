@@ -96,7 +96,8 @@ jobs:
       - name: Install OS build deps
         run: |
           sudo apt-get install -y \
-            build-essential pkg-config libssl-dev libclang-dev clang llvm-dev util-linux lld \
+            build-essential pkg-config libssl-dev libdbus-1-dev libcap-ng-dev \
+            libclang-dev clang llvm-dev util-linux lld \
             zstd git-lfs
 
       - name: Configure LIBCLANG_PATH for bindgen (hirofa-quickjs-sys)
@@ -303,7 +304,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential pkg-config libssl-dev libclang-dev clang llvm-dev util-linux lld \
+            build-essential pkg-config libssl-dev libdbus-1-dev libcap-ng-dev \
+            libclang-dev clang llvm-dev util-linux lld \
             zstd git-lfs
 
       - name: Configure LIBCLANG_PATH for bindgen (hirofa-quickjs-sys)
@@ -419,7 +421,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config libclang-dev clang llvm-dev lld
+          sudo apt update && sudo apt install -y build-essential pkg-config libclang-dev clang llvm-dev lld libdbus-1-dev libcap-ng-dev
 
       - name: Configure LIBCLANG_PATH for bindgen (hirofa-quickjs-sys)
         run: bash scripts/ci/set-libclang-path.sh
@@ -458,9 +460,10 @@ jobs:
 
       - name: Sandbox sidecar parity checks (bind + OCI)
         run: |
-          cargo test -p cargo-agent-platform write_runtime_sidecars_materializes_expected_files --locked -- --ignored --nocapture
-          cargo test -p cargo-agent-platform sandbox_oci_prepare --locked -- --ignored --nocapture
+          cargo test -p agentium write_runtime_sidecars_materializes_expected_files --locked -- --ignored --nocapture
+          cargo test -p agentium sandbox_oci_prepare --locked -- --ignored --nocapture
         env:
+          RUSTUP_TOOLCHAIN: stable
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
 
       - name: Publish JUnit report

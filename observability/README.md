@@ -47,7 +47,7 @@ Use a different `service.instance.id` per process. The runtime also emits the ca
 Then run your process, e.g.:
 
 ```bash
-cargo run -p baml-agent-runner
+cargo run -p agentium -- serve
 ```
 
 ## Grafana dashboard

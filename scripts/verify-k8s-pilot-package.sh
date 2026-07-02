@@ -19,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/e2e-k8s/lib.sh"
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-BUILDER_BIN="${CARGO_TARGET_DIR:-${REPO_ROOT}/target}/release/baml-agent-builder"
+BUILDER_BIN="${CARGO_TARGET_DIR:-${REPO_ROOT}/target}/release/agentium"
 
 SKIP_BUILD=false
 KEEP_CLUSTER=false
@@ -115,6 +115,22 @@ build_image() {
     -t "${IMAGE_NAME}:${IMAGE_TAG}" "$REPO_ROOT"
 }
 
+ensure_agentium_bin() {
+  if [[ -x "$BUILDER_BIN" ]]; then
+    log_info "agentium already built at ${BUILDER_BIN}"
+    return
+  fi
+  log_step "Building agentium for k8s-pilot-smoke (stable toolchain; avoids nightly ICE on host publish)"
+  (
+    cd "$REPO_ROOT"
+    RUSTUP_TOOLCHAIN=stable cargo build --release -p agentium --all-features
+  )
+  if [[ ! -x "$BUILDER_BIN" ]]; then
+    log_fail "Build completed but ${BUILDER_BIN} is missing"
+    exit 1
+  fi
+}
+
 create_or_reuse_cluster() {
   log_step "Creating k3d cluster '${CLUSTER_NAME}'"
   if k3d cluster list -o json 2>/dev/null | grep -q "\"name\":\"${CLUSTER_NAME}\""; then
@@ -138,6 +154,7 @@ run_smoke() {
   (
     cd "$REPO_ROOT"
     RUNNER_TOKEN="$E2E_TOKEN" \
+    AGENTIUM_BIN="$BUILDER_BIN" \
     K8S_PILOT_PF_LOG_DIR="$LOG_DIR" \
       bash "${REPO_ROOT}/scripts/k8s-pilot-smoke.sh" "${smoke_args[@]}"
   )
@@ -170,6 +187,7 @@ verify_no_warn_logs() {
 
 main() {
   preflight
+  ensure_agentium_bin
   build_image
   create_or_reuse_cluster
   if ((${#EXTRA_VALUES[@]} > 0)); then

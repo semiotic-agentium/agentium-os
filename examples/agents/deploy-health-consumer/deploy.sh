@@ -13,7 +13,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 cd "$REPO_ROOT"
 
 echo "Publishing to ${RUNNER_URL}/repository ..."
-HASH="$(cargo run -q -p cargo-agent-platform -- agent-platform publish \
+HASH="$(cargo run -q -p agentium -- publish \
   --agent-dir examples/agents/deploy-health-consumer \
   --repository-url "${RUNNER_URL}/repository" \
   --origin original 2>&1 | sed -n 's/^[[:space:]]*hash:[[:space:]]*//p')"
@@ -25,6 +25,6 @@ fi
 echo "Published hash: ${HASH}"
 
 echo "Deploying into ${RUNNER_URL} ..."
-cargo run -q -p cargo-agent-platform -- agent-platform deploy \
+cargo run -q -p agentium -- deploy \
   --hash "${HASH}" \
   --url "${RUNNER_URL}"
