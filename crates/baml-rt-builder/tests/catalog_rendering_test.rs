@@ -13,13 +13,17 @@
 
 use std::fs;
 
-use baml_rt_builder::builder::{baml_gen::GENERATED_BAML_PRELUDE_FILE, bootstrap::run_bootstrap};
+#[cfg(feature = "dev-tools")]
+use baml_rt_builder::builder::baml_gen::GENERATED_BAML_PRELUDE_FILE;
+use baml_rt_builder::builder::bootstrap::run_bootstrap;
 use tempfile::TempDir;
 
+#[cfg(feature = "dev-tools")]
 const CATALOG_SIDECAR: &str = "_baml_tool_schema_catalog.txt";
 
 /// Locate a generated phase function whose name ends in the given suffix (e.g. `__entry`,
 /// `__active__support_calculate`). Returns the byte offset of the `function ` keyword.
+#[cfg(feature = "dev-tools")]
 fn find_phase_function(generated: &str, suffix: &str) -> Option<usize> {
     for (offset, _) in generated.match_indices("function ") {
         let rest = &generated[offset + "function ".len()..];
@@ -33,6 +37,7 @@ fn find_phase_function(generated: &str, suffix: &str) -> Option<usize> {
 }
 
 /// Slice from the start of one BAML `function ...` declaration up to the next one (or EOF).
+#[cfg(feature = "dev-tools")]
 fn function_body(generated: &str, start: usize) -> &str {
     let after = start + "function ".len();
     let next = generated[after..]
@@ -43,6 +48,7 @@ fn function_body(generated: &str, start: usize) -> &str {
 }
 
 /// Pretty-print every `function NAME(` occurrence for diagnostic messages.
+#[cfg(feature = "dev-tools")]
 fn list_functions(generated: &str) -> String {
     let mut out = String::new();
     for (offset, _) in generated.match_indices("function ") {
@@ -56,6 +62,7 @@ fn list_functions(generated: &str) -> String {
     out
 }
 
+#[cfg(feature = "dev-tools")]
 async fn build_calculator_agent() -> TempDir {
     let root = TempDir::new().unwrap();
     let tools = vec!["support/calculate".to_string()];
@@ -69,6 +76,17 @@ async fn build_calculator_agent() -> TempDir {
     .await
     .expect("bootstrap should produce a runtime + catalog");
     root
+}
+
+#[cfg(feature = "dev-tools")]
+fn entry_function_body(generated: &str) -> &str {
+    let entry_idx = find_phase_function(generated, "__entry").unwrap_or_else(|| {
+        panic!(
+            "expected an entry phase function (`__entry`) in generated baml; functions found:\n{}",
+            list_functions(generated)
+        )
+    });
+    function_body(generated, entry_idx)
 }
 
 async fn build_no_tools_agent() -> TempDir {
@@ -90,12 +108,14 @@ fn read_authored_prompt(root: &std::path::Path, prompt_filename: &str) -> String
         .unwrap_or_else(|err| panic!("read authored prompt at {}: {err}", path.display()))
 }
 
+#[cfg(feature = "dev-tools")]
 fn read_catalog_text(root: &std::path::Path) -> String {
     let path = root.join("baml_src").join(CATALOG_SIDECAR);
     fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("read catalog sidecar at {}: {err}", path.display()))
 }
 
+#[cfg(feature = "dev-tools")]
 fn read_generated_baml(root: &std::path::Path) -> String {
     let path = root.join("baml_src").join(GENERATED_BAML_PRELUDE_FILE);
     fs::read_to_string(&path)
@@ -103,6 +123,7 @@ fn read_generated_baml(root: &std::path::Path) -> String {
 }
 
 #[tokio::test]
+#[cfg(feature = "dev-tools")]
 async fn catalog_text_is_source_free() {
     let root = build_calculator_agent().await;
     let catalog = read_catalog_text(root.path());
@@ -122,19 +143,24 @@ async fn catalog_text_is_source_free() {
 }
 
 #[tokio::test]
+#[cfg(feature = "dev-tools")]
 async fn catalog_includes_every_manifest_tool_step_kind() {
     let root = build_calculator_agent().await;
     let catalog = read_catalog_text(root.path());
 
-    for ty in [
+    assert!(
+        catalog.contains("type SupportCalculateSendStep = {"),
+        "catalog must render the one-shot Send operation type: \n{catalog}"
+    );
+
+    for stale in [
         "type SupportCalculateOpenStep = {",
-        "type SupportCalculateSendStep = {",
         "type SupportCalculateFinishStep = {",
         "type SupportCalculateAbortStep = {",
     ] {
         assert!(
-            catalog.contains(ty),
-            "catalog must render the stable operation type `{ty}`: \n{catalog}"
+            !catalog.contains(stale),
+            "one-shot tool catalog must not expose legacy FSM operation type `{stale}`: \n{catalog}"
         );
     }
 
@@ -160,17 +186,12 @@ async fn catalog_includes_every_manifest_tool_step_kind() {
 }
 
 #[tokio::test]
+#[cfg(feature = "dev-tools")]
 async fn generated_prompts_share_stable_prefix_before_history() {
     let root = build_calculator_agent().await;
     let generated = read_generated_baml(root.path());
 
-    let entry_idx = find_phase_function(&generated, "__entry").unwrap_or_else(|| {
-        panic!(
-            "expected an entry phase function (`__entry`) in generated baml; functions found:\n{}",
-            list_functions(&generated)
-        )
-    });
-    let entry_body = function_body(&generated, entry_idx);
+    let entry_body = entry_function_body(&generated);
     let active_idx = find_phase_function(&generated, "__active__support_calculate").unwrap_or_else(|| {
         panic!(
             "expected an active phase function for support/calculate in generated baml; functions found:\n{}",
@@ -195,17 +216,11 @@ async fn generated_prompts_share_stable_prefix_before_history() {
 }
 
 #[tokio::test]
+#[cfg(feature = "dev-tools")]
 async fn phase_function_prompts_place_contract_after_history_and_task_body() {
     let root = build_calculator_agent().await;
     let generated = read_generated_baml(root.path());
-
-    let entry_idx = find_phase_function(&generated, "__entry").unwrap_or_else(|| {
-        panic!(
-            "expected an entry phase function (`__entry`) in generated baml; functions found:\n{}",
-            list_functions(&generated)
-        )
-    });
-    let entry_body = function_body(&generated, entry_idx);
+    let entry_body = entry_function_body(&generated);
 
     let prelude_pos = entry_body
         .find("{% if ctx.tags['tool_schema_prelude'] %}")
@@ -217,7 +232,7 @@ async fn phase_function_prompts_place_contract_after_history_and_task_body() {
         .find("The user said: { user_message }")
         .expect("entry prompt must include the stripped task body");
     let contract_pos = entry_body
-        .find("Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateOpenStep`.")
+        .find("Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateSendStep`.")
         .expect("entry prompt must bind the compact contract after history");
 
     assert!(
@@ -244,6 +259,7 @@ async fn phase_function_prompts_place_contract_after_history_and_task_body() {
 }
 
 #[tokio::test]
+#[cfg(feature = "dev-tools")]
 async fn phase_function_prompts_omit_per_hop_output_format() {
     let root = build_calculator_agent().await;
     let generated = read_generated_baml(root.path());
@@ -339,6 +355,7 @@ async fn authored_non_fsm_function_has_one_canonical_output_format() {
 }
 
 #[tokio::test]
+#[cfg(feature = "dev-tools")]
 async fn session_plan_parent_function_is_not_rewritten() {
     // Session-plan parents must keep their original `prompt #"..."#` body because their text
     // is inlined into the generated `__entry` / `__active__*` phase executors which already
@@ -358,4 +375,82 @@ async fn session_plan_parent_function_is_not_rewritten() {
         archive_count, 0,
         "session-plan parent must not have the canonical archive prefix injected:\n{authored}"
     );
+}
+
+#[cfg(feature = "dev-tools")]
+fn entry_function_body_from_root(root: &std::path::Path) -> String {
+    let generated = read_generated_baml(root);
+    entry_function_body(&generated).to_string()
+}
+
+#[tokio::test]
+#[cfg(feature = "dev-tools")]
+async fn entry_function_return_union_includes_send_step() {
+    let root = build_calculator_agent().await;
+    let entry_body = entry_function_body_from_root(root.path());
+
+    assert!(
+        entry_body.contains(
+            ") -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateSendStep {"
+        ),
+        "one-shot entry function signature must expose Send plus read-only/archive options: {entry_body}"
+    );
+    assert!(
+        !entry_body.contains("SupportCalculateOpenStep"),
+        "one-shot entry function signature must not expose legacy Open: {entry_body}"
+    );
+}
+
+#[tokio::test]
+#[cfg(feature = "dev-tools")]
+async fn entry_prompt_discriminator_includes_send() {
+    let root = build_calculator_agent().await;
+    let entry_body = entry_function_body_from_root(root.path());
+
+    assert!(
+        entry_body.contains(
+            r#"Use `op` as the discriminator: "PageRead" | "ReadOnlyFinish" | "SearchRead" | "Send"."#
+        ),
+        "one-shot entry compact contract must expose only legal Send/read discriminators: {entry_body}"
+    );
+    assert!(
+        !entry_body.contains(r#""Open" |"#),
+        "one-shot entry compact contract must not expose Open discriminator: {entry_body}"
+    );
+}
+
+#[tokio::test]
+#[cfg(feature = "dev-tools")]
+async fn entry_prompt_phase_policy_allows_send_for_eligible_tools() {
+    let root = build_calculator_agent().await;
+    let entry_body = entry_function_body_from_root(root.path());
+
+    assert!(
+        entry_body.contains(
+            "eligible one-shot tools may emit Send directly (runtime auto-opens and auto-finishes)"
+        ),
+        "entry phase policy must describe Send-inclusive entry hops: {entry_body}"
+    );
+    assert!(
+        !entry_body.contains("this entry return union excludes `Send`"),
+        "entry phase policy must not claim Send is excluded when SendStep is in the union: {entry_body}"
+    );
+}
+
+#[tokio::test]
+#[cfg(feature = "dev-tools")]
+async fn entry_union_always_includes_archive_reads_and_read_only_finish() {
+    let root = build_calculator_agent().await;
+    let entry_body = entry_function_body_from_root(root.path());
+
+    for ty in [
+        "ArchivePageReadStep",
+        "ArchiveSearchReadStep",
+        "ReadOnlyFinishStep",
+    ] {
+        assert!(
+            entry_body.contains(ty),
+            "entry union must retain shared archive/read-only step `{ty}`: {entry_body}"
+        );
+    }
 }

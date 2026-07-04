@@ -40,6 +40,8 @@ pub struct ArchiveEntry {
     pub activity_anchor: String,
     /// Source kind: `"tool_result"` for archive entries.
     pub source: String,
+    /// Stable identity for deduping direct Send calls: `tool_name + canonical input JSON`.
+    pub send_signature: Option<String>,
 }
 
 impl ArchiveEntry {
@@ -61,7 +63,14 @@ impl ArchiveEntry {
             byte_count,
             activity_anchor,
             source,
+            send_signature: None,
         }
+    }
+
+    /// Attach stable direct-Send identity used for runtime duplicate suppression.
+    pub fn with_send_signature(mut self, signature: Option<String>) -> Self {
+        self.send_signature = signature.filter(|s| !s.trim().is_empty());
+        self
     }
 
     /// Attach a compact action/input identity used in new archive headers.
@@ -238,6 +247,43 @@ impl RefTable {
         self.entries.get(&r.cell_key())
     }
 
+    /// Snapshot archive refs + headers, sorted by local ref. Bounded by caller.
+    pub fn archive_headers_snapshot(&self) -> Vec<(ShortRef, String)> {
+        let mut rows: Vec<_> = self
+            .entries
+            .iter()
+            .map(|entry| {
+                let key = *entry.key();
+                let prefix = (key >> 32) as u32;
+                let local = key as u32;
+                let r = ShortRef::new_prefixed(prefix, local);
+                (r, entry.value().display_header(r))
+            })
+            .collect();
+        rows.sort_by_key(|(r, _)| (r.prefix, r.local));
+        rows
+    }
+
+    /// Find prior Send archive with same stable direct-Send signature.
+    pub fn find_by_send_signature(&self, signature: &str) -> Option<(ShortRef, String)> {
+        let mut rows: Vec<_> = self
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                if entry.value().send_signature.as_deref() != Some(signature) {
+                    return None;
+                }
+                let key = *entry.key();
+                let prefix = (key >> 32) as u32;
+                let local = key as u32;
+                let r = ShortRef::new_prefixed(prefix, local);
+                Some((r, entry.value().display_header(r)))
+            })
+            .collect();
+        rows.sort_by_key(|(r, _)| (r.prefix, r.local));
+        rows.into_iter().next()
+    }
+
     /// Resolve a `HistoryRef` (`#N`) to its `HistoryEntry`, if present.
     pub fn get_history(
         &self,
@@ -391,6 +437,22 @@ mod tests {
         assert_eq!(r3.as_u32(), 4);
 
         assert!(table.get(ShortRef::new(99)).is_none());
+    }
+
+    #[test]
+    fn archive_send_signature_lookup_returns_existing_ref() {
+        let table = RefTable::new();
+        let entry = make_entry("mcp/grafana/query_prometheus", "query result")
+            .with_action_identity(Some("Send(expr=\"up\")".into()))
+            .with_send_signature(Some(
+                "mcp/grafana/query_prometheus\0{\"expr\":\"up\"}".into(),
+            ));
+        let r = table.insert(entry);
+        let found = table
+            .find_by_send_signature("mcp/grafana/query_prometheus\0{\"expr\":\"up\"}")
+            .expect("signature lookup");
+        assert_eq!(found.0, r);
+        assert!(found.1.contains("Send(expr=\"up\")"));
     }
 
     #[test]

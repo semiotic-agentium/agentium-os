@@ -272,7 +272,7 @@ mod tests {
         let v = StepExecutorOutcome::Completed {
             last: serde_json::json!({"status": "done"}),
             steps: vec![serde_json::json!({"op": "open"})],
-            session_context: serde_json::json!({"contract_version": "session_context_v2"}),
+            session_context: serde_json::json!({"contract_version": "session_context_v3"}),
             selected_tool: Some("support/notion".to_string()),
         };
         insta::assert_json_snapshot!(snapshot_json(&v));

@@ -17,8 +17,8 @@ use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry};
 use baml_rt_llm_config::LlmClientResolver;
 use baml_rt_tools::prompt_projection::format_conversation_history_transcript;
 use baml_runtime::{
-    BamlRuntime, FunctionResultStream, RuntimeContextManager, client_registry::ClientRegistry,
-    internal::llm_client::LLMResponse,
+    BamlRuntime, FunctionResultStream, InternalRuntimeInterface, RuntimeContextManager,
+    client_registry::ClientRegistry, internal::llm_client::LLMResponse,
 };
 use baml_types::{BamlMap, BamlValue};
 use serde_json::Value;
@@ -48,6 +48,15 @@ pub(crate) fn log_baml_call_function_terminal_error(
         elapsed_ms,
         "BAML call_function: terminal execution error (not parse-retry)"
     );
+}
+
+fn function_has_baml_client_config(runtime: &BamlRuntime, function_name: &str) -> bool {
+    runtime
+        .ir()
+        .walk_functions()
+        .find(|function| function.name() == function_name)
+        .and_then(|function| function.elem().configs.first())
+        .is_some()
 }
 
 fn planner_state_telemetry(args: &Value) -> Option<(usize, bool, usize, Option<String>)> {
@@ -232,6 +241,9 @@ pub struct BamlExecutor {
     /// When set, per-agent/per-prompt LLM client overrides are resolved from host config
     /// instead of using the first BAML IR client as primary.
     llm_client_resolver: Option<Arc<dyn LlmClientResolver>>,
+    /// Last-resort platform default for functions without a BAML client config.
+    /// Applied after session/config/IR so schema-declared clients keep priority.
+    llm_fallback_client_resolver: Option<Arc<dyn LlmClientResolver>>,
 }
 
 impl BamlExecutor {
@@ -256,6 +268,7 @@ impl BamlExecutor {
             parse_retry_policy: ParseRetryPolicy::default(),
             llm_secret_resolver: None,
             llm_client_resolver: None,
+            llm_fallback_client_resolver: None,
         })
     }
 
@@ -271,6 +284,11 @@ impl BamlExecutor {
     /// to use based on the agent and function name, instead of the IR-walk default.
     pub fn set_llm_client_resolver(&mut self, resolver: Arc<dyn LlmClientResolver>) {
         self.llm_client_resolver = Some(resolver);
+    }
+
+    /// Set last-resort platform LLM fallback for functions with no BAML client config.
+    pub fn set_llm_fallback_client_resolver(&mut self, resolver: Arc<dyn LlmClientResolver>) {
+        self.llm_fallback_client_resolver = Some(resolver);
     }
 
     /// Set the policy for retrying on parse failure (e.g. use `max_attempts: 1` in tests).
@@ -349,6 +367,24 @@ impl BamlExecutor {
             scope_id,
         )
         .map_err(|e| BamlRtError::ClientRegistryBuild { source: e })?;
+        let has_baml_client_config =
+            function_has_baml_client_config(self.runtime.as_ref(), function_name);
+        let fallback_registry = if !has_baml_client_config {
+            if let Some(ref resolver) = self.llm_fallback_client_resolver {
+                match resolver.resolve(scope, function_name).await {
+                    Ok(Some(registry)) => Some(registry),
+                    Ok(None) => None,
+                    Err(e) => {
+                        tracing::warn!(function = function_name, error = %e, "LLM fallback resolver failed");
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let env_vars = HashMap::new();
         let tags = None;
 
@@ -501,11 +537,13 @@ impl BamlExecutor {
             } else {
                 None
             };
-            // Priority: session FSM registry > config-based override > IR-walk fallback
+            // Priority: session FSM registry > stored config override > IR-walk/BAML fallback
+            // > platform fallback for functions with no BAML client config.
             let effective_registry = session_client_registry
                 .as_ref()
                 .or(config_registry.as_ref())
-                .or(llm_registry_result.registry());
+                .or(llm_registry_result.registry())
+                .or(fallback_registry.as_ref());
             let (result, _call_id) = self
                 .runtime
                 .call_function(

@@ -11,7 +11,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use baml_rt_tools::{schema_allows_empty_or_optional_open_input, tools::ToolFunctionMetadata};
+use baml_rt_tools::{
+    schema_allows_empty_or_optional_open_input,
+    tools::{ToolCapability, ToolFunctionMetadata},
+};
 use baml_types::{
     EvaluationContext, LiteralValue,
     ir_type::{TypeNonStreaming, UnionTypeViewGeneric},
@@ -77,14 +80,7 @@ pub fn collect_catalog_types(
     let mut sorted_tools: Vec<&ToolFunctionMetadata> = tool_metadata.iter().collect();
     sorted_tools.sort_by_key(|tool| tool.name.to_string());
     for tool in &sorted_tools {
-        for step in [
-            format!("{}OpenStep", tool.class_name),
-            format!("{}SendStep", tool.class_name),
-            format!("{}SearchReadStep", tool.class_name),
-            format!("{}PageReadStep", tool.class_name),
-            format!("{}FinishStep", tool.class_name),
-            format!("{}AbortStep", tool.class_name),
-        ] {
+        for step in catalog_operation_type_names(tool) {
             collect_named_type(&step, ir_sig, &mut type_names);
         }
         if has_open_input(tool) {
@@ -135,16 +131,14 @@ fn render_catalog_text(
         out.push_str("  send: ");
         out.push_str(&tool.input_type.name);
         out.push('\n');
+        out.push_str("  capability: ");
+        out.push_str(&format!("{:?}", tool.capability));
+        out.push('\n');
+        out.push_str("  invocation_mode: ");
+        out.push_str(baml_rt_tools::capability_invocation_mode(tool.capability));
+        out.push('\n');
         out.push_str("  operations: ");
-        out.push_str(&format!(
-            "{}OpenStep | {}SendStep | {}SearchReadStep | {}PageReadStep | {}FinishStep | {}AbortStep",
-            tool.class_name,
-            tool.class_name,
-            tool.class_name,
-            tool.class_name,
-            tool.class_name,
-            tool.class_name
-        ));
+        out.push_str(&catalog_operation_type_names(tool).join(" | "));
         out.push_str("\n\n");
     }
 
@@ -156,6 +150,28 @@ fn render_catalog_text(
         }
     }
     out.trim_end().to_string()
+}
+
+fn catalog_operation_type_names(tool: &ToolFunctionMetadata) -> Vec<String> {
+    let class_name = &tool.class_name;
+    if tool.capability == ToolCapability::OneShot {
+        return ["SendStep", "SearchReadStep", "PageReadStep"]
+            .into_iter()
+            .map(|suffix| format!("{class_name}{suffix}"))
+            .collect();
+    }
+
+    [
+        "OpenStep",
+        "SendStep",
+        "SearchReadStep",
+        "PageReadStep",
+        "FinishStep",
+        "AbortStep",
+    ]
+    .into_iter()
+    .map(|suffix| format!("{class_name}{suffix}"))
+    .collect()
 }
 
 fn has_open_input(tool: &ToolFunctionMetadata) -> bool {
@@ -369,7 +385,47 @@ fn render_type_expr(ty: &TypeNonStreaming) -> String {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+
+    fn sample_tool(class_name: &str, capability: ToolCapability) -> ToolFunctionMetadata {
+        ToolFunctionMetadata {
+            name: baml_rt_tools::ToolName::parse("support/sample").expect("valid tool name"),
+            class_name: class_name.to_string(),
+            description: "sample".to_string(),
+            open_input_schema: json!({}),
+            input_schema: json!({}),
+            output_schema: json!({}),
+            open_input_type: baml_rt_tools::tools::ToolTypeSpec {
+                name: "()".to_string(),
+                ts_decl: None,
+            },
+            input_type: baml_rt_tools::tools::ToolTypeSpec {
+                name: "SupportSampleInput".to_string(),
+                ts_decl: None,
+            },
+            output_type: baml_rt_tools::tools::ToolTypeSpec {
+                name: "SupportSampleOutput".to_string(),
+                ts_decl: None,
+            },
+            baml_decl: None,
+            extra_ts_decls: Vec::new(),
+            access: None,
+            tags: Vec::new(),
+            secret_requests: Vec::new(),
+            config: None,
+            config_bundle: None,
+            origin: baml_rt_tools::ToolOrigin::Host,
+            backend: baml_rt_tools::ToolBackend::default(),
+            digest: None,
+            projection_semantics: None,
+            session_policy: baml_rt_tools::SessionPolicy::default(),
+            capability,
+            event_sources: Vec::new(),
+            coordination_baml: None,
+        }
+    }
 
     #[test]
     fn empty_plan_reports_empty() {
@@ -378,5 +434,33 @@ mod tests {
             rendered_text: String::new(),
         };
         assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn one_shot_catalog_operations_hide_explicit_lifecycle_steps() {
+        let tool = sample_tool("SupportCalculate", ToolCapability::OneShot);
+        let operations = catalog_operation_type_names(&tool);
+
+        assert_eq!(
+            operations,
+            vec![
+                "SupportCalculateSendStep".to_string(),
+                "SupportCalculateSearchReadStep".to_string(),
+                "SupportCalculatePageReadStep".to_string(),
+            ]
+        );
+        assert!(!operations.iter().any(|op| op.ends_with("OpenStep")));
+        assert!(!operations.iter().any(|op| op.ends_with("FinishStep")));
+        assert!(!operations.iter().any(|op| op.ends_with("AbortStep")));
+    }
+
+    #[test]
+    fn streaming_catalog_operations_keep_explicit_lifecycle_steps() {
+        let tool = sample_tool("SupportStream", ToolCapability::Streaming);
+        let operations = catalog_operation_type_names(&tool);
+
+        assert!(operations.contains(&"SupportStreamOpenStep".to_string()));
+        assert!(operations.contains(&"SupportStreamFinishStep".to_string()));
+        assert!(operations.contains(&"SupportStreamAbortStep".to_string()));
     }
 }

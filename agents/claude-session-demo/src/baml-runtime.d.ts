@@ -45,6 +45,7 @@ input: ArchiveSearchReadInput;
  }
 
 export interface ClaudeDevSendStep { op: "Send";
+tool_name: "claude/dev";
 input: ClaudeToolSendInput;
 citations: string[];
  }

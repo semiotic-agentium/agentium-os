@@ -9,6 +9,8 @@
 
 use serde_json::Value;
 
+use crate::tools::{SessionPolicy, ToolCapability, ToolFunctionMetadata};
+
 /// Whether the tool's `open_input` JSON Schema allows an empty object or null-shaped open
 /// (builder: optional `initial_input`; runtime: strict auto-open before Send/Read).
 pub fn schema_allows_empty_or_optional_open_input(schema: &Value) -> bool {
@@ -86,6 +88,22 @@ pub fn schema_allows_empty_or_optional_open_input(schema: &Value) -> bool {
     }
 }
 
+/// Whether a tool may surface a typed `<Tool>SendStep` on the entry hop.
+///
+/// Requires:
+/// - `OneShot` + `Strict`: entry-Send auto-opens, sends, reads-to-`Done`, then auto-finishes in one
+///   host call. That single-Send-then-complete shape *is* Strict semantics — `MultiSend` tools
+///   accumulate sends before a read, which entry-Send's read-to-`Done` would cut off after the
+///   first send, and they would also never auto-finish (auto-finish is `OneShot` + `Strict`),
+///   leaving the session to dangle. So the policy must be `Strict`.
+/// - empty/optional open payload, so the runtime can auto-open with no model-chosen config.
+#[must_use]
+pub fn entry_send_eligible(tool: &ToolFunctionMetadata) -> bool {
+    tool.capability == ToolCapability::OneShot
+        && tool.session_policy == SessionPolicy::Strict
+        && schema_allows_empty_or_optional_open_input(&tool.open_input_schema)
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -112,5 +130,76 @@ mod tests {
             "required": ["k"]
         });
         assert!(!schema_allows_empty_or_optional_open_input(&schema));
+    }
+
+    fn sample_tool(open_input_schema: Value, capability: ToolCapability) -> ToolFunctionMetadata {
+        ToolFunctionMetadata {
+            name: crate::ToolName::parse("support/sample").expect("valid tool name"),
+            class_name: "SupportSample".to_string(),
+            description: "sample".to_string(),
+            open_input_schema,
+            input_schema: json!({}),
+            output_schema: json!({}),
+            open_input_type: crate::tools::ToolTypeSpec {
+                name: "()".to_string(),
+                ts_decl: None,
+            },
+            input_type: crate::tools::ToolTypeSpec {
+                name: "SupportSampleInput".to_string(),
+                ts_decl: None,
+            },
+            output_type: crate::tools::ToolTypeSpec {
+                name: "SupportSampleOutput".to_string(),
+                ts_decl: None,
+            },
+            baml_decl: None,
+            extra_ts_decls: Vec::new(),
+            access: None,
+            tags: Vec::new(),
+            secret_requests: Vec::new(),
+            config: None,
+            config_bundle: None,
+            origin: crate::ToolOrigin::Host,
+            backend: crate::ToolBackend::default(),
+            digest: None,
+            projection_semantics: None,
+            session_policy: crate::SessionPolicy::default(),
+            capability,
+            event_sources: Vec::new(),
+            coordination_baml: None,
+        }
+    }
+
+    #[test]
+    fn entry_send_eligible_for_one_shot_empty_open() {
+        let tool = sample_tool(json!({}), ToolCapability::OneShot);
+        assert!(entry_send_eligible(&tool));
+    }
+
+    #[test]
+    fn entry_send_ineligible_for_streaming() {
+        let tool = sample_tool(json!({}), ToolCapability::Streaming);
+        assert!(!entry_send_eligible(&tool));
+    }
+
+    #[test]
+    fn entry_send_ineligible_for_multisend() {
+        // OneShot + empty-open but MultiSend: entry-Send reads-to-Done after the first send (cutting
+        // off accumulation) and never auto-finishes (auto-finish is OneShot+Strict), so it must not
+        // surface a bare entry Send.
+        let mut tool = sample_tool(json!({}), ToolCapability::OneShot);
+        tool.session_policy = SessionPolicy::MultiSend;
+        assert!(!entry_send_eligible(&tool));
+    }
+
+    #[test]
+    fn entry_send_ineligible_for_required_open_input() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "k": { "type": "string" } },
+            "required": ["k"]
+        });
+        let tool = sample_tool(schema, ToolCapability::OneShot);
+        assert!(!entry_send_eligible(&tool));
     }
 }

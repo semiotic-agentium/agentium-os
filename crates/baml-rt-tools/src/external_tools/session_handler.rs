@@ -27,7 +27,7 @@ use super::{
 use crate::{
     ToolName,
     tool_fsm::{ToolSession, ToolSessionError, ToolStep},
-    tools::{ToolCapability, ToolFunctionMetadata, ToolHandler, ToolSessionContext},
+    tools::{ToolFunctionMetadata, ToolHandler, ToolSessionContext},
 };
 
 /// Default chunk-read timeout used until metadata-driven values are wired in.
@@ -35,8 +35,9 @@ pub(crate) const DEFAULT_CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Handler for sandbox session-mode tools.
 ///
-/// Compile-only Phase 1 skeleton: holds the metadata + invoker, advertises
-/// [`ToolCapability::Streaming`], and routes `open_session` to the invoker.
+/// Compile-only Phase 1 skeleton: holds the metadata + invoker (whose
+/// `capability` is `Streaming`, sourced from manifest `invocation_mode=session`),
+/// and routes `open_session` to the invoker.
 /// The session inner-loop bookkeeping (resume tokens, single reader, reset
 /// path) lands in Phase 3.
 type SessionInvokerFactory =
@@ -129,10 +130,6 @@ impl ExternalSessionToolHandler {
 impl ToolHandler for ExternalSessionToolHandler {
     fn metadata(&self) -> &ToolFunctionMetadata {
         &self.metadata
-    }
-
-    fn capability(&self) -> ToolCapability {
-        ToolCapability::Streaming
     }
 
     async fn open_session(

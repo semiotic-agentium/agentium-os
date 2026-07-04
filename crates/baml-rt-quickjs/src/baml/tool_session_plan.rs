@@ -10,7 +10,7 @@ use baml_rt_tools::{ToolFailure, should_host_retry, tool_failure_to_baml_tool_ex
 use super::{BamlRuntimeManager, ToolSessionOp, ToolSessionPlan, manager_prelude::*, open_input};
 use crate::{
     provenance_errors::map_archive_provenance_err,
-    tool_session_handle::{SendResult, ToolSessionSendBlockingOutcome},
+    tool_session_handle::{SendResult, ToolSessionSendBlockingOutcome, send_signature},
 };
 
 /// Recoverable miss: LLM cited `@N` before it exists, wrong index, or stale session — return as
@@ -61,6 +61,26 @@ fn plan_send_tool_error_value(
     })
 }
 
+/// Intent-level failure for a Send that could not be performed (synthetic open failed, or the tool
+/// cannot be invoked directly). Surfaces as a tool result the model can act on — never a
+/// lifecycle-phrased FSM error ("open before send", "session already has input"). `status: "error"`
+/// flows through the step loop like Done, so the model sees the failure and can retry or route
+/// elsewhere instead of the turn aborting.
+fn send_unavailable_result(tool_name: &str, reason: &str) -> Value {
+    serde_json::json!({
+        "status": "error",
+        "tool_name": tool_name,
+        "has_more": false,
+        "message": format!("Could not run {tool_name}: {reason}"),
+        "error": {
+            "kind": "ToolUnavailable",
+            "code": "tool_unavailable",
+            "disposition": "LlmCorrectable",
+        },
+        "result": Value::Null,
+    })
+}
+
 fn send_done_json(send_result: &SendResult) -> Value {
     // `output` remains the archive header line; `result` carries typed tool JSON (e.g. calculator).
     serde_json::json!({
@@ -68,6 +88,23 @@ fn send_done_json(send_result: &SendResult) -> Value {
         "output": send_result.header,
         "archive_ref": send_result.archive_ref.to_string(),
         "result": send_result.output.clone(),
+    })
+}
+
+fn duplicate_send_json(
+    archive_ref: baml_rt_tools::archive_read::ShortRef,
+    header: String,
+) -> Value {
+    serde_json::json!({
+        "status": "duplicate",
+        "op": "DuplicateSend",
+        "archive_ref": archive_ref.to_string(),
+        "output": header,
+        "duplicate": true,
+        "message": format!(
+            "Identical Send already materialized as {archive_ref}; read it instead of re-issuing."
+        ),
+        "result": Value::Null,
     })
 }
 
@@ -101,6 +138,36 @@ impl BamlRuntimeManager {
                 },
             )),
         }
+    }
+
+    async fn reopen_logical_session_after_stale_close(
+        &self,
+        plan_scope: &context::RuntimeScope,
+        tool_name_str: &str,
+        stale_session: &ToolSessionId,
+    ) -> Result<ToolSessionId> {
+        let open_input = self
+            .tool_session_handle()
+            .open_input_for_session(stale_session)
+            .unwrap_or_else(open_input::empty_open_input);
+        if let Err(e) = self.tool_session_finish(stale_session).await {
+            tracing::warn!(
+                tool = %tool_name_str,
+                stale_session_id = %stale_session,
+                error = %e,
+                "failed to finish stale logical session before reopening; continuing with fresh session"
+            );
+        }
+        let fresh = self
+            .open_tool_session(plan_scope, tool_name_str, open_input)
+            .await?;
+        tracing::warn!(
+            tool = %tool_name_str,
+            stale_session_id = %stale_session,
+            fresh_session_id = %fresh,
+            "reopened fresh logical session after stale MCP close"
+        );
+        Ok(fresh)
     }
 
     /// Live [`RefTable`] first; on miss, optional Surreal [`SurrealProvenanceStore`](baml_rt_provenance::SurrealProvenanceStore).
@@ -270,7 +337,7 @@ impl BamlRuntimeManager {
         scope: &context::RuntimeScope,
         tool_name: baml_rt_tools::ToolName,
         plan: ToolSessionPlan,
-        _source_baml_function: Option<&str>,
+        source_baml_function: Option<&str>,
         _invocation_args: Option<&Value>,
     ) -> Result<Value> {
         let tool_name_str = tool_name.to_string();
@@ -279,12 +346,28 @@ impl BamlRuntimeManager {
 
         let plan_scope = scope.clone();
         let mut steps = vec![first_step];
+        let first_is_send = matches!(steps.first(), Some(ToolSessionOp::Send { .. }));
+        let from_entry_phase = source_baml_function
+            .map(|name| name.ends_with("__entry"))
+            .unwrap_or(false);
+        let tool_metadata = self.state.tool_registry.get_metadata(&tool_name_str);
+        let tool_one_shot_strict = tool_metadata
+            .as_ref()
+            .map(|m| {
+                m.capability == baml_rt_tools::ToolCapability::OneShot
+                    && m.session_policy == baml_rt_tools::SessionPolicy::Strict
+            })
+            .unwrap_or(false);
         // Strict linear mode: exactly one fragment per invocation.
-        // If this fragment is not Open, try to reuse an existing session.
-        let mut session_id: Option<ToolSessionId> = self
-            .tool_session_handle()
-            .find_existing_session_for_scope_and_tool(&plan_scope, &tool_name_str)
-            .await;
+        // Active-phase continuations reuse the existing logical session. Entry-phase direct Sends
+        // are standalone calls and must allocate fresh logical result slots for Send↔Result isolation.
+        let mut session_id: Option<ToolSessionId> = if first_is_send && from_entry_phase {
+            None
+        } else {
+            self.tool_session_handle()
+                .find_existing_session_for_scope_and_tool(&plan_scope, &tool_name_str)
+                .await
+        };
         if let Some(existing) = &session_id {
             tracing::debug!(
                 tool_name = %tool_name_str,
@@ -292,22 +375,49 @@ impl BamlRuntimeManager {
                 "Reusing existing session for single-fragment continuation",
             );
         }
+        // True when the runtime synthesized the Open for a bare Send fragment. Scopes auto-finish
+        // (below) to the entry-Send path: an explicitly model-opened session is the model's to Finish.
+        let mut auto_opened = false;
+        // Captured from the single auto-open metadata read below and reused at cleanup, so the
+        // auto-finish decision can't disagree with the auto-open decision (and we avoid a second
+        // registry lookup whose miss would silently skip the finish, leaking the session).
+        let mut auto_open_one_shot_strict = false;
+        if let Some(ToolSessionOp::Send { input, .. }) = steps.first() {
+            let normalized = normalize_plan_input(input.clone())?;
+            let signature = send_signature(&tool_name_str, &normalized);
+            let ref_table = baml_rt_tools::archive_refs::get_or_create_ref_table(
+                &self.state.archive_ref_tables,
+                plan_scope.context_id().as_str(),
+            );
+            if let Some((archive_ref, header)) = ref_table.find_by_send_signature(&signature) {
+                tracing::warn!(
+                    tool = %tool_name_str,
+                    archive_ref = %archive_ref,
+                    "FSM step: duplicate Send suppressed"
+                );
+                return Ok(duplicate_send_json(archive_ref, header));
+            }
+        }
+
         if let Some(first) = steps.first()
             && matches!(first, ToolSessionOp::Send { .. })
             && session_id.is_none()
         {
-            let can_auto_open = self
-                .state
-                .tool_registry
-                .get_metadata(&tool_name_str)
+            let can_auto_open = tool_metadata
+                .as_ref()
                 .map(|m| open_input::schema_allows_empty_open_input(&m.open_input_schema))
                 .unwrap_or(false);
             if !can_auto_open {
-                return Err(BamlRtError::InvalidArgument(
-                    "step rejected: no open session; strict auto-open is allowed only when tool open_input is empty/optional"
-                        .to_string(),
+                // A bare Send to a tool that needs configuration to start. The builder should not
+                // surface a direct Send for such tools, but if one slips through the model gets an
+                // intent-level failure (route elsewhere), not a lifecycle-phrased FSM error.
+                return Ok(send_unavailable_result(
+                    &tool_name_str,
+                    "this tool requires configuration before use and cannot be invoked directly",
                 ));
             }
+            // Same `metadata` clone drives the cleanup auto-finish gate (OneShot + Strict).
+            auto_open_one_shot_strict = tool_one_shot_strict;
             steps.insert(
                 0,
                 ToolSessionOp::Open {
@@ -315,6 +425,7 @@ impl BamlRuntimeManager {
                     reason: Some("auto-open for send fragment with no open session".to_string()),
                 },
             );
+            auto_opened = true;
         } else if let Some(first) = steps.first()
             && !matches!(first, ToolSessionOp::Open { .. })
             && !matches!(
@@ -323,12 +434,23 @@ impl BamlRuntimeManager {
             )
             && session_id.is_none()
         {
-            return Err(BamlRtError::InvalidArgument(
-                "session fragment rejected: no open session for non-Open step".to_string(),
-            ));
+            // No live session for a non-Open step. Finish/Abort here is a no-op: the session was
+            // already closed (e.g. auto-finished after a prior Send, or the agent finishes
+            // defensively). Surface a closed status, never a lifecycle-phrased error. Anything else
+            // is a malformed plan and gets an intent-level failure (not a hard FSM error).
+            return match first {
+                ToolSessionOp::Finish { .. } => Ok(serde_json::json!({ "status": "finished" })),
+                ToolSessionOp::Abort { .. } => Ok(serde_json::json!({ "status": "aborted" })),
+                _ => Ok(send_unavailable_result(
+                    &tool_name_str,
+                    "no open session for this step",
+                )),
+            };
         }
 
         let mut last_output: Option<Value> = None;
+        // Set once a Send fragment reaches Done — gates the OneShot auto-finish after the loop.
+        let mut send_completed = false;
 
         for step in steps {
             match step {
@@ -384,9 +506,19 @@ impl BamlRuntimeManager {
                         .clone()
                         .filter(|v| !v.is_null())
                         .unwrap_or_else(open_input::empty_open_input);
-                    let session = self
+                    let session = match self
                         .open_tool_session(&plan_scope, &tool_name_str, open_input)
-                        .await?;
+                        .await
+                    {
+                        Ok(session) => session,
+                        // A synthetic open (for a bare Send) that fails surfaces as an intent-level
+                        // failed-Send result — no hard FSM error, and no session was created so
+                        // there is nothing to clean up. An explicit model Open still propagates.
+                        Err(e) if auto_opened => {
+                            return Ok(send_unavailable_result(&tool_name_str, &e.to_string()));
+                        }
+                        Err(e) => return Err(e),
+                    };
                     last_output = Some(serde_json::json!({
                         "status": "open",
                         "session_id": session.to_string(),
@@ -418,6 +550,23 @@ impl BamlRuntimeManager {
                         )
                     })?;
                     let normalized = normalize_plan_input(input)?;
+                    let signature = send_signature(&tool_name_str, &normalized);
+                    let ref_table = baml_rt_tools::archive_refs::get_or_create_ref_table(
+                        &self.state.archive_ref_tables,
+                        plan_scope.context_id().as_str(),
+                    );
+                    if let Some((archive_ref, header)) =
+                        ref_table.find_by_send_signature(&signature)
+                    {
+                        tracing::warn!(
+                            tool = %tool_name_str,
+                            archive_ref = %archive_ref,
+                            "FSM step: duplicate Send suppressed"
+                        );
+                        last_output = Some(duplicate_send_json(archive_ref, header));
+                        send_completed = true;
+                        continue;
+                    }
                     let chunk_timeout = std::time::Duration::from_secs(300);
                     let mut active_session = current_session.clone();
 
@@ -450,7 +599,7 @@ impl BamlRuntimeManager {
                             .tool_session_handle()
                             .tool_session_send_blocking(
                                 &active_session,
-                                normalize_plan_input(serde_json::Value::Null)?,
+                                normalized.clone(),
                                 &plan_scope,
                                 &self.state.archive_ref_tables,
                                 chunk_timeout,
@@ -464,6 +613,7 @@ impl BamlRuntimeManager {
                         match send_outcome {
                             Ok(ToolSessionSendBlockingOutcome::Completed(send_result)) => {
                                 last_output = Some(send_done_json(&send_result));
+                                send_completed = true;
                                 if let Some(emitter) = self.effect_emitter_for_tool_effects() {
                                     let _ = emitter
                                         .emit(baml_rt_core::bus::EffectEvent::ToolSessionStep {
@@ -490,6 +640,17 @@ impl BamlRuntimeManager {
                                 if retry_classified {
                                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                                     host_attempt += 1;
+                                    if failure.classified.code == "mcp_logical_session_closed" {
+                                        let fresh = self
+                                            .reopen_logical_session_after_stale_close(
+                                                &plan_scope,
+                                                &tool_name_str,
+                                                &active_session,
+                                            )
+                                            .await?;
+                                        session_id = Some(fresh.clone());
+                                        active_session = fresh;
+                                    }
                                     send_outcome = self
                                         .tool_session_handle()
                                         .tool_session_send_blocking(
@@ -816,6 +977,73 @@ impl BamlRuntimeManager {
             }
         }
 
+        // Clean up one-shot strict sessions after Send→Done so stale logical result slots never
+        // dangle into next hop. Auto-opened direct Sends always stand alone; explicit Open for a
+        // one-shot strict tool also closes here because MCP read() has already closed its logical
+        // session and only the transport connection should remain reusable.
+        let should_auto_finish_one_shot = (auto_opened && auto_open_one_shot_strict)
+            || (!auto_opened && tool_one_shot_strict && send_completed);
+        if let Some(session) = session_id.clone()
+            && (auto_opened || should_auto_finish_one_shot)
+        {
+            if send_completed {
+                // Success. OneShot+Strict closes per the stateless-resend rule so each Send stands
+                // alone; the Done output is preserved (status stays "done") and the loop continues
+                // to a ReadOnlyFinish. MultiSend keeps the session open to accumulate further sends.
+                // Streaming is excluded inherently (capability != OneShot). `@N` reads hit the
+                // global ref table, not this session, so closing never blocks a later read.
+                // `auto_open_one_shot_strict` is the snapshot taken at auto-open — same metadata
+                // clone, so the finish decision can't drift from the open decision.
+                if should_auto_finish_one_shot {
+                    tracing::debug!(
+                        tool = %tool_name_str,
+                        session_id = %session,
+                        auto_opened,
+                        "auto-finish after Send→Done; OneShot+Strict"
+                    );
+                    // Best-effort teardown: the Send already committed its effect and `last_output`
+                    // holds the Done result. A failed close (store write error, session already
+                    // gone) must NOT discard that result or surface as a lifecycle-phrased error —
+                    // log and preserve the success. A genuinely lingering session is observable in
+                    // logs/metrics; propagating here would *also* nuke the result, never fix it.
+                    if let Err(e) = self.tool_session_finish(&session).await {
+                        tracing::warn!(
+                            tool = %tool_name_str,
+                            session_id = %session,
+                            error = %e,
+                            "auto-finish teardown failed after successful Send; preserving Send result"
+                        );
+                    }
+                }
+            } else {
+                // The auto-opened Send did not complete (failed and returned a failed-Send result).
+                // Abort so no stale session lingers; the model already has the failure to act on and
+                // its next Send auto-opens fresh. The abort is recorded in provenance with a reason.
+                tracing::debug!(
+                    tool = %tool_name_str,
+                    session_id = %session,
+                    "auto-abort after failed Send on auto-opened session"
+                );
+                // Best-effort, same as the success branch: `last_output` already carries the
+                // failed-Send result the model acts on. A failed abort must not replace it with a
+                // different hard error — log and preserve the intent-level failure.
+                if let Err(e) = self
+                    .tool_session_abort(
+                        &session,
+                        Some("auto-abort after failed Send on auto-opened session".to_string()),
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        tool = %tool_name_str,
+                        session_id = %session,
+                        error = %e,
+                        "auto-abort teardown failed after failed Send; preserving failed-Send result"
+                    );
+                }
+            }
+        }
+
         last_output.ok_or_else(|| {
             BamlRtError::InvalidArgument(
                 "Tool session plan produced no output; expected at least one step to yield a result. \
@@ -823,5 +1051,42 @@ impl BamlRuntimeManager {
                     .to_string(),
             )
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Intent-level failure contract (G): a Send that cannot be performed surfaces as a tool result
+    /// the model can act on (`status: "error"`, recoverable disposition), never a lifecycle-phrased
+    /// FSM error. The loop treats `status: "error"` like Done, so the model sees it and recovers.
+    #[test]
+    fn send_unavailable_result_is_intent_level_not_lifecycle() {
+        let v = send_unavailable_result("support/slack_notify", "service is unreachable");
+
+        assert_eq!(v.get("status").and_then(Value::as_str), Some("error"));
+        assert_eq!(
+            v.get("error").and_then(|e| e.get("disposition")),
+            Some(&Value::String("LlmCorrectable".to_string()))
+        );
+
+        let blob = v.to_string().to_lowercase();
+        // Names the tool and the underlying reason (intent-level).
+        assert!(blob.contains("support/slack_notify"));
+        assert!(blob.contains("service is unreachable"));
+        // Must not leak FSM/lifecycle phrasing to the model surface.
+        for forbidden in [
+            "open before send",
+            "session already has input",
+            "finish before send",
+            "no open session",
+            "fsm",
+        ] {
+            assert!(
+                !blob.contains(forbidden),
+                "failed-send result must not contain lifecycle phrasing {forbidden:?}: {v}"
+            );
+        }
     }
 }

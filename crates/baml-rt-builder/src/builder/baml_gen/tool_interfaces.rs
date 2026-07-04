@@ -179,6 +179,8 @@ fn generate_tool_card_baml(output: &mut String, tool: &ToolFunctionMetadata) -> 
     let tool_name = tool.name.to_string();
     let description = escape_baml_description(&tool.description);
     let policy = format!("{:?}", tool.session_policy);
+    let capability = format!("{:?}", tool.capability);
+    let invocation_mode = baml_rt_tools::capability_invocation_mode(tool.capability);
     let input_summary = summarize_input_schema(&tool.input_schema);
 
     write_line(
@@ -189,6 +191,8 @@ fn generate_tool_card_baml(output: &mut String, tool: &ToolFunctionMetadata) -> 
     write_line(output, &format!("  tool_name \"{tool_name}\""))?;
     write_line(output, &format!("  description \"{description}\""))?;
     write_line(output, &format!("  session_policy \"{policy}\""))?;
+    write_line(output, &format!("  capability \"{capability}\""))?;
+    write_line(output, &format!("  invocation_mode \"{invocation_mode}\""))?;
     write_line(
         output,
         &format!(
@@ -443,6 +447,13 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
 
     write_line(output, &format!("class {} {{", send_step_name))?;
     write_line(output, "  op \"Send\"")?;
+    // Literal `tool_name`, symmetric to OpenStep: pins the tool on polymorphic-entry Sends
+    // (no open session, no Open hop) so the runtime resolves via `selected_tool` instead of
+    // guessing from the input shape. Constrained decode auto-fills it; the model never types it.
+    write_line(
+        output,
+        &format!("  tool_name \"{tool_name}\" @description(\"Tool this Send targets\")"),
+    )?;
     write_line(
         output,
         &format!(

@@ -14,6 +14,7 @@ use crate::tools::{ClaudeToolNextOutput, ClaudeToolOpenInput, ClaudeToolSendInpu
         then call next() until completion is DONE/INTERRUPTED or INPUT_REQUIRED for resume.",
     tags = ["claude", "stream", "session"],
     access = Write,
+    capability = Streaming,
     metadata_only,
     open_input = ClaudeToolOpenInput,
     input = ClaudeToolSendInput,

@@ -56,6 +56,7 @@ input: ArchiveSearchReadInput;
  }
 
 export interface SupportCalculateSendStep { op: "Send";
+tool_name: "support/calculate";
 input: CalculatorInput;
 citations: string[];
  }

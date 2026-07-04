@@ -18,7 +18,7 @@ use baml_rt_provenance::{
     ProvenanceResponseProfile,
 };
 use baml_rt_tools::{
-    OpaqueJson, ToolCapability, ToolFailure, ToolHandler, ToolSession, ToolSessionError, ToolStep,
+    OpaqueJson, ToolFailure, ToolHandler, ToolSession, ToolSessionError, ToolStep,
     opaque_json_map_from_object,
     tools::{
         HistoryContextSessionOp, HistoryContextStatus, HistoryContextV1, SessionReadMode,
@@ -495,10 +495,6 @@ struct ProvenanceQueryTool {
 impl ToolHandler for ProvenanceQueryTool {
     fn metadata(&self) -> &ToolFunctionMetadata {
         &self.metadata
-    }
-
-    fn capability(&self) -> ToolCapability {
-        ToolCapability::Streaming
     }
 
     fn describe_result_value(&self, _output: &Value) -> Option<String> {

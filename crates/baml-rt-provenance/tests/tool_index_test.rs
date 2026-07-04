@@ -7,7 +7,9 @@
 use std::sync::Arc;
 
 use baml_rt_provenance::index_tools;
-use baml_rt_tools::{SecretRequest, ToolFunctionMetadataExport, ToolName, ToolTypeSpec};
+use baml_rt_tools::{
+    SecretRequest, ToolCapability, ToolFunctionMetadataExport, ToolName, ToolTypeSpec,
+};
 use serde_json::{Value, json};
 use test_support::testing::provenance_fixtures::build_isolated_store;
 
@@ -48,6 +50,9 @@ fn weather_tool() -> ToolFunctionMetadataExport {
         digest: None,
         projection_semantics: None,
         session_policy: baml_rt_tools::SessionPolicy::default(),
+        capability: baml_rt_tools::ToolCapability::default(),
+        invocation_mode: baml_rt_tools::capability_invocation_mode(ToolCapability::default())
+            .to_string(),
         event_sources: Vec::new(),
         coordination_baml: None,
     }

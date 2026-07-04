@@ -187,12 +187,10 @@ async fn start_slack_mock_server() -> std::io::Result<(RunningHttpServer, MockSl
     Ok((server, state))
 }
 
-/// `ChooseSlackAction__entry` in the **Entry** phase only allows `Open | ReadOnlyResponse` in the
-/// generated schema, but capable models often skip straight to `Send` (valid FSM intent, invalid for that
-/// hop's union). That yields "Parsed result conversion failed" — a **codegen/schema vs prompt** tension, not
-/// product slack. Pin the open hop so this E2E exercises the local Slack API fixture + synthesis; pin the
-/// first active Send when the plan targets the fixture thread so flaky models do not waste hops on
-/// ListConversations against the minimal mock.
+/// One-shot tool simplification lets entry hops emit `Send` directly; runtime auto-opens and
+/// auto-finishes the session. Pin the entry Send so this E2E exercises the local Slack API fixture
+/// + synthesis instead of wasting hops on ListConversations against the minimal mock. Keep the
+///   active fallback for older/generated fixtures that still split Open then Send.
 #[derive(Clone)]
 struct SlackE2eHopInterceptor {
     pinned_thread_send: Arc<AtomicBool>,
@@ -206,10 +204,20 @@ impl LLMInterceptor for SlackE2eHopInterceptor {
     ) -> baml_rt_core::Result<InterceptorDecision> {
         let name = ctx.function_id.full_name();
         let prompt_blob = serde_json::to_string(&ctx.prompt).unwrap_or_default();
-        if name == "ChooseSlackAction__entry" && prompt_blob.contains("Phase: ENTRY") {
+        if name == "ChooseSlackAction__entry"
+            && (prompt_blob.contains("C12345678") || prompt_blob.contains("1735689600.000000"))
+        {
+            self.pinned_thread_send.store(true, Ordering::SeqCst);
             return Ok(InterceptorDecision::Substitute(json!({
-                "op": "Open",
+                "op": "Send",
                 "tool_name": "support/slack",
+                "input": {
+                    "channel_id": "C12345678",
+                    "thread_ts": "1735689600.000000",
+                    "limit": 200,
+                    "resolve_users": "resolve_users",
+                    "order": "oldest_first"
+                }
             })));
         }
         if name == "ChooseSlackAction__active__support_slack"
@@ -438,12 +446,12 @@ async fn test_e2e_slack_todo_extraction_with_mock_server_and_mermaid_http() {
             &item.content,
             ConversationItemContent::SessionStep(ss)
                 if ss.tool_name == "support/slack"
-                    && matches!(ss.op, SessionStepOp::Open)
+                    && matches!(ss.op, SessionStepOp::Open | SessionStepOp::SendDone { .. })
         )
     });
     assert!(
         has_slack_tool_call,
-        "Expected support/slack tool_call or session Open in provenance context"
+        "Expected support/slack tool_call or session Open/SendDone in provenance context"
     );
 
     let saw_channel_id = conversation_items.iter().any(|item| {

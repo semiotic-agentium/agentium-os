@@ -306,7 +306,7 @@ mod tests {
     };
     use crate::{
         BundleName, ToolCatalog, ToolName, ToolOrigin, ToolTypeSpec,
-        tools::{SessionPolicy, ToolFunctionMetadata},
+        tools::{SessionPolicy, ToolCapability, ToolFunctionMetadata},
     };
 
     struct FakeIntake {
@@ -363,6 +363,7 @@ mod tests {
             digest: None,
             projection_semantics: None,
             session_policy: SessionPolicy::Strict,
+            capability: ToolCapability::default(),
             event_sources: vec![],
             coordination_baml: None,
         }

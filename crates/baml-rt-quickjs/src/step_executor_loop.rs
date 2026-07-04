@@ -52,6 +52,8 @@ pub enum StepStatus {
     Sent,
     Streaming,
     Suspended,
+    /// Runtime suppressed a duplicate Send and pointed at existing archive.
+    Duplicate,
 }
 
 impl StepStatus {
@@ -68,6 +70,7 @@ impl StepStatus {
             // Recoverable tool/archive failures returned as JSON (not thrown) — treat like Done
             // for strict graph / FSM so the LLM can emit a corrective next hop.
             "error" => Some(Self::Done),
+            "duplicate" => Some(Self::Duplicate),
             _ => None,
         }
     }
@@ -81,6 +84,7 @@ impl StepStatus {
             Self::Sent => "done",      // normalise legacy → done
             Self::Streaming => "done", // normalise legacy → done
             Self::Suspended => "done", // normalise legacy → done
+            Self::Duplicate => "duplicate",
         }
     }
 }
@@ -149,6 +153,7 @@ impl Phase {
 enum SessionStatus {
     AwaitingOpen,
     JustOpened,
+    ResultReady,
     Done,
 }
 
@@ -160,6 +165,12 @@ struct LastStepContext {
     archive_ref: Option<String>,
     output_header: Option<String>,
     completion: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+struct ArchiveLedgerEntry {
+    archive_ref: String,
+    header: String,
 }
 
 /// JSON shape for `session_context` injected into step-executor BAML args (matches prelude `SessionContext`).
@@ -178,11 +189,15 @@ struct SessionContextWire {
     last_output_header: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_completion: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    archives: Vec<ArchiveLedgerEntry>,
 }
 
 /// Stable id for the `session_context` object shape injected into step-executor BAML args;
 /// must match generated prelude `SessionContext.contract_version` in agent packages.
-const SESSION_CONTEXT_CONTRACT_VERSION: &str = "session_context_v2";
+const SESSION_CONTEXT_CONTRACT_VERSION: &str = "session_context_v3";
+const SESSION_CONTEXT_ARCHIVE_LEDGER_CAP: usize = 30;
+const SESSION_CONTEXT_ARCHIVE_HEADER_CAP: usize = 240;
 
 fn session_status_for_phase(phase: &Phase) -> SessionStatus {
     match phase {
@@ -198,16 +213,60 @@ fn session_status_for_phase(phase: &Phase) -> SessionStatus {
 ///
 /// FSM facts only — which operation is legal is expressed by the **per-phase**
 /// BAML function's narrowed return type (`ExecuteStep__entry`, `ExecuteStep__active__…`, …).
-fn build_session_context(phase: &Phase, last_step: &LastStepContext) -> Value {
+fn strip_archive_header_for_ledger(header: &str) -> String {
+    let without_ref = header
+        .split_once(" · ")
+        .map(|(_, rest)| rest)
+        .unwrap_or(header);
+    let without_size = without_ref
+        .rsplit_once(" · ")
+        .and_then(|(prefix, tail)| {
+            let looks_like_size =
+                tail.ends_with('B') || tail.ends_with("KB") || tail.ends_with("MB");
+            looks_like_size.then_some(prefix)
+        })
+        .and_then(|prefix| {
+            prefix
+                .rsplit_once(" · ")
+                .map(|(prefix, _line_count)| prefix)
+        })
+        .unwrap_or(without_ref);
+    if without_size.chars().count() > SESSION_CONTEXT_ARCHIVE_HEADER_CAP {
+        let truncated: String = without_size
+            .chars()
+            .take(SESSION_CONTEXT_ARCHIVE_HEADER_CAP)
+            .collect();
+        format!("{truncated}…")
+    } else {
+        without_size.to_string()
+    }
+}
+
+fn status_for_context(phase: &Phase, last_step: &LastStepContext) -> SessionStatus {
+    if matches!(phase, Phase::Entry)
+        && matches!(last_step.op, Some("send") | Some("duplicate_send"))
+        && matches!(last_step.status, Some("done") | Some("duplicate"))
+    {
+        return SessionStatus::ResultReady;
+    }
+    session_status_for_phase(phase)
+}
+
+fn build_session_context(
+    phase: &Phase,
+    last_step: &LastStepContext,
+    archives: &[ArchiveLedgerEntry],
+) -> Value {
     let wire = SessionContextWire {
         contract_version: SESSION_CONTEXT_CONTRACT_VERSION,
         session_open: phase.is_session_open(),
-        status: session_status_for_phase(phase),
+        status: status_for_context(phase, last_step),
         last_step_op: last_step.op,
         last_step_status: last_step.status,
         last_archive_ref: last_step.archive_ref.clone(),
         last_output_header: last_step.output_header.clone(),
         last_completion: last_step.completion.clone(),
+        archives: archives.to_vec(),
     };
     serde_json::to_value(wire).unwrap_or(Value::Null)
 }
@@ -221,6 +280,8 @@ fn infer_last_step_context(
         Phase::Entry => {
             if status == StepStatus::Open {
                 Some("open")
+            } else if status == StepStatus::Duplicate {
+                Some("duplicate_send")
             } else if status == StepStatus::Done {
                 if result.get("has_more").is_some() {
                     Some("read")
@@ -236,7 +297,9 @@ fn infer_last_step_context(
         Phase::Active {
             has_done: false, ..
         } => {
-            if result.get("archive_ref").is_some() {
+            if status == StepStatus::Duplicate {
+                Some("duplicate_send")
+            } else if result.get("archive_ref").is_some() {
                 Some("send")
             } else if result.get("has_more").is_some() {
                 Some("read")
@@ -247,6 +310,7 @@ fn infer_last_step_context(
         Phase::Active { has_done: true, .. } => match status {
             StepStatus::Finished => Some("finish"),
             StepStatus::Aborted => Some("abort"),
+            StepStatus::Duplicate => Some("duplicate_send"),
             _ if result.get("archive_ref").is_some() => Some("send"),
             _ if result.get("has_more").is_some() => Some("read"),
             _ => None,
@@ -275,6 +339,33 @@ fn infer_last_step_context(
 
 /// Extract the status string from a tool execution result.
 /// Handles `{ "status": "..." }` and `{ "output": { "status": "..." } }`.
+fn update_archive_ledger(archives: &mut Vec<ArchiveLedgerEntry>, step: &LastStepContext) {
+    let (Some(archive_ref), Some(header)) =
+        (step.archive_ref.as_ref(), step.output_header.as_ref())
+    else {
+        return;
+    };
+    if archives
+        .iter()
+        .any(|entry| entry.archive_ref == *archive_ref)
+    {
+        return;
+    }
+    archives.push(ArchiveLedgerEntry {
+        archive_ref: archive_ref.clone(),
+        header: strip_archive_header_for_ledger(header),
+    });
+    if archives.len() > SESSION_CONTEXT_ARCHIVE_LEDGER_CAP {
+        let drop_count = archives.len() - SESSION_CONTEXT_ARCHIVE_LEDGER_CAP;
+        tracing::debug!(
+            drop_count,
+            keep_count = SESSION_CONTEXT_ARCHIVE_LEDGER_CAP,
+            "session_context archive ledger truncated"
+        );
+        archives.drain(0..drop_count);
+    }
+}
+
 fn extract_status(result: &Value) -> Option<StepStatus> {
     let s = result.get("status").and_then(Value::as_str).or_else(|| {
         result
@@ -463,6 +554,7 @@ pub async fn run_step_executor_loop(
     let mut last = Value::Null;
     let mut step_intra_supplement: Vec<Value> = Vec::new();
     let mut last_step_context = LastStepContext::default();
+    let mut archive_ledger: Vec<ArchiveLedgerEntry> = Vec::new();
     // Carries the prior hop's terminal provider snapshot so we do not re-read the graph
     // at the start of the next hop. A fresh read can race async provenance / projection
     // and disagree with the previous hop's `p_after`, breaking strict prefix extension.
@@ -491,7 +583,7 @@ pub async fn run_step_executor_loop(
         }
         let current_function = candidate.clone();
 
-        let session_context = build_session_context(&phase, &last_step_context);
+        let session_context = build_session_context(&phase, &last_step_context, &archive_ledger);
 
         let mut args = match base_args.as_object() {
             Some(obj) => Value::Object(obj.clone()),
@@ -643,6 +735,7 @@ pub async fn run_step_executor_loop(
             phase = Phase::Terminal(TerminalReason::Finished);
             break;
         }
+        update_archive_ledger(&mut archive_ledger, &next_step_context);
         last_step_context = next_step_context;
 
         // Advance FSM based on current phase + status.
@@ -651,7 +744,13 @@ pub async fn run_step_executor_loop(
         } else {
             match phase {
                 Phase::Entry => {
-                    if status == StepStatus::Done {
+                    // An entry-hop Send (typed `<Tool>SendStep`, no Open) runs via auto-open and,
+                    // for OneShot+Strict tools, auto-finish (see `execute_tool_session_plan`), so it
+                    // returns Done with the session already closed. Stay in Entry — stateless
+                    // resend: the next hop emits another Send or a ReadOnlyFinish to end the turn.
+                    // A one-shot therefore never enters Active (no Open → no `Phase::Active`).
+                    // Entry archive reads (`@N`) also return Done and likewise continue here.
+                    if matches!(status, StepStatus::Done | StepStatus::Duplicate) {
                         continue;
                     }
                     if status == StepStatus::Finished {
@@ -699,7 +798,8 @@ pub async fn run_step_executor_loop(
                     StepStatus::Done
                     | StepStatus::Sent
                     | StepStatus::Streaming
-                    | StepStatus::Suspended => {
+                    | StepStatus::Suspended
+                    | StepStatus::Duplicate => {
                         let inferred = infer_last_step_context(
                             &Phase::Active {
                                 tool: tool.clone(),
@@ -708,7 +808,8 @@ pub async fn run_step_executor_loop(
                             status,
                             &result,
                         );
-                        let send_completed = inferred.op == Some("send");
+                        let send_completed =
+                            matches!(inferred.op, Some("send") | Some("duplicate_send"));
                         Phase::Active {
                             tool,
                             has_done: has_done || send_completed,
@@ -728,7 +829,7 @@ pub async fn run_step_executor_loop(
         phase = Phase::Terminal(TerminalReason::MaxStepsExhausted);
     }
 
-    let session_context = build_session_context(&phase, &last_step_context);
+    let session_context = build_session_context(&phase, &last_step_context, &archive_ledger);
     let selected_tool = phase.selected_tool().cloned();
 
     Ok(StepExecutorResult {
@@ -741,7 +842,10 @@ pub async fn run_step_executor_loop(
 
 #[cfg(test)]
 mod session_context_wire_tests {
-    use super::{SESSION_CONTEXT_CONTRACT_VERSION, SessionContextWire, SessionStatus};
+    use super::{
+        LastStepContext, Phase, SESSION_CONTEXT_CONTRACT_VERSION, SessionContextWire,
+        SessionStatus, build_session_context, update_archive_ledger,
+    };
 
     #[test]
     fn session_context_wire_json_stable() {
@@ -754,13 +858,42 @@ mod session_context_wire_tests {
             last_archive_ref: Some("@1".to_string()),
             last_output_header: Some("@1 · \"tool: Send\" · 1L · 10B".to_string()),
             last_completion: Some("DONE".to_string()),
+            archives: vec![super::ArchiveLedgerEntry {
+                archive_ref: "@1".to_string(),
+                header: "tool: Send".to_string(),
+            }],
         })
         .expect("serialize session_context");
-        assert_eq!(v["contract_version"], "session_context_v2");
+        assert_eq!(v["contract_version"], "session_context_v3");
         assert_eq!(v["session_open"], true);
         assert_eq!(v["status"], "done");
         assert_eq!(v["last_step_op"], "send");
         assert_eq!(v["last_completion"], "DONE");
+        assert_eq!(v["archives"][0]["archive_ref"], "@1");
+    }
+
+    #[test]
+    fn session_context_reports_result_ready_and_archive_ledger() {
+        let last = LastStepContext {
+            op: Some("send"),
+            status: Some("done"),
+            archive_ref: Some("@7".to_string()),
+            output_header: Some(
+                "@7 · mcp/grafana/query_prometheus:Send(expr=\"up\") · 7L · 2.8KB".to_string(),
+            ),
+            completion: None,
+        };
+        let mut archives = Vec::new();
+        update_archive_ledger(&mut archives, &last);
+        let v = build_session_context(&Phase::Entry, &last, &archives);
+        assert_eq!(v["contract_version"], "session_context_v3");
+        assert_eq!(v["session_open"], false);
+        assert_eq!(v["status"], "result_ready");
+        assert_eq!(v["archives"][0]["archive_ref"], "@7");
+        assert_eq!(
+            v["archives"][0]["header"],
+            "mcp/grafana/query_prometheus:Send(expr=\"up\")"
+        );
     }
 
     #[test]

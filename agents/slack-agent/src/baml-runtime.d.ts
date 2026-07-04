@@ -119,6 +119,7 @@ input: ArchiveSearchReadInput;
  }
 
 export interface SupportSlackSendStep { op: "Send";
+tool_name: "support/slack";
 input: GetThreadRepliesInput | GetConversationHistoryInput | SearchMessagesInput | ResolveUsersInput | ListConversationsInput;
 citations: string[];
  }

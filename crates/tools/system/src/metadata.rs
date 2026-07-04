@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use baml_rt_core::{BamlRtError, EventSourceKind, Result};
 use baml_rt_tools::{
-    SessionPolicy, ToolHandler, parse_tool_name_and_class, register_tool,
+    SessionPolicy, ToolCapability, ToolHandler, parse_tool_name_and_class, register_tool,
     tool_schema::ToolType,
     tools::{ToolAccess, ToolFunctionMetadata, ToolMetadataBuilder, TypeBasedMetadataBuilder},
 };
@@ -37,6 +37,7 @@ fn build_a2a_metadata(tool_name: &str) -> ToolFunctionMetadata {
     .with_tags(vec!["system".to_string(), "a2a".to_string()])
     .with_access(ToolAccess::Write)
     .with_session_policy(SessionPolicy::MultiSend)
+    .with_capability(ToolCapability::Streaming)
     .with_projection_semantics(
         "Chunk envelope and task-state identity only, without full message text bodies.",
         "Compact stream digest: chunk counts, completion state, and high-level task movement.",
@@ -89,6 +90,7 @@ where
     )
     .with_tags(vec!["system".to_string(), "discovery".to_string()])
     .with_access(ToolAccess::Read)
+    .with_capability(ToolCapability::Streaming)
     .with_projection_semantics(
         "Identifiers only for discovered entities (agent or tool names and stable ids).",
         "Compact list summary for this read hop (count and query constraints).",
@@ -129,6 +131,7 @@ pub fn system_introspection_metadata() -> ToolFunctionMetadata {
     )
     .with_tags(vec!["system".to_string(), "discovery".to_string()])
     .with_access(ToolAccess::Read)
+    .with_capability(ToolCapability::Streaming)
     .with_projection_semantics(
         "Only addressing graph: current traversal ref plus reachable refs, without payload bodies.",
         "Compact aggregate over the selected ref: counts/totals and source kinds, without full payload bodies.",
@@ -151,6 +154,7 @@ pub fn system_extrospection_metadata() -> ToolFunctionMetadata {
     )
     .with_tags(vec!["system".to_string(), "discovery".to_string()])
     .with_access(ToolAccess::Read)
+    .with_capability(ToolCapability::Streaming)
     .with_projection_semantics(
         "Only addressing graph: current traversal ref plus reachable refs, without payload bodies.",
         "Compact aggregate over the selected ref: counts/totals and source kinds, without full payload bodies.",

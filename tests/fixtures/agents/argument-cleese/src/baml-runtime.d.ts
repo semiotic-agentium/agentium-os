@@ -54,6 +54,7 @@ input: ArchiveSearchReadInput;
  }
 
 export interface SystemInternalA2aSendStep { op: "Send";
+tool_name: "system/internal_a2a";
 input: InternalA2aSendInput;
 citations: string[];
  }

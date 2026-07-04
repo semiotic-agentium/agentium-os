@@ -235,6 +235,10 @@ pub trait BamlTool: Send + Sync + 'static {
     /// different queries in one session (e.g. search pages then read blocks).
     const SESSION_POLICY: SessionPolicy = SessionPolicy::Strict;
 
+    /// Read/stream semantics. Override to `Streaming` for tools that emit
+    /// `ToolStep::Streaming` from `read()`.
+    const CAPABILITY: ToolCapability = ToolCapability::OneShot;
+
     /// Typed input for opening the session (initial_input in Open step).
     /// Use `()` for tools that don't need args when opening.
     type OpenInput: ToolType + Serialize + for<'de> Deserialize<'de> + DescribeAction;
@@ -879,6 +883,10 @@ impl SessionTypeNames {
         format!("{class_name}OpenStep")
     }
 
+    pub fn send_step(class_name: &str) -> String {
+        format!("{class_name}SendStep")
+    }
+
     pub fn session_plan(class_name: &str) -> String {
         format!("{class_name}SessionPlan")
     }
@@ -966,6 +974,9 @@ pub struct ToolFunctionMetadata {
     /// FSM scheduling policy for the step executor. Controls which ops are
     /// offered after a Send. Defaults to `Strict` (one Send per hop).
     pub session_policy: SessionPolicy,
+    /// Whether this tool completes after one read (`OneShot`) or may stream (`Streaming`).
+    /// Drives builder entry-Send eligibility and auto-finish scoping.
+    pub capability: ToolCapability,
     /// Event source kinds this tool can produce when polled.
     /// Empty means the tool is invoke-only (no event production).
     pub event_sources: Vec<EventSourceKind>,
@@ -1061,6 +1072,7 @@ impl ToolFunctionMetadata {
             digest: None,
             projection_semantics: None,
             session_policy: SessionPolicy::default(),
+            capability: ToolCapability::default(),
             event_sources: Vec::new(),
             coordination_baml: None,
         }
@@ -1084,6 +1096,7 @@ pub struct TypeBasedMetadataBuilder<OpenInput, Input, Output> {
     extra_ts_decls: Vec<String>,
     access: Option<ToolAccess>,
     session_policy: SessionPolicy,
+    capability: ToolCapability,
     event_sources: Vec<EventSourceKind>,
     _phantom: std::marker::PhantomData<(OpenInput, Input, Output)>,
 }
@@ -1112,6 +1125,7 @@ where
             digest: None,
             projection_semantics: None,
             session_policy: SessionPolicy::default(),
+            capability: ToolCapability::default(),
             event_sources: Vec::new(),
             _phantom: std::marker::PhantomData,
         }
@@ -1195,6 +1209,12 @@ where
         self
     }
 
+    /// Override read/stream semantics for builder catalog and auto-finish scoping.
+    pub fn with_capability(mut self, capability: ToolCapability) -> Self {
+        self.capability = capability;
+        self
+    }
+
     /// Set event source kinds this tool can produce when polled.
     pub fn with_event_sources(mut self, event_sources: Vec<EventSourceKind>) -> Self {
         self.event_sources = event_sources;
@@ -1233,6 +1253,7 @@ where
         metadata.digest = self.digest;
         metadata.projection_semantics = self.projection_semantics;
         metadata.session_policy = self.session_policy;
+        metadata.capability = self.capability;
         metadata.event_sources = self.event_sources;
         metadata
     }
@@ -1270,6 +1291,12 @@ pub struct ToolFunctionMetadataExport {
     /// writing the generated tool-card BAML. Defaults to `Strict`.
     #[serde(default)]
     pub session_policy: SessionPolicy,
+    /// Read/stream semantics for builder entry-Send and auto-finish scoping.
+    #[serde(default)]
+    pub capability: ToolCapability,
+    /// Manifest-aligned invocation mode (`single_shot` | `session`).
+    #[serde(default = "default_invocation_mode_for_export")]
+    pub invocation_mode: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_sources: Vec<EventSourceKind>,
     /// Session-coordination BAML fragment, merged into the generated prelude
@@ -1303,6 +1330,8 @@ impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
             digest: metadata.digest.clone(),
             projection_semantics: metadata.projection_semantics.clone(),
             session_policy: metadata.session_policy,
+            capability: metadata.capability,
+            invocation_mode: capability_invocation_mode(metadata.capability).to_string(),
             event_sources: metadata.event_sources.clone(),
             coordination_baml: metadata.coordination_baml.clone(),
         }
@@ -1336,6 +1365,7 @@ impl From<ToolFunctionMetadataExport> for ToolFunctionMetadata {
             digest: export.digest,
             projection_semantics: export.projection_semantics,
             session_policy: export.session_policy,
+            capability: export.capability,
             event_sources: export.event_sources,
             coordination_baml: export.coordination_baml,
         }
@@ -1391,16 +1421,43 @@ pub struct ToolBundleMetadata {
 /// `Streaming { output }` (more to come),
 /// `Done { output }` (completion), or `Error { error }`.
 ///
-/// - **OneShot:** This tool only ever returns `Done` or `Error` from `read(input)`. One read after
-///   a `send()` returns the full result and signals completion. `ToolRegistry::execute()` (one
-///   open → send → read → finish) is allowed.
-/// - **Streaming:** This tool may return `ToolStep::Streaming` one or more times. Each read may
-///   block or buffer and does *not* indicate completion until the step is `Done`. Callers must
-///   use `open_session` and call `read(input)` in a loop until `Done`. `execute()` is disabled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Read/stream **and lifecycle** semantics. **Read `Streaming` as "not one-shot," not literally
+/// "emits chunks."** This one enum drives three things, only the first of which is about reads:
+///   1. the read-loop shape (below),
+///   2. entry-Send eligibility — `OneShot` only (see `entry_send_eligible`),
+///   3. one-shot auto-open / auto-finish sugar — `OneShot` + `SessionPolicy::Strict` only.
+///
+/// - **OneShot:** completes in a single `read(input)` after `send()` — only ever returns `Done`
+///   or `Error`, never `Streaming`. `ToolRegistry::execute()` (one open → send → read → finish)
+///   is allowed, and the tool is eligible for entry-Send auto-open/auto-finish.
+/// - **Streaming:** ANY tool that must hold an explicit / maintained session and must NOT be
+///   one-shot-auto-finished — whether because it returns `ToolStep::Streaming` one or more times
+///   (read in a loop until `Done`) OR because it is a stateful multi-read / multi-send session
+///   tool that does no chunking (e.g. external `invocation_mode=session`, which maps here even
+///   without a chunk stream). `execute()` is disabled; excluded from entry-Send and auto-finish.
+///
+/// Choosing: pick `Streaming` if the tool needs more than one `read()` OR holds state across
+/// sends, even with no chunk stream. Use `OneShot` only for a true single request/response.
+/// (A cleaner future split — a `reads_stream` flag separate from lifecycle eligibility — is
+/// parked; today both meanings live in this single enum.)
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolCapability {
+    #[default]
     OneShot,
     Streaming,
+}
+
+/// Manifest-aligned invocation mode label for exported builder catalog metadata.
+#[must_use]
+pub fn capability_invocation_mode(capability: ToolCapability) -> &'static str {
+    match capability {
+        ToolCapability::OneShot => "single_shot",
+        ToolCapability::Streaming => "session",
+    }
+}
+
+fn default_invocation_mode_for_export() -> String {
+    capability_invocation_mode(ToolCapability::default()).to_string()
 }
 
 /// Origin of a tool invocation (host vs guest)
@@ -1747,8 +1804,15 @@ pub fn project_archive_action_identity(op: &str, input: &Value, schema: Option<&
 #[async_trait]
 pub trait ToolHandler: Send + Sync {
     fn metadata(&self) -> &ToolFunctionMetadata;
+    /// Read/stream semantics. **Single source of truth: [`ToolFunctionMetadata::capability`].**
+    ///
+    /// Do not override. Capability is authored upstream and threaded into metadata —
+    /// external tools: manifest `invocation_mode` (`single_shot` → `OneShot`, `session` →
+    /// `Streaming`); host tools: `BamlTool::CAPABILITY`; MCP: projection (`OneShot`). The
+    /// `execute()` gate, entry-Send eligibility, and auto-finish scoping all read the metadata
+    /// field, so a hardcoded override here would silently drift from them.
     fn capability(&self) -> ToolCapability {
-        ToolCapability::OneShot
+        self.metadata().capability
     }
     /// One-line natural language description of what the tool result contains.
     /// Used as the archive header summary and `tool_result` history item.
@@ -2112,6 +2176,7 @@ pub fn create_tool_handler<T: BamlTool>(
         description_str.clone(),
     )
     .with_session_policy(T::SESSION_POLICY)
+    .with_capability(T::CAPABILITY)
     .build_metadata();
     let handler: Arc<dyn ToolHandler> = Arc::new(ToolWrapper {
         tool: Arc::new(tool),

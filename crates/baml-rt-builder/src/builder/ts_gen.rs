@@ -132,14 +132,15 @@ pub fn render_ts_declarations(
         quote_in!(
             tokens =>
             export interface SessionContext {
-                contract_version: "session_context_v2";
+                contract_version: "session_context_v3";
                 session_open: boolean;
-                status: "awaiting_open" | "just_opened" | "done";
-                last_step_op?: "open" | "send" | "read" | "finish" | "abort";
-                last_step_status?: "open" | "done" | "finished" | "aborted";
+                status: "awaiting_open" | "just_opened" | "result_ready" | "done";
+                last_step_op?: "open" | "send" | "duplicate_send" | "read" | "finish" | "abort";
+                last_step_status?: "open" | "done" | "duplicate" | "finished" | "aborted";
                 last_archive_ref?: string;
                 last_output_header?: string;
                 last_completion?: string;
+                archives?: Array<{ archive_ref: string; header: string }>;
             }
         );
         tokens.line();

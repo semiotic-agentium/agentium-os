@@ -9,7 +9,7 @@ expression: snapshot_json(&v)
   "outcome": "completed",
   "selected_tool": "support/notion",
   "session_context": {
-    "contract_version": "session_context_v2"
+    "contract_version": "session_context_v3"
   },
   "steps": [
     {

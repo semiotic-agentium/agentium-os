@@ -92,7 +92,7 @@ pub use mcp_snapshot::{
 pub use opaque_json::{
     OPAQUE_JSON_BAML_TYPE, OPAQUE_JSON_SCHEMA_MARKER_KEY, OpaqueJson, opaque_json_map_from_object,
 };
-pub use open_input_schema::schema_allows_empty_or_optional_open_input;
+pub use open_input_schema::{entry_send_eligible, schema_allows_empty_or_optional_open_input};
 pub use session_coordination::{
     SessionCoordinationProvider, gather_coordination_fragments,
     get_session_coordination_baml_for_tools,
@@ -125,10 +125,10 @@ pub use tools::{
     ToolDiscoveryRecord, ToolExecutor, ToolFunctionMetadataExport, ToolHandler,
     ToolMetadataBuilder, ToolName, ToolOrigin, ToolRegistry, ToolSessionAdvance, ToolSessionHandle,
     ToolSlug, ToolTypeSpec, TypeBasedMetadataBuilder, UnifiedStepExecutorFunctionsMap,
-    UnifiedStepExecutorRootConfig, create_multi_send_session_tool_from_async,
-    create_one_shot_tool_from_async, create_one_shot_tool_from_async_with_context,
-    parse_tool_name_and_class, parse_unified_step_executors_authoring_json,
-    project_archive_action_identity_from_parts,
+    UnifiedStepExecutorRootConfig, capability_invocation_mode,
+    create_multi_send_session_tool_from_async, create_one_shot_tool_from_async,
+    create_one_shot_tool_from_async_with_context, parse_tool_name_and_class,
+    parse_unified_step_executors_authoring_json, project_archive_action_identity_from_parts,
 };
 pub use webhook_intake::{
     WebhookAuthTier, WebhookIntake, WebhookIntakeBuildContext, WebhookIntakeBuildFuture,

@@ -570,8 +570,11 @@ mod tests {
         assert!(extract_tool_session_plan(&json).unwrap().is_none());
     }
 
+    /// A tool_name-free Send (legacy / single-tool active phase) still extracts `selected_tool=None`.
+    /// The builder now bakes a `tool_name` literal into `<Tool>SendStep`, but extraction must stay
+    /// tolerant of its absence — see `extract_tool_session_plan_send_step_with_tool_name_pins_tool`.
     #[test]
-    fn extract_tool_session_plan_send_step_selected_tool_is_none() {
+    fn extract_tool_session_plan_send_step_without_tool_name_has_none() {
         let json: Value = serde_json::json!({
             "step": {
                 "op": "Send",
@@ -588,6 +591,28 @@ mod tests {
             }
             _ => panic!("expected Send step"),
         }
+    }
+
+    /// Polymorphic-entry resolution path: a `<Tool>SendStep` carries a baked `tool_name` literal
+    /// (symmetric to OpenStep), so extraction pins the tool via `selected_tool` with no open
+    /// session and no input-schema guessing — exactly how dispatch resolves a multi-tool entry Send.
+    #[test]
+    fn extract_tool_session_plan_send_step_with_tool_name_pins_tool() {
+        let json: Value = serde_json::json!({
+            "step": {
+                "op": "Send",
+                "tool_name": "support/slack_notify",
+                "input": { "text": "deploy ok", "context_id": "ctx-1" }
+            }
+        });
+        let plan = extract_tool_session_plan(&json)
+            .unwrap()
+            .expect("should extract plan");
+        assert_eq!(
+            plan.selected_tool.as_ref().map(|t| t.to_string()),
+            Some("support/slack_notify".to_string())
+        );
+        assert!(matches!(plan.step, ToolSessionOp::Send { .. }));
     }
 
     fn polymorphic_open_step(tool_name: &str) -> impl Strategy<Value = Value> {

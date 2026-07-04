@@ -301,6 +301,8 @@ class SystemExtrospectionToolCard {
   tool_name "system/extrospection"
   description "Queries provenance rows across contexts and agents with compact token-aware output. Open session, send filters/grouping, then read() returns one result page."
   session_policy "Strict"
+  capability "Streaming"
+  invocation_mode "session"
   input_summary "{ agent_id?: anyOf(string | null), baml_prompt?: anyOf(string | null), context_id?: anyOf(string | null), cursor?: anyOf(string | null), group_by?: anyOf(string[] | null), model?: anyOf(string | null), outcome?: anyOf(string | null), page_size?: anyOf(integer | null), payload_text?: anyOf(string | null), provider?: anyOf(string | null), read?: anyOf({ budget_hint?: anyOf(integer | null), mode?: anyOf(enum(\"retrieve_ref\") | null), projection?: anyOf(string | null), ref_id: string } | null), resource: string, sort_by?: anyOf(string | null), sort_dir?: anyOf(string | null), task_id?: anyOf(string | null), tool_name?: anyOf(string | null), top_k?: anyOf(integer | null) }"
   tags string[] @description("Tool tags: system, discovery")
 }
@@ -313,6 +315,7 @@ class SystemExtrospectionOpenStep {
 
 class SystemExtrospectionSendStep {
   op "Send"
+  tool_name "system/extrospection" @description("Tool this Send targets")
   input ProvenanceQuerySendInput @description("Payload for this step.")
   citations string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }
@@ -347,6 +350,8 @@ class SystemDiscoverAgentsToolCard {
   tool_name "system/discover_agents"
   description "Browse available agents. You can optionally filter by query, requiredCapabilities, or matching event subscriptions. Omit filters to list all agents."
   session_policy "Strict"
+  capability "Streaming"
+  invocation_mode "session"
   input_summary "{ limit?: anyOf(integer | null), offset?: anyOf(integer | null), query?: anyOf(string | null), required_capabilities?: anyOf(string[] | null), required_schema_versions?: anyOf(string[] | null), required_source_kinds?: anyOf(string[] | null) }"
   tags string[] @description("Tool tags: system, discovery")
 }
@@ -359,6 +364,7 @@ class SystemDiscoverAgentsOpenStep {
 
 class SystemDiscoverAgentsSendStep {
   op "Send"
+  tool_name "system/discover_agents" @description("Tool this Send targets")
   input DiscoverAgentsSendInput @description("Payload for this step.")
   citations string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }

@@ -145,6 +145,8 @@ class SupportCalculateToolCard {
   tool_name "support/calculate"
   description "Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division."
   session_policy "Strict"
+  capability "OneShot"
+  invocation_mode "single_shot"
   input_summary "{ expression: { left: integer, operation: enum(\"*\" | \"+\" | \"-\" | \"/\"), right: integer } }"
   tags string[] @description("Tool tags: support, calculate")
 }
@@ -156,6 +158,7 @@ class SupportCalculateOpenStep {
 
 class SupportCalculateSendStep {
   op "Send"
+  tool_name "support/calculate" @description("Tool this Send targets")
   input CalculatorInput @description("Payload for this step.")
   citations string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }
@@ -196,7 +199,7 @@ class SupportCalculateSessionPlan {
 function ChooseCalcTool__entry(
   user_message: string,
   session_context: SessionContext?
-) -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateOpenStep {
+) -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateOpenStep | SupportCalculateSendStep {
 
   client DefaultClient
   prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
@@ -215,13 +218,14 @@ Current step instructions:
 
 Evaluate this calculation: {{ user_message }}
 
-Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateOpenStep`.
+Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateOpenStep | SupportCalculateSendStep`.
 
-Use `op` as the discriminator: "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
+Use `op` as the discriminator: "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead" | "Send".
+SupportCalculateSendStep Send: set `input.expression.operation` to exactly one JSON string token: "Add" | "Divide" | "Multiply" | "Subtract" — never an object or sentence.
 Do not add text before or after the JSON object.
 
 Phase policy:
-- Derived state rule: this entry return union excludes `Send`, `Finish`, and `Abort`.
+- Derived state rule: eligible one-shot tools may emit Send directly (runtime auto-opens and auto-finishes); Open remains valid during migration. Finish and Abort are excluded on entry.
 "#
 
 }

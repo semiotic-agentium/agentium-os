@@ -21,7 +21,7 @@ use baml_rt_observability::metrics;
 use baml_rt_provenance::events::{BAML_PROV_RESERVED_TOOL_COMPLETION_ANCHOR, ReservedAnchor};
 use baml_rt_tools::{ToolFailure, ToolName, ToolSessionId, ToolStep};
 use dashmap::DashMap;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::{
     baml::{
@@ -35,6 +35,32 @@ use crate::{
         stamp_tool_effect_metadata_scope,
     },
 };
+
+fn canonical_json(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut sorted = Map::new();
+            let mut keys: Vec<_> = map.keys().collect();
+            keys.sort();
+            for key in keys {
+                if let Some(v) = map.get(key) {
+                    sorted.insert(key.clone(), canonical_json(v));
+                }
+            }
+            Value::Object(sorted)
+        }
+        Value::Array(items) => Value::Array(items.iter().map(canonical_json).collect()),
+        other => other.clone(),
+    }
+}
+
+pub(crate) fn send_signature(tool_name: &str, input: &Value) -> String {
+    let canonical = canonical_json(input);
+    format!(
+        "{tool_name}\0{}",
+        serde_json::to_string(&canonical).unwrap_or_else(|_| canonical.to_string())
+    )
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ToolCallSessionState {
@@ -299,6 +325,12 @@ impl ToolSessionExecutionHandle {
             }
         }
         None
+    }
+
+    pub(crate) fn open_input_for_session(&self, session_id: &ToolSessionId) -> Option<Value> {
+        self.tool_session_scopes
+            .get(session_id)
+            .map(|entry| entry.open_input.clone())
     }
 
     /// Tool name from an already-open session for this exact [`context::RuntimeScope`], if any.
@@ -912,6 +944,9 @@ impl ToolSessionExecutionHandle {
                                     .describe_result_for(&tool_name, &output_value)
                             })
                     };
+                    let signature = send_args_for_summary
+                        .as_ref()
+                        .map(|args| send_signature(&tool_name, args));
                     let entry = archive_refs::ArchiveEntry::new(
                         rendered,
                         tool_name,
@@ -919,7 +954,8 @@ impl ToolSessionExecutionHandle {
                         activity_anchor,
                         "tool_result".to_string(),
                     )
-                    .with_action_identity(action_identity);
+                    .with_action_identity(action_identity)
+                    .with_send_signature(signature);
                     let context_id = plan_scope.context_id().as_str().to_string();
                     let ref_table =
                         archive_refs::get_or_create_ref_table(archive_ref_tables, &context_id);
@@ -991,4 +1027,18 @@ pub struct SendResult {
     pub output: serde_json::Value,
     /// Tool completion anchor for provenance `WAS_INFORMED_BY` from this `SendDone`.
     pub informed_by_tool_activity_anchor: ActivityAnchorId,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::send_signature;
+
+    #[test]
+    fn send_signature_sorts_nested_object_keys() {
+        let a = json!({"b": 2, "a": {"y": true, "x": [3, 1]}});
+        let b = json!({"a": {"x": [3, 1], "y": true}, "b": 2});
+        assert_eq!(send_signature("tool", &a), send_signature("tool", &b));
+    }
 }

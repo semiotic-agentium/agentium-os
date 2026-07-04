@@ -213,6 +213,8 @@ class SystemCallbackToolCard {
   tool_name "system/callback"
   description "Schedules or cancels durable host-side callback events. Use this to ask the host to emit a future `system.callback.v1` dispatch on a stable source key through the normal event-delivery path."
   session_policy "Strict"
+  capability "OneShot"
+  invocation_mode "single_shot"
   input_summary "oneOf({ after_ms: integer, continuation?: anyOf(enum(\"detached\" | \"resume_current_task\") | null), dedupe_key?: anyOf(string | null), op: \"schedule\", payload: OpaqueJson, source_key: string } | { callback_id?: anyOf(string | null), dedupe_key?: anyOf(string | null), op: \"cancel\", source_key?: anyOf(string | null) })"
   tags string[] @description("Tool tags: system, callback, scheduler")
 }
@@ -224,6 +226,7 @@ class SystemCallbackOpenStep {
 
 class SystemCallbackSendStep {
   op "Send"
+  tool_name "system/callback" @description("Tool this Send targets")
   input CallbackToolInput @description("Payload for this step.")
   citations string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }
@@ -258,6 +261,8 @@ class SystemDiscoverToolsToolCard {
   tool_name "system/discover_tools"
   description "Searches registered tools by lexical rank. Open session, then send query/limit; read() returns results. Send can be called multiple times."
   session_policy "Strict"
+  capability "Streaming"
+  invocation_mode "session"
   input_summary "{ limit?: anyOf(integer | null), query?: anyOf(string | null) }"
   tags string[] @description("Tool tags: system, discovery")
 }
@@ -270,6 +275,7 @@ class SystemDiscoverToolsOpenStep {
 
 class SystemDiscoverToolsSendStep {
   op "Send"
+  tool_name "system/discover_tools" @description("Tool this Send targets")
   input DiscoverToolsSendInput @description("Payload for this step.")
   citations string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }

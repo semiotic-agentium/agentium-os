@@ -23,8 +23,8 @@ use crate::{
     opaque_json::{OPAQUE_JSON_BAML_TYPE, OPAQUE_JSON_SCHEMA_MARKER_KEY},
     tool_catalog::ToolCatalog,
     tools::{
-        BundleName, SecretRequest, SessionPolicy, ToolBackend, ToolFunctionMetadata, ToolOrigin,
-        ToolTypeSpec,
+        BundleName, SecretRequest, SessionPolicy, ToolBackend, ToolCapability,
+        ToolFunctionMetadata, ToolOrigin, ToolTypeSpec,
     },
 };
 
@@ -162,6 +162,7 @@ pub fn project_tool(server_id: &str, record: ToolRecord) -> Result<ToolFunctionM
         digest: Some(record.tool.input_schema_digest.to_string()),
         projection_semantics: None,
         session_policy: SessionPolicy::Strict,
+        capability: ToolCapability::OneShot,
         event_sources: Vec::new(),
         coordination_baml: None,
     })

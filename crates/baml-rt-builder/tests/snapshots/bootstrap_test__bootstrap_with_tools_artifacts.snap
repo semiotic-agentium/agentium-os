@@ -1,5 +1,6 @@
 ---
 source: crates/baml-rt-builder/tests/bootstrap_test.rs
+assertion_line: 113
 expression: artifacts
 ---
 === manifest.json ===
@@ -105,6 +106,7 @@ input: ArchiveSearchReadInput;
  }
 
 export interface SupportCalculateSendStep { op: "Send";
+tool_name: "support/calculate";
 input: CalculatorInput;
 citations: string[];
  }
@@ -487,14 +489,15 @@ export interface ToolFailure {
 export type StepExecutorFunctionName = "ChooseCalculatoragentTool" | "ChooseCalculatoragentTool__active__support_calculate" | "ChooseCalculatoragentTool__entry";
 
 export interface SessionContext {
-    contract_version: "session_context_v2";
+    contract_version: "session_context_v3";
     session_open: boolean;
-    status: "awaiting_open" | "just_opened" | "done";
-    last_step_op?: "open" | "send" | "read" | "finish" | "abort";
-    last_step_status?: "open" | "done" | "finished" | "aborted";
+    status: "awaiting_open" | "just_opened" | "result_ready" | "done";
+    last_step_op?: "open" | "send" | "duplicate_send" | "read" | "finish" | "abort";
+    last_step_status?: "open" | "done" | "duplicate" | "finished" | "aborted";
     last_archive_ref?: string;
     last_output_header?: string;
     last_completion?: string;
+    archives?: Array<{ archive_ref: string; header: string }>;
 }
 
 /** Last archive read op for this hop (`StepExecutorStateInput.history_context`); distinct from tool-session `SessionStepOp` in Rust provenance. */
@@ -615,17 +618,23 @@ class ProvenancePlanStep {
   depends_on string[]? @description("Prerequisite step_ids (same alias namespace as step_id); omit or [] if none.")
 }
 
+class ArchiveLedgerEntry {
+  archive_ref string @description("Archive handle, e.g. @7")
+  header string @description("Compact tool/action identity for this Send, without result body")
+}
+
 /// Runtime session state injected by the step-executor loop.
 /// Do not construct manually — values come from the FSM.
 class SessionContext {
   contract_version string
   session_open bool
-  status string @description("FSM status: awaiting_open | just_opened | done")
-  last_step_op string? @description("Previous FSM step op when known: open | send | read | finish | abort")
-  last_step_status string? @description("Previous FSM step status when known: open | done | finished | aborted")
+  status string @description("FSM status: awaiting_open | just_opened | result_ready | done. result_ready means previous direct Send completed and its archive is available; read it or move on, do not re-Send same input.")
+  last_step_op string? @description("Previous FSM step op when known: open | send | duplicate_send | read | finish | abort")
+  last_step_status string? @description("Previous FSM step status when known: open | done | duplicate | finished | aborted")
   last_archive_ref string? @description("Archive ref from the previous Send when available, e.g. @4")
   last_output_header string? @description("Compact archive header from the previous Send/Read when available")
   last_completion string? @description("Tool-specific terminal completion marker when available, e.g. DONE | INPUT_REQUIRED | INTERRUPTED")
+  archives ArchiveLedgerEntry[]? @description("Bounded ledger of Send archives already materialized this executor session. Use it to avoid identical Sends; PageRead/SearchRead existing refs when details are needed.")
 }
 
 /// Opaque JSON transport wrapper for host-managed tools and event payloads.
@@ -690,7 +699,7 @@ class ArchivePageReadStep {
 }
 
 /// Terminal hop without a host tool session: answer from visible conversation archives only.
-/// Do not emit when you need a fresh Open/Send — use ENTRY Open or ACTIVE Send instead.
+/// Do not emit when you need to invoke a tool — emit a Send instead (eligible one-shot tools Send directly on entry; tools needing configuration Open first).
 class ReadOnlyFinishStep {
   op "ReadOnlyFinish"
   reply StructuredReply @description("User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.")
@@ -728,6 +737,8 @@ class SupportCalculateToolCard {
   tool_name "support/calculate"
   description "Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division."
   session_policy "Strict"
+  capability "OneShot"
+  invocation_mode "single_shot"
   input_summary "{ expression: { left: integer, operation: enum(\"*\" | \"+\" | \"-\" | \"/\"), right: integer } }"
   tags string[] @description("Tool tags: support, calculate")
 }
@@ -739,6 +750,7 @@ class SupportCalculateOpenStep {
 
 class SupportCalculateSendStep {
   op "Send"
+  tool_name "support/calculate" @description("Tool this Send targets")
   input CalculatorInput @description("Payload for this step.")
   citations string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }
@@ -779,7 +791,7 @@ class SupportCalculateSessionPlan {
 function ChooseCalculatoragentTool__entry(
   user_message: string,
   session_context: SessionContext
-) -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateOpenStep {
+) -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateSendStep {
 
   client DefaultClient
   prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
@@ -801,13 +813,14 @@ Decide whether to use a tool and produce a session plan.
 
 { user_message }
 
-Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateOpenStep`.
+Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportCalculateSendStep`.
 
-Use `op` as the discriminator: "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead".
+Use `op` as the discriminator: "PageRead" | "ReadOnlyFinish" | "SearchRead" | "Send".
+SupportCalculateSendStep Send: set `input.expression.operation` to exactly one JSON string token: "Add" | "Divide" | "Multiply" | "Subtract" — never an object or sentence.
 Do not add text before or after the JSON object.
 
 Phase policy:
-- Derived state rule: this entry return union excludes `Send`, `Finish`, and `Abort`.
+- Derived state rule: eligible one-shot tools may emit Send directly (runtime auto-opens and auto-finishes); Open remains valid during migration. Finish and Abort are excluded on entry.
 "#
 
 }
@@ -864,7 +877,9 @@ tool support/calculate
   purpose: Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division.
   open: None
   send: CalculatorInput
-  operations: SupportCalculateOpenStep | SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep
+  capability: OneShot
+  invocation_mode: single_shot
+  operations: SupportCalculateSendStep | SupportCalculateSearchReadStep | SupportCalculatePageReadStep
 
 Type definitions:
 
@@ -923,19 +938,6 @@ type StructuredReply = {
   citations: string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
-type SupportCalculateAbortStep = {
-  op: "Abort"
-}
-
-type SupportCalculateFinishStep = {
-  op: "Finish"
-}
-
-type SupportCalculateOpenStep = {
-  op: "Open"
-  tool_name: "support/calculate" @description("Tool to open")
-}
-
 type SupportCalculatePageReadStep = {
   op: "PageRead"
   input: ArchivePageReadInput @description("PageRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a contiguous window: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
@@ -948,6 +950,7 @@ type SupportCalculateSearchReadStep = {
 
 type SupportCalculateSendStep = {
   op: "Send"
+  tool_name: "support/calculate" @description("Tool this Send targets")
   input: CalculatorInput @description("Payload for this step.")
   citations: string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }

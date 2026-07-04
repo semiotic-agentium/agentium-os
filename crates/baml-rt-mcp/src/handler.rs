@@ -108,9 +108,7 @@ impl ToolSession for McpToolSession {
                     )));
                 }
                 SessionState::Closed => {
-                    return Err(ToolSessionError::Tool(ToolFailure::execution_failed(
-                        "MCP session already closed",
-                    )));
+                    return Err(ToolSessionError::Tool(mcp_logical_session_closed_failure()));
                 }
                 SessionState::InFlight => {
                     return Err(ToolSessionError::Tool(ToolFailure::invalid_input(
@@ -186,9 +184,9 @@ impl ToolSession for McpToolSession {
             SessionState::Aborted => Err(ToolSessionError::Tool(ToolFailure::execution_failed(
                 "MCP session aborted",
             ))),
-            SessionState::Closed => Err(ToolSessionError::Tool(ToolFailure::execution_failed(
-                "MCP session already closed",
-            ))),
+            SessionState::Closed => {
+                Err(ToolSessionError::Tool(mcp_logical_session_closed_failure()))
+            }
             SessionState::InFlight => {
                 *state = SessionState::InFlight;
                 Err(ToolSessionError::Tool(ToolFailure::execution_failed(
@@ -233,6 +231,25 @@ impl ToolSession for McpToolSession {
         let mut state = self.state.lock().await;
         *state = SessionState::Aborted;
         Ok(())
+    }
+}
+
+fn mcp_logical_session_closed_failure() -> ToolFailure {
+    let message = "MCP session already closed".to_string();
+    let classified = ClassifiedToolError {
+        code: "mcp_logical_session_closed".to_string(),
+        disposition: ErrorDisposition::HostRetriable,
+        message: message.clone(),
+        hint: Some(
+            "Stale logical MCP session; discard it and open a fresh logical session".to_string(),
+        ),
+        retry_after_ms: None,
+    };
+    ToolFailure {
+        kind: baml_rt_tools::ToolFailureKind::ExecutionFailed,
+        message,
+        retryability: classified.host_retryability(),
+        classified,
     }
 }
 

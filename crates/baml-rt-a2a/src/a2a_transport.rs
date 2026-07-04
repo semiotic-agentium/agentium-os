@@ -750,6 +750,7 @@ impl A2aAgent {
             digest: None,
             projection_semantics: None,
             session_policy: baml_rt_tools::SessionPolicy::default(),
+            capability: baml_rt_tools::ToolCapability::default(),
             coordination_baml: None,
         };
 

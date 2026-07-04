@@ -99,6 +99,7 @@ input: ArchiveSearchReadInput;
  }
 
 export interface SupportClickupSendStep { op: "Send";
+tool_name: "support/clickup";
 input: ListTeamsInput | ListSpacesInput | ListListsInput | ListTasksInput | GetTaskInput | CreateTaskInput | UpdateTaskInput | DeleteTaskInput;
 citations: string[];
  }

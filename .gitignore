@@ -81,3 +81,6 @@ deploy/argocd/.rendered/
 .direnv/
 result
 .pi/
+
+# insta pending snapshots (never commit)
+*.snap.new

@@ -189,6 +189,8 @@ class SupportCrmToolCard {
   tool_name "support/crm"
   description "Customer relationship management: query accounts, contacts, opportunities. Create notes and manage records."
   session_policy "Strict"
+  capability "OneShot"
+  invocation_mode "single_shot"
   input_summary "anyOf({ fiscal_quarter?: anyOf(string | null), query?: anyOf(string | null), region?: anyOf(string | null) } | { account_id: string, min_value?: anyOf(number | null), stage?: anyOf(string | null) } | { contact_id: string } | { account_id: string, body: string, subject: string } | { confirm_delete: boolean, record_id: string, record_type: string } | { destination?: anyOf(string | null), format?: anyOf(string | null), query: string })"
   tags string[] @description("Tool tags: support, crm")
 }
@@ -200,6 +202,7 @@ class SupportCrmOpenStep {
 
 class SupportCrmSendStep {
   op "Send"
+  tool_name "support/crm" @description("Tool this Send targets")
   input CrmInput @description("Payload for this step.")
   citations string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }
@@ -234,6 +237,8 @@ class SupportEmailToolCard {
   tool_name "support/email"
   description "Send email messages to specified recipients."
   session_policy "Strict"
+  capability "OneShot"
+  invocation_mode "single_shot"
   input_summary "{ body: string, subject: string, to: string }"
   tags string[] @description("Tool tags: support, email")
 }
@@ -245,6 +250,7 @@ class SupportEmailOpenStep {
 
 class SupportEmailSendStep {
   op "Send"
+  tool_name "support/email" @description("Tool this Send targets")
   input SendEmailInput @description("Payload for this step.")
   citations string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
 }
@@ -303,7 +309,7 @@ function ExecuteStep__entry(
   objective: string,
   step_description: string,
   session_context: SessionContext?
-) -> ArchivePageReadStep | ArchiveSearchReadStep | CrmStepResult | ReadOnlyFinishStep | SupportCrmOpenStep | SupportEmailOpenStep {
+) -> ArchivePageReadStep | ArchiveSearchReadStep | CrmStepResult | ReadOnlyFinishStep | SupportCrmOpenStep | SupportCrmSendStep | SupportEmailOpenStep | SupportEmailSendStep {
 
   client DefaultClient
   prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
@@ -331,20 +337,22 @@ Current step: {{ step_description }}
 
 Session open (host FSM): {{ session_context.session_open }}
 
-Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | CrmStepResult | ReadOnlyFinishStep | SupportCrmOpenStep | SupportEmailOpenStep`.
+Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | CrmStepResult | ReadOnlyFinishStep | SupportCrmOpenStep | SupportCrmSendStep | SupportEmailOpenStep | SupportEmailSendStep`.
 
 Choose the matching object type.
-- `ArchivePageReadStep` uses fields like `input`, `op`
-- `ArchiveSearchReadStep` uses fields like `input`, `op`
+- `ArchivePageReadStep` uses fields like `input`
+- `ArchiveSearchReadStep` uses fields like `input`
 - `CrmStepResult` uses fields like `data`, `message`
-- `ReadOnlyFinishStep` uses fields like `op`, `reply`
-- `SupportCrmOpenStep` uses fields like `op`, `tool_name`
-- `SupportEmailOpenStep` uses fields like `op`, `tool_name`
+- `ReadOnlyFinishStep` uses fields like `reply`
+- `SupportCrmOpenStep` uses fields like `tool_name`
+- `SupportCrmSendStep` uses fields like `citations`, `input`, `tool_name`
+- `SupportEmailOpenStep` uses fields like `tool_name`
+- `SupportEmailSendStep` uses fields like `citations`, `input`, `tool_name`
 Do not mix fields from different object shapes.
 Do not add text before or after the JSON object.
 
 Phase policy:
-- Derived state rule: this entry return union excludes `Send`, `Finish`, and `Abort`.
+- Derived state rule: eligible one-shot tools may emit Send directly (runtime auto-opens and auto-finishes); Open remains valid during migration. Finish and Abort are excluded on entry.
 "#
 
 }

@@ -84,6 +84,17 @@ impl BamlRuntimeManager {
         }
     }
 
+    /// Set last-resort platform LLM fallback for functions with no BAML client config.
+    pub fn set_llm_fallback_client_resolver(
+        &mut self,
+        resolver: Arc<dyn baml_rt_llm_config::LlmClientResolver>,
+    ) {
+        self.state.llm_fallback_client_resolver = Some(resolver.clone());
+        if let Some(executor) = self.state.executor.as_mut() {
+            executor.set_llm_fallback_client_resolver(resolver);
+        }
+    }
+
     /// Set the effect emitter (for effects-first liveness).
     /// If the executor is already loaded, forwards the emitter to it so LLM/tool effects
     /// are emitted and the promise-polling loop can use effect-gated timeouts.
