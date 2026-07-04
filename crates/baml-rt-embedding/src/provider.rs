@@ -8,9 +8,95 @@
 //! [`FastEmbedProvider`] which wraps `fastembed::TextEmbedding` with
 //! `BAAI/bge-small-en-v1.5` (384-d, ~30 MB ONNX model).
 
-use std::{path::PathBuf, sync::Mutex, time::Instant};
+use std::{
+    path::{Path, PathBuf},
+    sync::Mutex,
+    time::Instant,
+};
 
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+
+/// Result of scanning a directory tree for ONNX model weights.
+enum OnnxStatus {
+    /// At least one real (non git-LFS-pointer) `.onnx` file present.
+    RealOnnx,
+    /// `.onnx` files exist but are all git-LFS pointer stubs (`git lfs pull` not run).
+    OnlyStubs,
+    /// No `.onnx` files at all.
+    NoOnnx,
+}
+
+/// A committed `.onnx` file that is still a git-LFS pointer is a ~130-byte text
+/// stub, not real weights. Loading it fails at runtime, so treat it as missing.
+fn looks_like_lfs_pointer(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let probe = &bytes[..bytes.len().min(256)];
+    let Ok(text) = std::str::from_utf8(probe) else {
+        return false;
+    };
+    text.starts_with("version https://git-lfs.github.com/spec/v1")
+}
+
+/// Iteratively scan `dir` for `.onnx` files, distinguishing real weights from
+/// LFS-pointer stubs.
+fn onnx_status(dir: &Path) -> OnnxStatus {
+    let mut saw_stub = false;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.filter_map(std::result::Result::ok) {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("onnx") {
+                if looks_like_lfs_pointer(&path) {
+                    saw_stub = true;
+                } else {
+                    return OnnxStatus::RealOnnx;
+                }
+            }
+        }
+    }
+    if saw_stub {
+        OnnxStatus::OnlyStubs
+    } else {
+        OnnxStatus::NoOnnx
+    }
+}
+
+/// Validate that a `BAML_MODELS_DIR` base holds a usable fastembed model tree.
+///
+/// Checks `<base>/fastembed` exists, is a directory, and contains at least one
+/// real (non git-LFS-pointer) `.onnx` file. Used by opt-in provenance drift
+/// scoring at runner boot to **fail fast** on a misconfigured / un-pulled models
+/// directory instead of silently falling back to a network autodownload — an
+/// explicitly configured local models path is a hard contract.
+///
+/// Returns `Err(reason)` with a human-readable cause on failure.
+pub fn validate_models_dir(base: &Path) -> Result<(), String> {
+    let fastembed = base.join("fastembed");
+    if !fastembed.is_dir() {
+        return Err(format!(
+            "expected model tree at {} (directory not found)",
+            fastembed.display()
+        ));
+    }
+    match onnx_status(&fastembed) {
+        OnnxStatus::RealOnnx => Ok(()),
+        OnnxStatus::OnlyStubs => Err(format!(
+            "{} contains only git-LFS pointer stubs, not real ONNX weights (run `git lfs pull` or `just download-models`)",
+            fastembed.display()
+        )),
+        OnnxStatus::NoOnnx => Err(format!(
+            "{} contains no .onnx model files",
+            fastembed.display()
+        )),
+    }
+}
 
 /// Resolve the fastembed model cache directory.
 ///
@@ -165,12 +251,14 @@ impl FastEmbedProvider {
                     e
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "Embedding model failed to load from local models cache; \
-                         falling back to fastembed default (~/.cache/fastembed/)"
-                    );
-                    TextEmbedding::try_new(make_opts(None)).map_err(EmbeddingError::ModelInit)?
+                    // No silent autodownload fallback: an explicitly-resolved local
+                    // models directory that fails to load signals a broken deploy
+                    // (missing / LFS-stub / corrupt weights). Surface it instead of
+                    // masking it with a ~600MB network download to a different path.
+                    return Err(EmbeddingError::ModelInit(e.context(
+                        "embedding model failed to load from local models cache \
+                         (no autodownload fallback when a models directory is configured)",
+                    )));
                 }
             }
         } else {

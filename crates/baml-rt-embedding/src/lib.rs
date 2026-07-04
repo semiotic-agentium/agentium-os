@@ -40,7 +40,7 @@ pub use plan_assessment::{
     PlanDriftAssessment, PlanDriftConfig, PlanDriftInputs, score_plan_drift,
 };
 pub use plan_context::{PlanDriftContext, PlanStepAnchor};
-pub use provider::{EmbeddingProvider, FastEmbedProvider};
+pub use provider::{EmbeddingProvider, FastEmbedProvider, validate_models_dir};
 pub use reranker::{FastRerankProvider, RerankDriftConfig, RerankProvider};
 pub use similarity::cosine_similarity;
 pub use trajectory::{StepDriftRecord, TaskDriftTracker};

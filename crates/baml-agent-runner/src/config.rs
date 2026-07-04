@@ -72,6 +72,12 @@ pub(crate) struct RunnerConfig {
         std::collections::HashMap<String, std::collections::HashMap<String, DatasourceActivation>>,
     /// Resolved sandbox bind allowlist roots (file → env precedence).
     pub(crate) sandbox_bind_roots: Vec<PathBuf>,
+    /// Whether provenance drift scoring is enabled. `true` when
+    /// `--enable-provenance-drift` is passed OR a non-empty `BAML_MODELS_DIR`
+    /// is set (an explicit signal the operator provisioned a model tree). When
+    /// `false` the runner never loads the embedding model and emits no
+    /// missing-model warning.
+    pub(crate) provenance_drift_enabled: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -174,6 +180,13 @@ pub struct Cli {
     /// (`BAML_EXTERNAL_TOOLS_DIR`, `BAML_SANDBOX_BIND_ROOTS`); env wins when set.
     #[arg(long, value_name = "FILE", env = "BAML_RUNNER_CONFIG")]
     pub(crate) runner_config: Option<PathBuf>,
+
+    /// Enable provenance drift scoring using a local embedding model.
+    /// Requires BAML_MODELS_DIR or downloadable models. Disabled by default.
+    ///
+    /// Also implied when a non-empty BAML_MODELS_DIR is set.
+    #[arg(long)]
+    pub(crate) enable_provenance_drift: bool,
 }
 
 impl Cli {
@@ -202,6 +215,15 @@ impl Cli {
             None => FileConfig::default(),
         };
         let resolved = runner_config_file::resolve_paths(&file_config);
+
+        // Drift scoring is opt-in: the CLI flag OR a non-empty BAML_MODELS_DIR
+        // (an explicit signal the operator provisioned a model tree) enables it.
+        // Otherwise the runner never loads the embedding model.
+        let baml_models_dir_set = std::env::var("BAML_MODELS_DIR")
+            .ok()
+            .is_some_and(|s| !s.trim().is_empty());
+        let provenance_drift_enabled = self.enable_provenance_drift || baml_models_dir_set;
+
         info!(
             count = resolved.external_tools_dirs.len(),
             source = resolved.external_tools_source.as_str(),
@@ -240,6 +262,7 @@ impl Cli {
             external_tools_dirs: resolved.external_tools_dirs,
             external_datasources: file_config.external_datasources,
             sandbox_bind_roots: resolved.sandbox_bind_roots,
+            provenance_drift_enabled,
         })
     }
 }

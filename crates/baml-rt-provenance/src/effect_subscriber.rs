@@ -5,7 +5,10 @@
 //! Provenance subscriber: converts EffectEvent to ProvEvent.
 
 use std::{
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Instant,
 };
 
@@ -62,6 +65,33 @@ const DEFAULT_INFERENCE_CONCURRENCY: usize = 4;
 static GLOBAL_DRIFT_PROVIDER: OnceLock<Option<Arc<dyn EmbeddingProvider>>> = OnceLock::new();
 static GLOBAL_RERANK_PROVIDER: OnceLock<Option<Arc<dyn RerankProvider>>> = OnceLock::new();
 
+/// Process-wide opt-in gate for provenance drift scoring.
+///
+/// Default `false`: the runner never loads the embedding / rerank ONNX models
+/// and emits no "missing model" warnings. Set once at boot from the CLI/config
+/// field (`--enable-provenance-drift`, or a non-empty `BAML_MODELS_DIR`) via
+/// [`set_drift_enabled`] — **before** [`warm_global_drift_models`] runs.
+///
+/// Gating a process-wide model load with a process-global flag mirrors the
+/// existing [`GLOBAL_DRIFT_PROVIDER`] cache: drift scoring is a runner-wide
+/// operational toggle, not a per-agent setting. Test / embedded callers that
+/// inject a provider via `new_with_embedding_provider` bypass this flag (the
+/// per-instance `drift_override` wins), so the default keeps unit tests green
+/// without opting the whole process in.
+static DRIFT_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Enable or disable provenance drift scoring process-wide.
+///
+/// Call once at runner boot, before [`warm_global_drift_models`]. Idempotent.
+pub fn set_drift_enabled(enabled: bool) {
+    DRIFT_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// Whether provenance drift scoring is enabled for this process.
+pub fn drift_enabled() -> bool {
+    DRIFT_ENABLED.load(Ordering::Relaxed)
+}
+
 /// Sync read of the global embedding provider. Returns `None` until
 /// [`warm_global_drift_models`] (or a lazy fallback in
 /// `ProvenanceEffectSubscriber::drift_provider`) has populated it.
@@ -83,6 +113,15 @@ pub fn global_rerank_provider() -> Option<Arc<dyn RerankProvider>> {
 ///
 /// Re-entrant: safe to call multiple times — short-circuits when already set.
 pub async fn warm_global_drift_models() {
+    // Opt-in only. Default runs skip ONNX init entirely — no download attempt,
+    // no "missing model" warning. Enabled via `set_drift_enabled(true)` at boot.
+    if !drift_enabled() {
+        tracing::debug!(
+            "provenance drift scoring disabled; skipping embedding model initialization"
+        );
+        return;
+    }
+
     let t0 = Instant::now();
 
     let embedding_ready = if GLOBAL_DRIFT_PROVIDER.get().is_some() {
@@ -883,7 +922,15 @@ impl ProvenanceEffectSubscriber {
         if let Some(p) = global_drift_provider() {
             return Some(p);
         }
-        // Lazy fallback: tests / embedded users that skipped warm-up.
+        // No warm-up populated the cache. Only pay the lazy ONNX cost when drift
+        // is enabled; default runs skip init entirely (no missing-model warning).
+        if !drift_enabled() {
+            tracing::debug!(
+                "provenance drift scoring disabled; skipping embedding model initialization"
+            );
+            return None;
+        }
+        // Lazy fallback: enabled hosts that skipped warm-up (tests / embedded).
         // Pays the ONNX cost once; OnceLock::set is race-tolerant.
         let loaded = match tokio::task::spawn_blocking(FastEmbedProvider::new).await {
             Ok(Ok(p)) => Some(Arc::new(p) as Arc<dyn EmbeddingProvider>),
@@ -914,6 +961,14 @@ impl ProvenanceEffectSubscriber {
         }
         if let Some(p) = global_rerank_provider() {
             return Some(p);
+        }
+        // Gated with drift scoring: the cross-encoder reranker is part of the
+        // drift-scoring path, so it shares the opt-in flag. Default: no init.
+        if !drift_enabled() {
+            tracing::debug!(
+                "provenance drift scoring disabled; skipping reranker model initialization"
+            );
+            return None;
         }
         let loaded = match tokio::task::spawn_blocking(FastRerankProvider::new).await {
             Ok(Ok(p)) => Some(Arc::new(p) as Arc<dyn RerankProvider>),

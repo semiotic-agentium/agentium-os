@@ -711,13 +711,60 @@ async fn run_inner(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow:
         }
     };
 
-    // Pre-load ONNX embedding + JINA reranker models once per process. Without
-    // this, every agent deploy reloads them inside `wire_provenance_subsystems`,
-    // CPU-stalling the QuickJS event-loop probe long enough to flip /readyz to
-    // 503 mid-deploy and drop the pod from Service endpoints. Paid as added
-    // pre-ready latency here (~1-40s depending on model cache state); zero
-    // cost per deploy thereafter.
-    baml_rt_provenance::effect_subscriber::warm_global_drift_models().await;
+    // Provenance drift scoring is opt-in (`--enable-provenance-drift`, or a
+    // non-empty BAML_MODELS_DIR). When enabled, pre-load the ONNX embedding +
+    // JINA reranker models once per process here: without this, every agent
+    // deploy reloads them inside `wire_provenance_subsystems`, CPU-stalling the
+    // QuickJS event-loop probe long enough to flip /readyz to 503 mid-deploy and
+    // drop the pod from Service endpoints. Paid as added pre-ready latency
+    // (~1-40s depending on model cache state); zero cost per deploy thereafter.
+    //
+    // When disabled (default), no model is loaded, no download is attempted, and
+    // no missing-model warning is emitted.
+    if config.provenance_drift_enabled {
+        tracing::info!("provenance drift scoring enabled");
+
+        // An explicitly set BAML_MODELS_DIR is a hard contract: if it does not
+        // point at a real fastembed tree (missing dir, LFS-pointer stubs, or no
+        // .onnx weights), fail fast. Never silently fall back to a network
+        // autodownload — that would hide a broken deploy the operator configured.
+        if let Some(dir) = std::env::var("BAML_MODELS_DIR")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+        {
+            if let Err(reason) = baml_rt_embedding::validate_models_dir(std::path::Path::new(&dir))
+            {
+                anyhow::bail!(
+                    "provenance drift scoring enabled, but BAML_MODELS_DIR is invalid: {dir} ({reason})\n\
+                     Run `just download-models` or set BAML_MODELS_DIR to a valid models directory.\n\
+                     (drift scoring does not silently fall back to network autodownload when a models directory is configured)"
+                );
+            }
+            tracing::info!(path = %dir, "using embedding model directory from BAML_MODELS_DIR");
+        } else {
+            tracing::info!(
+                "provenance drift scoring enabled; no BAML_MODELS_DIR set; using fastembed cache / autodownload (~600MB embedding + ~100MB reranker fetched to ~/.cache/fastembed on first use)"
+            );
+        }
+
+        baml_rt_provenance::effect_subscriber::set_drift_enabled(true);
+        baml_rt_provenance::effect_subscriber::warm_global_drift_models().await;
+
+        // Opt-in mode fails fast: if the embedding model could not be initialised
+        // (e.g. offline with no local tree), surface an actionable error instead
+        // of silently running with drift scoring disabled.
+        if baml_rt_provenance::effect_subscriber::global_drift_provider().is_none() {
+            anyhow::bail!(
+                "provenance drift scoring enabled, but the embedding model failed to initialise.\n\
+                 Set BAML_MODELS_DIR to a local models directory or run `just download-models`.\n\
+                 (enabled via --enable-provenance-drift or BAML_MODELS_DIR)"
+            );
+        }
+    } else {
+        tracing::debug!(
+            "provenance drift scoring disabled; skipping embedding model initialization"
+        );
+    }
 
     readyz.store(true, Ordering::Release);
     tracing::info!("readyz probe: ready (event producers loaded)");
