@@ -1510,7 +1510,10 @@ async fn get_openapi_json_returns_spec() {
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    let snapshot = response_snapshot(status, &body);
+    let mut snapshot = response_snapshot(status, &body);
+    if let Some(version) = snapshot.pointer_mut("/body/info/version") {
+        *version = Value::String("[crate_version]".to_string());
+    }
     insta::assert_json_snapshot!(snapshot);
 }
 
