@@ -58,7 +58,7 @@ jobs:
           ref: ${{ needs.release-please.outputs.tag_name }}
       - name: Verify release tag matches workspace version
         env:
-          GITHUB_REF_NAME: ${{ needs.release-please.outputs.tag_name }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
         run: bash scripts/release/verify-release-tag-matches-workspace-version.sh
 
   build:

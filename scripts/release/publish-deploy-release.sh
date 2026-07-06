@@ -46,7 +46,7 @@ fi
 cd "${ROOT}"
 
 if _want_git_tag; then
-  export GITHUB_REF_NAME="${GIT_REF}"
+  export RELEASE_TAG="${GIT_REF}"
   bash "${ROOT}/scripts/release/verify-release-tag-matches-workspace-version.sh" \
     || die "tag ${GIT_REF} must match Cargo.toml workspace version"
   if git rev-parse "${GIT_REF}" >/dev/null 2>&1; then
