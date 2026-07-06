@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/semiotic-agentium/agentium-os/compare/v0.2.0...v0.2.1) (2026-07-06)
+
+
+### Bug Fixes
+
+* stabilize runtime progress diagnose check ([bf96a6d](https://github.com/semiotic-agentium/agentium-os/commit/bf96a6dce942484cacc88f1d7117dff28771d817))
+
 ## [0.2.0](https://github.com/semiotic-agentium/agentium-os/compare/v0.1.3...v0.2.0) (2026-07-05)
 
 
