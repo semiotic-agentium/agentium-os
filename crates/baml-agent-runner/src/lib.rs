@@ -36,7 +36,9 @@ use std::{
 
 use anyhow::Context;
 use baml_rt_api::RuntimeProgressMeter;
-use baml_rt_core::{CallbackStore, DeploymentManager, DeploymentStatus, ExponentialBackoff};
+use baml_rt_core::{
+    CallbackStore, DeploymentManager, DeploymentStatus, ExponentialBackoff, join_error_message,
+};
 use baml_rt_llm_config::{
     FnoxFileSecretResolver, OverlaySecretResolver, SECRET_LINKS_CONFIG_KEY, SecretLinksState,
     apply_secret_links_state,
@@ -712,7 +714,7 @@ async fn run_inner(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow:
                 "event producer poll loop enabled"
             );
             Some(tokio::spawn(async move {
-                run_event_poll_loop(dispatcher, deployment_state_for_poll, interval).await;
+                run_event_poll_loop(dispatcher, deployment_state_for_poll, interval).await
             }))
         } else {
             None
@@ -777,6 +779,8 @@ async fn run_inner(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow:
     readyz.store(true, Ordering::Release);
     tracing::info!("readyz probe: ready (event producers loaded)");
 
+    let mut dispatcher_handle = dispatcher_handle;
+
     match (config.a2a_stdio, http_handle) {
         (true, Some(mut handle)) => {
             let stdio_fut = ready.run_a2a_stdio();
@@ -801,44 +805,83 @@ async fn run_inner(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow:
                         }
                         http_exited = true;
                     }
+                    poll_result = async {
+                        dispatcher_handle
+                            .as_mut()
+                            .expect("poll result selected without poll handle")
+                            .await
+                    }, if dispatcher_handle.is_some() => {
+                        handle_fatal_task_result(
+                            poll_result,
+                            "event poll loop",
+                            "event producer poll loop returned unexpectedly",
+                        )?;
+                    }
                 }
             }
         }
         (true, None) => {
-            ready.run_a2a_stdio().await?;
+            if let Some(mut poll_handle) = dispatcher_handle.take() {
+                let stdio_fut = ready.run_a2a_stdio();
+                tokio::pin!(stdio_fut);
+                tokio::select! {
+                    stdio_result = &mut stdio_fut => {
+                        poll_handle.abort();
+                        stdio_result?;
+                    }
+                    poll_result = &mut poll_handle => {
+                        handle_fatal_task_result(
+                            poll_result,
+                            "event poll loop",
+                            "event producer poll loop returned unexpectedly",
+                        )?;
+                    }
+                }
+            } else {
+                ready.run_a2a_stdio().await?;
+            }
         }
-        (false, Some(handle)) => {
+        (false, Some(mut handle)) => {
             // K8s-pilot mode: no stdio, only the HTTP listener. Nothing in this
             // process requests a listener shutdown, so any return — clean or
             // erroring — means the listener task died. Propagate as a non-zero
             // exit so the kubelet restarts the pod (issue #341 T4).
-            match handle.await {
-                Ok(Ok(())) => {
-                    error!(
-                        "HTTP API listener task returned Ok(()) without a shutdown request; \
-                         in --serve-http mode this means the listener died silently. \
-                         Exiting non-zero so the kubelet restarts the pod"
-                    );
-                    anyhow::bail!("HTTP API listener task exited without a shutdown request");
+            if let Some(mut poll_handle) = dispatcher_handle.take() {
+                tokio::select! {
+                    http_result = &mut handle => {
+                        handle_fatal_task_result(
+                            http_result,
+                            "HTTP API listener task",
+                            "HTTP API listener task returned Ok(()) without a shutdown request; \
+                             in --serve-http mode this means the listener died silently. \
+                             Exiting non-zero so the kubelet restarts the pod",
+                        )?;
+                    }
+                    poll_result = &mut poll_handle => {
+                        handle_fatal_task_result(
+                            poll_result,
+                            "event poll loop",
+                            "event producer poll loop returned unexpectedly",
+                        )?;
+                    }
                 }
-                Ok(Err(err)) => {
-                    error!(error = %err, "HTTP API listener task failed");
-                    return Err(err);
-                }
-                Err(join_err) => {
-                    error!(error = %join_err, "HTTP API listener task join error");
-                    return Err(anyhow::anyhow!(
-                        "HTTP API listener task join error: {join_err}"
-                    ));
-                }
+            } else {
+                handle_fatal_task_result(
+                    handle.await,
+                    "HTTP API listener task",
+                    "HTTP API listener task returned Ok(()) without a shutdown request; \
+                     in --serve-http mode this means the listener died silently. \
+                     Exiting non-zero so the kubelet restarts the pod",
+                )?;
             }
         }
         (false, None) => {
-            if let Some(handle) = dispatcher_handle {
-                if let Err(err) = handle.await {
-                    error!(error = %err, "event producer poll loop terminated unexpectedly");
-                }
-                return Ok(());
+            if let Some(handle) = dispatcher_handle.take() {
+                handle_fatal_task_result(
+                    handle.await,
+                    "event poll loop",
+                    "event producer poll loop returned unexpectedly",
+                )?;
             }
         }
     }
@@ -849,6 +892,32 @@ async fn run_inner(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow:
 
     info!("Agent Runner completed successfully");
     Ok(())
+}
+
+fn handle_fatal_task_result(
+    result: Result<anyhow::Result<()>, tokio::task::JoinError>,
+    task_name: &'static str,
+    unexpected_return_message: &'static str,
+) -> anyhow::Result<()> {
+    match result {
+        Ok(Ok(())) => {
+            error!("{unexpected_return_message}");
+            anyhow::bail!("{task_name} exited unexpectedly");
+        }
+        Ok(Err(err)) => {
+            error!(error = %err, "{task_name} failed");
+            Err(err)
+        }
+        Err(join_err) if join_err.is_panic() => {
+            let message = join_error_message(task_name, join_err);
+            error!(error = %message, "{task_name} panicked");
+            Err(anyhow::anyhow!(message))
+        }
+        Err(join_err) => {
+            error!(error = %join_err, "{task_name} join error");
+            Err(anyhow::anyhow!("{task_name} join error: {join_err}"))
+        }
+    }
 }
 
 /// Tunables for the initial remote SurrealDB connection retry. Sized so the
@@ -988,17 +1057,17 @@ async fn run_event_poll_loop(
     mut dispatcher: baml_rt_a2a::EventDispatcher,
     deployment_state: Arc<deployment_state::DeploymentStateStore>,
     interval: std::time::Duration,
-) {
+) -> anyhow::Result<()> {
     loop {
         tokio::time::sleep(interval).await;
-        run_event_poll_cycle(&mut dispatcher, deployment_state.as_ref()).await;
+        run_event_poll_cycle(&mut dispatcher, deployment_state.as_ref()).await?;
     }
 }
 
 async fn run_event_poll_cycle(
     dispatcher: &mut baml_rt_a2a::EventDispatcher,
     deployment_state: &deployment_state::DeploymentStateStore,
-) {
+) -> anyhow::Result<()> {
     let results = dispatcher.poll_and_deliver().await;
     for (producer_key, outcome) in &results {
         match outcome {
@@ -1011,16 +1080,13 @@ async fn run_event_poll_cycle(
                         "event delivery complete"
                     );
                 }
-                if let Some(checkpoint) = dispatcher.checkpoint(producer_key).value()
-                    && let Err(err) = deployment_state
+                if let Some(checkpoint) = dispatcher.checkpoint(producer_key).value() {
+                    deployment_state
                         .save_event_producer_checkpoint(producer_key, checkpoint)
                         .await
-                {
-                    warn!(
-                        producer_key = %producer_key,
-                        error = %err,
-                        "failed to persist event producer checkpoint"
-                    );
+                        .with_context(|| {
+                            format!("persisting event producer checkpoint for {producer_key}")
+                        })?;
                 }
             }
             Ok(delivery) => {
@@ -1031,16 +1097,15 @@ async fn run_event_poll_cycle(
                     failures = delivery.failures.len(),
                     "event delivery partial failure"
                 );
-                if let Some(checkpoint) = dispatcher.checkpoint(producer_key).value()
-                    && let Err(err) = deployment_state
+                if let Some(checkpoint) = dispatcher.checkpoint(producer_key).value() {
+                    deployment_state
                         .save_event_producer_checkpoint(producer_key, checkpoint)
                         .await
-                {
-                    warn!(
-                        producer_key = %producer_key,
-                        error = %err,
-                        "failed to persist event producer checkpoint after partial failure"
-                    );
+                        .with_context(|| {
+                            format!(
+                                "persisting event producer checkpoint after partial failure for {producer_key}"
+                            )
+                        })?;
                 }
             }
             Err(err) => {
@@ -1052,6 +1117,7 @@ async fn run_event_poll_cycle(
             }
         }
     }
+    Ok(())
 }
 
 async fn load_external_raw_datasources(
