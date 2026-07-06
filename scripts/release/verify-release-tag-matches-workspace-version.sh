@@ -25,16 +25,7 @@ ver="${ref#v}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cargo_toml="${root}/Cargo.toml"
 
-parsed="$(awk '
-  $0 == "[workspace.package]" { inpkg=1; next }
-  inpkg && $0 ~ /^version = / {
-    gsub(/^version = "/, "");
-    gsub(/"$/, "");
-    print;
-    exit
-  }
-  inpkg && $0 ~ /^\[/ { exit }
-' "$cargo_toml")"
+parsed="$(bash "${root}/scripts/release/workspace-version.sh")"
 
 if [[ -z "$parsed" ]]; then
   echo "verify-release-tag: could not read workspace version from ${cargo_toml}" >&2

@@ -37,7 +37,7 @@ Usage: build-release-binaries.sh [--target TRIPLE] [--all-targets]
 
 Builds with the \`release-dist\` Cargo profile (thin LTO, 16 codegen units,
 strip) defined in the root Cargo.toml — bounded CI memory/time, and locally
-reproducible via \`cargo build --profile release-dist\`. Output lands in
+reproducible via \`cargo build --locked --profile release-dist\`. Output lands in
 target/<triple>/release-dist/.
 
 Host deps for native Linux builds: libdbus-1-dev libcap-ng-dev pkg-config
@@ -138,7 +138,7 @@ build_for_target() {
   echo "build-release-binaries: building for ${triple} via cargo build"
 
   while IFS=$'\t' read -r package bin features; do
-    local -a cmd=(cargo build --profile release-dist --target "$triple" -p "$package" --bin "$bin")
+    local -a cmd=(cargo build --locked --profile release-dist --target "$triple" -p "$package" --bin "$bin")
     if [[ -n "$features" ]]; then
       cmd+=(--features "$features")
     fi
