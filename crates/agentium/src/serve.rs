@@ -7,8 +7,5 @@
 use baml_agent_runner::RunnerCli;
 
 pub fn run(cli: RunnerCli) -> anyhow::Result<()> {
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(baml_agent_runner::run(cli))
+    baml_agent_runner::run_blocking(cli)
 }

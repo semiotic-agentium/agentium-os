@@ -91,3 +91,6 @@ dev-tools = ["dep:baml-tools-calculator"]
 sandbox-provider = ["baml-rt-tools/sandbox-provider"]
 llm-tests = []
 cluster-tests = []
+# Test-only binary fault injection used by fail-fast subprocess tests.
+# Never enable in production builds.
+fail-fast-test = []

@@ -16,6 +16,7 @@ mod cluster;
 mod config;
 mod deployment_restore;
 mod deployment_state;
+mod fail_fast;
 mod host_compaction;
 mod package;
 mod routing;
@@ -72,6 +73,7 @@ use baml_tools_system::callback_delivery_gate::install_callback_delivery_gate;
 use callback_delivery::RunnerCallbackDeliveryGate;
 pub use config::Cli as RunnerCli;
 use config::{Cli, ProvenanceDb, parse_surreal_credentials, provenance_config_builder};
+pub use fail_fast::install_fail_fast_panic_hook;
 use serde_json::Value;
 use services::{
     ContextIndexServiceImpl, ContextMetricsServiceImpl, ConversationHistoryServiceImpl,
@@ -97,6 +99,35 @@ fn resolve_claude_workspaces_base(cli: &Cli) -> Option<PathBuf> {
         std::fs::canonicalize(&absolute).unwrap_or(absolute)
     })
 }
+
+/// Start the Agentium platform from a synchronous binary entrypoint.
+///
+/// Installs the serve-process fail-fast panic hook before building the Tokio
+/// runtime so panics from runtime worker/background tasks terminate the process.
+pub fn run_blocking(cli: Cli) -> anyhow::Result<()> {
+    install_fail_fast_panic_hook();
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async {
+            maybe_inject_background_panic_for_tests().await;
+            run(cli).await
+        })
+}
+
+#[cfg(feature = "fail-fast-test")]
+async fn maybe_inject_background_panic_for_tests() {
+    // Test-only fault injection: fail-fast subprocess tests set this exact
+    // value to verify panics in Tokio background tasks terminate the runner.
+    if std::env::var("AGENTIUM_TEST_PANIC_BACKGROUND").as_deref() == Ok("1") {
+        tokio::spawn(async { panic!("test-injected background panic") });
+        std::future::pending::<()>().await;
+    }
+}
+
+#[cfg(not(feature = "fail-fast-test"))]
+async fn maybe_inject_background_panic_for_tests() {}
 
 /// Start the Agentium platform (HTTP / stdio / event poll loop).
 pub async fn run(cli: Cli) -> anyhow::Result<()> {

@@ -7,8 +7,6 @@
 
 use clap::Parser;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let cli = baml_agent_runner::RunnerCli::parse();
-    baml_agent_runner::run(cli).await
+fn main() -> anyhow::Result<()> {
+    baml_agent_runner::run_blocking(baml_agent_runner::RunnerCli::parse())
 }
