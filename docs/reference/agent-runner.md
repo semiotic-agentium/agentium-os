@@ -80,7 +80,7 @@ The runner integrates with `baml-rt-provenance` for conversation tracking:
 
 - **Tool failures**: Isolated per tool session, don't crash conversation
 - **Agent crashes**: Captured and reported via conversation events
-- **Unhandled runner panics**: Fatal in `agentium serve`; process exits 101 after logging the panic and `fatal: unhandled panic (...)`, and supervisor/kubelet must restart it. Embedded SurrealDB/SurrealKV panics can leave storage state untrusted, so runner fails stop instead of serving in degraded state.
+- **Structural runner task panics**: Fatal in `agentium serve`; the runner returns an error, exits non-zero, and supervisor/kubelet must restart it. HTTP request handler panics are isolated per request and return 500 without taking down the listener.
 - **Network issues**: Retry logic for external tool calls
 - **Resource limits**: Memory and execution time bounds enforced
 
