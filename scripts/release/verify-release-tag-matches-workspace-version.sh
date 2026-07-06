@@ -7,9 +7,12 @@
 # Fail if release tag vX.Y.Z does not match [workspace.package].version in Cargo.toml.
 set -euo pipefail
 
-ref="${GITHUB_REF_NAME:-${CIRCLE_TAG:-}}"
+# GitHub Actions does not allow overriding GITHUB_* defaults. RELEASE_TAG lets
+# workflows that run on main (for example release-please) verify a newly-created
+# tag without accidentally reading GITHUB_REF_NAME=main.
+ref="${RELEASE_TAG:-${GITHUB_REF_NAME:-${CIRCLE_TAG:-}}}"
 if [[ -z "$ref" ]]; then
-  echo "verify-release-tag: set GITHUB_REF_NAME or CIRCLE_TAG (e.g. v0.2.0)" >&2
+  echo "verify-release-tag: set RELEASE_TAG, GITHUB_REF_NAME, or CIRCLE_TAG (e.g. v0.2.0)" >&2
   exit 2
 fi
 
