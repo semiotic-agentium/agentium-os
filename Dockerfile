@@ -20,6 +20,7 @@ WORKDIR /build
 # Copy manifests first for better layer caching.
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ crates/
+COPY baml_src/host baml_src/host
 
 # Override to stable (rust-toolchain.toml pins nightly for local dev).
 ENV RUSTUP_TOOLCHAIN=stable
@@ -56,10 +57,6 @@ RUN groupadd -r agentium && useradd -r -g agentium -d /data -s /sbin/nologin age
 RUN mkdir -p /data && chown -R agentium:agentium /data
 
 COPY --from=builder /build/target/release/agentium /usr/local/bin/
-
-# Host-owned context compaction BAML (SummarizeConversationPrefix).
-COPY baml_src/host /opt/agentium/baml_src/host
-ENV BAML_HOST_SCHEMA_DIR=/opt/agentium
 
 # ONNX models for embedding/drift detection (git-lfs tracked).
 # Fail fast if LFS pointers were not resolved (e.g. missing `git lfs pull`).

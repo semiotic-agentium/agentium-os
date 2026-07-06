@@ -4,7 +4,7 @@
 
 //! Host-owned BAML compaction engine (implements [`ConversationCompactionSummarizer`]).
 
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use baml_rt_core::{Result, bus::EffectEmitter, context::RuntimeScope};
@@ -17,9 +17,18 @@ use baml_rt_quickjs::{BamlRuntimeManager, llm_client_registry::LlmSecretResolver
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
-/// Directory whose `baml_src/` subtree contains host compaction BAML (repo root or package root).
+pub enum HostCompactionSource {
+    /// Load host BAML from embedded, compiled-in content.
+    Embedded {
+        root: &'static str,
+        files: &'static [(&'static str, &'static str)],
+    },
+    /// Load from an on-disk `<dir>/baml_src` (dev/operator override).
+    Dir(PathBuf),
+}
+
 pub struct HostCompactionConfig {
-    pub schema_dir: std::path::PathBuf,
+    pub source: HostCompactionSource,
 }
 
 /// Shared host BAML runtime loaded with `SummarizeConversationPrefix`.
@@ -39,12 +48,19 @@ impl HostCompactionEngine {
             .build()?;
         manager.set_llm_client_resolver(llm_resolver);
         manager.set_effect_emitter(effect_emitter);
-        let schema_path = config.schema_dir.to_str().ok_or_else(|| {
-            baml_rt_core::BamlRtError::InvalidArgument(
-                "host compaction schema path is not valid UTF-8".into(),
-            )
-        })?;
-        manager.load_schema(schema_path)?;
+        match config.source {
+            HostCompactionSource::Embedded { root, files } => {
+                manager.load_schema_from_files(root, files)?;
+            }
+            HostCompactionSource::Dir(schema_dir) => {
+                let schema_path = schema_dir.to_str().ok_or_else(|| {
+                    baml_rt_core::BamlRtError::InvalidArgument(
+                        "host compaction schema path is not valid UTF-8".into(),
+                    )
+                })?;
+                manager.load_schema(schema_path)?;
+            }
+        }
         Ok(Self {
             runtime: Arc::new(RwLock::new(manager)),
         })

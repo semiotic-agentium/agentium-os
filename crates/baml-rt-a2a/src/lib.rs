@@ -45,4 +45,4 @@ pub use baml_rt_core::{A2aJsChatHost, A2aRequestHandler};
 pub use conversation_context::ProjectingConversationContextProvider;
 pub use dispatch_port::RegistryDispatchPort;
 pub use event_dispatcher::EventDispatcher;
-pub use host_compaction::{HostCompactionConfig, HostCompactionEngine};
+pub use host_compaction::{HostCompactionConfig, HostCompactionEngine, HostCompactionSource};
