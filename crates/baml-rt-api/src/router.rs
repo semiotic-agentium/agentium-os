@@ -35,6 +35,7 @@ use baml_rt_router::auth::{ClusterAuthConfig, ClusterAuthLayer};
 use baml_rt_tools::{InventoryCatalog, ToolCatalog};
 use serde_json::json;
 use tower_http::{
+    catch_panic::CatchPanicLayer,
     services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
@@ -721,7 +722,13 @@ pub fn api_router_with_services_and_deploy(
         router = router.nest("/repository", repo_router);
     }
 
-    router
+    // Outermost middleware: catch any handler or middleware panic, convert it
+    // to a 500, and keep the per-connection task from unwinding into a dropped
+    // socket. A panic in one request must never bring down the listener or the
+    // process — request work stays isolated per the runtime crash-handling
+    // invariant. Fatal fail-fast is reserved for the structural tasks the
+    // runner owns (HTTP listener, event poll loop), handled in the runner.
+    router.layer(CatchPanicLayer::new())
 }
 
 /// Run the HTTP server with the full [`ApiServerConfig`].
