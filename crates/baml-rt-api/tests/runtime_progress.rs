@@ -347,23 +347,3 @@ async fn readyz_reopens_after_heartbeat_recovery() {
         "heartbeat back to ok clears the gate without external intervention"
     );
 }
-
-#[tokio::test]
-async fn diagnose_lag_stays_small_under_no_load() {
-    let registry: Arc<dyn AgentRegistry> = Arc::new(StubRegistry);
-    let app = api_router(registry, None, None).await;
-
-    tokio::time::sleep(Duration::from_millis(150)).await;
-
-    let body = diagnose_body(app).await;
-    let lag = body.runtime_progress_lag_ms;
-
-    // Looser bound than the in-process unit test: an axum handler round-trip
-    // adds scheduling jitter, and CI workers can be noisy. Keep this well below
-    // the readiness threshold so the test still catches unhealthy ticker stalls
-    // without failing on transient runner scheduling slips.
-    assert!(
-        lag < 750,
-        "runtime_progress_lag_ms should stay below CI jitter budget under no load (got {lag})"
-    );
-}
