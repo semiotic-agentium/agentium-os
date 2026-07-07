@@ -513,6 +513,12 @@ pub struct ProvenanceArchiveRecord {
     pub payloads: Vec<ProvenanceArchivePayload>,
 }
 
+#[derive(Debug, Clone)]
+pub struct GateActivityQueryResult {
+    pub rows: Vec<crate::ops_types::ProvenanceOpsRow>,
+    pub truncated: bool,
+}
+
 /// Operational analytics queries over the provenance store.
 ///
 /// **Graph-first contract:** Query results should derive relationships from node properties
@@ -524,6 +530,11 @@ pub trait ProvenanceOpsQuery: Send + Sync {
         &self,
         request: ProvenanceOpsQueryRequest,
     ) -> Result<ProvenanceOpsQueryResponse>;
+
+    async fn query_gate_activity(
+        &self,
+        filters: crate::episode::AgentGateActivityFilters,
+    ) -> Result<GateActivityQueryResult>;
 
     /// Resolve an opaque archive reference into its persisted payload.
     ///

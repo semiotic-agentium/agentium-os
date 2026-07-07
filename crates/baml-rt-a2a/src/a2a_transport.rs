@@ -461,9 +461,6 @@ async fn wire_provenance_subsystems(
                 if s.is_empty() { None } else { Some(s) }
             },
         ));
-        // Otherwise the first IntentResolved / PlanGenerated blocks on ONNX init before any
-        // provenance row hits the store — the UI stays empty for ~tens of seconds.
-        subscriber.warm_drift_models().await;
         effect_emitter
             .subscribe_effect_subscriber(Arc::new(subscriber))
             .await;
@@ -484,12 +481,15 @@ async fn wire_provenance_subsystems(
         effect_emitter.subscribe_effect_subscriber(subscriber).await;
     }
 
-    // Subsystem 2: ProvenanceInterceptor → tool pipeline of the interceptor registry.
-    // IMPORTANT: interception is for influencing runtime behavior, not provenance recording.
-    // Provenance writes (LLM + tool) are effect-bus only via `ProvenanceEffectSubscriber`.
+    // Subsystem 2: ProvenanceInterceptor + SemioticToolInterceptor → tool pipeline.
     {
+        use baml_rt_semiotic::{
+            SemioticToolInterceptor, TrojanLintLLMInterceptor, global_grounding_store,
+        };
         let mut registry = interceptor_registry.lock().await;
         registry.register_tool_interceptor(ProvenanceInterceptor::new(writer.clone()));
+        registry.register_tool_interceptor(SemioticToolInterceptor::new(global_grounding_store()));
+        registry.register_llm_interceptor(TrojanLintLLMInterceptor);
     }
 
     // Subsystem 3: ConversationContextProvider → runtime.
@@ -1361,6 +1361,7 @@ impl A2aAgentBuilderWithEffectEmitter {
         {
             let mut runtime_guard = runtime.write().await;
             runtime_guard.set_effect_emitter(self.effect_emitter.clone());
+            runtime_guard.set_agent_package(Some(agent_package.as_str()));
         }
 
         if self.register_baml_functions || !self.init_js.is_empty() {
@@ -1729,6 +1730,18 @@ impl A2aRequestHandler for A2aAgent {
 
 impl A2aJsChatHost for A2aAgent {}
 
+fn resume_user_message_text(parsed: &a2a::A2aRequest) -> Option<String> {
+    let a2a::A2aParams::MessageSendStream(params) = &parsed.params else {
+        return None;
+    };
+    params
+        .message
+        .parts
+        .iter()
+        .find_map(|p| p.text.as_ref().map(|t| t.trim().to_string()))
+        .filter(|t| !t.is_empty())
+}
+
 /// Wire chunk when the collector signals `InputRequired` completion with a null payload.
 /// Not wire-final (`final: false`); both `task.status` and `statusUpdate.status` carry
 /// `TASK_STATE_INPUT_REQUIRED` so clients (e.g. `getStateFromChunk`) stay aligned.
@@ -1977,6 +1990,26 @@ impl A2aAgent {
                         drop(abort_tx);
                         return TurnAction::Break;
                     }
+                }
+
+                if let Some(task_id) = session_task_id.as_ref() {
+                    let scope = baml_rt_core::context::RuntimeScope::task_scope(
+                        session_context_id.clone(),
+                        self.agent_id.clone(),
+                        baml_rt_core::ids::MessageId::from("gate-auth-resume"),
+                        task_id.clone(),
+                    );
+                    let user_text = parsed_resume
+                        .as_ref()
+                        .and_then(resume_user_message_text);
+                    let action = baml_rt_semiotic::resolve_pending_gate_authorization(
+                        &scope,
+                        user_text.as_deref().unwrap_or("approve"),
+                    );
+                    tracing::debug!(
+                        ?action,
+                        "live stream resume: gate authorization resolved"
+                    );
                 }
 
                 if resume_tx.send(turn.request).await.is_err() {

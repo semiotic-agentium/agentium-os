@@ -32,17 +32,23 @@ class ProvenancePlanStep {
   depends_on string[]? @description("Prerequisite step_ids (same alias namespace as step_id); omit or [] if none.")
 }
 
+class ArchiveLedgerEntry {
+  archive_ref string @description("Archive handle, e.g. @7")
+  header string @description("Compact tool/action identity for this Send, without result body")
+}
+
 /// Runtime session state injected by the step-executor loop.
 /// Do not construct manually — values come from the FSM.
 class SessionContext {
   contract_version string
   session_open bool
-  status string @description("FSM status: awaiting_open | just_opened | done")
-  last_step_op string? @description("Previous FSM step op when known: open | send | read | finish | abort")
-  last_step_status string? @description("Previous FSM step status when known: open | done | finished | aborted")
+  status string @description("FSM status: awaiting_open | just_opened | result_ready | done. result_ready means previous direct Send completed and its archive is available; read it or move on, do not re-Send same input.")
+  last_step_op string? @description("Previous FSM step op when known: open | send | duplicate_send | read | finish | abort")
+  last_step_status string? @description("Previous FSM step status when known: open | done | duplicate | finished | aborted")
   last_archive_ref string? @description("Archive ref from the previous Send when available, e.g. @4")
   last_output_header string? @description("Compact archive header from the previous Send/Read when available")
   last_completion string? @description("Tool-specific terminal completion marker when available, e.g. DONE | INPUT_REQUIRED | INTERRUPTED")
+  archives ArchiveLedgerEntry[]? @description("Bounded ledger of Send archives already materialized this executor session. Use it to avoid identical Sends; PageRead/SearchRead existing refs when details are needed.")
 }
 
 /// Opaque JSON transport wrapper for host-managed tools and event payloads.
@@ -107,7 +113,7 @@ class ArchivePageReadStep {
 }
 
 /// Terminal hop without a host tool session: answer from visible conversation archives only.
-/// Do not emit when you need a fresh Open/Send — use ENTRY Open or ACTIVE Send instead.
+/// Do not emit when you need to invoke a tool — emit a Send instead (eligible one-shot tools Send directly on entry; tools needing configuration Open first).
 class ReadOnlyFinishStep {
   op "ReadOnlyFinish"
   reply StructuredReply @description("User-visible answer; citations must include every @N archive line evidence relied on — omitting citations when grounding on archives is invalid.")
@@ -523,7 +529,7 @@ function ChooseNotionAction__entry(
   goal: string,
   step_description: string,
   session_context: SessionContext
-) -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportNotionOpenStep | SupportNotionSendStep {
+) -> ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportNotionSendStep {
 
   client OpenRouterGPT
   prompt #"Archive refs: `@N` names a visible tool-result handle, not evidence by itself. Read archive content with SearchRead or PageRead before citing `@N:L` or `@N:L1-L2`.
@@ -560,9 +566,9 @@ Deterministic overrides:
 
 Output: one JSON object matching the narrowed phase return type. No markdown or prose.
 
-Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportNotionOpenStep | SupportNotionSendStep`.
+Return exactly one JSON object of type `ArchivePageReadStep | ArchiveSearchReadStep | ReadOnlyFinishStep | SupportNotionSendStep`.
 
-Use `op` as the discriminator: "Open" | "PageRead" | "ReadOnlyFinish" | "SearchRead" | "Send".
+Use `op` as the discriminator: "PageRead" | "ReadOnlyFinish" | "SearchRead" | "Send".
 SupportNotionSendStep Send: set `input.raw_blocks` to exactly one JSON string token: "Enriched" | "Raw" — never an object or sentence.
 Do not add text before or after the JSON object.
 

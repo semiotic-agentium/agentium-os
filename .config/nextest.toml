@@ -114,11 +114,11 @@ test-group = "llm-heavy"
 slow-timeout = { period = "360s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 2, delay = "5s" }
 
+
 [[profile.ci.overrides]]
-filter = 'package(baml-agent-runner) and binary(drift_integration_test)'
+filter = 'package(baml-rt-semiotic) and test(corpus_p4_gate_oracle)'
 test-group = "llm-heavy"
-slow-timeout = { period = "360s", terminate-after = 2 }
-retries = { backoff = "fixed", count = 2, delay = "5s" }
+slow-timeout = { period = "120s", terminate-after = 2 }
 
 [[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and binary(runner_starvation_test)'
@@ -217,12 +217,11 @@ test-group = "llm-heavy"
 slow-timeout = { period = "360s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 2, delay = "5s" }
 
-# Security-eval + LLM drift integration is timing/network heavy; serialize this binary.
+# Semiotic corpus oracle — pure-function gate decisions.
 [[profile.ci-merged.overrides]]
-filter = 'package(baml-agent-runner) and binary(drift_integration_test)'
+filter = 'package(baml-rt-semiotic) and test(corpus_p4_gate_oracle)'
 test-group = "llm-heavy"
-slow-timeout = { period = "360s", terminate-after = 2 }
-retries = { backoff = "fixed", count = 2, delay = "5s" }
+slow-timeout = { period = "120s", terminate-after = 2 }
 
 [[profile.ci-merged.overrides]]
 filter = 'package(baml-agent-runner) and binary(runner_starvation_test)'

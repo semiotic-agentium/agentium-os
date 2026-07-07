@@ -187,6 +187,7 @@ pub fn extract_context_from_http_request(
     http_request: &baml_types::tracing::events::HTTPRequest,
     function_name: &str,
     planning_step: Option<(&str, &str)>,
+    agent_package: Option<&str>,
 ) -> Result<LLMCallContext> {
     // Extract client and model from client_details
     // HTTPRequest has fields: id, url, method, body, client_details (Arc<ClientDetails>)
@@ -293,6 +294,9 @@ pub fn extract_context_from_http_request(
         metadata_map.insert("plan_id".to_string(), Value::String(plan_id.to_string()));
         metadata_map.insert("step_id".to_string(), Value::String(step_id.to_string()));
     }
+    if let Some(pkg) = agent_package {
+        metadata_map.insert("agent_package".to_string(), Value::String(pkg.to_string()));
+    }
 
     Ok(LLMCallContext {
         client,
@@ -329,6 +333,7 @@ pub async fn intercept_llm_call_pre_execution(
     collector: Option<&crate::baml_collector::BamlLLMCollector>,
     planning_step: Option<(&str, &str)>,
     function_tool_manifest: &FunctionToolManifest,
+    agent_package: Option<&str>,
 ) -> Result<InterceptorDecision> {
     // Build the HTTP request to get LLM call details
     // This doesn't actually send the request, just builds it
@@ -402,13 +407,19 @@ pub async fn intercept_llm_call_pre_execution(
                 // Allow: interceptors are happy to let the call proceed — the probe
                 // failure is irrelevant.  call_function will make the actual LLM call.
                 InterceptorDecision::Allow => Ok(InterceptorDecision::Allow),
+                InterceptorDecision::RequireAuthorization(_) => Ok(InterceptorDecision::Allow),
             };
         }
     };
 
     // Extract LLM call context from the HTTP request
-    let context =
-        extract_context_from_http_request(scope, &http_request, function_name, planning_step)?;
+    let context = extract_context_from_http_request(
+        scope,
+        &http_request,
+        function_name,
+        planning_step,
+        agent_package,
+    )?;
 
     // Resolve tool name from the manifest (set at schema load time, no heuristics).
     let tool_name_resolution = match function_tool_manifest.tool_name_for_function(function_name) {

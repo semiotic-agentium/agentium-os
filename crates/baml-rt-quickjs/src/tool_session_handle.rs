@@ -30,10 +30,10 @@ use crate::{
     },
     provenance_errors::map_archive_provenance_err,
     quickjs_bridge::stream_yield::emit_stream_chunk_static,
-    tool_execution::{
-        ToolExecutionContext, build_metadata_map_with_phase, resolve_planning_step,
-        stamp_tool_effect_metadata_scope,
+    tool_effect_metadata::{
+        stamp_agent_package, stamp_tool_effect_metadata_scope, stamp_tool_registry_metadata,
     },
+    tool_execution::{ToolExecutionContext, build_metadata_map_with_phase, resolve_planning_step},
 };
 
 fn canonical_json(value: &Value) -> Value {
@@ -101,6 +101,8 @@ impl ToolSessionExecutionHandle {
         let start = Instant::now();
         let mut metadata = build_metadata_map_with_phase(&scope, Some("open"));
         stamp_tool_effect_metadata_scope(&scope, &mut metadata);
+        stamp_agent_package(self.ctx.agent_package.as_deref(), &mut metadata);
+        stamp_tool_registry_metadata(&self.ctx.tool_registry, tool_name, &mut metadata);
         if let Some((plan_id, step_id)) =
             resolve_planning_step(&self.ctx.execution_sessions, &scope)
             && let Some(obj) = metadata.as_object_mut()
@@ -115,6 +117,7 @@ impl ToolSessionExecutionHandle {
             args: open_input.clone(),
             metadata: metadata.clone(),
             runtime_scope: scope.clone(),
+            agent_package: self.ctx.agent_package.as_ref().map(|s| s.to_string()),
             delegation_target: delegation_target.clone(),
         };
 
@@ -134,8 +137,46 @@ impl ToolSessionExecutionHandle {
 
         // Record tool call start for "open" (session-based: open + execute = 2 invocations per request)
         let interceptor_registry = self.ctx.interceptor_registry.lock().await;
-        let _ = interceptor_registry.intercept_tool_call(&context).await?;
+        let intercept_decision = interceptor_registry.intercept_tool_call(&context).await;
+        interceptor_registry
+            .stamp_tool_metadata(&context, &mut metadata)
+            .await;
         drop(interceptor_registry);
+        match intercept_decision {
+            Ok(baml_rt_interceptor::InterceptorDecision::RequireAuthorization(prompt)) => {
+                self.ctx
+                    .emit_gate_blocked_effect(
+                        &context_id,
+                        tool_name,
+                        &open_input,
+                        &metadata,
+                        tool_backend.clone(),
+                        tool_digest.clone(),
+                    )
+                    .await;
+                return Err(BamlRtError::GateAuthorizationRequired { prompt });
+            }
+            Ok(
+                baml_rt_interceptor::InterceptorDecision::Allow
+                | baml_rt_interceptor::InterceptorDecision::Substitute(_),
+            ) => {}
+            Ok(baml_rt_interceptor::InterceptorDecision::Block(msg)) => {
+                self.ctx
+                    .emit_gate_blocked_effect(
+                        &context_id,
+                        tool_name,
+                        &open_input,
+                        &metadata,
+                        tool_backend.clone(),
+                        tool_digest.clone(),
+                    )
+                    .await;
+                return Err(BamlRtError::ToolExecution(format!(
+                    "Tool call blocked by interceptor: {msg}"
+                )));
+            }
+            Err(e) => return Err(e),
+        }
 
         let result = self
             .ctx
@@ -401,6 +442,12 @@ impl ToolSessionExecutionHandle {
             let start = Instant::now();
             let mut metadata = build_metadata_map_with_phase(&session_scope.scope, Some("send"));
             stamp_tool_effect_metadata_scope(&session_scope.scope, &mut metadata);
+            stamp_agent_package(self.ctx.agent_package.as_deref(), &mut metadata);
+            stamp_tool_registry_metadata(
+                &self.ctx.tool_registry,
+                &session_scope.tool_name,
+                &mut metadata,
+            );
             if let Some((plan_id, step_id)) =
                 resolve_planning_step(&self.ctx.execution_sessions, &session_scope.scope)
                 && let Some(obj) = metadata.as_object_mut()
@@ -418,17 +465,60 @@ impl ToolSessionExecutionHandle {
                 tool_name: session_scope.tool_name.clone(),
                 function_name: None,
                 args: input.clone(),
-                metadata,
+                metadata: metadata.clone(),
                 runtime_scope: session_scope.scope.clone(),
+                agent_package: self.ctx.agent_package.as_ref().map(|s| s.to_string()),
                 delegation_target,
             };
 
-            let interceptor_registry = self.ctx.interceptor_registry.lock().await;
-            let _decision: InterceptorDecision =
-                interceptor_registry.intercept_tool_call(&context).await?;
-            drop(interceptor_registry);
+            let (tool_backend, tool_digest) = self
+                .ctx
+                .tool_registry
+                .get_metadata(&session_scope.tool_name)
+                .map(|m| (Some(format!("{:?}", m.backend)), m.digest))
+                .unwrap_or((None, None));
 
-            // Keep a single in-flight state/token per session. This avoids replacing an
+            let interceptor_registry = self.ctx.interceptor_registry.lock().await;
+            let intercept_decision = interceptor_registry.intercept_tool_call(&context).await;
+            interceptor_registry
+                .stamp_tool_metadata(&context, &mut metadata)
+                .await;
+            drop(interceptor_registry);
+            let context_id = session_scope.scope.context_id().clone();
+            match intercept_decision {
+                Ok(InterceptorDecision::RequireAuthorization(prompt)) => {
+                    self.ctx
+                        .emit_gate_blocked_effect(
+                            &context_id,
+                            &session_scope.tool_name,
+                            &input,
+                            &metadata,
+                            tool_backend.clone(),
+                            tool_digest.clone(),
+                        )
+                        .await;
+                    return Err(BamlRtError::GateAuthorizationRequired { prompt });
+                }
+                Ok(InterceptorDecision::Allow | InterceptorDecision::Substitute(_)) => {}
+                Ok(InterceptorDecision::Block(msg)) => {
+                    self.ctx
+                        .emit_gate_blocked_effect(
+                            &context_id,
+                            &session_scope.tool_name,
+                            &input,
+                            &metadata,
+                            tool_backend,
+                            tool_digest,
+                        )
+                        .await;
+                    return Err(BamlRtError::ToolExecution(format!(
+                        "Tool call blocked by interceptor: {msg}"
+                    )));
+                }
+                Err(e) => return Err(e),
+            }
+
+            // Keep a single in-flight state/token per session.
             // existing EffectStartToken on duplicate send() calls (which would leak/panic).
             let is_new_send = {
                 match self.tool_session_states.entry(session_id.clone()) {
@@ -662,6 +752,7 @@ impl ToolSessionExecutionHandle {
                         args: input.clone(),
                         metadata: read_ctx_meta,
                         runtime_scope: scope_entry.scope.clone(),
+                        agent_package: self.ctx.agent_package.as_ref().map(|s| s.to_string()),
                         delegation_target: extract_delegation_target_from_open_input(
                             &scope_entry.tool_name,
                             &scope_entry.open_input,

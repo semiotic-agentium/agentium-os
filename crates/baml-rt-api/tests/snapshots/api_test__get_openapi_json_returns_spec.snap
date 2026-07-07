@@ -478,6 +478,89 @@ expression: snapshot
           ]
         }
       },
+      "/config/semiotic/activity": {
+        "get": {
+          "tags": [
+            "config"
+          ],
+          "summary": "Provenance-backed gate activity for operator incident diagnosis.",
+          "operationId": "get_semiotic_activity",
+          "parameters": [
+            {
+              "name": "windowHours",
+              "in": "query",
+              "description": "Rolling lookback hours (max 168)",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            },
+            {
+              "name": "agentPackage",
+              "in": "query",
+              "description": "Filter to one agent package",
+              "required": false,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "limit",
+              "in": "query",
+              "description": "Max recent incidents per agent (max 50)",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Gate activity rollup"
+            },
+            "401": {
+              "description": "Missing or invalid runner token"
+            },
+            "503": {
+              "description": "Provenance or config unavailable"
+            }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
+        }
+      },
+      "/config/semiotic/effective": {
+        "get": {
+          "tags": [
+            "config"
+          ],
+          "summary": "Resolved semiotic policies for system default and each agent package.",
+          "operationId": "get_semiotic_effective",
+          "responses": {
+            "200": {
+              "description": "Resolved semiotic gate policies"
+            },
+            "401": {
+              "description": "Missing or invalid runner token"
+            },
+            "503": {
+              "description": "Config service not available"
+            }
+          },
+          "security": [
+            {
+              "RunnerToken": []
+            }
+          ]
+        }
+      },
       "/config/{bundle_name}": {
         "get": {
           "tags": [

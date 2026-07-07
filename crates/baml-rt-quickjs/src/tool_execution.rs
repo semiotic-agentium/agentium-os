@@ -16,14 +16,19 @@ use baml_rt_core::{
     context,
     correlation::current_correlation_id,
 };
-use baml_rt_interceptor::{InterceptorRegistry, ToolCallContext};
+use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry, ToolCallContext};
 use baml_rt_observability::metrics;
 use baml_rt_tools::{ToolRegistry as ConcreteToolRegistry, archive_refs::ContextRefTables};
 use dashmap::DashMap;
 use serde_json::Value;
 use tokio::sync::Mutex as TokioMutex;
 
-use crate::baml::tool_extraction::{extract_tool_call, resolve_tool_name_from_input_with_registry};
+use crate::{
+    baml::tool_extraction::{extract_tool_call, resolve_tool_name_from_input_with_registry},
+    tool_effect_metadata::{
+        stamp_agent_package, stamp_tool_effect_metadata_scope, stamp_tool_registry_metadata,
+    },
+};
 
 /// Overwrite `message_id`, `agent_id`, and `task_id` (when task-scoped) on tool-effect metadata
 /// using the authoritative [`context::RuntimeScope`].
@@ -31,30 +36,6 @@ use crate::baml::tool_extraction::{extract_tool_call, resolve_tool_name_from_inp
 /// Downstream code may enrich the JSON map after [`build_metadata_map_with_phase`]; this keeps
 /// provenance effect metadata aligned with the scope actually executing the tool so
 /// `ProvenanceEffectSubscriber` always records task-scoped tool calls under the correct task.
-pub(crate) fn stamp_tool_effect_metadata_scope(
-    scope: &context::RuntimeScope,
-    metadata: &mut Value,
-) {
-    let Value::Object(obj) = metadata else {
-        return;
-    };
-    obj.insert(
-        "message_id".to_string(),
-        Value::String(scope.message_id().as_str().to_string()),
-    );
-    obj.insert(
-        "agent_id".to_string(),
-        Value::String(scope.agent_id().as_str().to_string()),
-    );
-    if let Some(task_id) = scope.task_id_opt() {
-        obj.insert(
-            "task_id".to_string(),
-            Value::String(task_id.as_str().to_string()),
-        );
-    }
-}
-
-/// Build a metadata map for tool/session effects, including correlation, scope IDs, and optional FSM phase.
 pub(crate) fn build_metadata_map_with_phase(
     scope: &context::RuntimeScope,
     phase: Option<&'static str>,
@@ -134,6 +115,8 @@ pub(crate) struct ToolExecutionContext {
     pub archive_ref_tables: Arc<ContextRefTables>,
     /// When set (Surreal-backed agent), new archives allocate `@prefix/local` in the store.
     pub archive_ref_store: Option<Arc<baml_rt_provenance::SurrealProvenanceStore>>,
+    /// Deployed agent package stamped on tool-call metadata for per-agent policy resolution.
+    pub agent_package: Option<Arc<str>>,
 }
 
 impl ToolExecutionContext {
@@ -171,6 +154,8 @@ impl ToolExecutionContext {
         let agent_id = scope.agent_id().clone();
         let mut metadata = build_metadata_map_with_phase(&scope, Some("execute"));
         stamp_tool_effect_metadata_scope(&scope, &mut metadata);
+        stamp_agent_package(self.agent_package.as_deref(), &mut metadata);
+        stamp_tool_registry_metadata(&self.tool_registry, name, &mut metadata);
         if let Some((plan_id, step_id)) = resolve_planning_step(&self.execution_sessions, &scope)
             && let Some(obj) = metadata.as_object_mut()
         {
@@ -184,6 +169,7 @@ impl ToolExecutionContext {
             args: args.clone(),
             metadata: metadata.clone(),
             runtime_scope: scope.clone(),
+            agent_package: self.agent_package.as_ref().map(|s| s.to_string()),
             delegation_target: None,
         };
 
@@ -193,6 +179,45 @@ impl ToolExecutionContext {
             .map(|m| (format!("{:?}", m.backend), m.digest))
             .map(|(backend, digest)| (Some(backend), digest))
             .unwrap_or((None, None));
+
+        let interceptor_registry = self.interceptor_registry.lock().await;
+        let intercept_decision = interceptor_registry.intercept_tool_call(&context).await;
+        interceptor_registry
+            .stamp_tool_metadata(&context, &mut metadata)
+            .await;
+        drop(interceptor_registry);
+
+        match intercept_decision {
+            Ok(InterceptorDecision::RequireAuthorization(prompt)) => {
+                self.emit_gate_blocked_effect(
+                    &context_id,
+                    name,
+                    &args,
+                    &metadata,
+                    tool_backend.clone(),
+                    tool_digest.clone(),
+                )
+                .await;
+                return Err(BamlRtError::GateAuthorizationRequired { prompt });
+            }
+            Ok(InterceptorDecision::Allow) | Ok(InterceptorDecision::Substitute(_)) => {}
+            Ok(InterceptorDecision::Block(msg)) => {
+                self.emit_gate_blocked_effect(
+                    &context_id,
+                    name,
+                    &args,
+                    &metadata,
+                    tool_backend.clone(),
+                    tool_digest.clone(),
+                )
+                .await;
+                return Err(BamlRtError::ToolExecution(format!(
+                    "Tool call blocked by interceptor: {msg}"
+                )));
+            }
+            Err(e) => return Err(e),
+        }
+
         let effect_metadata = ToolEffectMetadata {
             tool_name: name.to_string(),
             function_name: None,
@@ -215,31 +240,6 @@ impl ToolExecutionContext {
             }
         } else {
             None
-        };
-
-        let interceptor_registry = self.interceptor_registry.lock().await;
-        let interceptor_result = interceptor_registry.intercept_tool_call(&context).await;
-        drop(interceptor_registry);
-        if let Err(e) = interceptor_result {
-            if let Some(token) = effect_token
-                && let Some(emitter) = self.effect_emitter.as_ref()
-            {
-                let duration_ms = start.elapsed().as_millis() as u64;
-                if let Err(complete_err) = token
-                    .complete(emitter.as_ref(), duration_ms, Outcome::Failure, None)
-                    .await
-                {
-                    tracing::warn!(
-                        error = ?complete_err,
-                        "Failed to complete tool effect after interceptor denied"
-                    );
-                }
-            }
-            return Err(e);
-        }
-        let _decision = match interceptor_result {
-            Ok(d) => d,
-            Err(_) => unreachable!("Err branch returned above"),
         };
 
         let final_args = args;
@@ -272,5 +272,68 @@ impl ToolExecutionContext {
         metrics::record_tool_invocation(name, metric_result, duration);
 
         result
+    }
+
+    pub(crate) async fn emit_gate_blocked_effect(
+        &self,
+        context_id: &baml_rt_core::ids::ContextId,
+        name: &str,
+        args: &Value,
+        metadata: &Value,
+        tool_backend: Option<String>,
+        tool_digest: Option<String>,
+    ) {
+        tracing::info!(
+            tool = name,
+            context_id = %context_id,
+            has_emitter = self.effect_emitter.is_some(),
+            has_gate_meta = metadata
+                .get("semiotic_gate")
+                .is_some(),
+            "emit_gate_blocked_effect"
+        );
+        let Some(emitter) = self.effect_emitter.as_ref() else {
+            tracing::warn!(
+                tool = name,
+                context_id = %context_id,
+                "gate blocked effect skipped: effect_emitter not wired"
+            );
+            return;
+        };
+        let effect_metadata = ToolEffectMetadata {
+            tool_name: name.to_string(),
+            function_name: None,
+            args: args.clone(),
+            metadata: metadata.clone(),
+            delegation_target: None,
+            tool_backend,
+            tool_digest,
+        };
+        let token = match emitter
+            .start_tool(context_id.clone(), effect_metadata)
+            .await
+        {
+            Ok(token) => token,
+            Err(e) => {
+                tracing::warn!(
+                    tool = name,
+                    context_id = %context_id,
+                    error = ?e,
+                    "gate blocked effect: start_tool failed"
+                );
+                return;
+            }
+        };
+        if let Err(e) = token
+            .complete(emitter.as_ref(), 0, Outcome::Failure, None)
+            .await
+        {
+            tracing::warn!(
+                tool = name,
+                context_id = %context_id,
+                error = ?e,
+                "gate blocked effect: tool complete failed"
+            );
+        }
     }
 }

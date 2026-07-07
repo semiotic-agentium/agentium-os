@@ -28,6 +28,7 @@ import {
 } from "./toolNotificationEvents";
 import { stripLegacyStructuredPlaceholderLines } from "./legacyStructuredPlaceholders";
 import { isSyntheticInputRequiredPrompt } from "./inputRequiredUi";
+import { isGateAuthorizationPrompt } from "./gateAuthorizationUi";
 import { isWorkflowStatusText, shouldSuppressAgentTranscriptText } from "./workflowUiFilters";
 import { parseToolOutcome } from "./parseToolOutcome";
 import type { OperationalContentBlock } from "../types/a2a";
@@ -201,6 +202,7 @@ export function syncResumeHintsFromPage(
     if (m.role === "agent") {
       m.awaitingInput = false;
       m.inputRequiredPrompt = undefined;
+      m.gateAuthorization = false;
     }
   }
   if (!page.awaitingInput) return;
@@ -212,6 +214,7 @@ export function syncResumeHintsFromPage(
       const trimmed = typeof p === "string" ? p.trim() : "";
       m.inputRequiredPrompt =
         trimmed.length > 0 && !isSyntheticInputRequiredPrompt(trimmed) ? trimmed : undefined;
+      m.gateAuthorization = isGateAuthorizationPrompt(trimmed);
       break;
     }
   }

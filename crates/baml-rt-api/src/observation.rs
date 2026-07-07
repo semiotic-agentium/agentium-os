@@ -23,18 +23,22 @@ pub struct ObservationInclude {
     pub llm_ops: bool,
     pub tool_ops: bool,
     pub drift: bool,
+    pub gate: bool,
 }
 
 impl ObservationInclude {
     pub fn from_query(
         raw: Option<&str>,
         include_drift: bool,
+        include_gate: bool,
     ) -> Result<Self, ObservationRequestParseError> {
+        let gate = include_gate || include_drift;
         let mut out = Self {
             planning: true,
             llm_ops: true,
             tool_ops: true,
             drift: include_drift,
+            gate,
         };
         let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
             return Ok(out);
@@ -49,11 +53,13 @@ impl ObservationInclude {
                 "llmops" | "llm_ops" | "llm" => out.llm_ops = true,
                 "toolops" | "tool_ops" | "tool" => out.tool_ops = true,
                 "drift" => out.drift = true,
+                "gate" => out.gate = true,
                 "all" => {
                     out.planning = true;
                     out.llm_ops = true;
                     out.tool_ops = true;
                     out.drift = include_drift;
+                    out.gate = gate;
                 }
                 other if !other.is_empty() => {
                     return Err(ObservationRequestParseError::UnknownInclude(
@@ -76,6 +82,7 @@ pub struct ObservationQueryParams {
     /// Comma-separated: planning, llmOps, toolOps, drift, all
     pub include: Option<String>,
     pub include_drift: Option<bool>,
+    pub include_gate: Option<bool>,
     pub ops_page_size: Option<u32>,
 }
 
@@ -108,12 +115,17 @@ impl ObservationRequest {
             .map(parse_agent_id)
             .transpose()?;
         let include_drift = params.include_drift.unwrap_or(false);
+        let include_gate = params.include_gate.unwrap_or(include_drift);
         Ok(Self {
             context_id,
             task_id,
             agent_package: params.agent_package.filter(|s| !s.is_empty()),
             agent_id,
-            include: ObservationInclude::from_query(params.include.as_deref(), include_drift)?,
+            include: ObservationInclude::from_query(
+                params.include.as_deref(),
+                include_drift,
+                include_gate,
+            )?,
             ops_page_size: params.ops_page_size.unwrap_or(20).clamp(1, 50),
             planning_history_limit: crate::planning::DEFAULT_PLANNING_HISTORY_LIMIT,
         })

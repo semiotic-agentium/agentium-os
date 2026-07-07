@@ -127,21 +127,21 @@ describe("useContextObserve", () => {
     await Promise.resolve();
   });
 
-  it("includes includeDrift in scope key", async () => {
+  it("includes includeGate in scope key", async () => {
     const contextId = ref("ctx-1");
-    const includeDrift = ref(false);
+    const includeGate = ref(false);
     const active = ref(false);
 
     useContextObserve({
       contextId,
-      includeDrift,
+      includeGate,
       active,
     });
 
     await Promise.resolve();
     const callsAfterMount = vi.mocked(fetch).mock.calls.length;
 
-    includeDrift.value = true;
+    includeGate.value = true;
     await Promise.resolve();
     expect(vi.mocked(fetch).mock.calls.length).toBeGreaterThan(callsAfterMount);
   });

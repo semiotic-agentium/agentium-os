@@ -17,7 +17,7 @@ use baml_rt_core::{
         TaskId,
     },
 };
-use baml_rt_embedding::{BipiaSignalInputs, DriftMode, DriftSeverity};
+use baml_rt_semiotic::CitationIntegrityAssessment;
 use baml_rt_tools::prompt_message_char_count;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, Value as JsonValue};
@@ -212,8 +212,6 @@ pub struct ResolvedCitationTarget {
     pub line_end: Option<usize>,
     /// Counter-evidence (`!@N`, `!#N`).
     pub negated: bool,
-    /// Cosine similarity from drift scoring, if available.
-    pub similarity: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -225,211 +223,6 @@ pub enum LlmUsage {
         cached_input_tokens: Option<u64>,
     },
     Unknown,
-}
-
-/// Per-citation similarity entry in the provenance record.
-///
-/// Stores both the scoring result **and** the resolved evidence so the API can
-/// surface the actual text that the LLM cited — not just the shorthand ref.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct LlmCitationSimilarity {
-    /// The ref number (`N` in `#N` or `@N`).
-    pub n: u32,
-    /// `true` for history refs (`#N`), `false` for archive refs (`@N`).
-    pub is_history: bool,
-    /// Counter-evidence citation (`!#N` or `!@N`); excluded from `mean_similarity`.
-    #[serde(default)]
-    pub negated: bool,
-    /// Cosine similarity between the decision text and the cited content.
-    pub similarity: f32,
-    /// Raw citation string exactly as the LLM emitted it (e.g. `"#1"`, `"@2:L3-L5"`, `"!@1"`).
-    #[serde(default)]
-    pub raw: String,
-    /// Stable event ID of the cited activity — usable for provenance graph lookup.
-    #[serde(default)]
-    pub activity_anchor: String,
-    /// First 400 characters of the resolved content of the cited entry.
-    ///
-    /// For `#N` history refs this is the message/tool-call text; for `@N` archive
-    /// refs this is the archived tool result (scoped to any requested line range).
-    #[serde(default)]
-    pub content_preview: String,
-}
-
-/// Citation-grounded drift info stored on every LLM call completion that produced citations.
-///
-/// This is the persisted form of [`baml_rt_embedding::CitationDriftAssessment`]; it stores
-/// both the scoring results and the resolved evidence text so downstream consumers (API,
-/// UI, eval tooling) can display what the model actually cited without re-resolving.
-///
-/// ## Interpreting `mean_similarity`
-///
-/// Calibrated ranges (from `tests/fixtures/drift/`):
-///
-/// - `> 0.85` and `coverage > 0` — near-verbatim copy of archive; **synthesis BIPIA signature**
-/// - `0.67–0.78` — legitimate synthesis: paraphrase + reorganise from retrieved data
-/// - `0.40–0.67` — moderate grounding; same domain, partial overlap
-/// - `< 0.40` — likely wrong archive cited, or very weak grounding
-/// - `= 1.0` with `coverage = 0` — **vacuous**: no citations were emitted at all
-///
-/// ## Interpreting `coverage`
-///
-/// `coverage = 0` is the primary signal for *missing citations*. In
-/// [`baml_rt_tools::citations::CitationMode::Enforce`] this causes the call to be
-/// rejected at the source before it reaches this record.
-///
-/// ## BIPIA composite rule
-///
-/// Combine with `plan_drift.step_alignment` from the same call to evaluate the
-/// 2D injection firewall. See [`baml_rt_embedding::score_bipia_signal`] for the
-/// full rule and threshold guidance. Neither signal alone is sufficient:
-/// - `step_alignment` alone misses synthesis injections (step descriptions too broad)
-/// - `mean_similarity` alone fires on legitimate grounded synthesis (0.67–0.78)
-/// - Together they isolate the injection quadrant reliably across 39 test scenarios
-///
-/// ## Known limitations (unchanged from the scoring layer)
-///
-/// Numeric hallucination and broad generalisation errors are **not detectable** via
-/// this signal. Both "$7.8M revenue" and "$4.2M revenue" embed near the same
-/// "Q3 revenue figure" centroid.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct LlmCitationDriftInfo {
-    /// One entry per citation the LLM emitted, including negated counter-evidence.
-    /// Negated entries are reported here but excluded from `mean_similarity`.
-    pub per_citation: Vec<LlmCitationSimilarity>,
-    /// Mean cosine similarity across **positive** (non-negated) citations only.
-    /// `1.0` is vacuous when `coverage = 0` (no citations) or when all citations are negated.
-    pub mean_similarity: f32,
-    /// Fraction of decisions that emitted at least one citation (cited_decisions / total_decisions).
-    /// `0.0` means no citations were provided — the primary missing-citation signal.
-    pub coverage: f32,
-    pub total_decisions: usize,
-    pub cited_decisions: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct LlmDriftInfo {
-    pub score: f32,
-    pub severity: DriftSeverity,
-    pub mode: DriftMode,
-    pub warn_min_score: f32,
-    pub block_min_score: f32,
-    pub intent_text_preview: String,
-    pub response_text_preview: String,
-    /// The plan step description that the response was compared against.
-    /// Present for PlanCommitted calls; empty for pre-plan calls.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub step_text_preview: String,
-    /// Plan-anchored drift fields — present only when the task has an active
-    /// committed plan at the time of the LLM call.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub plan_drift: Option<LlmPlanDriftInfo>,
-    /// Citation-grounded drift — present when the LLM produced citations.
-    /// Independent signal; composition with tactical/plan drift is empirical.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub citation_drift: Option<LlmCitationDriftInfo>,
-}
-
-/// Shared numeric scores common to both plan phases.
-/// Serialised with `#[serde(flatten)]` so the JSON wire shape stays flat:
-/// `{ "intentAlignment": 0.3, "trajectoryDrift": 0.9, ... }`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct PlanDriftScores {
-    pub intent_alignment: f32,
-    pub trajectory_drift: f32,
-    pub plan_adherence_score: f32,
-    pub composite_severity: DriftSeverity,
-}
-
-/// Plan-anchored drift scores attached to an LLM call completion.
-///
-/// Discriminated by plan phase so the pre-plan/post-plan distinction is
-/// preserved end-to-end from scorer → events → store → API → UI.
-/// Pre-plan variants structurally cannot contain step alignment.
-/// Post-plan variants structurally guarantee it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "phase")]
-pub enum LlmPlanDriftInfo {
-    #[serde(rename = "pre_plan")]
-    PrePlan {
-        #[serde(flatten)]
-        scores: PlanDriftScores,
-    },
-    #[serde(rename = "plan_committed")]
-    PlanCommitted {
-        #[serde(flatten)]
-        scores: PlanDriftScores,
-        step_alignment: f32,
-        /// Cross-encoder relevance logit for (step_description, response).
-        /// Always present when PlanCommitted — the reranker is always configured.
-        cross_encoder_step_score: f32,
-    },
-}
-
-impl LlmPlanDriftInfo {
-    pub fn intent_alignment(&self) -> f32 {
-        match self {
-            Self::PrePlan { scores } | Self::PlanCommitted { scores, .. } => {
-                scores.intent_alignment
-            }
-        }
-    }
-
-    pub fn step_alignment(&self) -> Option<f32> {
-        match self {
-            Self::PrePlan { .. } => None,
-            Self::PlanCommitted { step_alignment, .. } => Some(*step_alignment),
-        }
-    }
-
-    pub fn trajectory_drift(&self) -> f32 {
-        match self {
-            Self::PrePlan { scores } | Self::PlanCommitted { scores, .. } => {
-                scores.trajectory_drift
-            }
-        }
-    }
-
-    pub fn plan_adherence_score(&self) -> f32 {
-        match self {
-            Self::PrePlan { scores } | Self::PlanCommitted { scores, .. } => {
-                scores.plan_adherence_score
-            }
-        }
-    }
-
-    pub fn composite_severity(&self) -> DriftSeverity {
-        match self {
-            Self::PrePlan { scores } | Self::PlanCommitted { scores, .. } => {
-                scores.composite_severity
-            }
-        }
-    }
-
-    /// Return a copy of this info with `composite_severity` escalated.
-    /// Used by the BIPIA firewall to escalate to `Block` when the 2D geometric
-    /// fingerprint fires (low step_alignment + high cite_mean), even if individual
-    /// 1D thresholds would produce only `Warn`.
-    pub fn with_escalated_severity(mut self, severity: DriftSeverity) -> Self {
-        match &mut self {
-            Self::PlanCommitted { scores, .. } | Self::PrePlan { scores } => {
-                scores.composite_severity = severity;
-            }
-        }
-        self
-    }
-}
-
-impl BipiaSignalInputs for LlmCitationDriftInfo {
-    fn mean_similarity(&self) -> f32 {
-        self.mean_similarity
-    }
-    fn positive_citation_count(&self) -> usize {
-        self.per_citation.iter().filter(|c| !c.negated).count()
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -487,8 +280,8 @@ pub struct PlanStepSpec {
 
 /// UTF-8 byte length of `serde_json::to_string(prompt)` — canonical serialized prompt size for telemetry and graph props.
 ///
-/// Computed **once** when constructing [`ProvEventData::LlmCallCompleted`] (see [`ProvEvent::llm_call_completed_global_with_drift`] /
-/// [`ProvEvent::llm_call_completed_task_with_drift`]); downstream code copies the value — no second serialization.
+/// Computed **once** when constructing [`ProvEventData::LlmCallCompleted`] (see [`ProvEvent::llm_call_completed_global_with_integrity`] /
+/// [`ProvEvent::llm_call_completed_task_with_integrity`]); downstream code copies the value — no second serialization.
 #[must_use]
 pub fn serialized_prompt_utf8_len(prompt: &Value) -> u64 {
     serde_json::to_string(prompt)
@@ -516,7 +309,7 @@ pub enum ProvEventData {
         usage: LlmUsage,
         duration_ms: u64,
         outcome: Outcome,
-        drift: Option<Box<LlmDriftInfo>>,
+        citation_integrity: Option<CitationIntegrityAssessment>,
         /// Parsed citation strings co-produced by the LLM in this call.
         /// Empty when the BAML wrapper type produced no citations.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -962,7 +755,7 @@ impl ProvEvent {
         duration_ms: u64,
         outcome: Outcome,
     ) -> Self {
-        Self::llm_call_completed_global_with_drift(
+        Self::llm_call_completed_global_with_integrity(
             context_id,
             message_id,
             client,
@@ -983,7 +776,7 @@ impl ProvEvent {
         clippy::too_many_arguments,
         reason = "event constructor mirrors the provenance event's full field set; a params struct would only duplicate the schema"
     )]
-    pub fn llm_call_completed_global_with_drift(
+    pub fn llm_call_completed_global_with_integrity(
         context_id: ContextId,
         message_id: MessageId,
         client: String,
@@ -994,7 +787,7 @@ impl ProvEvent {
         usage: LlmUsage,
         duration_ms: u64,
         outcome: Outcome,
-        drift: Option<Box<LlmDriftInfo>>,
+        citation_integrity: Option<CitationIntegrityAssessment>,
         citations: Vec<String>,
         resolved_citations: Vec<ResolvedCitationTarget>,
     ) -> Self {
@@ -1014,7 +807,7 @@ impl ProvEvent {
                 usage,
                 duration_ms,
                 outcome,
-                drift,
+                citation_integrity,
                 citations,
                 resolved_citations,
                 prompt_serialized_utf8_bytes,
@@ -1039,7 +832,7 @@ impl ProvEvent {
         duration_ms: u64,
         outcome: Outcome,
     ) -> Self {
-        Self::llm_call_completed_task_with_drift(
+        Self::llm_call_completed_task_with_integrity(
             context_id,
             task_id,
             client,
@@ -1060,7 +853,7 @@ impl ProvEvent {
         clippy::too_many_arguments,
         reason = "event constructor mirrors the provenance event's full field set; a params struct would only duplicate the schema"
     )]
-    pub fn llm_call_completed_task_with_drift(
+    pub fn llm_call_completed_task_with_integrity(
         context_id: ContextId,
         task_id: TaskId,
         client: String,
@@ -1071,7 +864,7 @@ impl ProvEvent {
         usage: LlmUsage,
         duration_ms: u64,
         outcome: Outcome,
-        drift: Option<Box<LlmDriftInfo>>,
+        citation_integrity: Option<CitationIntegrityAssessment>,
         citations: Vec<String>,
         resolved_citations: Vec<ResolvedCitationTarget>,
     ) -> Self {
@@ -1092,7 +885,7 @@ impl ProvEvent {
                 usage,
                 duration_ms,
                 outcome,
-                drift,
+                citation_integrity,
                 citations,
                 resolved_citations,
                 prompt_serialized_utf8_bytes,
@@ -1101,7 +894,7 @@ impl ProvEvent {
         })
     }
 
-    /// Same as `llm_call_completed_task_with_drift` but also carries citation strings
+    /// Same as `llm_call_completed_task_with_integrity` but also carries citation strings
     /// co-produced by the LLM call.
     #[expect(
         clippy::too_many_arguments,
@@ -1118,10 +911,10 @@ impl ProvEvent {
         usage: LlmUsage,
         duration_ms: u64,
         outcome: Outcome,
-        drift: Option<Box<LlmDriftInfo>>,
+        citation_integrity: Option<CitationIntegrityAssessment>,
         citations: Vec<String>,
     ) -> Self {
-        Self::llm_call_completed_task_with_drift(
+        Self::llm_call_completed_task_with_integrity(
             context_id,
             task_id,
             client,
@@ -1132,7 +925,7 @@ impl ProvEvent {
             usage,
             duration_ms,
             outcome,
-            drift,
+            citation_integrity,
             citations,
             vec![],
         )

@@ -386,6 +386,7 @@ impl AgentPackage {
                 }
             };
 
+            let agent_package = Some(self.manifest.name.as_str());
             match stored_llm_config {
                 Some(llm_config) => {
                     tracing::info!(
@@ -396,11 +397,13 @@ impl AgentPackage {
                         "stored LLM client config loaded for override resolution"
                     );
                     let llm_config_arc = Arc::new(llm_config);
-                    let resolver = Arc::new(StaticResolver::new(
+                    let resolver = Arc::new(StaticResolver::with_agent_package(
                         Arc::clone(&llm_config_arc),
                         provenance_config.llm_secret_resolver(),
+                        agent_package,
                     ));
                     runtime_manager.set_llm_client_resolver(resolver);
+                    runtime_manager.set_agent_package(agent_package);
                     llm_config_arc
                 }
                 None => {
@@ -411,11 +414,13 @@ impl AgentPackage {
                         "no stored LLM client config; platform fallback will apply only to functions without BAML client config"
                     );
                     let fallback_config_arc = Arc::new(fallback_config);
-                    let fallback_resolver = Arc::new(StaticResolver::new(
+                    let fallback_resolver = Arc::new(StaticResolver::with_agent_package(
                         Arc::clone(&fallback_config_arc),
                         provenance_config.llm_secret_resolver(),
+                        agent_package,
                     ));
                     runtime_manager.set_llm_fallback_client_resolver(fallback_resolver);
+                    runtime_manager.set_agent_package(agent_package);
                     fallback_config_arc
                 }
             }

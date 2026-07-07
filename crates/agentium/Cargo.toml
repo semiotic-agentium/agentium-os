@@ -18,7 +18,6 @@ baml-rt-repository = { path = "../baml-rt-repository" }
 baml-rt-builder = { path = "../baml-rt-builder" }
 baml-rt-api = { path = "../baml-rt-api" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
-baml-rt-embedding = { path = "../baml-rt-embedding" }
 baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 clap = { workspace = true }
 toml = "0.8"

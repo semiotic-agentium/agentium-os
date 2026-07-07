@@ -215,8 +215,11 @@ struct OpaqueClause {
 pub struct GraphQuery<Subject: NodeLabelTy, S: ScopeState> {
     scope: S,
     filters: Vec<PropertyFilter>,
-    /// Time-range fence on `props.a2a_event_order`. Inclusive on both ends.
+    /// Monotonic `event_order` fence (`props.a2a_event_order`). For transcript
+    /// cursors only — not wall-clock operator windows.
     time_range: Option<(Option<u64>, Option<u64>)>,
+    /// Wall-clock fence on `props.prov_time` (unix ms). For operator time windows.
+    wall_time_range: Option<(Option<u64>, Option<u64>)>,
     /// Outcome segment on `props.a2a_activity_outcome` (success / failed /
     /// both). Defaults to `Both` (no clause emitted).
     outcome_segment: Option<ProvenanceOutcomeSegment>,
@@ -236,6 +239,7 @@ impl<Subject: NodeLabelTy> GraphQuery<Subject, Unscoped> {
             scope: Unscoped,
             filters: Vec::new(),
             time_range: None,
+            wall_time_range: None,
             outcome_segment: None,
             page: None,
             order: None,
@@ -256,6 +260,7 @@ impl<Subject: NodeLabelTy> GraphQuery<Subject, Unscoped> {
             scope: ScopedToContext { ctx },
             filters: self.filters,
             time_range: self.time_range,
+            wall_time_range: self.wall_time_range,
             outcome_segment: self.outcome_segment,
             page: self.page,
             order: self.order,
@@ -272,6 +277,7 @@ impl<Subject: NodeLabelTy> GraphQuery<Subject, Unscoped> {
             scope: Unbounded,
             filters: self.filters,
             time_range: self.time_range,
+            wall_time_range: self.wall_time_range,
             outcome_segment: self.outcome_segment,
             page: self.page,
             order: self.order,
@@ -294,6 +300,12 @@ impl<Subject: NodeLabelTy, S: ScopeState> GraphQuery<Subject, S> {
     /// leave that side open.
     pub fn with_time_range(mut self, from_ms: Option<u64>, to_ms: Option<u64>) -> Self {
         self.time_range = Some((from_ms, to_ms));
+        self
+    }
+
+    /// Inclusive wall-clock fence on `props.prov_time` (unix ms).
+    pub fn with_wall_time_range(mut self, from_ms: Option<u64>, to_ms: Option<u64>) -> Self {
+        self.wall_time_range = Some((from_ms, to_ms));
         self
     }
 
@@ -637,6 +649,12 @@ impl<S: ScopeState> GraphQuery<labels::ToolCall, S> {
         );
         let sql = call_activity_to_agent_traversal(AgentTarget::InstanceIdArray(&bind));
         self.push_opaque(sql, vec![(bind, value)]);
+        self
+    }
+
+    /// Restrict to tool calls that recorded a semiotic gate decision on the node.
+    pub fn with_recorded_gate_decision(mut self) -> Self {
+        self.push_opaque("props.a2a_gate IS NOT NONE".to_string(), vec![]);
         self
     }
 
@@ -996,7 +1014,7 @@ impl<Subject: NodeLabelTy, S: Scoped + ScopeQueryEmitter> GraphQuery<Subject, S>
             binds_map.insert(f.bind.clone(), f.value.clone());
         }
 
-        // 3. Time-range fence on `props.a2a_event_order`.
+        // 3. Monotonic event_order fence (transcript cursors).
         if let Some((from_ms, to_ms)) = self.time_range {
             if let Some(from) = from_ms {
                 let bind = format!("time_from_{}", binds_map.len());
@@ -1006,6 +1024,20 @@ impl<Subject: NodeLabelTy, S: Scoped + ScopeQueryEmitter> GraphQuery<Subject, S>
             if let Some(to) = to_ms {
                 let bind = format!("time_to_{}", binds_map.len());
                 where_clauses.push(format!("props.a2a_event_order <= ${bind}"));
+                binds_map.insert(bind, Value::Number(to.into()));
+            }
+        }
+
+        // 3b. Wall-clock prov_time fence (operator windows).
+        if let Some((from_ms, to_ms)) = self.wall_time_range {
+            if let Some(from) = from_ms {
+                let bind = format!("wall_from_{}", binds_map.len());
+                where_clauses.push(format!("props.prov_time >= ${bind}"));
+                binds_map.insert(bind, Value::Number(from.into()));
+            }
+            if let Some(to) = to_ms {
+                let bind = format!("wall_to_{}", binds_map.len());
+                where_clauses.push(format!("props.prov_time <= ${bind}"));
                 binds_map.insert(bind, Value::Number(to.into()));
             }
         }

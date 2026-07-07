@@ -170,6 +170,7 @@ pub struct ObservationBundleRequest {
     pub agent_id: Option<AgentId>,
     pub include_planning: bool,
     pub include_drift: bool,
+    pub include_gate: bool,
     pub include_llm_ops: bool,
     pub include_tool_ops: bool,
     pub ops_page_size: u32,

@@ -173,6 +173,17 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "tool_classified",
             retryability_for_a2a(error),
         ),
+        BamlRtError::GateAuthorizationRequired { prompt } => mapping(
+            error,
+            -32603,
+            "Internal error",
+            Some(serde_json::json!({
+                "gate_authorization": true,
+                "prompt": prompt,
+            })),
+            "gate_authorization",
+            retryability_for_a2a(error),
+        ),
         BamlRtError::ToolExecution(_) => mapping(
             error,
             -32603,

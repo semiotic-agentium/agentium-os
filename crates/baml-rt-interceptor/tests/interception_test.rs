@@ -715,3 +715,61 @@ async fn test_e2e_llm_interceptor_with_baml_execution() {
 
     tracing::info!("🎉 E2E LLM interceptor test completed successfully!");
 }
+
+struct BlockingToolInterceptor;
+
+#[async_trait::async_trait]
+impl baml_rt::interceptor::ToolInterceptor for BlockingToolInterceptor {
+    async fn intercept_tool_call(
+        &self,
+        _context: &baml_rt::interceptor::ToolCallContext,
+    ) -> Result<InterceptorDecision> {
+        Ok(InterceptorDecision::Block("test block".into()))
+    }
+
+    async fn on_tool_call_complete(
+        &self,
+        _context: &baml_rt::interceptor::ToolCallContext,
+        _result: &Result<Value>,
+        _duration_ms: u64,
+    ) {
+    }
+}
+
+#[tokio::test]
+async fn tool_registry_returns_ok_block_for_tool_interceptor_block() {
+    use baml_rt::interceptor::{InterceptorRegistry, ToolCallContext};
+    use baml_rt_core::{
+        context::RuntimeScope,
+        ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
+    };
+
+    let mut registry = InterceptorRegistry::new();
+    registry.register_tool_interceptor(BlockingToolInterceptor);
+
+    let context_id = ContextId::new(1_778_675_800_000, 1);
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-00000000b101").unwrap());
+    let task_id = TaskId::from_external(ExternalId::new("task-block-test"));
+    let scope = RuntimeScope::task_scope(
+        context_id,
+        agent_id,
+        MessageId::from_external(ExternalId::new("msg-block-test")),
+        task_id,
+    );
+    let ctx = ToolCallContext {
+        tool_name: "test/write_echo".into(),
+        function_name: None,
+        args: serde_json::json!({}),
+        metadata: serde_json::json!({}),
+        runtime_scope: scope,
+        agent_package: None,
+        delegation_target: None,
+    };
+
+    let decision = registry.intercept_tool_call(&ctx).await.expect("intercept");
+    match decision {
+        InterceptorDecision::Block(msg) => assert_eq!(msg, "test block"),
+        other => panic!("expected Block, got {other:?}"),
+    }
+}

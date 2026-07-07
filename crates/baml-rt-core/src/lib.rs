@@ -36,6 +36,7 @@ pub mod host_wire;
 pub mod ids;
 pub mod ingress_store;
 pub mod json;
+pub mod llm_text;
 pub mod observation;
 pub mod package;
 pub mod progress_probe;
@@ -125,6 +126,11 @@ pub use ids::{
 };
 pub use ingress_store::{IngressId, IngressItem, IngressStore, ingress_store_not_installed};
 pub use json::to_json_value;
+pub use llm_text::{
+    baml_output_is_plain_string_result, baml_output_is_tool_session_planning_payload,
+    extract_intent_from_prompt, extract_response_text,
+    llm_completion_should_materialize_assistant_message,
+};
 pub use observation::{ObservationUpdate, kinds as ObservationKinds};
 pub use package::AgentManifest;
 pub use progress_probe::{ProgressProbe, ProgressProbeRegistry, register_progress_probe};

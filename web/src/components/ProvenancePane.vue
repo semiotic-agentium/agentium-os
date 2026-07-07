@@ -27,7 +27,7 @@ import ProvenanceFailuresTab from "./provenance/ProvenanceFailuresTab.vue";
 import type { DrilldownFromFailure } from "./provenance/ProvenanceFailuresTab.vue";
 import ProvenanceAnomaliesTab from "./provenance/ProvenanceAnomaliesTab.vue";
 import type { DrilldownFromAnomaly } from "./provenance/ProvenanceAnomaliesTab.vue";
-import ProvenanceDriftTab from "./provenance/ProvenanceDriftTab.vue";
+import ProvenanceGateTab from "./provenance/ProvenanceGateTab.vue";
 import ExploreTab from "./provenance/ExploreTab.vue";
 import type { DrilldownParams } from "./provenance/ExploreTab.vue";
 import type { LlmPromptOperation } from "../types/a2a";
@@ -69,7 +69,7 @@ const props = defineProps<{
   traceRefreshTick?: number;
   llmPromptOperations?: LlmPromptOperation[];
   /** Dashboard / deep-link: bump `nonce` to switch tabs and expand the pane */
-  externalTabFocus?: { nonce: number; tab: "live" | "failures" | "anomalies" | "drift" | "explore" };
+  externalTabFocus?: { nonce: number; tab: "live" | "failures" | "anomalies" | "gate" | "explore" };
   /** Initial open state; Event Console passes false until a context is observed. */
   defaultOpen?: boolean;
   /** When true, expand the pane (e.g. after publish). */
@@ -99,7 +99,7 @@ const emptyStateCopy = computed(() => {
   return "Start a chat turn to attach context-scoped provenance.";
 });
 
-const activeTab = ref<"live" | "failures" | "anomalies" | "drift" | "explore">("live");
+const activeTab = ref<"live" | "failures" | "anomalies" | "gate" | "explore">("live");
 
 const { theme } = useTheme();
 const toast = useToast();
@@ -152,7 +152,7 @@ const planningState = ref<{
   response: null,
 });
 
-// ── Unified observe bundle (Live + Drift planning) ─────────────────────────
+// ── Unified observe bundle (Live + Gate planning) ─────────────────────────
 
 const observationScope = useObservationScope(
   () => props.contextId,
@@ -160,7 +160,7 @@ const observationScope = useObservationScope(
   () => props.selectedAgentPackage,
 );
 
-const includeDriftInObserve = computed(() => activeTab.value === "drift");
+const includeGateInObserve = computed(() => activeTab.value === "gate");
 
 const {
   bundle: observeBundle,
@@ -172,7 +172,7 @@ const {
   taskId: computed(() => props.taskId),
   agentPackage: computed(() => props.selectedAgentPackage),
   agentId: computed(() => props.selectedAgentId),
-  includeDrift: includeDriftInObserve,
+  includeGate: includeGateInObserve,
   active: traceActive,
 });
 
@@ -224,7 +224,7 @@ function baseScope(): Pick<
 
 async function refreshForActiveTab() {
   if (!props.contextId) return;
-  if (activeTab.value === "live" || activeTab.value === "drift") {
+  if (activeTab.value === "live" || activeTab.value === "gate") {
     return;
   }
   if (pollInFlight.value) {
@@ -311,9 +311,9 @@ function onAnomalyDrilldown(params: DrilldownFromAnomaly) {
   });
 }
 
-function onDrillToDriftCalls(taskId: string) {
+function onDrillToGateCalls(taskId: string) {
   switchToExploreWithDrilldown({
-    resource: "llm_calls",
+    resource: "tool_calls",
     outcome: "both",
     taskId,
     sortBy: "timestamp_ms",
@@ -417,7 +417,7 @@ watch(
   () => [props.contextId, props.taskId, props.selectedAgentId, props.selectedAgentPackage],
   () => {
     if (!props.contextId || isExploreTab.value) return;
-    if (activeTab.value === "live" || activeTab.value === "drift") return;
+    if (activeTab.value === "live" || activeTab.value === "gate") return;
     void refreshForActiveTab();
   },
   { immediate: true },
@@ -427,7 +427,7 @@ watch(
   () => props.traceRefreshTick ?? 0,
   (tick, prev) => {
     if (tick === prev) return;
-    if (activeTab.value === "live" || activeTab.value === "drift") {
+    if (activeTab.value === "live" || activeTab.value === "gate") {
       // Live observe SSE already receives bundle pushes from observation_events.
       // Reconnecting here cancels streams and fights the transcript SSE.
       if (!traceActive.value) {
@@ -443,7 +443,7 @@ watch(
   () => [activeTab.value] as const,
   ([tab]) => {
     if (!props.contextId || tab === "explore") return;
-    if (tab === "live" || tab === "drift") return;
+    if (tab === "live" || tab === "gate") return;
     void refreshForActiveTab();
   },
 );
@@ -474,10 +474,10 @@ watch(
         <button class="provenance-tab" :class="{ active: activeTab === 'anomalies' }" @click="activeTab = 'anomalies'">Anomalies</button>
         <button
           class="provenance-tab"
-          :class="{ active: activeTab === 'drift' }"
-          @click="activeTab = 'drift'"
+          :class="{ active: activeTab === 'gate' }"
+          @click="activeTab = 'gate'"
         >
-          Drift
+          Gate
         </button>
         <button class="provenance-tab" :class="{ active: activeTab === 'explore' }" @click="activeTab = 'explore'">Explore</button>
       </div>
@@ -520,10 +520,10 @@ watch(
           />
         </template>
 
-        <template v-else-if="activeTab === 'drift'">
-          <ProvenanceDriftTab
+        <template v-else-if="activeTab === 'gate'">
+          <ProvenanceGateTab
             :planning-tasks="planningTasks"
-            @drill-to-drift-calls="onDrillToDriftCalls"
+            @drill-to-gate-calls="onDrillToGateCalls"
           />
         </template>
 

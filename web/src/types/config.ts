@@ -79,7 +79,7 @@ export interface LlmRetryPolicyDef {
   strategy?: unknown;
 }
 
-pub interface ModelBudgetOverride {
+export interface ModelBudgetOverride {
   context_window_tokens?: number;
   trigger_ratio?: number;
   emergency_ratio?: number;
@@ -145,3 +145,106 @@ export interface ResolvedClientBudgets {
 }
 
 export const LLM_BUNDLE_NAME = "llm";
+
+export const SEMIOTIC_BUNDLE_NAME = "semiotic";
+
+export type SemioticMode = "dry_run" | "enforce";
+
+export interface SemioticPolicy {
+  enabled: boolean;
+  mode: SemioticMode;
+  enforceMinTier: number;
+  requirePostconditionsT3: boolean;
+  strictCitationAnchors: boolean;
+}
+
+export interface SemioticConfig extends SemioticPolicy {
+  overrides?: {
+    agent?: Record<string, SemioticPolicy>;
+  };
+}
+
+export type SemioticPosture = "off" | "audit" | "enforce";
+
+export interface EffectiveSystemPolicy {
+  policy: SemioticPolicy;
+  posture: SemioticPosture;
+  summary: string;
+}
+
+export interface EffectiveAgentPolicy {
+  agentPackage: string;
+  hasOverride: boolean;
+  policy: SemioticPolicy;
+  posture: SemioticPosture;
+  summary: string;
+}
+
+export interface SemioticEffectiveDto {
+  version: number;
+  system: EffectiveSystemPolicy;
+  agents: EffectiveAgentPolicy[];
+}
+
+export interface AgentGateCounts {
+  deny: number;
+  ask: number;
+  passGated: number;
+  pass: number;
+  frictionDenial: number;
+  preventedError: number;
+}
+
+export interface RankedCount {
+  code: string;
+  count: number;
+}
+
+export interface GateIncidentDrill {
+  contextId: string;
+  taskId: string;
+  toolCallAnchor: string;
+}
+
+export interface SemioticIncidentRow {
+  occurredAtMs: number;
+  contextId: string;
+  taskId: string;
+  toolName: string;
+  tier: number;
+  decision: string;
+  reasonCode: string;
+  deficientNodes: string[];
+  telemetryVerdict?: string;
+  severity: "critical" | "warning" | "info";
+  drill: GateIncidentDrill;
+}
+
+export interface SemioticAgentActivityDto {
+  agentPackage: string;
+  effective: { posture: SemioticPosture; summary: string };
+  counts: AgentGateCounts;
+  preventionRatio?: number | null;
+  topReasonCodes: RankedCount[];
+  topDeficientNodes: RankedCount[];
+  recentIncidents: SemioticIncidentRow[];
+}
+
+export interface SemioticFleetActivityDto {
+  denyCount: number;
+  askCount: number;
+  frictionDenialCount: number;
+  preventedErrorCount: number;
+  preventionRatio?: number | null;
+  agentsWithActivity: number;
+}
+
+export interface SemioticActivityDto {
+  windowHours: number;
+  sinceMs: number;
+  untilMs: number;
+  configVersion: number;
+  fleet: SemioticFleetActivityDto;
+  emptyReason?: string | null;
+  agents: SemioticAgentActivityDto[];
+}

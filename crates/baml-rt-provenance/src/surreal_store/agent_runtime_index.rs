@@ -87,13 +87,15 @@ impl SurrealProvenanceStore {
 
     async fn load_agent_runtime_index_uncached(&self) -> Result<AgentRuntimeIndex> {
         let registry_index = self.load_agent_runtime_index_from_registry().await?;
-        if !registry_index.identity_by_agent_id.is_empty() {
+        if !registry_index.identity_by_agent_id.is_empty()
+            || !registry_index.instance_node_ids_by_package.is_empty()
+        {
             return Ok(registry_index);
         }
         self.scan_agent_runtime_index_from_graph().await
     }
 
-    async fn load_agent_runtime_index_from_registry(&self) -> Result<AgentRuntimeIndex> {
+    pub(super) async fn load_agent_runtime_index_from_registry(&self) -> Result<AgentRuntimeIndex> {
         let sql = format!(
             "SELECT instance_node_id, agent_package, agent_id, agent_version \
              FROM {TBL_AGENT_PACKAGE_INSTANCE}"

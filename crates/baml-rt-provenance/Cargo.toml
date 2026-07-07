@@ -12,7 +12,7 @@ publish = false
  [dependencies]
  baml-rt-conversation = { path = "../baml-rt-conversation" }
 baml-rt-core = { path = "../baml-rt-core" }
-baml-rt-embedding = { path = "../baml-rt-embedding" }
+baml-rt-semiotic = { path = "../baml-rt-semiotic" }
 baml-rt-id = { path = "../baml-rt-id" }
  baml-rt-interceptor = { path = "../baml-rt-interceptor" }
 baml-rt-llm-config = { path = "../baml-rt-llm-config" }
@@ -42,10 +42,7 @@ paste = { workspace = true }
 [features]
 default = []
 
-[[bench]]
-name = "sequence_render"
-harness = false
 
 [[bench]]
-name = "drift_llm_completed"
+name = "sequence_render"
 harness = false

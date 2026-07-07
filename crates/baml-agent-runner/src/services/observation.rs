@@ -40,7 +40,7 @@ impl ObservationService for ObservationServiceImpl {
                 baml_rt_api::service_error::ServiceError::Other(Box::new(std::io::Error::other(e)))
             })?;
 
-        let planning = if include.planning || include.drift {
+        let planning = if include.planning || include.drift || include.gate {
             match loaded.planning {
                 Some(slice) => Some(
                     planning_response_from_slice(
@@ -48,6 +48,7 @@ impl ObservationService for ObservationServiceImpl {
                         loaded.context_id.as_str(),
                         slice,
                         include.drift,
+                        include.gate,
                     )
                     .await
                     .map_err(|e| {
@@ -80,6 +81,7 @@ fn observation_bundle_request_from_api(request: &ObservationRequest) -> Observat
         agent_id: request.agent_id.clone(),
         include_planning: request.include.planning,
         include_drift: request.include.drift,
+        include_gate: request.include.gate,
         include_llm_ops: request.include.llm_ops,
         include_tool_ops: request.include.tool_ops,
         ops_page_size: request.ops_page_size,
@@ -92,11 +94,18 @@ async fn planning_response_from_slice(
     context_id: &str,
     slice: LoadedPlanningSlice,
     include_drift: bool,
+    include_gate: bool,
 ) -> Result<ContextPlanningResponse, baml_rt_provenance::ProvenanceError> {
     let mut tasks = Vec::with_capacity(slice.tasks.len());
     for row in slice.tasks {
         let drift = if include_drift {
             super::planning::PlanningServiceImpl::aggregate_drift(store, context_id, &row.task_id)
+                .await
+        } else {
+            None
+        };
+        let gate = if include_gate {
+            super::planning::PlanningServiceImpl::aggregate_gate(store, context_id, &row.task_id)
                 .await
         } else {
             None
@@ -109,6 +118,7 @@ async fn planning_response_from_slice(
             intent_history: row.intent_history,
             plan_history: row.plan_history,
             step_summary,
+            gate,
             drift,
         });
     }

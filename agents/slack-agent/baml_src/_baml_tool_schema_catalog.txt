@@ -9,7 +9,7 @@ tool support/slack
   send: SlackInput
   capability: OneShot
   invocation_mode: single_shot
-  operations: SupportSlackOpenStep | SupportSlackSendStep | SupportSlackSearchReadStep | SupportSlackPageReadStep | SupportSlackFinishStep | SupportSlackAbortStep
+  operations: SupportSlackSendStep | SupportSlackSearchReadStep | SupportSlackPageReadStep
 
 tool system/discover_agents
   purpose: Browse available agents. You can optionally filter by query, requiredCapabilities, or matching event subscriptions. Omit filters to list all agents.
@@ -184,19 +184,6 @@ type SlackUserResolutionMode = "None" | "ResolveUsers"
 type StructuredReply = {
   parts: (TextPart | DataPart)[] @description("Ordered parts: start with TextPart (type \"text\") — set media_type TextMarkdown for rich answers (see TextPart); optionally append DataPart (type \"data\", media_type ApplicationJson) with a JSON string for machine-readable UI payloads.")
   citations: string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
-}
-
-type SupportSlackAbortStep = {
-  op: "Abort"
-}
-
-type SupportSlackFinishStep = {
-  op: "Finish"
-}
-
-type SupportSlackOpenStep = {
-  op: "Open"
-  tool_name: "support/slack" @description("Tool to open")
 }
 
 type SupportSlackPageReadStep = {

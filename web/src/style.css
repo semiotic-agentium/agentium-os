@@ -3063,6 +3063,19 @@ body {
   display: inline-flex;
 }
 
+/* ── Input area (gate auth card + composer) ── */
+
+.input-area {
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  transition: background-color 0.25s ease;
+}
+
+.input-area .reply-needed-strip,
+.input-area .gate-auth-card {
+  margin: 12px 24px 0;
+}
+
 /* ── Input bar ── */
 
 .input-bar {
@@ -3071,8 +3084,8 @@ body {
   align-items: flex-end;
   gap: 8px;
   padding: 16px 24px;
-  background: var(--surface);
-  border-top: 1px solid var(--border);
+  background: transparent;
+  border-top: none;
   transition: background-color 0.25s ease;
 }
 
@@ -3106,6 +3119,122 @@ body {
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--text);
+}
+
+.gate-auth-card {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border));
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--warning) 12%, var(--surface)) 0%,
+    var(--surface) 100%
+  );
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning) 10%, transparent);
+  animation: slideIn 0.35s ease-out;
+}
+
+.gate-auth-card__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.gate-auth-card__badge {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.gate-auth-card__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.gate-auth-card__field-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.gate-auth-card__intent,
+.gate-auth-card__postconditions {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.gate-auth-card__hint {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.gate-auth-card__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.gate-auth-card__btn {
+  flex: 1;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.gate-auth-card__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.gate-auth-card__btn--approve {
+  background: color-mix(in srgb, var(--success) 18%, var(--surface));
+  border-color: color-mix(in srgb, var(--success) 40%, var(--border));
+  color: var(--text);
+}
+
+.gate-auth-card__btn--approve:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--success) 28%, var(--surface));
+}
+
+.gate-auth-card__btn--deny {
+  background: var(--surface);
+  color: var(--text-muted);
+}
+
+.gate-auth-card__btn--deny:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  color: var(--text);
+}
+
+.gate-auth-card__btn--link {
+  flex: 0 0 auto;
+  background: transparent;
+  color: var(--primary);
+  font-weight: 500;
+}
+
+.gate-auth-card__btn--link:hover:not(:disabled) {
+  background: var(--primary-subtle);
 }
 
 .input-wrapper {
@@ -5207,6 +5336,7 @@ select.config-input {
   padding-right: 4px;
 }
 
+
 .config-badge-default {
   font-size: 11px;
   padding: 2px 6px;
@@ -5370,6 +5500,27 @@ select.config-input {
 .config-agent-expand-spacer {
   width: 12px;
   flex-shrink: 0;
+}
+
+.config-agent-chevron {
+  font-size: 9px;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+  width: 12px;
+  display: inline-block;
+}
+
+.config-agent-chevron::before {
+  content: "▶";
+}
+
+.config-agent-chevron.is-open {
+  transform: rotate(90deg);
+}
+
+.config-agent-override-body {
+  border-top: 1px solid var(--border-subtle);
 }
 
 .config-agent-override-name {
@@ -5690,3 +5841,107 @@ select.config-input {
   letter-spacing: 0.08em;
   margin-bottom: 6px;
 }
+
+/* Semiotic gate surfaces (layout aligned with drift tokens during cutover) */
+.gate-decision-ok,
+.gate-posture-ok {
+  color: var(--color-success);
+  border-color: var(--color-success-border);
+  background: var(--color-success-subtle);
+}
+.gate-decision-ask,
+.gate-posture-ask {
+  color: var(--color-warning);
+  border-color: var(--color-warning-border);
+  background: var(--color-warning-subtle);
+}
+.gate-decision-deny,
+.gate-posture-denied,
+.gate-decision-gated,
+.gate-posture-gated {
+  color: var(--color-error);
+  border-color: var(--color-error-border);
+  background: var(--color-error-subtle);
+}
+
+.gate-help {
+  cursor: help;
+  opacity: 0.65;
+}
+.gate-help:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  z-index: 20;
+  max-width: 280px;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: var(--shadow-sm);
+}
+
+.gate-task-list { display: flex; flex-direction: column; gap: 10px; }
+.gate-task-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--bg-subtle);
+}
+.gate-task-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.gate-task-intent { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+.gate-tab-lede { font-size: 12px; color: var(--text-muted); margin: 0 0 10px; }
+.gate-call-summary { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; margin-top: 8px; }
+.gate-deny-count { color: var(--color-error); }
+.gate-ask-count { color: var(--color-warning); }
+.gate-gated-count { color: var(--color-warning); }
+.gate-count-link {
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+.gate-bar-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.gate-bar-label { font-size: 11px; color: var(--text-muted); min-width: 72px; }
+.gate-bar-track { flex: 1; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+.gate-bar-fill { height: 100%; transform-origin: left; background: var(--color-accent); }
+.gate-bar-value { font-size: 11px; min-width: 36px; text-align: right; }
+.gate-event-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.gate-event-card { border-top: 1px solid var(--border); padding-top: 8px; }
+.gate-event-header { display: flex; align-items: center; gap: 8px; }
+.gate-event-tool { font-size: 11px; color: var(--text-muted); }
+.gate-event-reason { font-size: 12px; margin-top: 4px; }
+.gate-deficit-list { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.gate-deficit-chip {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+.gate-scores-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+.gate-score-label { font-size: 11px; color: var(--text-muted); }
+.gate-score-value { font-size: 12px; }
+.gate-strength-strong { color: var(--color-success); }
+.gate-strength-moderate { color: var(--color-warning); }
+.gate-strength-weak { color: var(--color-error); }
+.integrity-resolved { color: var(--color-success); border-color: var(--color-success-border); }
+.integrity-unresolved { color: var(--color-error); border-color: var(--color-error-border); }
+.integrity-negated { color: var(--color-warning); border-color: var(--color-warning-border); }
+.integrity-status-chip {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  text-transform: lowercase;
+}
+.integrity-list { display: flex; flex-direction: column; gap: 8px; }
+.integrity-entry { border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; }
+.integrity-header { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.inspector-integrity-lede,
+.inspector-gate-empty { font-size: 12px; color: var(--text-muted); }

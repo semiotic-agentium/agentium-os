@@ -423,7 +423,7 @@ async fn setup_failed_call_with_classification(store: &dyn SnapshotStore) {
                 usage: LlmUsage::Unknown,
                 duration_ms: 500,
                 outcome: Outcome::Failure,
-                drift: None,
+                citation_integrity: None,
                 citations: vec![],
                 resolved_citations: vec![],
                 prompt_serialized_utf8_bytes: serialized_prompt_utf8_len(

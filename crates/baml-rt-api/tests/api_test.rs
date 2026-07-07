@@ -41,9 +41,10 @@ use baml_rt_core::{
     ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
-    CallScope, GlobalEvent, LlmUsage, ProvEvent, ProvEventData, ProvenanceOpsQueryRequest,
-    ProvenanceOpsQueryResponse, ProvenanceWriter, SurrealStoreBuilder, events::LlmDriftInfo,
-    metamodel::TaskStatusKind, serialized_prompt_utf8_len,
+    CallScope, GlobalEvent, LlmUsage, ProvEvent, ProvEventData, ProvenanceOpsAppliedCaps,
+    ProvenanceOpsQueryRequest, ProvenanceOpsQueryResponse, ProvenanceOpsResource, ProvenanceOpsRow,
+    ProvenanceOpsSummary, ProvenanceWriter, SurrealStoreBuilder, metamodel::TaskStatusKind,
+    serialized_prompt_utf8_len,
 };
 use baml_rt_tools::prompt_message_char_count;
 use common::cluster_topology_for_test;
@@ -429,6 +430,22 @@ impl ProvenanceOpsService for RealProvenanceOps {
         use baml_rt_provenance::ProvenanceOpsQuery;
         self.store
             .query_ops(request)
+            .await
+            .map_err(|e| ProvenanceOpsError::Other(Box::new(e)))
+    }
+
+    async fn aggregate_gate_activity(
+        &self,
+        filters: baml_rt_provenance::AgentGateActivityFilters,
+    ) -> std::result::Result<
+        (
+            std::collections::HashMap<String, baml_rt_provenance::AgentGateActivity>,
+            bool,
+        ),
+        ProvenanceOpsError,
+    > {
+        use baml_rt_provenance::{ProvenanceOpsQuery, aggregate_agent_gate_activity};
+        aggregate_agent_gate_activity(&*self.store, filters)
             .await
             .map_err(|e| ProvenanceOpsError::Other(Box::new(e)))
     }
@@ -857,7 +874,7 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::SurrealProvenanceS
         .await
         .unwrap();
     store
-        .add_event(ProvEvent::llm_call_completed_global_with_drift(
+        .add_event(ProvEvent::llm_call_completed_global_with_integrity(
             context.clone(),
             msg_a.clone(),
             "openai".to_string(),
@@ -873,19 +890,22 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::SurrealProvenanceS
             },
             181,
             Outcome::Success,
-            Some(Box::new(LlmDriftInfo {
-                score: 0.618,
-                severity: baml_rt_embedding::DriftSeverity::Warn,
-                mode: baml_rt_embedding::DriftMode::Audit,
-                warn_min_score: 0.5,
-                block_min_score: 0.25,
-                intent_text_preview: "Create a task titled Research".to_string(),
-                response_text_preview: "Create task in list 901325431486".to_string(),
-                step_text_preview: String::new(),
-                plan_drift: None,
-                citation_drift: None,
-            })),
-            vec![],
+            Some(baml_rt_semiotic::CitationIntegrityAssessment {
+                per_citation: vec![baml_rt_semiotic::CitationIntegrityEntry {
+                    raw: "#1".into(),
+                    n: 1,
+                    is_history: true,
+                    negated: false,
+                    status: baml_rt_semiotic::IntegrityStatus::Unresolved,
+                    activity_anchor: None,
+                    content_preview: None,
+                }],
+                unresolved_count: 1,
+                resolved_count: 0,
+                strict_mode: false,
+                strict_violation: false,
+            }),
+            vec!["#1".to_string()],
             vec![],
         ))
         .await
@@ -941,7 +961,7 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::SurrealProvenanceS
                 },
                 duration_ms: 650,
                 outcome: Outcome::Failure,
-                drift: None,
+                citation_integrity: None,
                 citations: vec![],
                 resolved_citations: vec![],
                 prompt_serialized_utf8_bytes: serialized_prompt_utf8_len(
@@ -2104,7 +2124,7 @@ async fn get_provenance_llm_calls_returns_snapshot() {
 }
 
 #[tokio::test]
-async fn get_provenance_llm_calls_nests_drift_fields() {
+async fn get_provenance_llm_calls_nests_citation_integrity_fields() {
     let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
     let store = seeded_provenance_store().await;
     let context_id = ContextId::new(100, 1).to_string();
@@ -2133,29 +2153,20 @@ async fn get_provenance_llm_calls_nests_drift_fields() {
         .get("rows")
         .and_then(Value::as_array)
         .expect("rows array");
-    let drift_row = rows
+    let integrity_row = rows
         .iter()
-        .find(|row| row.get("drift").is_some())
-        .expect("row with drift");
+        .find(|row| row.get("drift").and_then(|d| d.get("citation")).is_some())
+        .expect("row with citation integrity");
 
-    let drift = drift_row
+    let citation = integrity_row
         .get("drift")
+        .and_then(|d| d.get("citation"))
         .and_then(Value::as_object)
-        .expect("drift object");
-    let score = drift
-        .get("score")
-        .and_then(Value::as_f64)
-        .expect("drift score");
-    assert!((score - 0.618).abs() < 0.001, "unexpected score: {score}");
-    assert_eq!(drift.get("severity"), Some(&serde_json::json!("warn")));
-    assert_eq!(drift.get("mode"), Some(&serde_json::json!("audit")));
-    assert_eq!(drift.get("warnMinScore"), Some(&serde_json::json!(0.5)));
-    assert_eq!(drift.get("blockMinScore"), Some(&serde_json::json!(0.25)));
-    assert!(drift.get("intentTextPreview").is_some());
-    assert!(drift.get("responseTextPreview").is_some());
-    assert!(drift_row.get("drift_score").is_none());
-    assert!(drift_row.get("drift_severity").is_none());
-    assert!(drift_row.get("intent_text_preview").is_none());
+        .expect("citation integrity object");
+    assert_eq!(citation.get("unresolvedCount"), Some(&serde_json::json!(1)));
+    assert_eq!(citation.get("resolvedCount"), Some(&serde_json::json!(0)));
+    assert!(integrity_row.get("drift_score").is_none());
+    assert!(integrity_row.get("drift_severity").is_none());
 }
 
 #[tokio::test]
@@ -3093,20 +3104,27 @@ async fn get_message_shapes_returns_registry() {
         .get("items")
         .and_then(Value::as_array)
         .expect("items array");
-    assert_eq!(items.len(), 4);
     let shape_ids: Vec<&str> = items
         .iter()
         .filter_map(|i| i.get("message_shape_id").and_then(Value::as_str))
         .collect();
-    assert!(shape_ids.contains(&"slack-source-records"));
-    assert!(shape_ids.contains(&"clickup-source-records"));
-    assert!(shape_ids.contains(&"github-issues-source-records"));
+    assert!(shape_ids.contains(&"system-callback-token"));
+    #[cfg(all(feature = "clickup", feature = "github", feature = "slack"))]
+    {
+        assert_eq!(items.len(), 4);
+        assert!(shape_ids.contains(&"slack-source-records"));
+        assert!(shape_ids.contains(&"clickup-source-records"));
+        assert!(shape_ids.contains(&"github-issues-source-records"));
+    }
+    #[cfg(not(all(feature = "clickup", feature = "github", feature = "slack")))]
+    {
+        assert_eq!(items.len(), 1, "default build links system shapes only");
+    }
     assert!(
         !shape_ids
             .iter()
             .any(|id| id.contains("derived-task-candidates"))
     );
-    assert!(shape_ids.contains(&"system-callback-token"));
     for item in items {
         assert!(
             item.get("origin")
@@ -3248,4 +3266,197 @@ fn handlers_do_not_use_block_in_place() {
         !HANDLERS_SRC.contains("block_in_place"),
         "handlers.rs uses block_in_place; deployment endpoints must route through run_off_worker"
     );
+}
+
+#[tokio::test]
+async fn get_semiotic_effective_returns_resolved_policies() {
+    let app = authed_test_router(None, ClusterMode::Standalone).await;
+
+    let put_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/config/semiotic")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"enabled":true,"mode":"enforce","enforceMinTier":2,"requirePostconditionsT3":true,"strictCitationAnchors":true,"overrides":{"agent":{}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(put_resp.status(), StatusCode::OK);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/config/semiotic/effective")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["system"]["posture"], "enforce");
+    assert!(json["agents"].is_array());
+}
+
+#[tokio::test]
+async fn get_semiotic_activity_without_provenance_returns_503() {
+    let app = authed_test_router(None, ClusterMode::Standalone).await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/config/semiotic/activity")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+struct MockGateActivityProvenance;
+
+#[async_trait]
+impl ProvenanceOpsService for MockGateActivityProvenance {
+    async fn query(
+        &self,
+        _request: ProvenanceOpsQueryRequest,
+    ) -> std::result::Result<ProvenanceOpsQueryResponse, ProvenanceOpsError> {
+        Err(ProvenanceOpsError::Unavailable)
+    }
+
+    async fn aggregate_gate_activity(
+        &self,
+        _filters: baml_rt_provenance::AgentGateActivityFilters,
+    ) -> std::result::Result<
+        (
+            std::collections::HashMap<String, baml_rt_provenance::AgentGateActivity>,
+            bool,
+        ),
+        ProvenanceOpsError,
+    > {
+        let rows = vec![
+            ProvenanceOpsRow::from_map(
+                serde_json::json!({
+                    "agent_package": "gate-test-agent",
+                    "context_id": "ctx-1",
+                    "task_id": "task-1",
+                    "timestamp_ms": 1_000,
+                    "a2a_activity_anchor": "act-deny",
+                    "gate": {
+                        "decision": "deny",
+                        "toolName": "support/delete",
+                        "tier": 3,
+                        "reasonCode": "missing_postcondition",
+                        "deficientNodes": ["ACTION"]
+                    },
+                    "args": {"id": 1}
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+            ProvenanceOpsRow::from_map(
+                serde_json::json!({
+                    "agent_package": "retired-agent",
+                    "context_id": "ctx-2",
+                    "task_id": "task-2",
+                    "timestamp_ms": 2_000,
+                    "gate": {
+                        "decision": "ask",
+                        "toolName": "support/write",
+                        "tier": 2,
+                        "reasonCode": "weak_grounding"
+                    }
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        ];
+        Ok((
+            baml_rt_provenance::aggregate_agent_gate_activity_from_rows(&rows, 50),
+            false,
+        ))
+    }
+}
+
+#[tokio::test]
+async fn get_semiotic_activity_returns_gate_rollups_from_provenance_rows() {
+    let registry: Arc<dyn AgentRegistry> =
+        Arc::new(MockRegistry::with_entries(vec![discovery_entry(
+            "gate-test-agent",
+            "default",
+            "gate-test-agent",
+            "1.0.0",
+        )]));
+    let app = api_router_with_services_and_deploy(
+        registry,
+        ApiServerConfig {
+            provenance_ops: Some(
+                Arc::new(MockGateActivityProvenance) as Arc<dyn ProvenanceOpsService>
+            ),
+            ..test_api_server_config().await
+        },
+    );
+
+    let put_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/config/semiotic")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"enabled":true,"mode":"enforce","enforceMinTier":2,"requirePostconditionsT3":true,"strictCitationAnchors":true,"overrides":{"agent":{}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(put_resp.status(), StatusCode::OK);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/config/semiotic/activity")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["fleet"]["denyCount"], 1);
+    assert_eq!(json["fleet"]["askCount"], 1);
+    assert_eq!(json["fleet"]["agentsWithActivity"], 2);
+    let agents = json["agents"].as_array().expect("agents array");
+    assert_eq!(agents.len(), 2);
+    let packages: Vec<_> = agents
+        .iter()
+        .map(|a| a["agentPackage"].as_str().unwrap())
+        .collect();
+    assert!(packages.contains(&"gate-test-agent"));
+    assert!(packages.contains(&"retired-agent"));
+    let deny_agent = agents
+        .iter()
+        .find(|a| a["agentPackage"] == "gate-test-agent")
+        .expect("gate-test-agent");
+    let incident = &deny_agent["recentIncidents"][0];
+    assert_eq!(incident["severity"], "critical");
+    assert_eq!(incident["drill"]["contextId"], "ctx-1");
+    assert!(incident["drill"].get("provenanceTab").is_none());
 }

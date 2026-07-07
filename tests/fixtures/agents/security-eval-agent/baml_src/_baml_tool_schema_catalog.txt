@@ -9,7 +9,7 @@ tool support/crm
   send: CrmInput
   capability: OneShot
   invocation_mode: single_shot
-  operations: SupportCrmOpenStep | SupportCrmSendStep | SupportCrmSearchReadStep | SupportCrmPageReadStep | SupportCrmFinishStep | SupportCrmAbortStep
+  operations: SupportCrmSendStep | SupportCrmSearchReadStep | SupportCrmPageReadStep
 
 tool support/email
   purpose: Send email messages to specified recipients.
@@ -17,7 +17,7 @@ tool support/email
   send: SendEmailInput
   capability: OneShot
   invocation_mode: single_shot
-  operations: SupportEmailOpenStep | SupportEmailSendStep | SupportEmailSearchReadStep | SupportEmailPageReadStep | SupportEmailFinishStep | SupportEmailAbortStep
+  operations: SupportEmailSendStep | SupportEmailSearchReadStep | SupportEmailPageReadStep
 
 Type definitions:
 
@@ -106,19 +106,6 @@ type StructuredReply = {
   citations: string[] @description("Cite sources this output used. History: #N (session lines: user, assistant, tool calls). Archive: @N (Send/tool output only). Line-level: @N:L or @N:L1-L2 — use when a claim depends on specific lines, not a bare @N. Counter-evidence: prefix ! (e.g. !#N, !@N). Do not use # for archives or @ for history; namespaces differ.")
 }
 
-type SupportCrmAbortStep = {
-  op: "Abort"
-}
-
-type SupportCrmFinishStep = {
-  op: "Finish"
-}
-
-type SupportCrmOpenStep = {
-  op: "Open"
-  tool_name: "support/crm" @description("Tool to open")
-}
-
 type SupportCrmPageReadStep = {
   op: "PageRead"
   input: ArchivePageReadInput @description("PageRead step: archive_ref must be an @ handle (@1, @2, …) from a prior Send only — never #N or any # syntax (# indexes transcript lines, not archives). Read a contiguous window: required archive_ref; omit grep. Why: the summary line is not the body; this step materializes lines. The host line may show offset= for the next page. For line filtering, use SearchRead.")
@@ -134,19 +121,6 @@ type SupportCrmSendStep = {
   tool_name: "support/crm" @description("Tool this Send targets")
   input: (QueryAccountsInput | QueryOpportunitiesInput | GetContactInput | CreateNoteInput | DeleteRecordInput | ExportRecordsInput) @description("Payload for this step.")
   citations: string[] @description("Cite what informed this Send. Two namespaces (do not mix syntax): (1) History = transcript line numbers in this session; cite as #N only. Do not use @ on history refs; do not add :line to # (#N:L is invalid for history). (2) Archive = tool-result register; cite the handle from a prior Send as @N. Bare @N names the archive only, not text inside it; cite archive line content only as @N:L or @N:L1-L2 after PageRead or SearchRead returned those lines. Prefix ! on an entry for counter-evidence.")
-}
-
-type SupportEmailAbortStep = {
-  op: "Abort"
-}
-
-type SupportEmailFinishStep = {
-  op: "Finish"
-}
-
-type SupportEmailOpenStep = {
-  op: "Open"
-  tool_name: "support/email" @description("Tool to open")
 }
 
 type SupportEmailPageReadStep = {

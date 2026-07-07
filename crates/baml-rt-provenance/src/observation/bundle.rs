@@ -25,7 +25,8 @@ impl SurrealProvenanceStore {
         &self,
         request: ObservationBundleRequest,
     ) -> Result<LoadedObservationBundle> {
-        let planning = if request.include_planning || request.include_drift {
+        let planning = if request.include_planning || request.include_drift || request.include_gate
+        {
             let scope = PlanningScopeQuery {
                 context_id: request.context_id.clone(),
                 task_id: request.task_id.clone(),

@@ -113,6 +113,40 @@ export interface PlanningStepSummary {
   pending: number;
 }
 
+export type GateDecision = "pass" | "deny" | "ask" | "pass_gated";
+
+export interface GateEventDetail {
+  toolName: string;
+  tier: number;
+  decision: GateDecision;
+  reasonCode: string;
+  deficientNodes: string[];
+  nodeStrengths?: { name: string; strength: number; trojan?: string }[];
+  toolCallAnchor: string;
+}
+
+export interface TaskGateSummary {
+  denyCount: number;
+  askCount: number;
+  passGatedCount: number;
+  passCount: number;
+  preventedErrorCount: number;
+  frictionDenialCount: number;
+  preventionRatio: number | null;
+  gateEvents?: GateEventDetail[];
+}
+
+export interface CitationIntegrityOnRow {
+  raw: string;
+  n: number;
+  isHistory: boolean;
+  negated: boolean;
+  status: "resolved" | "unresolved" | "negated";
+  activityAnchor?: string;
+  contentPreview?: string;
+}
+
+/** @deprecated Use TaskGateSummary / gate surfaces instead. */
 export type DriftSeverity = "acceptable" | "warn" | "block";
 
 /** One resolved citation: the raw ref the LLM emitted plus the actual evidence text. */
@@ -210,6 +244,9 @@ export interface ContextPlanningTaskSnapshot {
   /** Prior intents for this task (`intent_history`). */
   intentHistory?: PlanningIntentView[];
   stepSummary: PlanningStepSummary;
+  /** Semiotic gate summary for tier≥1 tool calls. */
+  gate?: TaskGateSummary;
+  /** @deprecated Use `gate` — retained for one-release API shim. */
   drift?: TaskPlanDriftSummary;
 }
 

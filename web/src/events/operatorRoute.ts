@@ -142,6 +142,64 @@ export function writeEventConsoleRouteToUrl(
   window.history.replaceState(window.history.state, "", url.toString());
 }
 
+const TRUST_AGENT = "trustAgent";
+const PROVENANCE_TAB = "provenanceTab";
+
+function commitOperatorUrl(url: URL): void {
+  url.search = url.searchParams.toString();
+  window.history.replaceState(window.history.state, "", url.toString());
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
+export function readTrustAgentFromUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  return new URLSearchParams(window.location.search).get(TRUST_AGENT);
+}
+
+export function writeTrustAgentToUrl(agentPackage: string | null): void {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  const params = url.searchParams;
+  if (agentPackage) params.set(TRUST_AGENT, agentPackage);
+  else params.delete(TRUST_AGENT);
+  url.search = params.toString();
+  window.history.replaceState(window.history.state, "", url.toString());
+}
+
+export function readProvenanceTabFromUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  return new URLSearchParams(window.location.search).get(PROVENANCE_TAB);
+}
+
+/** Navigate from Settings incident drill to Chat + Provenance Gate tab. */
+export function navigateToGateIncident(
+  drill: { contextId: string; taskId: string },
+  agentPackage: string,
+): void {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  const params = url.searchParams;
+  params.set("view", "chat");
+  params.set(CHAT_AGENT, agentPackage);
+  params.delete(LEGACY_AGENT);
+  params.set(CHAT_CONTEXT, drill.contextId);
+  params.delete(LEGACY_CONTEXT);
+  params.set(PROVENANCE_TAB, "gate");
+  params.delete(TRUST_AGENT);
+  commitOperatorUrl(url);
+}
+
+/** Open Settings Trust tab with optional agent highlight. */
+export function navigateToTrustSettings(agentPackage?: string | null): void {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  const params = url.searchParams;
+  params.set("view", "settings");
+  if (agentPackage) params.set(TRUST_AGENT, agentPackage);
+  else params.delete(TRUST_AGENT);
+  commitOperatorUrl(url);
+}
+
 export function chatRouteKey(state: ChatRouteState & { view?: ViewName }): string {
   return JSON.stringify({
     view: state.view ?? "chat",

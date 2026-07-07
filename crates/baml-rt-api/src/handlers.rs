@@ -1033,6 +1033,7 @@ pub async fn get_context_planning(
         .planning_for_scope({
             let mut planning = PlanningScopeRequest::from_observation(&scope);
             planning.include_drift = scope.include.drift;
+            planning.include_gate = scope.include.gate;
             planning
         })
         .await
@@ -1279,6 +1280,7 @@ fn to_ops_request(
             payload_text: q.payload_text,
             from_timestamp_ms: q.from_timestamp_ms,
             to_timestamp_ms: q.to_timestamp_ms,
+            ..Default::default()
         },
         group_by,
         sort_by: q.sort_by,

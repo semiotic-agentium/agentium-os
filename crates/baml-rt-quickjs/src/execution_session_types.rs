@@ -63,6 +63,12 @@ pub enum ExecutionSessionCommand {
         session_id: ExecutionSessionId,
         reason: String,
     },
+    SubmitGrounding {
+        session_id: ExecutionSessionId,
+        artifact: serde_json::Value,
+        #[serde(default)]
+        plan_step_id: Option<String>,
+    },
 }
 
 /// Wire DTO: `intent_id` is a **planning alias** for this task’s execution session, not a global id.

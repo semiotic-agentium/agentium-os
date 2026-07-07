@@ -744,7 +744,7 @@ fn normalize_event_with_registry(
             usage,
             duration_ms,
             outcome,
-            drift,
+            citation_integrity,
             citations,
             resolved_citations,
             prompt_serialized_utf8_bytes,
@@ -845,83 +845,10 @@ fn normalize_event_with_registry(
                 a2a::DURATION_MS.to_string(),
                 Value::Number((*duration_ms).into()),
             );
-            if let Some(drift) = drift {
-                attrs.insert(a2a::DRIFT_SCORE.to_string(), serde_json::json!(drift.score));
-                attrs.insert(
-                    a2a::DRIFT_SEVERITY.to_string(),
-                    Value::String(drift.severity.as_str().to_owned()),
-                );
-                attrs.insert(
-                    a2a::DRIFT_MODE.to_string(),
-                    Value::String(
-                        serde_json::to_string(&drift.mode)
-                            .unwrap_or_default()
-                            .trim_matches('"')
-                            .to_owned(),
-                    ),
-                );
-                attrs.insert(
-                    a2a::DRIFT_WARN_MIN_SCORE.to_string(),
-                    serde_json::json!(drift.warn_min_score),
-                );
-                attrs.insert(
-                    a2a::DRIFT_BLOCK_MIN_SCORE.to_string(),
-                    serde_json::json!(drift.block_min_score),
-                );
-                attrs.insert(
-                    a2a::INTENT_TEXT_PREVIEW.to_string(),
-                    Value::String(drift.intent_text_preview.clone()),
-                );
-                attrs.insert(
-                    a2a::RESPONSE_TEXT_PREVIEW.to_string(),
-                    Value::String(drift.response_text_preview.clone()),
-                );
-                if !drift.step_text_preview.is_empty() {
-                    attrs.insert(
-                        a2a::STEP_TEXT_PREVIEW.to_string(),
-                        Value::String(drift.step_text_preview.clone()),
-                    );
-                }
-                if let Some(ref plan_drift) = drift.plan_drift {
-                    use crate::events::LlmPlanDriftInfo;
-                    attrs.insert(
-                        a2a::PLAN_DRIFT_INTENT_ALIGNMENT.to_string(),
-                        serde_json::json!(plan_drift.intent_alignment()),
-                    );
-                    attrs.insert(
-                        a2a::PLAN_DRIFT_TRAJECTORY.to_string(),
-                        serde_json::json!(plan_drift.trajectory_drift()),
-                    );
-                    attrs.insert(
-                        a2a::PLAN_DRIFT_ADHERENCE.to_string(),
-                        serde_json::json!(plan_drift.plan_adherence_score()),
-                    );
-                    attrs.insert(
-                        a2a::PLAN_DRIFT_COMPOSITE_SEVERITY.to_string(),
-                        Value::String(plan_drift.composite_severity().as_str().to_owned()),
-                    );
-                    // PlanCommitted-only fields: step alignment and XE score.
-                    if let LlmPlanDriftInfo::PlanCommitted {
-                        step_alignment,
-                        cross_encoder_step_score,
-                        ..
-                    } = plan_drift
-                    {
-                        attrs.insert(
-                            a2a::PLAN_DRIFT_STEP_ALIGNMENT.to_string(),
-                            serde_json::json!(step_alignment),
-                        );
-                        attrs.insert(
-                            a2a::PLAN_DRIFT_CROSS_ENCODER_STEP.to_string(),
-                            serde_json::json!(cross_encoder_step_score),
-                        );
-                    }
-                }
-                if let Some(ref cd) = drift.citation_drift
-                    && let Ok(v) = serde_json::to_value(cd)
-                {
-                    attrs.insert(a2a::CITATION_DRIFT.to_string(), v);
-                }
+            if let Some(integrity) = citation_integrity
+                && let Ok(v) = serde_json::to_value(integrity)
+            {
+                attrs.insert(a2a::CITATION_DRIFT.to_string(), v);
             }
             if !citations.is_empty() {
                 attrs.insert(
@@ -950,9 +877,6 @@ fn normalize_event_with_registry(
                 }
                 if rc.negated {
                     edge_attrs.insert("negated".to_string(), Value::Bool(true));
-                }
-                if let Some(sim) = rc.similarity {
-                    edge_attrs.insert("similarity".to_string(), serde_json::json!(sim));
                 }
                 if let Some(ls) = rc.line_start {
                     edge_attrs.insert("line_start".to_string(), Value::from(ls as u64));
@@ -1215,6 +1139,9 @@ fn normalize_event_with_registry(
             if let Some(phase) = metadata_string_field(metadata, "phase") {
                 attrs.insert(a2a::PHASE.to_string(), Value::String(phase));
             }
+            if let Some(gate) = metadata.get("semiotic_gate") {
+                attrs.insert("a2a_gate".to_string(), gate.clone());
+            }
             let start_time_ms = Some(event.timestamp_ms());
 
             doc.insert_activity(
@@ -1333,6 +1260,9 @@ fn normalize_event_with_registry(
             );
             if let Some(phase) = metadata_string_field(metadata, "phase") {
                 attrs.insert(a2a::PHASE.to_string(), Value::String(phase));
+            }
+            if let Some(gate) = metadata.get("semiotic_gate") {
+                attrs.insert("a2a_gate".to_string(), gate.clone());
             }
             if let Some(result) = metadata_json_field(metadata, "result") {
                 attrs.insert(a2a::RESULT.to_string(), result);

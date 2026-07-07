@@ -24,8 +24,8 @@ baml-rt-quickjs = { path = "../baml-rt-quickjs" }
 baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 baml-rt-config = { path = "../baml-rt-config" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
+baml-rt-semiotic = { path = "../baml-rt-semiotic" }
 baml-rt-repository = { path = "../baml-rt-repository" }
-baml-rt-embedding = { path = "../baml-rt-embedding" }
 baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
 baml-rt-tools-claude = { path = "../tools/claude" }
 baml-rt-mcp = { path = "../baml-rt-mcp" }

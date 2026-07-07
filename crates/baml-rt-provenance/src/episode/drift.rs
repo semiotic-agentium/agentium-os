@@ -2,10 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Drift aggregation for episode assembly.
+//! Citation integrity aggregation for episode assembly.
 
 use baml_rt_core::ids::{ContextId, TaskId};
-use baml_rt_embedding::DriftSeverity;
 
 use crate::{
     error::Result,
@@ -14,10 +13,7 @@ use crate::{
     },
 };
 
-/// Query and aggregate per-call drift data for a task into episode-appropriate structs.
-///
-/// Accepts any `ProvenanceOpsQuery` implementation so the aggregation logic is decoupled from
-/// the concrete `SurrealProvenanceStore` and can be tested with a mock store.
+/// Query and aggregate per-call citation integrity for a task.
 pub async fn aggregate_task_drift(
     store: &dyn ProvenanceOpsQuery,
     context_id: &ContextId,
@@ -34,10 +30,7 @@ pub async fn aggregate_task_drift(
                 task_id: Some(task_id.clone()),
                 ..Default::default()
             },
-            // Drift scoring only inspects inline node properties — full prompt/result
-            // payloads are never read here, so use the compact profile to avoid loading them.
             response_profile: Some(crate::store::ProvenanceResponseProfile::ToolCompact),
-            // 500 gives ample headroom for long tasks without over-fetching.
             page_size: Some(500),
             sort_by: Some("timestamp_ms".to_string()),
             sort_dir: Some("desc".to_string()),
@@ -47,39 +40,32 @@ pub async fn aggregate_task_drift(
 
     let mut scored_count = 0u32;
     let mut warn_count = 0u32;
-    let mut block_count = 0u32;
-    // Track the call with the worst composite severity (not just the most recent call)
-    // so the summary headline reflects the most concerning event in the task.
-    let mut worst_plan_drift: Option<&serde_json::Value> = None;
     let mut drift_calls = Vec::new();
-
-    fn f32_field(obj: &serde_json::Value, key: &str) -> Option<f32> {
-        obj.get(key).and_then(|v| v.as_f64()).map(|v| v as f32)
-    }
-
-    fn sev_field(obj: &serde_json::Value, key: &str) -> DriftSeverity {
-        obj.get(key)
-            .and_then(|v| v.as_str())
-            .map(DriftSeverity::from_wire_str)
-            .unwrap_or(DriftSeverity::Acceptable)
-    }
+    let mut worst_unresolved = 0u32;
 
     for row in &report.rows {
         let row_obj = row.as_map();
         let Some(drift_obj) = row_obj.get("drift") else {
             continue;
         };
-        let Some(plan) = drift_obj.get("plan") else {
+        let Some(citation) = drift_obj.get("citation") else {
             continue;
         };
         scored_count += 1;
 
-        let call_sev = sev_field(plan, "compositeSeverity");
-        let worst_sev = worst_plan_drift
-            .map(|p| sev_field(p, "compositeSeverity"))
-            .unwrap_or(DriftSeverity::Acceptable);
-        if worst_plan_drift.is_none() || call_sev > worst_sev {
-            worst_plan_drift = Some(plan);
+        let unresolved = citation
+            .get("unresolvedCount")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        let resolved = citation
+            .get("resolvedCount")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+        if unresolved > worst_unresolved {
+            worst_unresolved = unresolved;
+        }
+        if unresolved > 0 {
+            warn_count += 1;
         }
 
         let activity_anchor = row_obj
@@ -88,38 +74,16 @@ pub async fn aggregate_task_drift(
             .unwrap_or("")
             .to_string();
 
-        match call_sev {
-            DriftSeverity::Warn => warn_count += 1,
-            DriftSeverity::Block => block_count += 1,
-            DriftSeverity::Acceptable => {}
-        }
-
-        // Citation arrives as a parsed Object — `nest_llm_drift_fields` in
-        // `surreal_store.rs` deserialises any `Value::String` form at query time.
-        let (cite_mean, cite_cov, cite_strings) = match drift_obj.get("citation") {
-            Some(serde_json::Value::Object(obj)) => {
-                let mean = obj
-                    .get("meanSimilarity")
-                    .and_then(|v| v.as_f64())
-                    .map(|v| v as f32);
-                let cov = obj
-                    .get("coverage")
-                    .and_then(|v| v.as_f64())
-                    .map(|v| v as f32);
-                let strings: Vec<String> = obj
-                    .get("perCitation")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|c| c.get("raw").and_then(|r| r.as_str()))
-                            .map(str::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                (mean, cov, strings)
-            }
-            _ => (None, None, Vec::new()),
-        };
+        let cite_strings: Vec<String> = citation
+            .get("perCitation")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|c| c.get("raw").and_then(|r| r.as_str()))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
 
         drift_calls.push(super::EpisodeDriftCall {
             activity_anchor,
@@ -128,28 +92,44 @@ pub async fn aggregate_task_drift(
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string(),
-            severity: call_sev,
-            intent_alignment: f32_field(plan, "intentAlignment").unwrap_or(0.0),
-            step_alignment: f32_field(plan, "stepAlignment"),
-            cross_encoder_step_score: f32_field(plan, "crossEncoderStepScore"),
-            trajectory_drift: f32_field(plan, "trajectoryDrift"),
-            plan_adherence_score: f32_field(plan, "planAdherenceScore").unwrap_or(0.0),
-            citation_mean_similarity: cite_mean,
-            citation_coverage: cite_cov,
+            severity: if unresolved > 0 {
+                "warn".to_string()
+            } else {
+                "acceptable".to_string()
+            },
+            intent_alignment: 0.0,
+            step_alignment: None,
+            cross_encoder_step_score: None,
+            trajectory_drift: None,
+            plan_adherence_score: 0.0,
+            citation_mean_similarity: None,
+            citation_coverage: if resolved + unresolved > 0 {
+                Some(resolved as f32 / (resolved + unresolved) as f32)
+            } else {
+                None
+            },
             citation_strings: cite_strings,
         });
     }
 
-    let drift_summary = worst_plan_drift.map(|plan| super::EpisodeDriftSummary {
-        composite_severity: sev_field(plan, "compositeSeverity"),
-        intent_alignment: f32_field(plan, "intentAlignment").unwrap_or(0.0),
-        step_alignment: f32_field(plan, "stepAlignment"),
-        trajectory_drift: f32_field(plan, "trajectoryDrift"),
-        plan_adherence_score: f32_field(plan, "planAdherenceScore").unwrap_or(0.0),
-        scored_call_count: scored_count,
-        warn_count,
-        block_count,
-    });
+    let drift_summary = if scored_count > 0 {
+        Some(super::EpisodeDriftSummary {
+            composite_severity: if worst_unresolved > 0 {
+                "warn".to_string()
+            } else {
+                "acceptable".to_string()
+            },
+            intent_alignment: 0.0,
+            step_alignment: None,
+            trajectory_drift: None,
+            plan_adherence_score: 0.0,
+            scored_call_count: scored_count,
+            warn_count,
+            block_count: 0,
+        })
+    } else {
+        None
+    };
 
     Ok((drift_summary, drift_calls))
 }

@@ -914,7 +914,8 @@ pub(super) async fn register_execution_session_helper(bridge: &QuickJSBridge) ->
                 | ExecutionSessionCommand::StartStep { session_id, .. }
                 | ExecutionSessionCommand::CompleteStep { session_id, .. }
                 | ExecutionSessionCommand::Finish { session_id }
-                | ExecutionSessionCommand::Abort { session_id, .. } => Some(session_id.clone()),
+                | ExecutionSessionCommand::Abort { session_id, .. }
+                | ExecutionSessionCommand::SubmitGrounding { session_id, .. } => Some(session_id.clone()),
             };
             let invocation_scope = match &cmd {
                 ExecutionSessionCommand::Open => resolve_scope_from_active_context(&registry)?,
@@ -1398,6 +1399,40 @@ pub(super) async fn register_execution_session_helper(bridge: &QuickJSBridge) ->
                                     serde_json::to_string(&out).map_err(|e| {
                                         quickjs_runtime::jsutils::JsError::new_str(&format!(
                                             "Failed to encode execution-session abort response: {e}"
+                                        ))
+                                    })?,
+                                ))
+                            }
+                            ExecutionSessionCommand::SubmitGrounding {
+                                session_id,
+                                artifact,
+                                plan_step_id,
+                            } => {
+                                ensure_execution_session_scope_matches(
+                                    state_store
+                                        .get(session_id.as_str())
+                                        .ok_or_else(|| {
+                                            quickjs_runtime::jsutils::JsError::new_str(
+                                                "execution session not found",
+                                            )
+                                        })?
+                                        .base(),
+                                    &scope_for_run,
+                                )?;
+                                let art = baml_rt_semiotic::ParseArtifact::coerce_from_value(artifact);
+                                baml_rt_semiotic::submit_grounding(
+                                    &scope_for_run,
+                                    art,
+                                    plan_step_id.clone(),
+                                );
+                                let out = serde_json::json!({
+                                    "sessionId": session_id.as_str(),
+                                    "grounding": "submitted"
+                                });
+                                Ok(JsValueFacade::new_string(
+                                    serde_json::to_string(&out).map_err(|e| {
+                                        quickjs_runtime::jsutils::JsError::new_str(&format!(
+                                            "Failed to encode submitGrounding response: {e}"
                                         ))
                                     })?,
                                 ))
