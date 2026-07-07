@@ -4,7 +4,7 @@
 
 //! Conformance scenarios mirrored from `sc-review/plugin/tests/test_hooks.py`.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, OnceLock};
 
 use baml_rt_core::{
     context::RuntimeScope,
@@ -23,10 +23,9 @@ use baml_rt_semiotic::{
 use baml_rt_tools::tools::ToolAccess;
 use serde_json::json;
 
-static CONFORMANCE_LOCK: Mutex<()> = Mutex::new(());
-
-fn conformance_guard() -> std::sync::MutexGuard<'static, ()> {
-    CONFORMANCE_LOCK.lock().expect("conformance lock")
+fn conformance_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 fn grounded_artifact() -> ParseArtifact {
@@ -208,7 +207,7 @@ async fn intercept(
 
 #[tokio::test]
 async fn tier0_passes_silently() {
-    let _guard = conformance_guard();
+    let _guard = conformance_lock().lock().await;
     let store = Arc::new(GroundingStore::new());
     let gate = enforced_interceptor(store);
     let decision = intercept(
@@ -223,7 +222,7 @@ async fn tier0_passes_silently() {
 
 #[tokio::test]
 async fn no_artifact_denies_tier3() {
-    let _guard = conformance_guard();
+    let _guard = conformance_lock().lock().await;
     let store = Arc::new(GroundingStore::new());
     let gate = enforced_interceptor(store);
     let decision = intercept(
@@ -253,7 +252,7 @@ async fn trojan_nodes_deficient() {
 
 #[tokio::test]
 async fn grounded_tier2_passes() {
-    let _guard = conformance_guard();
+    let _guard = conformance_lock().lock().await;
     let store = Arc::new(GroundingStore::new());
     store.submit(&runtime_scope(), grounded_artifact(), None);
     let gate = enforced_interceptor(store);
@@ -266,7 +265,7 @@ async fn grounded_tier2_passes() {
 
 #[tokio::test]
 async fn grounded_tier3_requires_authorization() {
-    let _guard = conformance_guard();
+    let _guard = conformance_lock().lock().await;
     let store = Arc::new(GroundingStore::new());
     store.submit(&runtime_scope(), grounded_artifact(), None);
     let gate = enforced_interceptor(store);
@@ -285,7 +284,7 @@ async fn grounded_tier3_requires_authorization() {
 
 #[tokio::test]
 async fn per_agent_override_enforces_while_global_dry_run() {
-    let _guard = conformance_guard();
+    let _guard = conformance_lock().lock().await;
     let store = Arc::new(GroundingStore::new());
     set_global_semiotic_config(SemioticConfig {
         default: SemioticPolicy {
