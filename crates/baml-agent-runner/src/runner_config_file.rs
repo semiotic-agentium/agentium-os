@@ -27,6 +27,7 @@ pub struct FileConfig {
     pub external_tools: ExternalToolsSection,
     pub external_datasources: HashMap<String, HashMap<String, DatasourceActivation>>,
     pub sandbox: SandboxSection,
+    pub mcp: McpSection,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -51,6 +52,42 @@ pub struct SandboxSection {
 #[serde(default, deny_unknown_fields)]
 pub struct SandboxBindSection {
     pub roots: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct McpSection {
+    pub runtime: McpRuntimeSection,
+    pub http: McpHttpSection,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct McpRuntimeSection {
+    pub startup_timeout_secs: Option<u64>,
+    pub call_timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct McpHttpSection {
+    pub connect_timeout_ms: Option<u64>,
+    pub request_timeout_ms: Option<u64>,
+    pub pool_idle_timeout_ms: Option<u64>,
+    pub max_idle_per_host: Option<u64>,
+}
+
+impl From<&McpSection> for baml_rt_mcp::resolver::McpRuntimePolicy {
+    fn from(value: &McpSection) -> Self {
+        Self {
+            startup_timeout_secs: value.runtime.startup_timeout_secs,
+            call_timeout_secs: value.runtime.call_timeout_secs,
+            http_connect_timeout_ms: value.http.connect_timeout_ms,
+            http_request_timeout_ms: value.http.request_timeout_ms,
+            http_pool_idle_timeout_ms: value.http.pool_idle_timeout_ms,
+            http_max_idle_per_host: value.http.max_idle_per_host,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,6 +235,36 @@ roots = ["./bind"]
     }
 
     #[test]
+    fn parses_mcp_runtime_policy() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("runner.toml");
+        fs::write(
+            &path,
+            r#"
+[mcp.runtime]
+startup_timeout_secs = 7
+call_timeout_secs = 11
+
+[mcp.http]
+connect_timeout_ms = 13
+request_timeout_ms = 17
+pool_idle_timeout_ms = 19
+max_idle_per_host = 23
+"#,
+        )
+        .expect("write toml");
+
+        let cfg = FileConfig::load(&path).expect("load");
+        let policy = baml_rt_mcp::resolver::McpRuntimePolicy::from(&cfg.mcp);
+        assert_eq!(policy.startup_timeout_secs, Some(7));
+        assert_eq!(policy.call_timeout_secs, Some(11));
+        assert_eq!(policy.http_connect_timeout_ms, Some(13));
+        assert_eq!(policy.http_request_timeout_ms, Some(17));
+        assert_eq!(policy.http_pool_idle_timeout_ms, Some(19));
+        assert_eq!(policy.http_max_idle_per_host, Some(23));
+    }
+
+    #[test]
     fn rejects_unknown_field() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("runner.toml");
@@ -231,6 +298,7 @@ unknown = true
             },
             external_datasources: HashMap::new(),
             sandbox: SandboxSection::default(),
+            mcp: McpSection::default(),
         };
         set_env(EXTERNAL_TOOLS_DIR_ENV, "/from-env-a:/from-env-b");
 
@@ -260,6 +328,7 @@ unknown = true
                     roots: vec![PathBuf::from("/bind-from-file")],
                 },
             },
+            mcp: McpSection::default(),
         };
 
         let resolved = resolve_paths(&file);
@@ -300,6 +369,7 @@ unknown = true
             },
             external_datasources: HashMap::new(),
             sandbox: SandboxSection::default(),
+            mcp: McpSection::default(),
         };
         set_env(EXTERNAL_TOOLS_DIR_ENV, "   ");
 

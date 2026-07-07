@@ -24,7 +24,10 @@ use baml_rt_tools::{
     mcp_secrets::{
         ResolvedSecret, SecretFingerprint, compute_secret_fingerprint, resolve_secret_specs,
     },
-    mcp_snapshot::{Digest as McpDigest, compute_server_config_digest},
+    mcp_snapshot::{
+        Digest as McpDigest, compute_server_config_digest,
+        compute_server_config_digest_legacy_runtime_policy,
+    },
     tools::{ToolFunctionMetadata, ToolHandler, ToolName},
 };
 use dashmap::{DashMap, mapref::entry::Entry};
@@ -39,6 +42,18 @@ use crate::{
 const DEFAULT_STARTUP_TIMEOUT_SECS: u64 = 30;
 /// Default per-call deadline when not specified.
 const DEFAULT_CALL_TIMEOUT_SECS: u64 = 120;
+
+/// Runner-scoped MCP runtime policy. `None` means: use legacy
+/// `mcp-servers.json` value when present, otherwise code default.
+#[derive(Debug, Clone, Default)]
+pub struct McpRuntimePolicy {
+    pub startup_timeout_secs: Option<u64>,
+    pub call_timeout_secs: Option<u64>,
+    pub http_connect_timeout_ms: Option<u64>,
+    pub http_request_timeout_ms: Option<u64>,
+    pub http_pool_idle_timeout_ms: Option<u64>,
+    pub http_max_idle_per_host: Option<u64>,
+}
 
 /// Wire transport discriminant carried on the pool key so a registry rewrite
 /// from stdio to Streamable HTTP (or vice versa) never reuses a connection.
@@ -88,6 +103,7 @@ pub struct McpResolver<R: SecretResolver + Send + Sync> {
     cache_root: PathBuf,
     servers: McpServersFile,
     secret_resolver: R,
+    runtime_policy: McpRuntimePolicy,
     connections: DashMap<PoolKey, Arc<McpConnection>>,
 }
 
@@ -107,11 +123,29 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
         servers: McpServersFile,
         secret_resolver: R,
     ) -> Self {
+        Self::for_agent_with_policy(
+            agent_scope,
+            cache_root,
+            servers,
+            secret_resolver,
+            McpRuntimePolicy::default(),
+        )
+    }
+
+    /// Construct a resolver with explicit runner-scoped runtime policy.
+    pub fn for_agent_with_policy(
+        agent_scope: impl Into<String>,
+        cache_root: PathBuf,
+        servers: McpServersFile,
+        secret_resolver: R,
+        runtime_policy: McpRuntimePolicy,
+    ) -> Self {
         Self {
             agent_scope: Arc::<str>::from(agent_scope.into()),
             cache_root,
             servers,
             secret_resolver,
+            runtime_policy,
             connections: DashMap::new(),
         }
     }
@@ -141,19 +175,39 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
             Some(&tools_digest),
         );
         if observed_config_digest != server_config_digest {
-            tracing::error!(
-                target: "mcp.config",
-                mcp_server_id = %server_id,
-                agent_scope = %self.agent_scope,
-                expected = %server_config_digest,
-                observed = %observed_config_digest,
-                protocol_version = %protocol_version,
-                event = "mcp.launch_config_digest_mismatch",
-                "MCP launch config digest does not match approved snapshot; refusing to bind. Run `agent-platform mcp enable <server>` to re-import and approve, then redeploy affected agents."
+            let legacy_config_digest = compute_server_config_digest_legacy_runtime_policy(
+                server_id,
+                protocol_version,
+                server_config,
+                Some(&tools_digest),
             );
-            return Err(BamlRtError::InvalidArgument(format!(
-                "MCP server `{server_id}` launch config digest mismatch (expected `{server_config_digest}`, observed `{observed_config_digest}`); operator must re-import and approve a new registry snapshot"
-            )));
+            if legacy_config_digest == server_config_digest {
+                tracing::warn!(
+                    target: "mcp.config",
+                    mcp_server_id = %server_id,
+                    agent_scope = %self.agent_scope,
+                    approved = %server_config_digest,
+                    observed = %observed_config_digest,
+                    protocol_version = %protocol_version,
+                    event = "mcp.launch_config_digest_legacy_runtime_policy_accepted",
+                    "MCP launch config digest matches legacy runtime-policy-inclusive shape; accepting existing snapshot. Re-import to seal runtime-policy-independent digest."
+                );
+            } else {
+                tracing::error!(
+                    target: "mcp.config",
+                    mcp_server_id = %server_id,
+                    agent_scope = %self.agent_scope,
+                    expected = %server_config_digest,
+                    observed = %observed_config_digest,
+                    legacy_observed = %legacy_config_digest,
+                    protocol_version = %protocol_version,
+                    event = "mcp.launch_config_digest_mismatch",
+                    "MCP launch config digest does not match approved snapshot; refusing to bind. Run `agent-platform mcp enable <server>` to re-import and approve, then redeploy affected agents."
+                );
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "MCP server `{server_id}` launch config digest mismatch (expected `{server_config_digest}`, observed `{observed_config_digest}`); operator must re-import and approve a new registry snapshot"
+                )));
+            }
         }
 
         // Resolve every declared secret through the unified spec model. Fails
@@ -169,15 +223,25 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
         })?;
         let resolved_vec: Vec<ResolvedSecret> = resolved_map.values().cloned().collect();
 
-        let startup_timeout_secs = server_config
-            .sandbox
-            .as_ref()
-            .and_then(|s| s.import_timeout_secs)
+        let startup_timeout_secs = self
+            .runtime_policy
+            .startup_timeout_secs
+            .or_else(|| {
+                server_config
+                    .sandbox
+                    .as_ref()
+                    .and_then(|s| s.import_timeout_secs)
+            })
             .unwrap_or(DEFAULT_STARTUP_TIMEOUT_SECS);
-        let call_timeout_secs = server_config
-            .sandbox
-            .as_ref()
-            .and_then(|s| s.runtime_call_timeout_secs)
+        let call_timeout_secs = self
+            .runtime_policy
+            .call_timeout_secs
+            .or_else(|| {
+                server_config
+                    .sandbox
+                    .as_ref()
+                    .and_then(|s| s.runtime_call_timeout_secs)
+            })
             .unwrap_or(DEFAULT_CALL_TIMEOUT_SECS);
 
         let secret_fingerprint = compute_secret_fingerprint(&resolved_vec);
@@ -212,6 +276,7 @@ impl<R: SecretResolver + Send + Sync> McpResolver<R> {
                 LaunchKind::Http(HttpLaunchConfig::from(HttpLaunchInput {
                     config: http_cfg,
                     resolved_secrets: resolved_vec.clone(),
+                    runtime_policy: &self.runtime_policy,
                 })),
                 PoolTransport::StreamableHttp,
             ),
@@ -347,6 +412,7 @@ fn pool_transport_label(transport: PoolTransport) -> &'static str {
 struct HttpLaunchInput<'a> {
     config: &'a StreamableHttpConfig,
     resolved_secrets: Vec<ResolvedSecret>,
+    runtime_policy: &'a McpRuntimePolicy,
 }
 
 impl From<HttpLaunchInput<'_>> for HttpLaunchConfig {
@@ -356,10 +422,28 @@ impl From<HttpLaunchInput<'_>> for HttpLaunchConfig {
             static_headers: input.config.headers.clone(),
             resolved_secrets: input.resolved_secrets,
             network_policy: input.config.network_policy.clone(),
-            connect_timeout: Duration::from_millis(input.config.timeouts.connect_ms),
-            request_timeout: Duration::from_millis(input.config.timeouts.request_ms),
-            idle_stream_timeout: Duration::from_millis(input.config.timeouts.idle_stream_ms),
-            max_idle_per_host: input.config.pooling.max_idle_per_host,
+            connect_timeout: Duration::from_millis(
+                input
+                    .runtime_policy
+                    .http_connect_timeout_ms
+                    .unwrap_or(input.config.timeouts.connect_ms),
+            ),
+            request_timeout: Duration::from_millis(
+                input
+                    .runtime_policy
+                    .http_request_timeout_ms
+                    .unwrap_or(input.config.timeouts.request_ms),
+            ),
+            idle_stream_timeout: Duration::from_millis(
+                input
+                    .runtime_policy
+                    .http_pool_idle_timeout_ms
+                    .unwrap_or(input.config.timeouts.idle_stream_ms),
+            ),
+            max_idle_per_host: input
+                .runtime_policy
+                .http_max_idle_per_host
+                .unwrap_or(input.config.pooling.max_idle_per_host),
             extra_ca_certs_pem: Vec::new(),
         }
     }
@@ -387,6 +471,21 @@ pub fn default_mcp_resolver_for_agent<R: SecretResolver + Send + Sync>(
     cache_root: &Path,
     secret_resolver: R,
 ) -> Result<McpResolver<R>> {
+    default_mcp_resolver_for_agent_with_policy(
+        agent_scope,
+        cache_root,
+        secret_resolver,
+        McpRuntimePolicy::default(),
+    )
+}
+
+/// Same as [`default_mcp_resolver_for_agent`] with runner-scoped runtime policy.
+pub fn default_mcp_resolver_for_agent_with_policy<R: SecretResolver + Send + Sync>(
+    agent_scope: impl Into<String>,
+    cache_root: &Path,
+    secret_resolver: R,
+    runtime_policy: McpRuntimePolicy,
+) -> Result<McpResolver<R>> {
     let config_path = resolve_servers_config_path()?;
     let raw = std::fs::read_to_string(&config_path).map_err(|err| {
         BamlRtError::InvalidArgumentWithSource {
@@ -403,11 +502,12 @@ pub fn default_mcp_resolver_for_agent<R: SecretResolver + Send + Sync>(
             message: format!("parsing {}", config_path.display()),
             source: Box::new(err),
         })?;
-    Ok(McpResolver::for_agent(
+    Ok(McpResolver::for_agent_with_policy(
         agent_scope,
         cache_root.to_path_buf(),
         parsed,
         secret_resolver,
+        runtime_policy,
     ))
 }
 
@@ -564,5 +664,43 @@ mod tests {
             !rendered.contains("supersecret"),
             "secret value leaked: {rendered}"
         );
+    }
+
+    #[test]
+    fn http_launch_prefers_runner_runtime_policy_over_legacy_config() {
+        let config = StreamableHttpConfig {
+            url: "https://example.invalid/mcp".into(),
+            headers: vec![],
+            auth: None,
+            timeouts: baml_rt_tools::mcp_config::HttpTimeoutsConfig {
+                connect_ms: 1,
+                request_ms: 2,
+                idle_stream_ms: 3,
+            },
+            pooling: baml_rt_tools::mcp_config::HttpPoolingConfig {
+                share_safe: false,
+                max_idle_per_host: 4,
+                idle_ttl_ms: 5,
+            },
+            network_policy: Default::default(),
+        };
+        let policy = McpRuntimePolicy {
+            http_connect_timeout_ms: Some(10),
+            http_request_timeout_ms: Some(20),
+            http_pool_idle_timeout_ms: Some(30),
+            http_max_idle_per_host: Some(40),
+            ..Default::default()
+        };
+
+        let launch = HttpLaunchConfig::from(HttpLaunchInput {
+            config: &config,
+            resolved_secrets: vec![],
+            runtime_policy: &policy,
+        });
+
+        assert_eq!(launch.connect_timeout, Duration::from_millis(10));
+        assert_eq!(launch.request_timeout, Duration::from_millis(20));
+        assert_eq!(launch.idle_stream_timeout, Duration::from_millis(30));
+        assert_eq!(launch.max_idle_per_host, 40);
     }
 }

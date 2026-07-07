@@ -335,6 +335,42 @@ pub fn compute_server_config_digest(
             "url": normalized_http_url(&http.url),
             "headers": http.headers,
             "auth": auth_digest_shape(http.auth.as_ref()),
+            "network_policy": effective_network_policy(&http.url, &http.network_policy),
+            "imported_tools_digest": tool_scope_digest,
+        }),
+        None => json!({
+            "server_id": server_id,
+            "transport_kind": "stdio",
+            "protocol_version": protocol_version,
+            "command": config.command,
+            "args": config.args,
+            "env": &config.env,
+            "secret_names": config.secrets.iter().map(|s| &s.name).collect::<Vec<_>>(),
+            "sandbox_profile": config.sandbox.as_ref().and_then(|s| s.profile.as_ref()),
+            "imported_tools_digest": tool_scope_digest,
+        }),
+    };
+    canonical_digest(&canonical)
+}
+
+/// Legacy digest shape used before runtime-only MCP policy moved to runner
+/// config. Runtime keeps this for compatibility with already-packaged approved
+/// snapshots, but new imports should use [`compute_server_config_digest`].
+pub fn compute_server_config_digest_legacy_runtime_policy(
+    server_id: &str,
+    protocol_version: &str,
+    config: &McpServerConfig,
+    imported_tools_digest: Option<&Digest>,
+) -> Digest {
+    let tool_scope_digest = imported_tools_digest;
+    let canonical = match &config.transport {
+        Some(McpServerTransportConfig::StreamableHttp(http)) => json!({
+            "server_id": server_id,
+            "transport_kind": "streamable_http",
+            "protocol_version": protocol_version,
+            "url": normalized_http_url(&http.url),
+            "headers": http.headers,
+            "auth": auth_digest_shape(http.auth.as_ref()),
             "timeouts": http.timeouts,
             "pooling": http.pooling,
             "network_policy": effective_network_policy(&http.url, &http.network_policy),
@@ -817,6 +853,50 @@ mod tests {
         assert_ne!(a, changed_policy);
     }
 
+    #[test]
+    fn server_config_digest_ignores_streamable_http_runtime_policy() {
+        let mut config = McpServerConfig {
+            transport: Some(McpServerTransportConfig::StreamableHttp(
+                StreamableHttpConfig {
+                    url: "https://example.invalid/mcp".into(),
+                    headers: vec![],
+                    auth: None,
+                    timeouts: Default::default(),
+                    pooling: Default::default(),
+                    network_policy: Default::default(),
+                },
+            )),
+            command: String::new(),
+            args: vec![],
+            env: std::collections::BTreeMap::new(),
+            secrets: vec![],
+            sandbox: None,
+            description: None,
+        };
+        let tools =
+            Digest::new("sha256:8888888888888888888888888888888888888888888888888888888888888888");
+        let base = compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools));
+
+        with_streamable_http_mut(&mut config, |http| {
+            http.timeouts.connect_ms = 123;
+            http.timeouts.request_ms = 456;
+            http.timeouts.idle_stream_ms = 789;
+            http.pooling.max_idle_per_host = 99;
+            http.pooling.idle_ttl_ms = 42;
+        });
+        let changed_runtime =
+            compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools));
+        assert_eq!(base, changed_runtime);
+
+        let legacy_changed = compute_server_config_digest_legacy_runtime_policy(
+            "grafana",
+            "2025-06-18",
+            &config,
+            Some(&tools),
+        );
+        assert_ne!(base, legacy_changed);
+    }
+
     fn with_streamable_http_mut(
         config: &mut McpServerConfig,
         f: impl FnOnce(&mut StreamableHttpConfig),
@@ -869,6 +949,47 @@ mod tests {
         let added_key =
             compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools));
         assert_ne!(base, added_key, "new non-secret env key must affect digest");
+    }
+
+    #[test]
+    fn stdio_digest_ignores_runtime_timeouts_but_tracks_sandbox_profile() {
+        let mut config = McpServerConfig {
+            transport: None,
+            command: "grafana-mcp".into(),
+            args: vec![],
+            env: std::collections::BTreeMap::new(),
+            secrets: vec![],
+            sandbox: None,
+            description: None,
+        };
+        let tools =
+            Digest::new("sha256:4444444444444444444444444444444444444444444444444444444444444444");
+        let base = compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools));
+
+        config.sandbox = Some(crate::mcp_config::SandboxConfig {
+            profile: None,
+            import_timeout_secs: Some(1),
+            runtime_call_timeout_secs: Some(2),
+        });
+        let changed_timeouts =
+            compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools));
+        assert_eq!(base, changed_timeouts);
+        let legacy_changed = compute_server_config_digest_legacy_runtime_policy(
+            "grafana",
+            "2025-06-18",
+            &config,
+            Some(&tools),
+        );
+        assert_ne!(base, legacy_changed);
+
+        config.sandbox = Some(crate::mcp_config::SandboxConfig {
+            profile: Some("custom-profile".into()),
+            import_timeout_secs: Some(1),
+            runtime_call_timeout_secs: Some(2),
+        });
+        let changed_profile =
+            compute_server_config_digest("grafana", "2025-06-18", &config, Some(&tools));
+        assert_ne!(base, changed_profile);
     }
 
     #[test]

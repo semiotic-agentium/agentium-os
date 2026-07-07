@@ -24,7 +24,7 @@ use baml_rt_core::{
 };
 use baml_rt_mcp::{
     composite::CompositeResolver, importer::SecretResolver as McpSecretResolver,
-    resolver::default_mcp_resolver_for_agent,
+    resolver::default_mcp_resolver_for_agent_with_policy,
 };
 use baml_rt_observability::spans;
 use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, index_tools};
@@ -104,6 +104,7 @@ pub(crate) struct AgentPackageBootArgs<'a> {
     pub(crate) claude_workspaces_base: Option<&'a Path>,
     pub(crate) external_tools_dirs: &'a [PathBuf],
     pub(crate) sandbox_bind_roots: &'a [PathBuf],
+    pub(crate) mcp_runtime_policy: &'a baml_rt_mcp::resolver::McpRuntimePolicy,
     /// Meter to register the agent's JS-event-loop progress probe with.
     pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
     pub(crate) observation_notify:
@@ -154,6 +155,7 @@ impl AgentPackage {
         claude_workspaces_base: Option<&std::path::Path>,
         external_tools_dirs: &[std::path::PathBuf],
         sandbox_bind_roots: &[std::path::PathBuf],
+        mcp_runtime_policy: &baml_rt_mcp::resolver::McpRuntimePolicy,
         llm_secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver>,
     ) -> Result<ToolsRegistered> {
         let mut runtime_manager = loaded.runtime_manager;
@@ -224,10 +226,11 @@ impl AgentPackage {
             // Pool keys are scoped to the agent package name, so two agents
             // backed by different packages never share an MCP connection
             // entry even when they resolve the same `server_id`.
-            Some(default_mcp_resolver_for_agent(
+            Some(default_mcp_resolver_for_agent_with_policy(
                 self.manifest.name.clone(),
                 &package_mcp_root,
                 LlmSecretResolverToMcpAdapter::new(llm_secret_resolver),
+                mcp_runtime_policy.clone(),
             )?)
         } else {
             None
@@ -513,6 +516,7 @@ impl AgentPackage {
                     args.claude_workspaces_base,
                     args.external_tools_dirs,
                     args.sandbox_bind_roots,
+                    args.mcp_runtime_policy,
                     args.provenance_config.llm_secret_resolver(),
                 )
                 .await?;

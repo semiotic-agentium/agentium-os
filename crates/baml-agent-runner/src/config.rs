@@ -72,6 +72,8 @@ pub(crate) struct RunnerConfig {
         std::collections::HashMap<String, std::collections::HashMap<String, DatasourceActivation>>,
     /// Resolved sandbox bind allowlist roots (file → env precedence).
     pub(crate) sandbox_bind_roots: Vec<PathBuf>,
+    /// Runner-scoped MCP runtime policy (explicit values override legacy mcp-servers.json knobs).
+    pub(crate) mcp_runtime_policy: baml_rt_mcp::resolver::McpRuntimePolicy,
     /// Whether provenance drift scoring is enabled. `true` when
     /// `--enable-provenance-drift` is passed OR a non-empty `BAML_MODELS_DIR`
     /// is set (an explicit signal the operator provisioned a model tree). When
@@ -234,6 +236,16 @@ impl Cli {
             source = resolved.sandbox_bind_source.as_str(),
             "sandbox.bind.roots resolved"
         );
+        let mcp_runtime_policy = baml_rt_mcp::resolver::McpRuntimePolicy::from(&file_config.mcp);
+        info!(
+            startup_timeout_secs = ?mcp_runtime_policy.startup_timeout_secs,
+            call_timeout_secs = ?mcp_runtime_policy.call_timeout_secs,
+            http_connect_timeout_ms = ?mcp_runtime_policy.http_connect_timeout_ms,
+            http_request_timeout_ms = ?mcp_runtime_policy.http_request_timeout_ms,
+            http_pool_idle_timeout_ms = ?mcp_runtime_policy.http_pool_idle_timeout_ms,
+            http_max_idle_per_host = ?mcp_runtime_policy.http_max_idle_per_host,
+            "mcp runtime policy resolved"
+        );
 
         Ok(RunnerConfig {
             repository_url: self.repository_url,
@@ -262,6 +274,7 @@ impl Cli {
             external_tools_dirs: resolved.external_tools_dirs,
             external_datasources: file_config.external_datasources,
             sandbox_bind_roots: resolved.sandbox_bind_roots,
+            mcp_runtime_policy,
             provenance_drift_enabled,
         })
     }
