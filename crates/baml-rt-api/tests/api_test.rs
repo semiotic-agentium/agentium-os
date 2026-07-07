@@ -444,7 +444,7 @@ impl ProvenanceOpsService for RealProvenanceOps {
         ),
         ProvenanceOpsError,
     > {
-        use baml_rt_provenance::{ProvenanceOpsQuery, aggregate_agent_gate_activity};
+        use baml_rt_provenance::aggregate_agent_gate_activity;
         aggregate_agent_gate_activity(&*self.store, filters)
             .await
             .map_err(|e| ProvenanceOpsError::Other(Box::new(e)))

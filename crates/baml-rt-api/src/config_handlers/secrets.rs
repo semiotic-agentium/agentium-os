@@ -15,7 +15,6 @@ use baml_rt_llm_config::{
 };
 use baml_rt_tools::{BundleName, ToolName};
 use http_api_problem::HttpApiProblem;
-use serde_json::Value;
 
 use super::common::{HttpResult, config_err_500, problem};
 use crate::openapi::{ProvisionSecretDto, SecretOverviewEntryDto, SecretRequestDto};

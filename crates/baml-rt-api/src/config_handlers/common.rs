@@ -6,7 +6,6 @@
 
 use axum::Json;
 use baml_rt_llm_config::{LLM_CONFIG_BUNDLE_NAME, LlmProvider};
-use baml_rt_semiotic::SEMIOTIC_CONFIG_BUNDLE_NAME;
 use http_api_problem::HttpApiProblem;
 use serde_json::Value;
 

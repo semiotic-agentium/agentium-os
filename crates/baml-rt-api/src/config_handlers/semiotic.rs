@@ -129,6 +129,10 @@ fn default_incident_limit() -> u32 {
     20
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "HttpApiProblem is the HttpResult error type; boxing it would ripple through every handler signature"
+)]
 pub fn list_schema_entry(has_config: bool) -> Result<ToolConfigSchemaDto, HttpApiProblem> {
     let default_semiotic_value = serde_json::to_value(SemioticConfig::default()).map_err(|e| {
         problem(
@@ -421,6 +425,10 @@ pub async fn get_semiotic_activity(
     result
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "HttpApiProblem is the HttpResult error type; boxing it would ripple through every handler signature"
+)]
 pub fn parse_put_body(body: Value) -> Result<Value, HttpApiProblem> {
     let semiotic_config: SemioticConfig = serde_json::from_value(body)
         .map_err(|e| problem(400, "Invalid config", format!("Semiotic config: {e}")))?;

@@ -1280,7 +1280,6 @@ fn to_ops_request(
             payload_text: q.payload_text,
             from_timestamp_ms: q.from_timestamp_ms,
             to_timestamp_ms: q.to_timestamp_ms,
-            ..Default::default()
         },
         group_by,
         sort_by: q.sort_by,
