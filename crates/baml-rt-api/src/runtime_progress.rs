@@ -24,10 +24,14 @@ use std::{
         Arc, RwLock, Weak,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use baml_rt_core::{ProgressProbe, ProgressProbeRegistry};
+// tokio's clock (not std) so tests can drive time deterministically under
+// `start_paused`; identical to `std::time::Instant` when the clock is unpaused
+// (production), and it falls back to real time when read outside a runtime.
+use tokio::time::Instant;
 
 const TICK_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -207,16 +211,22 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn spawn_in_runtime_advances_lag_under_no_load() {
         let meter = RuntimeProgressMeter::spawn_in_current_runtime();
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        // Paused clock: the meter's `Instant` and the ticker's `interval` both
+        // read tokio's virtual time, which advances only when the runtime is
+        // idle-waiting on a timer. CI CPU starvation cannot inflate it, so this
+        // is deterministic — no wall-clock, no flake. The ticker fires at
+        // 100/200/300ms; sleeping to 350ms leaves the last tick at 300ms.
+        tokio::time::sleep(Duration::from_millis(350)).await;
         let lag = meter.lag_millis();
-        // Looser than the strictly-expected ~50ms: CI workers can slip
-        // ticker scheduling by 50–100ms under load.
+        // A live ticker yields exactly ~50ms (350 − 300). A never-spawned or
+        // wedged ticker leaves `last_tick` at 0, so lag tracks the full 350ms;
+        // the one-interval bound still catches that regression.
         assert!(
-            lag < 250,
-            "under no load, lag should stay near one interval period (got {lag})"
+            lag <= TICK_INTERVAL.as_millis() as u64,
+            "ticker should hold lag within one interval under virtual no-load (got {lag})"
         );
     }
 

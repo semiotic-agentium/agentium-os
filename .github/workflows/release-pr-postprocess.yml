@@ -25,6 +25,9 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           token: ${{ github.token }}
+          # Rebase below must survive release-please force-pushing this branch.
+          # Shallow checkout can lack the merge-base after a force-push.
+          fetch-depth: 0
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
@@ -33,6 +36,8 @@ jobs:
         run: cargo update --workspace
 
       - name: Commit Cargo.lock if changed
+        env:
+          BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
           if git diff --quiet -- Cargo.lock; then
             echo "Cargo.lock already up to date"
@@ -42,4 +47,24 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Cargo.lock
           git commit -m "chore: update Cargo.lock for release"
-          git push
+
+          # Release Please may force-push the release PR branch after this job
+          # starts. Rebase onto the latest branch tip before pushing so the
+          # lockfile update is not based on a stale generated PR snapshot.
+          for attempt in 1 2 3; do
+            if ! git fetch origin "${BRANCH}"; then
+              sleep $((attempt * 5))
+              continue
+            fi
+            if ! git rebase "origin/${BRANCH}"; then
+              git rebase --abort || true
+              sleep $((attempt * 5))
+              continue
+            fi
+            if git push origin "HEAD:${BRANCH}"; then
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "failed to push Cargo.lock update after rebasing onto ${BRANCH}" >&2
+          exit 1

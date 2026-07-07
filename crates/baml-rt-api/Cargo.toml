@@ -54,6 +54,10 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
+# `test-util` enables tokio's paused clock (`#[tokio::test(start_paused)]`) used
+# by the runtime_progress ticker test. Dev-only: feature unification adds it for
+# the test build without shipping it in production `cargo build`.
+tokio = { workspace = true, features = ["test-util"] }
 baml-rt-embedding = { path = "../baml-rt-embedding" }
 axum = { workspace = true }
 insta = { workspace = true, features = ["json"] }

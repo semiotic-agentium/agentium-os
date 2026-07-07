@@ -12,7 +12,9 @@ permissions:
 
 concurrency:
   group: release-please-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel after release-please creates a tag/GitHub Release: that can
+  # leave a valid release with missing binary assets.
+  cancel-in-progress: false
 
 jobs:
   release-please:
@@ -122,9 +124,20 @@ jobs:
           find artifacts -name '*.tar.gz' -exec cp {} out/ \;
           ( cd out && sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS )
 
-      - name: Upload assets to GitHub Release
+      - name: Create or update GitHub Release assets
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
-        run: gh release upload "${TAG_NAME}" out/*.tar.gz out/SHA256SUMS --clobber
+        run: |
+          # Idempotent: reruns after partial failures reuse the release and
+          # clobber assets instead of failing on an existing release.
+          if gh release view "${TAG_NAME}" >/dev/null 2>&1; then
+            echo "release ${TAG_NAME} exists — uploading assets (--clobber)"
+            gh release upload "${TAG_NAME}" out/*.tar.gz out/SHA256SUMS --clobber
+          else
+            gh release create "${TAG_NAME}" \
+              --title "${TAG_NAME}" \
+              --generate-notes \
+              out/*.tar.gz out/SHA256SUMS
+          fi
