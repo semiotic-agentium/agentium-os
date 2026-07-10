@@ -42,7 +42,7 @@ impl BamlRuntimeManager {
         // Resolve LLM secrets from fnox resolver and inject as env_vars so BAML schema's
         // `api_key env.X` references resolve without relying on std::env::var.
         let env_vars = self.resolve_secrets_as_env_vars();
-        let mut executor = BamlExecutor::load_il(&baml_src_dir, env_vars)?;
+        let executor = BamlExecutor::load_il(&baml_src_dir, env_vars)?;
 
         // Load the rendered agent-wide tool schema catalog produced by the builder. This is
         // the JSON-shape catalog text emitted via BAML's `{{ ctx.output_format }}` renderer
@@ -50,7 +50,7 @@ impl BamlRuntimeManager {
         // `_baml_runtime.baml` source. Old packages without the sidecar simply load no
         // prelude (graceful degradation; no source dump fallback).
         let catalog_path = baml_src_dir.join(baml_rt_tools::TOOL_SCHEMA_CATALOG_SIDECAR_FILE);
-        self.state.tool_schema_prelude = match std::fs::read_to_string(&catalog_path) {
+        let tool_schema_prelude = match std::fs::read_to_string(&catalog_path) {
             Ok(s) => Some(std::sync::Arc::<str>::from(s)),
             Err(e) => {
                 tracing::debug!(
@@ -61,6 +61,67 @@ impl BamlRuntimeManager {
                 None
             }
         };
+        self.finish_schema_load(executor, tool_schema_prelude);
+
+        self.state.session_plan_functions = runtime_io::load_build_manifest::<
+            SessionPlanFunctionsMap,
+        >(project_root, "session_plan_functions.json");
+        self.state.tool_step_executors = runtime_io::load_build_manifest::<
+            std::collections::HashMap<String, String>,
+        >(project_root, "tool_step_executors.json");
+        self.state.unified_step_executor_functions =
+            runtime_io::load_build_manifest::<baml_rt_tools::UnifiedStepExecutorFunctionsMap>(
+                project_root,
+                "unified_step_executor_functions.json",
+            );
+
+        tracing::debug!(
+            function_count = self.state.function_registry.len(),
+            session_plan_manifest = self
+                .state
+                .session_plan_functions
+                .as_ref()
+                .map(|m| m.len())
+                .unwrap_or(0),
+            unified_step_executor_roots = self
+                .state
+                .unified_step_executor_functions
+                .as_ref()
+                .map(|m| m.len())
+                .unwrap_or(0),
+            "Loaded BAML IL"
+        );
+
+        Ok(())
+    }
+
+    /// Load BAML schema from embedded/in-memory files, without disk sidecars.
+    pub fn load_schema_from_files(
+        &mut self,
+        root_path: &str,
+        files: &[(&str, &str)],
+    ) -> Result<()> {
+        tracing::debug!(
+            root_path,
+            file_count = files.len(),
+            "Loading BAML IL from files"
+        );
+        let env_vars = self.resolve_secrets_as_env_vars();
+        let files_map: HashMap<&str, &str> = files.iter().copied().collect();
+        let executor = BamlExecutor::load_il_from_content(root_path, &files_map, env_vars)?;
+        self.finish_schema_load(executor, None);
+        self.state.session_plan_functions = None;
+        self.state.tool_step_executors = None;
+        self.state.unified_step_executor_functions = None;
+        Ok(())
+    }
+
+    fn finish_schema_load(
+        &mut self,
+        mut executor: BamlExecutor,
+        tool_schema_prelude: Option<Arc<str>>,
+    ) {
+        self.state.tool_schema_prelude = tool_schema_prelude;
 
         // Set effect emitter if available
         if let Some(ref emitter) = self.state.effect_emitter {
@@ -97,37 +158,6 @@ impl BamlRuntimeManager {
         }
 
         self.state.executor = Some(executor);
-
-        self.state.session_plan_functions = runtime_io::load_build_manifest::<
-            SessionPlanFunctionsMap,
-        >(project_root, "session_plan_functions.json");
-        self.state.tool_step_executors = runtime_io::load_build_manifest::<
-            std::collections::HashMap<String, String>,
-        >(project_root, "tool_step_executors.json");
-        self.state.unified_step_executor_functions =
-            runtime_io::load_build_manifest::<baml_rt_tools::UnifiedStepExecutorFunctionsMap>(
-                project_root,
-                "unified_step_executor_functions.json",
-            );
-
-        tracing::debug!(
-            function_count = self.state.function_registry.len(),
-            session_plan_manifest = self
-                .state
-                .session_plan_functions
-                .as_ref()
-                .map(|m| m.len())
-                .unwrap_or(0),
-            unified_step_executor_roots = self
-                .state
-                .unified_step_executor_functions
-                .as_ref()
-                .map(|m| m.len())
-                .unwrap_or(0),
-            "Loaded BAML IL"
-        );
-
-        Ok(())
     }
 
     /// Get the signature of a function by name

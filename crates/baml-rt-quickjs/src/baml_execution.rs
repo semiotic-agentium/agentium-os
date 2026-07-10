@@ -261,7 +261,30 @@ impl BamlExecutor {
         let runtime = BamlRuntime::from_directory(baml_src_dir, env_vars, feature_flags)
             .map_err(|e| BamlRtError::RuntimeLoadFailed { source: e })?;
 
-        Ok(Self {
+        Ok(Self::from_runtime(runtime))
+    }
+
+    /// Load BAML IL from in-memory source (path -> content), no filesystem access.
+    pub fn load_il_from_content(
+        root_path: &str,
+        files: &HashMap<&str, &str>,
+        env_vars: HashMap<String, String>,
+    ) -> Result<Self> {
+        tracing::debug!(
+            root_path,
+            file_count = files.len(),
+            "Loading BAML runtime from content"
+        );
+
+        let feature_flags = internal_baml_core::feature_flags::FeatureFlags::default();
+        let runtime = BamlRuntime::from_file_content(root_path, files, env_vars, feature_flags)
+            .map_err(|e| BamlRtError::RuntimeLoadFailed { source: e })?;
+
+        Ok(Self::from_runtime(runtime))
+    }
+
+    fn from_runtime(runtime: BamlRuntime) -> Self {
+        Self {
             runtime: Arc::new(runtime),
             effect_emitter: None,
             conversation_context_provider: None,
@@ -269,7 +292,7 @@ impl BamlExecutor {
             llm_secret_resolver: None,
             llm_client_resolver: None,
             llm_fallback_client_resolver: None,
-        })
+        }
     }
 
     /// Set the LLM secret resolver for ClientRegistry-based API key injection.

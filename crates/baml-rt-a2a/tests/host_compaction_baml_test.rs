@@ -6,7 +6,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use baml_rt_a2a::{HostCompactionConfig, HostCompactionEngine};
+use baml_rt_a2a::{HostCompactionConfig, HostCompactionEngine, HostCompactionSource};
 use baml_rt_core::bus::BusWithEffects;
 use baml_rt_llm_config::{LlmClientConfig, StaticResolver, test_model_default};
 use baml_rt_provenance::{
@@ -20,6 +20,17 @@ use baml_rt_tools::{
 };
 use test_support::testing::provenance_fixtures::{provenance_agent_id, provenance_context_id};
 
+const HOST_CLIENTS_BAML: &str = include_str!("../../../baml_src/host/clients.baml");
+const HOST_COMPACTION_BAML: &str = include_str!("../../../baml_src/host/context_compaction.baml");
+
+const EMBEDDED_HOST_BAML: &[(&str, &str)] = &[
+    ("baml_src/host/clients.baml", HOST_CLIENTS_BAML),
+    (
+        "baml_src/host/context_compaction.baml",
+        HOST_COMPACTION_BAML,
+    ),
+];
+
 struct EnvSecretResolver;
 
 impl LlmSecretResolver for EnvSecretResolver {
@@ -30,6 +41,23 @@ impl LlmSecretResolver for EnvSecretResolver {
 
 fn host_schema_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+async fn boot_host_compaction_engine(source: HostCompactionSource) -> HostCompactionEngine {
+    let effect_emitter: Arc<dyn baml_rt_core::bus::EffectEmitter> = Arc::new(BusWithEffects::new());
+    let llm_config = LlmClientConfig::sensible_default();
+    let llm_resolver = Arc::new(StaticResolver::new(
+        Arc::new(llm_config),
+        Arc::new(baml_rt_llm_config::FnoxFileSecretResolver::default_path_resolver()),
+    ));
+    HostCompactionEngine::boot(
+        HostCompactionConfig { source },
+        effect_emitter,
+        llm_resolver,
+        Arc::new(EnvSecretResolver),
+    )
+    .await
+    .expect("boot host compaction engine")
 }
 
 fn compaction_ref_table_with_at3_and_hash2() -> Arc<RefTable> {
@@ -53,6 +81,11 @@ fn compaction_ref_table_with_at3_and_hash2() -> Arc<RefTable> {
 }
 
 #[tokio::test]
+async fn host_compaction_boots_from_dir_override() {
+    let _engine = boot_host_compaction_engine(HostCompactionSource::Dir(host_schema_dir())).await;
+}
+
+#[tokio::test]
 async fn host_compaction_baml_validates_wire_refs_after_finalize() {
     if std::env::var("OPENROUTER_API_KEY").is_err() {
         eprintln!("SKIP host_compaction_baml: OPENROUTER_API_KEY unset");
@@ -62,23 +95,12 @@ async fn host_compaction_baml_validates_wire_refs_after_finalize() {
         std::env::set_var("BAML_TEST_MODEL", test_model_default());
     }
 
-    let effect_emitter: Arc<dyn baml_rt_core::bus::EffectEmitter> = Arc::new(BusWithEffects::new());
-    let llm_config = LlmClientConfig::sensible_default();
-    let llm_resolver = Arc::new(StaticResolver::new(
-        Arc::new(llm_config),
-        Arc::new(baml_rt_llm_config::FnoxFileSecretResolver::default_path_resolver()),
-    ));
     let engine = Arc::new(
-        HostCompactionEngine::boot(
-            HostCompactionConfig {
-                schema_dir: host_schema_dir(),
-            },
-            effect_emitter,
-            llm_resolver,
-            Arc::new(EnvSecretResolver),
-        )
-        .await
-        .expect("boot host compaction engine"),
+        boot_host_compaction_engine(HostCompactionSource::Embedded {
+            root: "baml_src",
+            files: EMBEDDED_HOST_BAML,
+        })
+        .await,
     );
 
     let request = CompactionRequest {
