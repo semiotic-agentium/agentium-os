@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2](https://github.com/semiotic-agentium/agentium-os/compare/v0.2.1...v0.2.2) (2026-07-10)
+
+
+### Bug Fixes
+
+* embed host compaction baml ([24d3ba2](https://github.com/semiotic-agentium/agentium-os/commit/24d3ba20c198e71c89bb4687793fce5986483c80))
+* embed host compaction baml ([4c79545](https://github.com/semiotic-agentium/agentium-os/commit/4c79545bd22e99225aef59bcff4bae1ed79a57e9))
+
 ## [0.2.1](https://github.com/semiotic-agentium/agentium-os/compare/v0.2.0...v0.2.1) (2026-07-06)
 
 
