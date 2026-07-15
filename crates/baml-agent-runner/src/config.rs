@@ -77,6 +77,9 @@ pub(crate) struct RunnerConfig {
     /// is set (an explicit signal the operator provisioned a model tree). When
     /// `false` the runner never loads the embedding model and emits no
     /// missing-model warning.
+    // Reserved: drift consumer removed with the embedding crate; CLI flag +
+    // BAML_MODELS_DIR wiring kept for when scoring is re-enabled.
+    #[allow(dead_code)]
     pub(crate) provenance_drift_enabled: bool,
 }
 

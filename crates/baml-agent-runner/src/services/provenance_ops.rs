@@ -6,9 +6,7 @@
 
 use std::sync::Arc;
 
-use baml_rt_provenance::{
-    ObservationLoader as _, OpsQueryMode, observation_scope_from_ops_filters,
-};
+use baml_rt_provenance::ObservationLoader as _;
 
 pub(crate) struct ProvenanceOpsServiceImpl {
     store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
@@ -49,7 +47,7 @@ impl baml_rt_api::ProvenanceOpsService for ProvenanceOpsServiceImpl {
         ),
         baml_rt_api::ProvenanceOpsError,
     > {
-        use baml_rt_provenance::{ProvenanceOpsQuery, aggregate_agent_gate_activity};
+        use baml_rt_provenance::aggregate_agent_gate_activity;
         aggregate_agent_gate_activity(&*self.store, filters)
             .await
             .map_err(|e| baml_rt_api::ProvenanceOpsError::Other(Box::new(std::io::Error::other(e))))

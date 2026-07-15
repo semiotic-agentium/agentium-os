@@ -41,10 +41,9 @@ use baml_rt_core::{
     ids::{ActivityAnchorId, AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
-    CallScope, GlobalEvent, LlmUsage, ProvEvent, ProvEventData, ProvenanceOpsAppliedCaps,
-    ProvenanceOpsQueryRequest, ProvenanceOpsQueryResponse, ProvenanceOpsResource, ProvenanceOpsRow,
-    ProvenanceOpsSummary, ProvenanceWriter, SurrealStoreBuilder, metamodel::TaskStatusKind,
-    serialized_prompt_utf8_len,
+    CallScope, GlobalEvent, LlmUsage, ProvEvent, ProvEventData, ProvenanceOpsQueryRequest,
+    ProvenanceOpsQueryResponse, ProvenanceOpsRow, ProvenanceWriter, SurrealStoreBuilder,
+    metamodel::TaskStatusKind, serialized_prompt_utf8_len,
 };
 use baml_rt_tools::prompt_message_char_count;
 use common::cluster_topology_for_test;
