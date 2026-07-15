@@ -23,6 +23,9 @@ pub enum InterceptorDecision {
     /// The error will be wrapped in a ToolExecution or BamlRuntime error
     Block(String),
 
+    /// Tier-3 gate passed; suspend for human authorization via A2A InputRequired.
+    RequireAuthorization(String),
+
     /// Substitute the call: skip the real LLM call and return this value.
     /// Used by tests to stub LLM responses without hitting the provider.
     Substitute(Value),
@@ -68,6 +71,9 @@ pub struct ToolCallContext {
 
     /// Additional metadata
     pub metadata: Value,
+
+    /// Deployed agent package for per-agent config resolution (Settings overrides).
+    pub agent_package: Option<String>,
 
     /// For system/internal_a2a: the delegated-to agent package (write-time provenance).
     pub delegation_target: Option<String>,
@@ -123,6 +129,9 @@ pub trait ToolInterceptor: Send + Sync + 'static {
         result: &Result<Value>,
         duration_ms: u64,
     );
+
+    /// Merge interceptor-owned fields into tool-effect metadata after [`intercept_tool_call`].
+    async fn stamp_tool_metadata(&self, _context: &ToolCallContext, _metadata: &mut Value) {}
 }
 
 /// Pipeline for composing multiple interceptors
@@ -317,6 +326,9 @@ impl InterceptorRegistry {
                 Ok(InterceptorDecision::Substitute(value)) => {
                     return Ok(InterceptorDecision::Substitute(value));
                 }
+                Ok(InterceptorDecision::RequireAuthorization(_)) => {
+                    // Tool-only decision; LLM pipeline ignores.
+                }
                 Err(e) => {
                     // Interceptor itself failed - log but continue?
                     tracing::warn!(error = ?e, "LLM interceptor failed");
@@ -329,7 +341,8 @@ impl InterceptorRegistry {
 
     /// Execute tool interceptors and return the final decision
     ///
-    /// Returns Ok(Allow) if all interceptors allow, or Err if any block
+    /// Returns `Ok(Allow)` if all interceptors allow, `Ok(Block)` / `Ok(RequireAuthorization)`
+    /// when a gate denies or suspends, or `Err` only when an interceptor itself fails.
     pub async fn intercept_tool_call(
         &self,
         context: &ToolCallContext,
@@ -339,11 +352,11 @@ impl InterceptorRegistry {
                 Ok(InterceptorDecision::Allow) | Ok(InterceptorDecision::Substitute(_)) => {
                     // Continue; Substitute is LLM-only, treat as Allow for tools
                 }
+                Ok(InterceptorDecision::RequireAuthorization(prompt)) => {
+                    return Ok(InterceptorDecision::RequireAuthorization(prompt));
+                }
                 Ok(InterceptorDecision::Block(msg)) => {
-                    return Err(BamlRtError::ToolExecution(format!(
-                        "Tool call blocked by interceptor: {}",
-                        msg
-                    )));
+                    return Ok(InterceptorDecision::Block(msg));
                 }
                 Err(e) => {
                     // Interceptor itself failed - log but continue?
@@ -353,6 +366,13 @@ impl InterceptorRegistry {
         }
 
         Ok(InterceptorDecision::Allow)
+    }
+
+    /// Merge tool interceptor metadata stamps (e.g. semiotic gate outcomes) into effect metadata.
+    pub async fn stamp_tool_metadata(&self, context: &ToolCallContext, metadata: &mut Value) {
+        for interceptor in self.tool_pipeline.interceptors() {
+            interceptor.stamp_tool_metadata(context, metadata).await;
+        }
     }
 
     /// Notify all LLM interceptors of a completed call

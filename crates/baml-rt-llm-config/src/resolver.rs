@@ -27,17 +27,28 @@ pub trait LlmClientResolver: Send + Sync {
     ) -> Result<Option<ClientRegistry>>;
 }
 
-/// Static resolver: uses config overrides (agent, agent_function) and default; builds registry from config.
+/// Static resolver: uses config overrides (agent package, agent_function) and default.
 pub struct StaticResolver {
     config: Arc<LlmClientConfig>,
     secret_resolver: Arc<dyn SecretResolver>,
+    /// Deployed agent package — keys `overrides.agent` (same as Settings / GET /agents).
+    agent_package: Option<Arc<str>>,
 }
 
 impl StaticResolver {
     pub fn new(config: Arc<LlmClientConfig>, secret_resolver: Arc<dyn SecretResolver>) -> Self {
+        Self::with_agent_package(config, secret_resolver, None::<&str>)
+    }
+
+    pub fn with_agent_package(
+        config: Arc<LlmClientConfig>,
+        secret_resolver: Arc<dyn SecretResolver>,
+        agent_package: Option<impl Into<Arc<str>>>,
+    ) -> Self {
         Self {
             config,
             secret_resolver,
+            agent_package: agent_package.map(Into::into),
         }
     }
 }
@@ -46,11 +57,12 @@ impl StaticResolver {
 impl LlmClientResolver for StaticResolver {
     async fn resolve(
         &self,
-        scope: &context::RuntimeScope,
+        _scope: &context::RuntimeScope,
         function_name: &str,
     ) -> Result<Option<ClientRegistry>> {
-        let agent_package = Some(scope.agent_id().as_str());
-        let primary = self.config.resolve(agent_package, function_name);
+        let primary = self
+            .config
+            .resolve(self.agent_package.as_deref(), function_name);
         if primary.is_empty() {
             return Ok(None);
         }
@@ -89,8 +101,6 @@ mod tests {
         secret_resolver::EmptySecretResolver,
     };
 
-    /// Resolver → ClientRegistry: StaticResolver with config containing "Default" returns
-    /// Some(registry) for a scope, so the runner can pass it to BAML and override the schema client.
     #[tokio::test]
     async fn static_resolver_returns_registry_for_default_client() {
         let mut options = HashMap::new();
@@ -115,19 +125,57 @@ mod tests {
             MessageId::from("msg-1"),
         );
         let registry_opt = resolver.resolve(&scope, "AddNumbers").await.unwrap();
-        assert!(
-            registry_opt.is_some(),
-            "Resolver must return Some(registry) so BAML substitution uses config client"
-        );
-        assert!(
-            !registry_opt.unwrap().is_empty(),
-            "Substitution registry must be non-empty"
-        );
+        assert!(registry_opt.is_some());
+        assert!(!registry_opt.unwrap().is_empty());
     }
 
-    /// An override that references a non-existent client is a configuration error — the resolver
-    /// must return an error rather than silently falling back, so misconfigured overrides surface
-    /// at call time instead of being masked.
+    #[tokio::test]
+    async fn static_resolver_uses_agent_package_override_key() {
+        let mut options = HashMap::new();
+        options.insert("model".to_string(), "openai/gpt-4o-mini".to_string());
+        let default_client = ClientDef {
+            name: "Default".to_string(),
+            provider: crate::config::LlmProvider::Openrouter,
+            options: options.clone(),
+            retry_policy: None,
+        };
+        let override_client = ClientDef {
+            name: "Override".to_string(),
+            provider: crate::config::LlmProvider::Openrouter,
+            options,
+            retry_policy: None,
+        };
+        let mut clients = HashMap::new();
+        clients.insert("Default".to_string(), default_client);
+        clients.insert("Override".to_string(), override_client);
+        let mut overrides = crate::config::LlmOverrides::default();
+        overrides
+            .agent
+            .insert("my-agent".to_string(), "Override".to_string());
+        let config = LlmClientConfig {
+            default: "Default".to_string(),
+            clients,
+            overrides,
+            ..Default::default()
+        };
+        let resolver = StaticResolver::with_agent_package(
+            Arc::new(config),
+            Arc::new(EmptySecretResolver),
+            Some("my-agent"),
+        );
+        let scope = RuntimeScope::message_scope(
+            ContextId::new(1, 1),
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000001").unwrap()),
+            MessageId::from("msg-1"),
+        );
+        let registry = resolver
+            .resolve(&scope, "AddNumbers")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!registry.is_empty());
+    }
+
     #[tokio::test]
     async fn static_resolver_errors_when_override_references_missing_client() {
         let mut options = HashMap::new();
@@ -141,31 +189,28 @@ mod tests {
         let mut clients = HashMap::new();
         clients.insert("Default".to_string(), client);
         let mut overrides = crate::config::LlmOverrides::default();
-        let agent_id_str = "00000000-0000-0000-0000-000000000001";
         overrides
             .agent
-            .insert(agent_id_str.to_string(), "MissingClient".to_string());
+            .insert("my-agent".to_string(), "MissingClient".to_string());
         let config = LlmClientConfig {
             default: "Default".to_string(),
             clients,
             overrides,
             ..Default::default()
         };
-        let resolver = StaticResolver::new(Arc::new(config), Arc::new(EmptySecretResolver));
+        let resolver = StaticResolver::with_agent_package(
+            Arc::new(config),
+            Arc::new(EmptySecretResolver),
+            Some("my-agent"),
+        );
         let scope = RuntimeScope::message_scope(
             ContextId::new(1, 1),
-            AgentId::from_uuid(UuidId::parse_str(agent_id_str).unwrap()),
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000001").unwrap()),
             MessageId::from("msg-1"),
         );
         let result = resolver.resolve(&scope, "AddNumbers").await;
-        assert!(
-            result.is_err(),
-            "Resolver must return an error when an override references a non-existent client"
-        );
+        assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("MissingClient"),
-            "Error must name the missing client; got: {err}"
-        );
+        assert!(err.contains("MissingClient"), "got: {err}");
     }
 }

@@ -11,6 +11,7 @@ baml-rt-tools = { path = "../baml-rt-tools" }
 baml-rt-interceptor = { path = "../baml-rt-interceptor" }
 baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
+baml-rt-semiotic = { path = "../baml-rt-semiotic" }
 baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 baml-runtime = { workspace = true }
 baml-types = { workspace = true }

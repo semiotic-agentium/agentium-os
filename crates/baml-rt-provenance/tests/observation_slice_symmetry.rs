@@ -82,7 +82,7 @@ fn task_llm_event(
             },
             duration_ms: 100,
             outcome,
-            drift: None,
+            citation_integrity: None,
             citations: vec![],
             resolved_citations: vec![],
             prompt_serialized_utf8_bytes: 2,

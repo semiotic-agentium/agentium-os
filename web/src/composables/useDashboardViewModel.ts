@@ -20,7 +20,7 @@ import type { AgentDiscoveryEntry, ChatMessage, ContextMetricsResponse } from ".
 import type { ProvenanceGroupHotspot } from "../types/provenance";
 import { formatCompact } from "../utils/format";
 
-export type ProvenancePaneTab = "live" | "failures" | "anomalies" | "drift" | "explore";
+export type ProvenancePaneTab = "live" | "failures" | "anomalies" | "gate" | "explore";
 
 export interface DashboardLaneSnapshot {
   tabId: string;
@@ -89,6 +89,8 @@ export interface DashboardViewModel {
   planningChip: {
     completed: number;
     total: number;
+    gatePosture: string | null;
+    /** @deprecated Use gatePosture */
     driftSeverity: string | null;
     intent: string | null;
   } | null;
@@ -184,14 +186,18 @@ export function buildDashboardViewModel(input: BuildDashboardViewModelInput): Da
     });
   }
 
-  const drift = input.planningChip?.driftSeverity?.toLowerCase() ?? "";
-  if (drift && drift !== "none" && drift !== "low") {
+  const gatePosture =
+    input.planningChip?.gatePosture?.toLowerCase() ??
+    input.planningChip?.driftSeverity?.toLowerCase() ??
+    "";
+  if (gatePosture && gatePosture !== "none" && gatePosture !== "low" && gatePosture !== "ok") {
     attention.push({
-      severity: drift.includes("high") || drift.includes("block") ? "critical" : "warning",
-      title: "Planning drift signal",
-      detail: input.planningChip?.intent ?? "See drift tab for call-level evidence.",
-      provenanceTab: "drift",
-      actionLabel: "Open Drift",
+      severity:
+        gatePosture.includes("denied") || gatePosture.includes("block") ? "critical" : "warning",
+      title: "Gate friction elevated",
+      detail: input.planningChip?.intent ?? "See Gate tab for deficient nodes and deny/ask counts.",
+      provenanceTab: "gate",
+      actionLabel: "Open Gate",
     });
   }
 

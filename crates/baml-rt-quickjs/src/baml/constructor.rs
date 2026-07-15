@@ -171,6 +171,7 @@ impl BamlRuntimeManager {
             execution_sessions: self.state.execution_sessions.clone(),
             archive_ref_tables: self.state.archive_ref_tables.clone(),
             archive_ref_store: self.state.archive_ref_store.clone(),
+            agent_package: self.state.agent_package.clone(),
         }
     }
 
@@ -180,6 +181,16 @@ impl BamlRuntimeManager {
         store: Option<Arc<baml_rt_provenance::SurrealProvenanceStore>>,
     ) {
         self.state.archive_ref_store = store;
+    }
+
+    /// Set deployed agent package for LLM metadata and per-agent policy resolution.
+    pub fn set_agent_package(&mut self, agent_package: Option<impl Into<Arc<str>>>) {
+        self.state.agent_package = agent_package.map(Into::into);
+        if let Some(ref mut executor) = self.state.executor
+            && let Some(ref pkg) = self.state.agent_package
+        {
+            executor.set_agent_package(Some(Arc::clone(pkg)));
+        }
     }
 
     /// Returns a handle for session operations. Use this to avoid holding the runtime lock across awaits.

@@ -7,6 +7,8 @@ import type {
   ConfigVersionDto,
   SecretOverviewEntryDto,
   SecretRequestDto,
+  SemioticActivityDto,
+  SemioticEffectiveDto,
   ToolConfigDto,
   ToolConfigSchemaDto,
 } from "../types/config";
@@ -311,6 +313,63 @@ export function useConfigApi() {
     }
   }
 
+  async function fetchSemioticEffective(): Promise<
+    { data: SemioticEffectiveDto } | { error: ConfigApiError }
+  > {
+    loading.value = true;
+    try {
+      const res = await fetch("/config/semiotic/effective");
+      if (!res.ok) return { error: await parseProblem(res) };
+      const data = (await res.json()) as SemioticEffectiveDto;
+      return { data };
+    } catch (e) {
+      return {
+        error: {
+          status: 0,
+          title: "Network Error",
+          detail: e instanceof Error ? e.message : String(e),
+        },
+      };
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  async function fetchSemioticActivity(options?: {
+    windowHours?: number;
+    agentPackage?: string | null;
+    limit?: number;
+  }): Promise<{ data: SemioticActivityDto } | { error: ConfigApiError }> {
+    loading.value = true;
+    try {
+      const params = new URLSearchParams();
+      if (options?.windowHours != null) {
+        params.set("windowHours", String(options.windowHours));
+      }
+      if (options?.agentPackage) {
+        params.set("agentPackage", options.agentPackage);
+      }
+      if (options?.limit != null) {
+        params.set("limit", String(options.limit));
+      }
+      const qs = params.toString();
+      const res = await fetch(`/config/semiotic/activity${qs ? `?${qs}` : ""}`);
+      if (!res.ok) return { error: await parseProblem(res) };
+      const data = (await res.json()) as SemioticActivityDto;
+      return { data };
+    } catch (e) {
+      return {
+        error: {
+          status: 0,
+          title: "Network Error",
+          detail: e instanceof Error ? e.message : String(e),
+        },
+      };
+    } finally {
+      loading.value = false;
+    }
+  }
+
   return {
     loading,
     fetchConfigList,
@@ -322,5 +381,7 @@ export function useConfigApi() {
     fetchStoreKeys,
     putSecret,
     deleteSecret,
+    fetchSemioticEffective,
+    fetchSemioticActivity,
   };
 }

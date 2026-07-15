@@ -5,7 +5,6 @@
 //! Historic **episode** view: task-scoped transcript and metadata for grep-friendly replay.
 
 use baml_rt_core::ids::{AgentId, ContextId, TaskId};
-use baml_rt_embedding::DriftSeverity;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -234,7 +233,7 @@ pub struct ArtifactSummary {
 /// Flattened version of the API's TaskPlanDriftSummary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EpisodeDriftSummary {
-    pub composite_severity: DriftSeverity,
+    pub composite_severity: String,
     pub intent_alignment: f32,
     pub step_alignment: Option<f32>,
     pub trajectory_drift: Option<f32>,
@@ -250,7 +249,7 @@ pub struct EpisodeDriftCall {
     /// Correlates with EpisodeEntry.activity_anchor in the transcript.
     pub activity_anchor: String,
     pub function_name: String,
-    pub severity: DriftSeverity,
+    pub severity: String,
     pub intent_alignment: f32,
     pub step_alignment: Option<f32>,
     pub cross_encoder_step_score: Option<f32>,

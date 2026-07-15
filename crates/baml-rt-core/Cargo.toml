@@ -17,6 +17,7 @@ baml-rt-id = { path = "../baml-rt-id" }
 # baml-types = { workspace = true }
 # internal-baml-core = { workspace = true }
 # regex = { workspace = true }
+regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

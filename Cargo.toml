@@ -15,7 +15,7 @@ members = [
   "crates/baml-rt-citation",
   "crates/baml-rt-conversation",
   "crates/baml-rt-core",
-  "crates/baml-rt-embedding",
+  "crates/baml-rt-semiotic",
   "crates/baml-rt-hash",
   "crates/baml-rt-id",
   "crates/baml-rt-interceptor",
@@ -135,8 +135,7 @@ quickjs_runtime = { version = "0.15", default-features = false, features = ["bel
 agentic-memory = "0.2.6"
 # SurrealDB — embedded (kv-mem, kv-surrealkv) and remote (protocol-ws) backends.
 surrealdb = { version = "3", default-features = false, features = ["kv-mem", "kv-surrealkv", "protocol-ws"] }
-# Embedding / drift detection
-fastembed = { version = "4", default-features = false, features = ["ort-download-binaries", "hf-hub-native-tls"] }
+# Embedding / drift detection removed — citation integrity replaces ONNX drift scoring.
 dashmap = "6"
 axum = "0.8"
 http = "1"

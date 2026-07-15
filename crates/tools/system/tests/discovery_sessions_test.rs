@@ -215,7 +215,7 @@ async fn seeded_store_for_context(
                 },
                 duration_ms: 100,
                 outcome: Outcome::Success,
-                drift: None,
+                citation_integrity: None,
                 citations: vec![],
                 resolved_citations: vec![],
                 prompt_serialized_utf8_bytes: serialized_prompt_utf8_len(
@@ -251,7 +251,7 @@ async fn seeded_store_for_context(
                 },
                 duration_ms: 220,
                 outcome: Outcome::Failure,
-                drift: None,
+                citation_integrity: None,
                 citations: vec![],
                 resolved_citations: vec![],
                 prompt_serialized_utf8_bytes: serialized_prompt_utf8_len(
@@ -409,7 +409,7 @@ async fn seeded_store_for_context(
                 },
                 duration_ms: 300,
                 outcome: Outcome::Success,
-                drift: None,
+                citation_integrity: None,
                 citations: vec![],
                 resolved_citations: vec![],
                 prompt_serialized_utf8_bytes: serialized_prompt_utf8_len(&json!({"input":"other"})),

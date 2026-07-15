@@ -65,6 +65,8 @@ pub(in crate::baml) struct BamlRuntimeState {
     /// `invoke_function` and step-executor `invoke_function_with_intra` paths.
     /// Single source of truth lives in `BamlRuntimeManager::enrich_with_tool_schema_prelude`.
     pub(in crate::baml) tool_schema_prelude: Option<Arc<str>>,
+    /// Deployed agent package name for per-agent config resolution (semiotic gate, etc.).
+    pub(in crate::baml) agent_package: Option<Arc<str>>,
 }
 
 impl Default for BamlRuntimeState {
@@ -93,6 +95,7 @@ impl Default for BamlRuntimeState {
             planning_resolver: Arc::new(DefaultPlanningResolver),
             execution_sessions: Arc::new(DashMap::new()),
             tool_schema_prelude: None,
+            agent_package: None,
         }
     }
 }

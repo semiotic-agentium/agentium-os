@@ -133,7 +133,9 @@ function setClientBudgetOverride(clientName: string, patch: ModelBudgetOverride)
   ensureCompaction();
   const overrides = { ...(local.value.compaction?.client_overrides ?? {}) };
   const merged = { ...overrides[clientName], ...patch };
-  const hasValues = Object.values(merged).some((v) => v !== undefined && v !== null && v !== "");
+  const hasValues = Object.values(merged).some(
+    (v) => v !== undefined && v !== null && (typeof v !== "string" || v !== ""),
+  );
   if (hasValues) {
     overrides[clientName] = merged;
   } else {

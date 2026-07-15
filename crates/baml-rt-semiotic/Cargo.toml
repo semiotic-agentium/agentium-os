@@ -1,0 +1,25 @@
+[package]
+name = "baml-rt-semiotic"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "Semiotic compiler gate — P4 ambiguity-aware pre-action grounding"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+baml-rt-core = { path = "../baml-rt-core" }
+baml-rt-interceptor = { path = "../baml-rt-interceptor" }
+baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
+
+[dev-dependencies]
+insta = { workspace = true }
+rstest = "0.23"
+tokio = { workspace = true, features = ["macros", "rt"] }
+baml-rt-interceptor = { path = "../baml-rt-interceptor" }
+baml-rt-tools = { path = "../baml-rt-tools", default-features = false }

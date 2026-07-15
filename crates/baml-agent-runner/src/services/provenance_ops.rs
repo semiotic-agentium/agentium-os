@@ -6,9 +6,7 @@
 
 use std::sync::Arc;
 
-use baml_rt_provenance::{
-    ObservationLoader as _, OpsQueryMode, observation_scope_from_ops_filters,
-};
+use baml_rt_provenance::ObservationLoader as _;
 
 pub(crate) struct ProvenanceOpsServiceImpl {
     store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
@@ -29,12 +27,28 @@ impl baml_rt_api::ProvenanceOpsService for ProvenanceOpsServiceImpl {
         baml_rt_provenance::ProvenanceOpsQueryResponse,
         baml_rt_api::ProvenanceOpsError,
     > {
-        let mode = match observation_scope_from_ops_filters(&request.filters) {
-            Some(scope) => OpsQueryMode::ContextScoped { scope, request },
-            None => OpsQueryMode::Global(request),
+        let mode = match baml_rt_provenance::observation_scope_from_ops_filters(&request.filters) {
+            Some(scope) => baml_rt_provenance::OpsQueryMode::ContextScoped { scope, request },
+            None => baml_rt_provenance::OpsQueryMode::Global(request),
         };
         self.store
             .query_ops(mode)
+            .await
+            .map_err(|e| baml_rt_api::ProvenanceOpsError::Other(Box::new(std::io::Error::other(e))))
+    }
+
+    async fn aggregate_gate_activity(
+        &self,
+        filters: baml_rt_provenance::AgentGateActivityFilters,
+    ) -> std::result::Result<
+        (
+            std::collections::HashMap<String, baml_rt_provenance::AgentGateActivity>,
+            bool,
+        ),
+        baml_rt_api::ProvenanceOpsError,
+    > {
+        use baml_rt_provenance::aggregate_agent_gate_activity;
+        aggregate_agent_gate_activity(&*self.store, filters)
             .await
             .map_err(|e| baml_rt_api::ProvenanceOpsError::Other(Box::new(std::io::Error::other(e))))
     }

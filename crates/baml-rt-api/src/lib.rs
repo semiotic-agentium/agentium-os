@@ -74,8 +74,8 @@ pub use observation::{
 };
 pub use planning::{
     CitationDetail, ContextPlanningResponse, DEFAULT_PLANNING_HISTORY_LIMIT, DriftedCallDetail,
-    PlanningError, PlanningScopeRequest, PlanningService, PlanningStepSummary,
-    TaskPlanDriftSummary, TaskPlanningSnapshot, summarize_plan_steps,
+    GateEventDetail, PlanningError, PlanningScopeRequest, PlanningService, PlanningStepSummary,
+    TaskGateSummary, TaskPlanDriftSummary, TaskPlanningSnapshot, summarize_plan_steps,
 };
 pub use provenance_ops::{ProvenanceOpsError, ProvenanceOpsService};
 pub use router::{

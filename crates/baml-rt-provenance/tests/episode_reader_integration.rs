@@ -309,7 +309,7 @@ async fn episode_includes_drift_summary_citations_and_rendered_section() {
     wall_clock_tick().await;
 
     store
-        .add_event(ProvEvent::llm_call_completed_task_with_drift(
+        .add_event(ProvEvent::llm_call_completed_task_with_integrity(
             ctx.clone(),
             tid.clone(),
             "DefaultClient".into(),
@@ -327,48 +327,26 @@ async fn episode_includes_drift_summary_citations_and_rendered_section() {
             },
             2_000,
             Outcome::Success,
-            Some(Box::new(baml_rt_provenance::events::LlmDriftInfo {
-                score: 0.85,
-                severity: baml_rt_embedding::DriftSeverity::Acceptable,
-                mode: baml_rt_embedding::DriftMode::Audit,
-                warn_min_score: 0.4,
-                block_min_score: 0.2,
-                intent_text_preview: "analyze data".into(),
-                response_text_preview: "Based on the data...".into(),
-                step_text_preview: "analyze user input".into(),
-                plan_drift: Some(
-                    baml_rt_provenance::events::LlmPlanDriftInfo::PlanCommitted {
-                        scores: baml_rt_provenance::events::PlanDriftScores {
-                            intent_alignment: 0.85,
-                            trajectory_drift: 0.88,
-                            plan_adherence_score: 0.91,
-                            composite_severity: baml_rt_embedding::DriftSeverity::Acceptable,
-                        },
-                        step_alignment: 0.92,
-                        cross_encoder_step_score: 3.2,
-                    },
-                ),
-                citation_drift: Some(baml_rt_provenance::events::LlmCitationDriftInfo {
-                    per_citation: vec![baml_rt_provenance::events::LlmCitationSimilarity {
-                        n: 1,
-                        is_history: true,
-                        negated: false,
-                        similarity: 0.74,
-                        raw: "#1".into(),
-                        activity_anchor: "prov-1900000000300".into(),
-                        content_preview: "analyze data...".into(),
-                    }],
-                    mean_similarity: 0.74,
-                    coverage: 1.0,
-                    total_decisions: 1,
-                    cited_decisions: 1,
-                }),
-            })),
+            Some(baml_rt_semiotic::CitationIntegrityAssessment {
+                per_citation: vec![baml_rt_semiotic::CitationIntegrityEntry {
+                    raw: "#1".into(),
+                    n: 1,
+                    is_history: true,
+                    negated: false,
+                    status: baml_rt_semiotic::IntegrityStatus::Resolved,
+                    activity_anchor: Some("prov-1900000000300".into()),
+                    content_preview: Some("analyze data...".into()),
+                }],
+                unresolved_count: 0,
+                resolved_count: 1,
+                strict_mode: false,
+                strict_violation: false,
+            }),
             vec!["#1".into()],
             vec![],
         ))
         .await
-        .expect("llm_drift");
+        .expect("llm_integrity");
     complete_task(&store, &ctx, &tid).await;
 
     let ep = EpisodeReader::new(store)
@@ -382,30 +360,15 @@ async fn episode_includes_drift_summary_citations_and_rendered_section() {
         .as_ref()
         .expect("drift_summary must be present");
     assert_eq!(ds.scored_call_count, 1);
+    assert_eq!(ds.composite_severity, "acceptable");
     assert_eq!(ds.warn_count, 0);
     assert_eq!(ds.block_count, 0);
-    assert_eq!(
-        ds.composite_severity,
-        baml_rt_embedding::DriftSeverity::Acceptable
-    );
-    assert!(ds.intent_alignment > 0.8);
-    assert!(ds.step_alignment.unwrap() > 0.9);
-    assert!(ds.trajectory_drift.unwrap() > 0.8);
-    assert!(ds.plan_adherence_score > 0.9);
 
-    // --- Per-call drift detail ---
     assert_eq!(ep.drift_calls.len(), 1);
     let call = &ep.drift_calls[0];
     assert!(!call.activity_anchor.is_empty());
     assert_eq!(call.function_name, "Chat");
-    assert_eq!(call.severity, baml_rt_embedding::DriftSeverity::Acceptable);
-    assert!(call.intent_alignment >= 0.8);
-    assert!(call.step_alignment.unwrap() >= 0.9);
-
-    // Citation drift should be populated (the fix in nest_llm_drift_fields parses the JSON string)
-    if let Some(cite_mean) = call.citation_mean_similarity {
-        assert!(cite_mean >= 0.7, "citation_mean_similarity={cite_mean}");
-    }
+    assert_eq!(call.severity, "acceptable");
     if let Some(cite_cov) = call.citation_coverage {
         assert!(cite_cov > 0.0, "citation_coverage={cite_cov}");
     }
@@ -417,8 +380,6 @@ async fn episode_includes_drift_summary_citations_and_rendered_section() {
         "rendered must include drift section"
     );
     assert!(rendered.contains("composite_severity: acceptable"));
-    assert!(rendered.contains("intent_alignment: 0.85"));
-    assert!(rendered.contains("step_alignment: 0.92"));
     assert!(rendered.contains("scored_calls: 1"));
     assert!(
         rendered.contains("calls:"),

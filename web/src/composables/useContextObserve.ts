@@ -13,6 +13,8 @@ function buildObserveUrl(
     taskId?: string;
     agentPackage?: string;
     agentId?: string;
+    includeGate?: boolean;
+    /** @deprecated Use includeGate */
     includeDrift?: boolean;
     stream?: boolean;
   },
@@ -21,7 +23,7 @@ function buildObserveUrl(
   if (params.taskId) search.set("taskId", params.taskId);
   if (params.agentPackage) search.set("agentPackage", params.agentPackage);
   if (params.agentId) search.set("agentId", params.agentId);
-  if (params.includeDrift) search.set("includeDrift", "true");
+  if (params.includeGate ?? params.includeDrift) search.set("includeGate", "true");
   const suffix = search.toString();
   const base = params.stream
     ? `/contexts/${encodeURIComponent(contextId)}/observe/stream`
@@ -34,15 +36,18 @@ function observeScopeKey(options: {
   taskId?: string;
   agentPackage?: string;
   agentId?: string;
+  includeGate?: boolean;
+  /** @deprecated Use includeGate */
   includeDrift?: boolean;
   active: boolean;
 }): string {
+  const includeGate = options.includeGate ?? options.includeDrift ?? false;
   return JSON.stringify({
     contextId: options.contextId?.trim() ?? "",
     taskId: options.taskId?.trim() ?? "",
     agentPackage: options.agentPackage?.trim() ?? "",
     agentId: options.agentId?.trim() ?? "",
-    includeDrift: options.includeDrift ?? false,
+    includeGate,
     active: options.active,
   });
 }
@@ -52,6 +57,8 @@ export function useContextObserve(options: {
   taskId?: Ref<string | undefined> | ComputedRef<string | undefined>;
   agentPackage?: Ref<string | undefined> | ComputedRef<string | undefined>;
   agentId?: Ref<string | undefined> | ComputedRef<string | undefined>;
+  includeGate?: Ref<boolean> | ComputedRef<boolean>;
+  /** @deprecated Use includeGate */
   includeDrift?: Ref<boolean> | ComputedRef<boolean>;
   active: Ref<boolean> | ComputedRef<boolean>;
 }) {
@@ -75,12 +82,16 @@ export function useContextObserve(options: {
     fetchInFlightUrl = "";
   }
 
+  function resolvedIncludeGate(): boolean {
+    return options.includeGate?.value ?? options.includeDrift?.value ?? false;
+  }
+
   function currentSnapshotUrl(contextId: string): string {
     return buildObserveUrl(contextId, {
       taskId: options.taskId?.value,
       agentPackage: options.agentPackage?.value,
       agentId: options.agentId?.value,
-      includeDrift: options.includeDrift?.value,
+      includeGate: resolvedIncludeGate(),
       stream: false,
     });
   }
@@ -90,7 +101,7 @@ export function useContextObserve(options: {
       taskId: options.taskId?.value,
       agentPackage: options.agentPackage?.value,
       agentId: options.agentId?.value,
-      includeDrift: options.includeDrift?.value,
+      includeGate: resolvedIncludeGate(),
       stream: true,
     });
   }
@@ -203,7 +214,7 @@ export function useContextObserve(options: {
       taskId: options.taskId?.value,
       agentPackage: options.agentPackage?.value,
       agentId: options.agentId?.value,
-      includeDrift: options.includeDrift?.value,
+      includeGate: resolvedIncludeGate(),
       active: options.active.value,
     });
     if (!force && scopeKey === lastScopeKey) {
@@ -240,6 +251,7 @@ export function useContextObserve(options: {
       () => options.taskId?.value,
       () => options.agentPackage?.value,
       () => options.agentId?.value,
+      () => options.includeGate?.value,
       () => options.includeDrift?.value,
       options.active,
     ],

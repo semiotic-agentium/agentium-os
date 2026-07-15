@@ -1033,6 +1033,7 @@ pub async fn get_context_planning(
         .planning_for_scope({
             let mut planning = PlanningScopeRequest::from_observation(&scope);
             planning.include_drift = scope.include.drift;
+            planning.include_gate = scope.include.gate;
             planning
         })
         .await

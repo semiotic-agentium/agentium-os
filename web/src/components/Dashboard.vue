@@ -75,8 +75,16 @@ const planningStatus = computed(() => {
   const summary = task.stepSummary;
   const total = summary?.total ?? 0;
   const completed = summary?.completed ?? 0;
-  const driftSeverity = task.drift?.compositeSeverity ?? null;
-  return { intent, total, completed, driftSeverity };
+  const gatePosture = task.gate
+    ? task.gate.denyCount > 0
+      ? "denied"
+      : task.gate.askCount > 0
+        ? "ask"
+        : task.gate.passGatedCount > 0
+          ? "gated"
+          : "ok"
+    : (task.drift?.compositeSeverity ?? null);
+  return { intent, total, completed, gatePosture, driftSeverity: gatePosture };
 });
 
 const planningChip = computed(() => {
@@ -85,6 +93,7 @@ const planningChip = computed(() => {
   return {
     completed: ps.completed,
     total: ps.total,
+    gatePosture: ps.gatePosture,
     driftSeverity: ps.driftSeverity,
     intent: ps.intent,
   };

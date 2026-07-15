@@ -111,10 +111,12 @@ pub use conversation_context_query::DEFAULT_LLM_CONTEXT_ITEM_CAP;
 pub use conversation_history_resume::{ConversationResumeUiHints, resolve_resume_ui_hints};
 pub use effect_subscriber::ProvenanceEffectSubscriber;
 pub use episode::{
-    ArtifactSummary, CachedEpisode, Episode, EpisodeArchiveSource, EpisodeContent,
-    EpisodeDriftCall, EpisodeDriftSummary, EpisodeDuration, EpisodeEntry, EpisodeOutcome,
-    EpisodeReader, EpisodeRefPrefix, IntentRevision, PlanRevision, PlanStepEntry,
-    SessionHistoryLine, StepType, TerminalStatus, TokenSummary, aggregate_task_drift,
+    AgentGateActivity, AgentGateActivityFilters, AgentGateCounts, ArtifactSummary, CachedEpisode,
+    Episode, EpisodeArchiveSource, EpisodeContent, EpisodeDriftCall, EpisodeDriftSummary,
+    EpisodeDuration, EpisodeEntry, EpisodeOutcome, EpisodeReader, EpisodeRefPrefix,
+    GateIncidentRow, IntentRevision, PlanRevision, PlanStepEntry, RankedCount, SessionHistoryLine,
+    StepType, TerminalStatus, TokenSummary, agent_has_gate_activity, aggregate_agent_gate_activity,
+    aggregate_agent_gate_activity_from_rows, aggregate_task_drift, aggregate_task_gate,
     episode_ref_table, prefix_wire_citation, render_episode,
 };
 pub use error::ProvenanceError;
@@ -154,8 +156,8 @@ pub use read::{
     TranscriptPageRequest, TranscriptProjectionProfile, TranscriptScopeWidening,
 };
 pub use store::{
-    ActivityRef, ArchiveRef, PayloadRef, PlanningIntentRecord, PlanningPlanRecord,
-    PlanningPlanStepRecord, ProvenanceArchivePayload, ProvenanceArchiveRecord,
+    ActivityRef, ArchiveRef, GateActivityQueryResult, PayloadRef, PlanningIntentRecord,
+    PlanningPlanRecord, PlanningPlanStepRecord, ProvenanceArchivePayload, ProvenanceArchiveRecord,
     ProvenanceContextReader, ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest,
     ProvenanceOpsQueryResponse, ProvenanceOpsResource, ProvenanceOutcomeSegment,
     ProvenancePlanningQuery, ProvenanceQueryApi, ProvenanceReadIntent, ProvenanceResponseProfile,
@@ -163,8 +165,9 @@ pub use store::{
 };
 pub use surreal_config::SurrealStoreConfig;
 pub use surreal_store::{
-    ContextPickerIndexRow, RemoteConfig, RemoteCredentials, SurrealBackend, SurrealProvenanceStore,
-    SurrealStoreBuilder, hydrate_ref_table, prepare_ref_table_for_projection,
+    ContextPickerIndexRow, GATE_ACTIVITY_MAX_ROWS, RemoteConfig, RemoteCredentials, SurrealBackend,
+    SurrealProvenanceStore, SurrealStoreBuilder, hydrate_ref_table,
+    prepare_ref_table_for_projection,
 };
 pub use task_agent_binding::{
     TaskAgentBinding, TaskAgentBindingSource, event_local_executing_agent_id,

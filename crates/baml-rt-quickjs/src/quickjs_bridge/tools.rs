@@ -14,7 +14,7 @@ use tokio::time::{Duration, timeout};
 
 use super::{
     QuickJSBridge, StreamSessionId, empty_open_input, resolve_scope_from_session,
-    tool_step_to_value, wrappers,
+    stream::emit_gate_input_required, tool_step_to_value, wrappers,
 };
 use crate::js_value_converter::value_to_js_value_facade;
 
@@ -127,6 +127,8 @@ impl QuickJSBridge {
     pub(crate) async fn register_tool_invoke_helper(&mut self) -> Result<()> {
         let manager_clone = self.baml_manager.clone();
         let registry = self.invocation_context_registry.clone();
+        let yield_tx_by_session = self.a2a_yield_tx_by_session.clone();
+        let stream_sessions_for_gate = self.stream_sessions.clone();
 
         self.runtime.set_function(
             &[],
@@ -156,6 +158,8 @@ impl QuickJSBridge {
 
                 let tool_name_clone = tool_name.clone();
                 let manager_for_promise = manager_clone.clone();
+                let yield_tx_by_session = yield_tx_by_session.clone();
+                let stream_sessions_for_gate = stream_sessions_for_gate.clone();
                 let correlation_id = registry
                     .lock()
                     .ok()
@@ -175,6 +179,18 @@ impl QuickJSBridge {
                                 .await;
                             match result {
                                 Ok(json_value) => Ok(value_to_js_value_facade(json_value)),
+                                Err(BamlRtError::GateAuthorizationRequired { prompt }) => {
+                                    emit_gate_input_required(
+                                        &yield_tx_by_session,
+                                        &stream_sessions_for_gate,
+                                        &tool_scope,
+                                        &prompt,
+                                    );
+                                    let error_msg =
+                                        format!("Tool execution error: Gate authorization required: {prompt}");
+                                    tracing::warn!("semiotic tier-3 gate suspended for authorization");
+                                    Err(quickjs_runtime::jsutils::JsError::new_str(&error_msg))
+                                }
                                 Err(e) => {
                                     let error_msg = format!("Tool execution error: {}", e);
                                     tracing::error!(error = ?e, "Tool execution failed");
@@ -199,6 +215,8 @@ impl QuickJSBridge {
         // Register __tool_from_baml_result: tokenless; host resolves from active context. JS calls (baml_result_json).
         let manager_clone = self.baml_manager.clone();
         let registry = self.invocation_context_registry.clone();
+        let yield_tx_by_session = self.a2a_yield_tx_by_session.clone();
+        let stream_sessions_for_gate = self.stream_sessions.clone();
         self.runtime.set_function(
             &[],
             "__tool_from_baml_result",
@@ -219,6 +237,8 @@ impl QuickJSBridge {
                     .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&format!("Failed to parse BAML result JSON: {}", e)))?;
 
                 let manager_for_promise = manager_clone.clone();
+                let yield_tx_by_session = yield_tx_by_session.clone();
+                let stream_sessions_for_gate = stream_sessions_for_gate.clone();
                 let correlation_id = registry
                     .lock()
                     .ok()
@@ -238,6 +258,18 @@ impl QuickJSBridge {
                                 .await;
                             match result {
                                 Ok(json_value) => Ok(value_to_js_value_facade(json_value)),
+                                Err(BamlRtError::GateAuthorizationRequired { prompt }) => {
+                                    emit_gate_input_required(
+                                        &yield_tx_by_session,
+                                        &stream_sessions_for_gate,
+                                        &tool_scope,
+                                        &prompt,
+                                    );
+                                    let error_msg =
+                                        format!("Tool execution error: Gate authorization required: {prompt}");
+                                    tracing::warn!("semiotic tier-3 gate suspended for authorization");
+                                    Err(quickjs_runtime::jsutils::JsError::new_str(&error_msg))
+                                }
                                 Err(e) => {
                                     let error_msg = format!("Tool execution error: {}", e);
                                     tracing::error!(error = ?e, "Tool execution from BAML result failed");

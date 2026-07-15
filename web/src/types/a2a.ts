@@ -344,6 +344,8 @@ export interface ChatMessage {
   awaitingInput?: boolean;
   /** Optional prompt from the agent (e.g. from awaitInput(prompt)); show as hint/placeholder */
   inputRequiredPrompt?: string;
+  /** Tier-3 semiotic gate authorization suspend (host-injected InputRequired). */
+  gateAuthorization?: boolean;
   /** A2A message metadata (if present in the inbound message) */
   metadata?: Record<string, unknown>;
   /** Task state transitions recorded during SSE streaming */

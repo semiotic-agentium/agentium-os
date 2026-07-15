@@ -33,4 +33,15 @@ pub trait ProvenanceOpsService: Send + Sync {
         &self,
         request: ProvenanceOpsQueryRequest,
     ) -> Result<ProvenanceOpsQueryResponse, ProvenanceOpsError>;
+
+    async fn aggregate_gate_activity(
+        &self,
+        filters: baml_rt_provenance::AgentGateActivityFilters,
+    ) -> Result<
+        (
+            std::collections::HashMap<String, baml_rt_provenance::AgentGateActivity>,
+            bool,
+        ),
+        ProvenanceOpsError,
+    >;
 }

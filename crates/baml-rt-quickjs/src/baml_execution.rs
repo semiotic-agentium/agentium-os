@@ -244,6 +244,8 @@ pub struct BamlExecutor {
     /// Last-resort platform default for functions without a BAML client config.
     /// Applied after session/config/IR so schema-declared clients keep priority.
     llm_fallback_client_resolver: Option<Arc<dyn LlmClientResolver>>,
+    /// Deployed agent package stamped on LLM effect metadata for per-agent policy.
+    agent_package: Option<Arc<str>>,
 }
 
 impl BamlExecutor {
@@ -292,7 +294,12 @@ impl BamlExecutor {
             llm_secret_resolver: None,
             llm_client_resolver: None,
             llm_fallback_client_resolver: None,
+            agent_package: None,
         }
+    }
+
+    pub fn set_agent_package(&mut self, agent_package: Option<Arc<str>>) {
+        self.agent_package = agent_package;
     }
 
     /// Set the LLM secret resolver for ClientRegistry-based API key injection.
@@ -473,6 +480,7 @@ impl BamlExecutor {
                 collector.as_ref().map(Arc::as_ref),
                 planning_step_refs,
                 function_tool_manifest,
+                self.agent_package.as_deref(),
             )
             .await
             {
@@ -503,6 +511,7 @@ impl BamlExecutor {
                     }
                     return Ok((value, None));
                 }
+                Ok(InterceptorDecision::RequireAuthorization(_)) => {}
                 Err(e) => {
                     if let Some(ref collector) = collector {
                         collector

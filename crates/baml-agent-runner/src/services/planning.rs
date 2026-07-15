@@ -7,11 +7,14 @@
 use std::sync::Arc;
 
 use baml_rt_api::{
-    ContextPlanningResponse, PlanningScopeRequest, PlanningService, TaskPlanDriftSummary,
-    TaskPlanningSnapshot, summarize_plan_steps,
+    ContextPlanningResponse, GateEventDetail, PlanningScopeRequest, PlanningService,
+    TaskGateSummary, TaskPlanDriftSummary, TaskPlanningSnapshot, summarize_plan_steps,
 };
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
-use baml_rt_provenance::{episode::aggregate_task_drift, surreal_store::PlanningScopeQuery};
+use baml_rt_provenance::{
+    episode::{aggregate_task_drift, aggregate_task_gate},
+    surreal_store::PlanningScopeQuery,
+};
 
 pub(crate) struct PlanningServiceImpl {
     store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
@@ -20,6 +23,45 @@ pub(crate) struct PlanningServiceImpl {
 impl PlanningServiceImpl {
     pub(crate) fn new(store: Arc<baml_rt_provenance::SurrealProvenanceStore>) -> Self {
         Self { store }
+    }
+
+    pub(super) async fn aggregate_gate(
+        store: &baml_rt_provenance::SurrealProvenanceStore,
+        context_id: &str,
+        task_id: &str,
+    ) -> Option<TaskGateSummary> {
+        let ctx_id = ContextId::from(context_id);
+        let tid = TaskId::from_external(ExternalId::new(task_id.to_string()));
+        let agg = aggregate_task_gate(store, &ctx_id, &tid).await.ok()??;
+        let gate_events = agg
+            .gate_events
+            .into_iter()
+            .map(|e| GateEventDetail {
+                tool_name: e.tool_name,
+                tier: e.tier,
+                decision: e.decision,
+                reason_code: e.reason_code,
+                deficient_nodes: e.deficient_nodes,
+                tool_call_anchor: e.tool_call_anchor,
+            })
+            .collect();
+        let prevented = agg.prevented_error_count;
+        let friction = agg.friction_denial_count;
+        let prevention_ratio = if prevented + friction > 0 {
+            Some(prevented as f32 / (prevented + friction) as f32)
+        } else {
+            None
+        };
+        Some(TaskGateSummary {
+            deny_count: agg.deny_count,
+            ask_count: agg.ask_count,
+            pass_gated_count: agg.pass_gated_count,
+            pass_count: agg.pass_count,
+            prevented_error_count: prevented,
+            friction_denial_count: friction,
+            prevention_ratio,
+            gate_events,
+        })
     }
 
     pub(super) async fn aggregate_drift(
@@ -34,7 +76,7 @@ impl PlanningServiceImpl {
 
         let mut drifted_calls = Vec::new();
         for call in drift_calls {
-            if call.severity >= baml_rt_embedding::DriftSeverity::Warn {
+            if call.severity == "warn" {
                 drifted_calls.push(baml_rt_api::DriftedCallDetail {
                     function_name: call.function_name,
                     severity: call.severity.as_str().to_owned(),
@@ -84,6 +126,11 @@ impl PlanningService for PlanningServiceImpl {
             } else {
                 None
             };
+            let gate = if request.include_gate {
+                Self::aggregate_gate(&self.store, context_id.as_str(), &row.task_id).await
+            } else {
+                None
+            };
             let step_summary = summarize_plan_steps(row.current_plan.as_ref());
             tasks.push(TaskPlanningSnapshot {
                 task_id: row.task_id,
@@ -92,6 +139,7 @@ impl PlanningService for PlanningServiceImpl {
                 intent_history: row.intent_history,
                 plan_history: row.plan_history,
                 step_summary,
+                gate,
                 drift,
             });
         }

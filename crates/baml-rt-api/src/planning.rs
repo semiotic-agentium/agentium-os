@@ -116,6 +116,34 @@ pub struct DriftedCallDetail {
     pub citations: Vec<CitationDetail>,
 }
 
+/// Summary of semiotic gate decisions for a task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskGateSummary {
+    pub deny_count: u32,
+    pub ask_count: u32,
+    pub pass_gated_count: u32,
+    pub pass_count: u32,
+    pub prevented_error_count: u32,
+    pub friction_denial_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prevention_ratio: Option<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gate_events: Vec<GateEventDetail>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GateEventDetail {
+    pub tool_name: String,
+    pub tier: u8,
+    pub decision: String,
+    pub reason_code: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deficient_nodes: Vec<String>,
+    pub tool_call_anchor: String,
+}
+
 /// Summary of plan-anchored drift state for a task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -150,7 +178,10 @@ pub struct TaskPlanningSnapshot {
     pub intent_history: Vec<PlanningIntentRecord>,
     pub plan_history: Vec<PlanningPlanRecord>,
     pub step_summary: PlanningStepSummary,
-    /// Plan-anchored drift summary.  `None` when no plan drift data exists.
+    /// Semiotic gate summary. `None` when no gate evaluations exist.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gate: Option<TaskGateSummary>,
+    /// Plan-anchored drift summary. Deprecated — use `gate` and citation integrity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drift: Option<TaskPlanDriftSummary>,
 }
@@ -205,6 +236,8 @@ pub struct PlanningScopeRequest {
     pub agent_id: Option<baml_rt_core::ids::AgentId>,
     #[serde(default)]
     pub include_drift: bool,
+    #[serde(default)]
+    pub include_gate: bool,
     #[serde(default = "default_history_limit")]
     pub history_limit: u32,
 }
@@ -222,6 +255,7 @@ impl PlanningScopeRequest {
             agent_package: obs.agent_package.clone(),
             agent_id: obs.agent_id.clone(),
             include_drift: obs.include.drift,
+            include_gate: obs.include.gate,
             history_limit: obs.planning_history_limit,
         }
     }

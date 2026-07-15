@@ -39,17 +39,8 @@ regen-fixtures:
     set +a
     cargo run --release -p baml-rt-builder --all-features --bin regen_fixtures
 
-# Pre-download fastembed ONNX models to models/fastembed/ (git-LFS tracked).
-# Run once after a fresh clone or when models/ is empty.
-# Models are also committed via LFS — git lfs pull will restore them without re-downloading.
-download-models:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "$(git rev-parse --show-toplevel)"
-    set -a
-    [ -f .env ] && . ./.env
-    set +a
-    cargo run --release -p baml-rt-embedding --bin download_models
+# Retired: ONNX drift models removed in semiotic gate cutover.
+# download-models: (removed — see docs/assertions/semiotic-gate.md)
 
 # Verify the local host has the system deps required to build agents.
 # On non-Linux hosts, skips Linux-only checks (libdbus / libcap-ng);

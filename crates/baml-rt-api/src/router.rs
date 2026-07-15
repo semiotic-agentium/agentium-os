@@ -490,20 +490,42 @@ pub fn api_router_with_services_and_deploy(
     // ── Tier 2: Operator-authenticated routes (ClusterAuthLayer) ─
     // Config reads/mutations, secret management, deployment lifecycle, migration.
     let (operator_router, operator_openapi) = OpenApiRouter::new()
-        .routes(utoipa_axum::routes!(config_handlers::list_secrets_overview))
-        .routes(utoipa_axum::routes!(config_handlers::list_store_keys))
-        .routes(utoipa_axum::routes!(config_handlers::list_config))
-        .routes(utoipa_axum::routes!(config_handlers::get_config))
-        .routes(utoipa_axum::routes!(config_handlers::list_config_versions))
-        .routes(utoipa_axum::routes!(config_handlers::get_config_version))
-        .routes(utoipa_axum::routes!(config_handlers::list_secret_requests))
-        .routes(utoipa_axum::routes!(config_handlers::put_secret))
-        .routes(utoipa_axum::routes!(config_handlers::delete_secret))
-        .routes(utoipa_axum::routes!(config_handlers::put_config))
-        .routes(utoipa_axum::routes!(config_handlers::delete_config))
-        .routes(utoipa_axum::routes!(config_handlers::get_llm_model_budgets))
         .routes(utoipa_axum::routes!(
-            config_handlers::refresh_llm_model_budgets
+            config_handlers::secrets::list_secrets_overview
+        ))
+        .routes(utoipa_axum::routes!(
+            config_handlers::secrets::list_store_keys
+        ))
+        .routes(utoipa_axum::routes!(config_handlers::bundles::list_config))
+        .routes(utoipa_axum::routes!(config_handlers::bundles::get_config))
+        .routes(utoipa_axum::routes!(
+            config_handlers::bundles::list_config_versions
+        ))
+        .routes(utoipa_axum::routes!(
+            config_handlers::bundles::get_config_version
+        ))
+        .routes(utoipa_axum::routes!(
+            config_handlers::secrets::list_secret_requests
+        ))
+        .routes(utoipa_axum::routes!(config_handlers::secrets::put_secret))
+        .routes(utoipa_axum::routes!(
+            config_handlers::secrets::delete_secret
+        ))
+        .routes(utoipa_axum::routes!(config_handlers::bundles::put_config))
+        .routes(utoipa_axum::routes!(
+            config_handlers::bundles::delete_config
+        ))
+        .routes(utoipa_axum::routes!(
+            config_handlers::llm_budgets::get_llm_model_budgets
+        ))
+        .routes(utoipa_axum::routes!(
+            config_handlers::llm_budgets::refresh_llm_model_budgets
+        ))
+        .routes(utoipa_axum::routes!(
+            crate::config_handlers::semiotic::get_semiotic_effective
+        ))
+        .routes(utoipa_axum::routes!(
+            crate::config_handlers::semiotic::get_semiotic_activity
         ))
         .routes(utoipa_axum::routes!(handlers::post_deploy))
         .routes(utoipa_axum::routes!(handlers::post_undeploy))

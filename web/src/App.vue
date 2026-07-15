@@ -25,6 +25,7 @@ import {
   chatRouteKey,
   parseView,
   readChatRouteFromUrl,
+  readProvenanceTabFromUrl,
   writeChatRouteToUrl,
 } from "./events/operatorRoute";
 import { useTheme } from "./composables/useTheme";
@@ -32,6 +33,7 @@ import { useConfirm } from "./composables/useConfirm";
 import { parseMermaidBlocks } from "./utils/parseMermaid";
 import type { AgentDiscoveryEntry, ChatMessage, LlmPromptOperation } from "./types/a2a";
 import type { ProvenancePaneTab } from "./composables/useDashboardViewModel";
+import { GATE_DENY_MESSAGE } from "./chat/gateAuthorizationUi";
 import { deriveChatRunStatus } from "./operator/runStatus";
 
 /** First inline mermaid block in agent messages (stops at first hit). */
@@ -116,6 +118,12 @@ const chatRunStatus = computed(() =>
   }),
 );
 const inputRequiredPrompt = computed(() => activeClient.value?.inputRequiredPrompt.value ?? "");
+const gateAuthorizationPending = computed(
+  () => activeClient.value?.gateAuthorizationPending.value ?? false,
+);
+const gateAuthorizationSummary = computed(
+  () => activeClient.value?.gateAuthorizationSummary.value ?? null,
+);
 function normalizeChatTitle(text: string): string {
   const compact = text.replace(/\s+/g, " ").trim();
   if (!compact) return "New Chat";
@@ -134,6 +142,12 @@ function selectAgent(agent: AgentDiscoveryEntry) {
 function sendMessage(text: string) {
   maybeSetActiveTabTitle(text);
   activeClient.value?.sendMessage(text);
+}
+function approveGateAuthorization() {
+  sendMessage("approve");
+}
+function denyGateAuthorization() {
+  sendMessage(GATE_DENY_MESSAGE);
 }
 function cancelStream() { activeClient.value?.cancelStream(); }
 function refreshConversationHistories() {
@@ -233,6 +247,10 @@ async function applyRouteStateFromUrl(): Promise<void> {
   const params = new URLSearchParams(window.location.search);
   const nextView = parseView(params.get("view"));
   view.value = nextView;
+  const provenanceTab = readProvenanceTabFromUrl();
+  if (provenanceTab === "gate" || provenanceTab === "live" || provenanceTab === "failures" || provenanceTab === "anomalies" || provenanceTab === "explore") {
+    provenanceExternalFocus.value = { nonce: Date.now(), tab: provenanceTab };
+  }
   if (nextView === "chat") {
     await applyChatRouteFromUrl();
   } else if (nextView === "events") {
@@ -433,10 +451,15 @@ watch(
             :disabled="!selectedAgent"
             :awaiting-input="awaitingInput"
             :input-required-prompt="inputRequiredPrompt"
+            :gate-authorization-pending="gateAuthorizationPending"
+            :gate-authorization-summary="gateAuthorizationSummary"
+            :selected-agent-package="selectedAgent?.agent_package ?? null"
             :run-status="chatRunStatus"
             :history-hydrate-state="historyHydrateState"
             :selected-context-id="selectedHistoryContextId"
             @send="sendMessage"
+            @gate-approve="approveGateAuthorization"
+            @gate-deny="denyGateAuthorization"
             @cancel="cancelStream"
             @open-settings="view = 'settings'"
           />

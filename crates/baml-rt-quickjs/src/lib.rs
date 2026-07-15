@@ -27,6 +27,7 @@ pub mod quickjs_bridge;
 pub mod runtime;
 pub mod step_executor_loop;
 pub(crate) mod step_executor_outcome_bridge;
+pub(crate) mod tool_effect_metadata;
 pub(crate) mod tool_execution;
 pub mod tool_session_handle;
 pub mod traits;

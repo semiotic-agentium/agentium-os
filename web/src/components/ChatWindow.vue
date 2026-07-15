@@ -12,8 +12,10 @@ import type {
   HistoryHydrateState,
 } from "../types/a2a";
 import type { OperatorRunStatus } from "../operator/runStatus";
+import type { GateAuthorizationSummary } from "../chat/gateAuthorizationUi";
 import TranscriptView from "./TranscriptView.vue";
 import RunStatusIndicator from "./RunStatusIndicator.vue";
+import GateAuthorizationCard from "./GateAuthorizationCard.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -22,6 +24,9 @@ const props = withDefaults(
     disabled: boolean;
     awaitingInput?: boolean;
     inputRequiredPrompt?: string;
+    gateAuthorizationPending?: boolean;
+    gateAuthorizationSummary?: GateAuthorizationSummary | null;
+    selectedAgentPackage?: string | null;
     runStatus: OperatorRunStatus;
     historyHydrateState?: HistoryHydrateState;
     selectedContextId?: string | null;
@@ -34,12 +39,14 @@ const emit = defineEmits<{
   send: [text: string];
   cancel: [];
   "open-settings": [];
+  "gate-approve": [];
+  "gate-deny": [];
 }>();
 
 const input = ref("");
 const chatWindowEl = ref<HTMLElement>();
 const transcriptRef = ref<InstanceType<typeof TranscriptView> | null>(null);
-const inputBarEl = ref<HTMLElement>();
+const inputAreaEl = ref<HTMLElement>();
 const textarea = ref<HTMLTextAreaElement>();
 
 function handleSend() {
@@ -57,6 +64,9 @@ const streamBusy = computed(() => props.isLoading && !props.awaitingInput);
 const showRunStatus = computed(() => props.runStatus.phase !== "idle");
 
 const inputPlaceholder = computed(() => {
+  if (props.gateAuthorizationPending) {
+    return "Optional: type a custom reply instead of Approve/Deny…";
+  }
   if (props.awaitingInput) {
     const p = props.inputRequiredPrompt?.trim();
     return p && p.length > 0 ? p : "Type your reply…";
@@ -118,7 +128,7 @@ watch(
         chatWindow: chatWindowEl.value
           ? { clientHeight: chatWindowEl.value.clientHeight }
           : null,
-        inputBar: inputBarEl.value ? { clientHeight: inputBarEl.value.clientHeight } : null,
+        inputArea: inputAreaEl.value ? { clientHeight: inputAreaEl.value.clientHeight } : null,
         viewportHeight: window.innerHeight,
       }),
     );
@@ -146,9 +156,17 @@ watch(
       :status="runStatus"
       :context-id="selectedContextId"
     />
-    <form ref="inputBarEl" class="input-bar" @submit.prevent="handleSend">
+    <div ref="inputAreaEl" class="input-area">
+      <GateAuthorizationCard
+        v-if="gateAuthorizationPending && gateAuthorizationSummary"
+        :summary="gateAuthorizationSummary"
+        :agent-package="selectedAgentPackage"
+        :disabled="disabled || streamBusy"
+        @approve="emit('gate-approve')"
+        @deny="emit('gate-deny')"
+      />
       <div
-        v-if="awaitingInput"
+        v-else-if="awaitingInput"
         id="reply-needed-strip"
         class="reply-needed-strip"
         role="status"
@@ -172,7 +190,8 @@ watch(
         </span>
         <span class="reply-needed-strip__text">Your reply is needed</span>
       </div>
-      <div :class="['input-wrapper', { 'input-wrapper--awaiting': awaitingInput }]">
+      <form class="input-bar" @submit.prevent="handleSend">
+        <div :class="['input-wrapper', { 'input-wrapper--awaiting': awaitingInput }]">
         <textarea
           ref="textarea"
           v-model="input"
@@ -218,6 +237,7 @@ watch(
           <polygon points="22 2 15 22 11 13 2 9 22 2" />
         </svg>
       </button>
-    </form>
+      </form>
+    </div>
   </div>
 </template>

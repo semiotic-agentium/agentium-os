@@ -18,6 +18,7 @@ baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-builder = { path = "../baml-rt-builder" }
 baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
+baml-rt-semiotic = { path = "../baml-rt-semiotic" }
 baml-rt-repository = { path = "../baml-rt-repository" }
 baml-rt-tools = { path = "../baml-rt-tools" }
 # Static tool crates are force-linked only so repository-side publish/typegen
@@ -58,7 +59,6 @@ async-trait = { workspace = true }
 # by the runtime_progress ticker test. Dev-only: feature unification adds it for
 # the test build without shipping it in production `cargo build`.
 tokio = { workspace = true, features = ["test-util"] }
-baml-rt-embedding = { path = "../baml-rt-embedding" }
 axum = { workspace = true }
 insta = { workspace = true, features = ["json"] }
 tower = { workspace = true }

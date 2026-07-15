@@ -466,3 +466,48 @@ impl QuickJSBridge {
         Ok(session_id)
     }
 }
+
+pub(crate) fn emit_gate_input_required(
+    yield_tx_by_session: &Arc<
+        dashmap::DashMap<StreamSessionId, tokio::sync::mpsc::UnboundedSender<Value>>,
+    >,
+    stream_sessions: &super::StreamSessionMap,
+    scope: &baml_rt_core::context::RuntimeScope,
+    prompt: &str,
+) {
+    let session_id = stream_sessions.iter().find_map(|entry| {
+        let session = entry.value();
+        if session.is_terminated() {
+            return None;
+        }
+        if session.scope == *scope {
+            return Some(*entry.key());
+        }
+        // Tool execution may attach task_id while the stream session was registered under
+        // message_scope first — match the active context for tier-3 gate injection.
+        (session.scope.context_id() == scope.context_id()
+            && session.scope.agent_id() == scope.agent_id())
+        .then_some(*entry.key())
+    });
+    let Some(session_id) = session_id else {
+        tracing::debug!("gate auth: no active stream session for InputRequired injection");
+        return;
+    };
+    let chunk = serde_json::json!({
+        "statusUpdate": {
+            "status": {
+                "state": "TASK_STATE_INPUT_REQUIRED",
+                "message": {
+                    "role": "ROLE_AGENT",
+                    "parts": [{ "text": prompt }],
+                    "metadata": { "gateAuthorization": true }
+                }
+            }
+        }
+    });
+    if let Some(tx) = yield_tx_by_session.get(&session_id)
+        && tx.send(chunk).is_err()
+    {
+        tracing::debug!(%session_id, "gate auth: yield channel closed");
+    }
+}

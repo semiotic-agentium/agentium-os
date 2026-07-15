@@ -180,6 +180,10 @@ pub enum BamlRtError {
     #[error("Tool execution error: {0}")]
     ToolExecution(String),
 
+    /// Semiotic tier-3 gate requires human authorization (A2A InputRequired).
+    #[error("Gate authorization required: {prompt}")]
+    GateAuthorizationRequired { prompt: String },
+
     /// Tool failed with structured classification from typed integration errors.
     #[error(transparent)]
     ToolClassified(#[from] ClassifiedToolError),
@@ -369,6 +373,7 @@ pub fn baml_error_disposition(err: &BamlRtError) -> ErrorDisposition {
             ErrorDisposition::HostRetriable
         }
         BamlRtError::ToolClassified(c) => c.disposition,
+        BamlRtError::GateAuthorizationRequired { .. } => ErrorDisposition::InformAndContinue,
         BamlRtError::ToolExecution(_) => ErrorDisposition::InformAndContinue,
         BamlRtError::ExecutionFailed { .. } | BamlRtError::ParsedResultFailed { .. } => {
             ErrorDisposition::InformAndContinue

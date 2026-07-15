@@ -9,6 +9,7 @@ import {
   applyConversationHistoryDelta,
   applyConversationHistoryPage,
   ConversationHistoryDeltaApplyMode,
+  syncResumeHintsFromPage,
 } from "./conversationHistoryHydration";
 
 describe("applyConversationHistoryPage user speaker kind", () => {
@@ -152,5 +153,30 @@ describe("applyConversationHistoryPage user speaker kind", () => {
     );
     expect(messages.value).toHaveLength(1);
     expect(messages.value[0]?.id).toBe("prov-op-host-ingress:op-dedupe");
+  });
+});
+
+describe("syncResumeHintsFromPage gate authorization", () => {
+  it("flags tier-3 authorization prompt on restore", () => {
+    const messages = ref<ChatMessage[]>([
+      {
+        id: "a1",
+        role: "agent",
+        text: "Working…",
+        timestamp: new Date(),
+      },
+    ]);
+    syncResumeHintsFromPage(messages, {
+      contextId: "ctx-1",
+      version: "v1",
+      maxEventOrder: 1,
+      items: [],
+      awaitingInput: true,
+      inputRequiredPrompt:
+        "Tier-3 authorization required.\n\nGrounded intent: Delete prod rows\nPostconditions declared: 1",
+    });
+    expect(messages.value[0]?.awaitingInput).toBe(true);
+    expect(messages.value[0]?.gateAuthorization).toBe(true);
+    expect(messages.value[0]?.inputRequiredPrompt).toContain("Grounded intent");
   });
 });

@@ -29,6 +29,13 @@ import {
 } from "../chat/toolNotificationEvents";
 import { isSyntheticInputRequiredPrompt } from "../chat/inputRequiredUi";
 import {
+  extractMessageMetadata,
+  isGateAuthorizationMetadata,
+  isGateAuthorizationPrompt,
+  parseGateAuthorizationPrompt,
+  type GateAuthorizationSummary,
+} from "../chat/gateAuthorizationUi";
+import {
   fetchContextMermaidDiagram,
   scheduleContextMermaidDiagram,
 } from "../utils/mermaidDiagram";
@@ -443,6 +450,7 @@ export function useA2aClient() {
     if (lastAgent?.awaitingInput) {
       lastAgent.awaitingInput = false;
       lastAgent.inputRequiredPrompt = undefined;
+      lastAgent.gateAuthorization = false;
     }
 
     const agent = selectedAgent.value;
@@ -820,12 +828,17 @@ export function useA2aClient() {
       updateMessage(messages, agentMsgId, (msg) => {
         msg.isStreaming = false;
         msg.awaitingInput = true;
+        const statusMessage =
+          chunk.statusUpdate?.status?.message ?? chunk.task?.status?.message;
+        const meta = extractMessageMetadata(statusMessage);
         const prompt =
           collectChunkAssistantPlainText(chunk) ??
           extractTextFromStatusUpdate(chunk) ??
           extractText(chunk.statusUpdate?.status?.message) ??
           extractText(chunk.task?.status?.message);
         const trimmed = prompt?.trim() ?? "";
+        msg.gateAuthorization =
+          isGateAuthorizationMetadata(meta) || isGateAuthorizationPrompt(trimmed);
         const synth = isSyntheticInputRequiredPrompt(trimmed);
         msg.inputRequiredPrompt = synth ? undefined : trimmed;
         // Real awaitInput(prompt) becomes placeholder + may show in-bubble; wire shim copy is not transcript.
@@ -1055,6 +1068,16 @@ export function useA2aClient() {
     const last = [...messages.value].reverse().find((m) => m.role === "agent");
     return last?.inputRequiredPrompt ?? "";
   });
+  const gateAuthorizationPending = computed(() => {
+    const last = [...messages.value].reverse().find((m) => m.role === "agent");
+    return (last?.awaitingInput && last?.gateAuthorization) ?? false;
+  });
+  const gateAuthorizationSummary = computed((): GateAuthorizationSummary | null => {
+    if (!gateAuthorizationPending.value) return null;
+    const prompt = inputRequiredPrompt.value.trim();
+    if (!prompt) return null;
+    return parseGateAuthorizationPrompt(prompt);
+  });
 
   function cancelStream(): void {
     if (pendingHydrateRetryTimer !== null) {
@@ -1105,6 +1128,8 @@ export function useA2aClient() {
     taskId: computed(() => _taskId.value),
     awaitingInput,
     inputRequiredPrompt,
+    gateAuthorizationPending,
+    gateAuthorizationSummary,
     fetchAgents,
     selectAgent,
     fetchConversationHistoryOptions,
