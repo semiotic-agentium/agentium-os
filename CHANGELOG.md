@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.0](https://github.com/semiotic-agentium/agentium-os/compare/v0.2.2...v0.3.0) (2026-07-15)
+
+
+### Features
+
+* **semiotic:** gate trust UX, fast activity reads, and symmetric persistence ([8b68504](https://github.com/semiotic-agentium/agentium-os/commit/8b685048fbe7bbead2101ca4bb345322cca2e1e8))
+* **semiotic:** gate trust UX, fast activity reads, and symmetric persistence ([3db5f7b](https://github.com/semiotic-agentium/agentium-os/commit/3db5f7bdbbbeef2d8b475a6b804d553c2c8ad606))
+
+
+### Bug Fixes
+
+* **ci:** add SPDX headers to gate provenance verifier script ([9210d4b](https://github.com/semiotic-agentium/agentium-os/commit/9210d4bf58286a52d0a20259fd05c3d70fd2cb52))
+* **ci:** clippy and drift field renames after semiotic rebase ([7799ce2](https://github.com/semiotic-agentium/agentium-os/commit/7799ce216e7e4c16830bd3c4585ef87b9ec7d69a))
+* **ci:** drop ONNX warmup steps after embedding crate removal ([b9c25c9](https://github.com/semiotic-agentium/agentium-os/commit/b9c25c9f1ded191c3b3e03b4bc5442f0131d913f))
+* **semiotic:** use async mutex in conformance tests for clippy ([b132caa](https://github.com/semiotic-agentium/agentium-os/commit/b132caad94e2176f2e32f0ebc3a584a3f6bae610))
+
 ## [0.2.2](https://github.com/semiotic-agentium/agentium-os/compare/v0.2.1...v0.2.2) (2026-07-10)
 
 
