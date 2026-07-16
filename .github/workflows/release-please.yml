@@ -24,12 +24,59 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
+      pr: ${{ steps.release.outputs.pr }}
     steps:
       - id: release
         uses: googleapis/release-please-action@v4
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  # Release Please only bumps the version in Cargo.toml; it never touches
+  # Cargo.lock. The release build runs `cargo build --locked`, which fails if
+  # the lock still pins the previous workspace versions. We used to sync the
+  # lock from release-pr-postprocess.yml (pull_request-triggered), but Release
+  # Please pushes the PR with the default GITHUB_TOKEN, and GITHUB_TOKEN pushes
+  # do not trigger other workflows — so that job never ran. Syncing here, in the
+  # same workflow, does not depend on any downstream event firing.
+  sync-release-lock:
+    name: Sync Cargo.lock on release PR
+    needs: [release-please]
+    if: needs.release-please.outputs.pr != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve release PR head branch
+        id: pr
+        env:
+          PR_JSON: ${{ needs.release-please.outputs.pr }}
+        run: |
+          branch=$(printf '%s' "$PR_JSON" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["headBranchName"])')
+          [[ -n "${branch}" ]] || { echo "could not resolve PR head branch" >&2; exit 1; }
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.branch }}
+          fetch-depth: 0
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+      - name: Sync workspace lockfile versions
+        run: cargo update --workspace
+      - name: Commit + push Cargo.lock if changed
+        env:
+          BRANCH: ${{ steps.pr.outputs.branch }}
+        run: |
+          if git diff --quiet -- Cargo.lock; then
+            echo "Cargo.lock already in sync"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock
+          git commit -m "chore: sync Cargo.lock for release"
+          git push origin "HEAD:${BRANCH}"
 
   manifest:
     name: Read release manifest
