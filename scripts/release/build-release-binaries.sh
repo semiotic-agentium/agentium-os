@@ -135,6 +135,15 @@ build_for_target() {
     die "cannot build ${triple} on host ${host}: cross-compilation is not supported (the downloaded onnxruntime prebuilt needs a jammy+ toolchain). Build this target on a native ${triple%%-*} runner — see .github/workflows/release-publish.yml."
   fi
 
+  # Fail fast with an actionable message if Cargo.lock drifted from Cargo.toml.
+  # `cargo build --locked` below would otherwise die with a cryptic "cannot
+  # update the lock file ... --locked was passed" mid-resolve. Drift at a release
+  # tag means the lock was not synced after the version bump — see the
+  # sync-release-lock job in .github/workflows/release-please.yml.
+  if ! (cd "$root" && cargo metadata --locked --format-version 1 >/dev/null 2>&1); then
+    die "Cargo.lock is out of sync with Cargo.toml at this commit. Run 'cargo update --workspace' and commit the lockfile. This usually means a release version bump landed without regenerating Cargo.lock (see sync-release-lock in .github/workflows/release-please.yml)."
+  fi
+
   echo "build-release-binaries: building for ${triple} via cargo build"
 
   while IFS=$'\t' read -r package bin features; do
