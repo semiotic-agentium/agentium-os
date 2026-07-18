@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/semiotic-agentium/agentium-os/compare/v0.3.0...v0.3.1) (2026-07-18)
+
+
+### Bug Fixes
+
+* **release:** regenerate Cargo.lock for 0.3.0 version bump ([c22517d](https://github.com/semiotic-agentium/agentium-os/commit/c22517d56fcd1941cffbb9e16f9d714cb33b9022))
+
 ## [0.3.0](https://github.com/semiotic-agentium/agentium-os/compare/v0.2.2...v0.3.0) (2026-07-15)
 
 
