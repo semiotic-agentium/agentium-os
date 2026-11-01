@@ -13,8 +13,9 @@ use std::sync::Arc;
 use baml_rt_core::clock_events;
 use baml_rt_hash::AgentIdentityDigest;
 use baml_rt_tools::{
-    StaticToolCatalogResponse, external_tools::ExternalToolSnapshot,
-    mcp_snapshot::McpServerSnapshot,
+    StaticToolCatalogResponse,
+    external_tools::{ExternalToolSnapshot, audit_ktool_bundle, validate_external_tool_snapshot},
+    mcp_snapshot::{Digest, McpServerSnapshot},
 };
 
 use crate::{
@@ -158,6 +159,81 @@ impl RepositoryService {
         self.external_tool_registry
             .put_external_tool_snapshot(snapshot)
             .await
+    }
+
+    /// Store an audited `.ktool` under its exact bundle digest, then register
+    /// its approval snapshot. An orphan blob is harmless if registry insertion
+    /// fails because blob storage is content addressed.
+    pub async fn put_external_tool_bundle(
+        &self,
+        bytes: &[u8],
+        snapshot: &ExternalToolSnapshot,
+    ) -> Result<ExternalToolRegistryToolVersion> {
+        let audited =
+            audit_ktool_bundle(bytes).map_err(|e| RepositoryError::InvalidSourceBundle {
+                reason: e.to_string(),
+            })?;
+        let Some(v2) = &snapshot.v2 else {
+            return Err(RepositoryError::InvalidSourceBundle {
+                reason: "a .ktool bundle requires a v2 external-tool snapshot".to_string(),
+            });
+        };
+        if v2.bundle_digest != audited.bundle_digest
+            || v2.tool_digest != audited.tool_digest
+            || v2.descriptor != audited.descriptor
+            || v2.runtime_image != audited.manifest.runtime_image
+        {
+            return Err(RepositoryError::InvalidSourceBundle {
+                reason: "the external-tool snapshot does not match the audited .ktool bundle"
+                    .to_string(),
+            });
+        }
+        validate_external_tool_snapshot(snapshot).map_err(|e| {
+            RepositoryError::InvalidSourceBundle {
+                reason: e.to_string(),
+            }
+        })?;
+
+        let content_hash: ContentHash = audited
+            .bundle_digest
+            .to_string()
+            .trim_start_matches("sha256:")
+            .parse()
+            .expect("a validated SHA-256 digest is a valid content hash");
+        self.blobs.put(&content_hash, bytes).await?;
+        self.external_tool_registry
+            .put_external_tool_snapshot(snapshot)
+            .await
+    }
+
+    /// Load exact `.ktool` bytes by bundle digest and verify storage integrity.
+    pub async fn get_external_tool_bundle(&self, digest: Digest) -> Result<Option<Vec<u8>>> {
+        let hash: ContentHash = digest
+            .to_string()
+            .trim_start_matches("sha256:")
+            .parse()
+            .expect("a validated SHA-256 digest is a valid content hash");
+        let Some(bytes) = self.blobs.get(&hash).await? else {
+            return Ok(None);
+        };
+        let audited = audit_ktool_bundle(&bytes).map_err(|e| RepositoryError::StorageRead {
+            source: Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e.to_string(),
+            )),
+        })?;
+        if audited.bundle_digest != digest {
+            return Err(RepositoryError::HashMismatch {
+                expected: hash,
+                computed: audited
+                    .bundle_digest
+                    .to_string()
+                    .trim_start_matches("sha256:")
+                    .parse()
+                    .expect("a validated SHA-256 digest is a valid content hash"),
+            });
+        }
+        Ok(Some(bytes))
     }
 
     pub async fn get_external_tool_snapshot(

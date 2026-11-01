@@ -28,6 +28,7 @@ pub mod snapshot_report;
 pub mod sync_types;
 pub mod tool_build;
 pub mod tool_new;
+pub mod tool_publish;
 pub mod tool_test;
 pub mod undeploy;
 pub(crate) mod utils;

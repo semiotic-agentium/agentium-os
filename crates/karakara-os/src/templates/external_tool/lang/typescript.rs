@@ -116,7 +116,7 @@ karak tool test      # run under the DevBackend (same wire as prod, no microVM)
 ## Ship
 
 ```bash
-karak publish        # derive the descriptor, bundle the JS, sign, store
+karak publish        # derive the descriptor, bundle the JS, audit, store
 ```
 
 The descriptor (schemas, side-effect, requested capabilities) is **derived** from
@@ -125,7 +125,7 @@ The descriptor (schemas, side-effect, requested capabilities) is **derived** fro
         tool_id = tool_id,
     );
 
-    let gitignore = "node_modules/\ndist/\n";
+    let gitignore = "node_modules/\ndist/\ntool-descriptor.json\ntool.lock.json\n";
 
     vec![
         GeneratedFile::new("package.json", package_json),

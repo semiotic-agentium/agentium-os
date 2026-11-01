@@ -87,6 +87,36 @@ pub fn publish_agent(
     http.publish_agent(agent_dir, repository_url, rationale, origin)
 }
 
+/// Select the publish pipeline from the project files. Tool projects use the
+/// v2 `.ktool` ingest path; agent projects keep the existing source build.
+pub fn run_auto(
+    project_dir: &str,
+    repository_url: &str,
+    rationale: &str,
+    origin: PublishOriginArg,
+    approved_by: Option<&str>,
+    yes: bool,
+    runner_token: Option<RunnerToken>,
+) -> Result<()> {
+    let dir = Path::new(project_dir);
+    if dir.join("manifest.json").is_file() {
+        return run(project_dir, repository_url, rationale, origin, runner_token);
+    }
+    if dir.join("package.json").is_file() && dir.join("src/tool.ts").is_file() {
+        return super::tool_publish::run(
+            project_dir,
+            repository_url,
+            approved_by,
+            yes,
+            runner_token,
+        );
+    }
+    bail!(
+        "Could not identify {} as an agent or tool project. Expected manifest.json, or package.json plus src/tool.ts.",
+        dir.display()
+    )
+}
+
 pub fn run(
     agent_dir: &str,
     repository_url: &str,

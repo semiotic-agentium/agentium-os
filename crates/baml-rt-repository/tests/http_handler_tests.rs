@@ -13,6 +13,15 @@ use baml_rt_repository::{
     entry::{ChangeRationale, SourceBundle, Tag},
     lineage::EdgeDescription,
 };
+use baml_rt_tools::external_tools::{
+    CapabilityRequest, DESCRIPTOR_ABI, ErrorClass, KTOOL_BUNDLE_SCHEMA_VERSION,
+    KTOOL_DESCRIPTOR_PATH, KTOOL_MANIFEST_PATH, KTOOL_NODE_ENTRYPOINT, KTOOL_SBOM_PATH,
+    KtoolManifest, KtoolRuntimeTier, OutputTrust, SideEffect, UnifiedToolDescriptor,
+    compute_descriptor_digest, default_node_runtime_image,
+};
+use flate2::{Compression, GzBuilder};
+use serde_json::json;
+use tar::{Builder, Header};
 #[path = "support/common.rs"]
 mod common;
 use common::setup_app;
@@ -861,4 +870,147 @@ async fn mcp_tool_lookup_and_mark_stale_routes_work() {
         .unwrap();
     let lookup: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(lookup["tools"][0]["approval_state"], "stale");
+}
+
+fn ktool_bundle() -> Vec<u8> {
+    let descriptor = UnifiedToolDescriptor {
+        descriptor_abi: DESCRIPTOR_ABI,
+        name: "support/http-echo".into(),
+        version: "0.1.0".into(),
+        description: "HTTP publish fixture".into(),
+        input_schema: json!({"type": "object"}),
+        output_schema: json!({"type": "object"}),
+        error_classes: vec![ErrorClass::Execution],
+        side_effect: SideEffect::Read,
+        idempotent: true,
+        output_trust: OutputTrust::Untrusted,
+        requested: CapabilityRequest::default(),
+    };
+    let manifest = KtoolManifest {
+        bundle_schema_version: KTOOL_BUNDLE_SCHEMA_VERSION,
+        name: descriptor.name.clone(),
+        runtime_tier: KtoolRuntimeTier::Sandbox,
+        runtime_image: default_node_runtime_image(),
+        entrypoint: KTOOL_NODE_ENTRYPOINT.into(),
+        descriptor_digest: compute_descriptor_digest(&descriptor),
+        requested: descriptor.requested.clone(),
+    };
+
+    let mut bytes = Vec::new();
+    let encoder = GzBuilder::new()
+        .mtime(0)
+        .write(&mut bytes, Compression::default());
+    let mut archive = Builder::new(encoder);
+    for (path, body) in [
+        (
+            KTOOL_DESCRIPTOR_PATH,
+            serde_json::to_vec(&descriptor).unwrap(),
+        ),
+        (KTOOL_MANIFEST_PATH, serde_json::to_vec(&manifest).unwrap()),
+        (KTOOL_SBOM_PATH, b"{}".to_vec()),
+        (KTOOL_NODE_ENTRYPOINT, b"export default {};".to_vec()),
+    ] {
+        let mut header = Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, path, body.as_slice())
+            .unwrap();
+    }
+    let encoder = archive.into_inner().unwrap();
+    encoder.finish().unwrap();
+    bytes
+}
+
+#[tokio::test]
+async fn external_tool_publish_ingests_bundle_and_v2_snapshot() {
+    let app = setup_app().await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/external-tools/publish?approved_by=repository-test")
+                .header("content-type", "application/vnd.karakara.ktool+gzip")
+                .body(Body::from(ktool_bundle()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let published: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(published["tool_name"], "support/http-echo");
+    assert_eq!(published["version"], 1);
+    assert!(
+        published["tool_digest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/external-tools/snapshot?tool_name=support%2Fhttp-echo")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let snapshot: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(snapshot["approval"]["state"], "approved");
+    assert_eq!(snapshot["approval"]["owner"], "repository-test");
+    assert_eq!(snapshot["v2"]["tool_digest"], published["tool_digest"]);
+    assert_eq!(snapshot["v2"]["bundle_digest"], published["bundle_digest"]);
+}
+
+#[tokio::test]
+async fn external_tool_bundle_is_stored_by_exact_content_digest() {
+    let service = common::setup_service().await;
+    let bytes = ktool_bundle();
+    let audited = baml_rt_tools::external_tools::audit_ktool_bundle(&bytes).unwrap();
+    let snapshot = baml_rt_tools::external_tools::ExternalToolSnapshot::from_v2_bundle(
+        audited.descriptor,
+        audited.bundle_digest,
+        audited.tool_digest,
+        audited.manifest.runtime_image,
+        "repository-test",
+        "2026-01-01T00:00:00Z",
+    )
+    .unwrap();
+    service
+        .put_external_tool_bundle(&bytes, &snapshot)
+        .await
+        .unwrap();
+    assert_eq!(
+        service
+            .get_external_tool_bundle(audited.bundle_digest)
+            .await
+            .unwrap(),
+        Some(bytes)
+    );
+}
+
+#[tokio::test]
+async fn external_tool_publish_rejects_non_bundle_bytes() {
+    let app = setup_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/external-tools/publish")
+                .body(Body::from("not a bundle"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }

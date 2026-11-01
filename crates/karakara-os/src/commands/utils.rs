@@ -143,6 +143,37 @@ impl AgentPlatform {
         })
     }
 
+    pub fn post_bytes<Resp>(
+        &self,
+        url: &str,
+        content_type: &str,
+        bytes: Vec<u8>,
+        op_name: &str,
+    ) -> Result<Resp>
+    where
+        Resp: DeserializeOwned,
+    {
+        self.runtime.block_on(async {
+            let mut request = self
+                .client
+                .post(url)
+                .header("content-type", content_type)
+                .body(bytes);
+            if let Some(token) = &self.runner_token {
+                request = request.header("X-Runner-Token", token.as_str());
+            }
+            let resp = request
+                .send()
+                .await
+                .with_context(|| format!("Failed to POST {op_name} to {url}"))?;
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            self.check_response(status, &body, url, op_name)?;
+            serde_json::from_str::<Resp>(&body)
+                .with_context(|| format!("Failed to parse {op_name} response: {body}"))
+        })
+    }
+
     pub fn get_json<Resp>(&self, url: &str, op_name: &str) -> Result<Resp>
     where
         Resp: DeserializeOwned,

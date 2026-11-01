@@ -46,7 +46,7 @@ pub enum Commands {
         command: ConfigCommands,
     },
 
-    /// Publish source and deploy an agent, or enable an external tool
+    /// Publish source and deploy an agent.
     Install {
         #[command(subcommand)]
         command: InstallCommands,
@@ -73,7 +73,7 @@ pub enum Commands {
         command: EvalCommands,
     },
 
-    /// Author external tools (v2): scaffold, build, and test a TypeScript tool.
+    /// Author external tools (v2): scaffold, build, test, and publish a TypeScript tool.
     Tool {
         #[command(subcommand)]
         command: ToolCommands,
@@ -173,10 +173,15 @@ pub enum Commands {
         snapshot_cache: Option<String>,
     },
 
-    /// Publish an agent source bundle to repository
+    /// Publish an agent source bundle or a v2 TypeScript tool.
     Publish {
-        /// Path to an agent source directory (contains manifest.json + baml_src/)
-        #[arg(long, default_value = ".")]
+        /// Project directory. `manifest.json` selects an agent; `package.json` + `src/tool.ts` selects a tool.
+        #[arg(
+            long = "path",
+            visible_alias = "agent-dir",
+            value_name = "PROJECT_DIR",
+            default_value = "."
+        )]
         agent_dir: String,
 
         /// Repository base URL where repository routes are mounted
@@ -190,6 +195,14 @@ pub enum Commands {
         /// Publish origin kind: original | iteration
         #[arg(long, value_enum, default_value_t = PublishOriginArg::Iteration)]
         origin: PublishOriginArg,
+
+        /// Audit identity recorded when approving a tool publish.
+        #[arg(long)]
+        approved_by: Option<String>,
+
+        /// Approve a tool publish without prompting.
+        #[arg(long)]
+        yes: bool,
 
         /// Runner token for authenticated operator access (falls back to RUNNER_TOKEN env)
         #[arg(long)]
@@ -302,7 +315,7 @@ pub enum Commands {
     },
 }
 
-/// `karak tool <new|build|test>` — the v2 external-tool authoring workflow.
+/// `karak tool <new|build|publish|test>` — the v2 external-tool authoring workflow.
 #[derive(Subcommand)]
 pub enum ToolCommands {
     /// Scaffold a new TypeScript tool (one typed `defineTool` function).
@@ -327,6 +340,24 @@ pub enum ToolCommands {
         /// Tool project directory (default: current directory).
         #[arg(default_value = ".")]
         dir: String,
+    },
+    /// Build, approve, and ingest a content-addressed `.ktool` bundle.
+    Publish {
+        /// Tool project directory (default: current directory).
+        #[arg(default_value = ".")]
+        dir: String,
+        /// Repository base URL where repository routes are mounted.
+        #[arg(long, default_value = "http://127.0.0.1:18080/repository")]
+        repository_url: String,
+        /// Audit identity recorded as the approval owner.
+        #[arg(long)]
+        approved_by: Option<String>,
+        /// Approve without prompting.
+        #[arg(long)]
+        yes: bool,
+        /// Runner token for authenticated operator access (falls back to RUNNER_TOKEN env).
+        #[arg(long)]
+        runner_token: Option<String>,
     },
     /// Run one invocation through the SDK over a stdio DevBackend.
     Test {
@@ -376,22 +407,6 @@ pub enum InstallCommands {
 
         #[arg(long)]
         runner_token: Option<String>,
-    },
-    /// Discover, approve, and import an external tool snapshot
-    Tool {
-        dir: String,
-        #[arg(long)]
-        repository_url: Option<String>,
-        #[arg(long)]
-        runner_token: Option<String>,
-        #[arg(long)]
-        sandbox_rootfs: Option<String>,
-        #[arg(long)]
-        approved_by: Option<String>,
-        #[arg(long)]
-        yes: bool,
-        #[arg(long)]
-        json: bool,
     },
 }
 

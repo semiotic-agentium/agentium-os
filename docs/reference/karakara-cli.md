@@ -73,8 +73,7 @@ karak eval run --min-pass-rate 0.9
 | Command | Purpose |
 |---------|---------|
 | `install agent` | `POST /repository/publish` (server build) + `POST /deploy` |
-| `install tool` | Approve and register an external tool snapshot |
-| `publish` | Publish source only (no deploy); prints `karak deploy …` hint |
+| `publish` | Publish an agent source bundle or build, approve, and ingest a `.ktool` |
 | `deploy --hash HASH --url URL` | Activate a published artifact |
 | `sync-types` | Pull `_baml_runtime.baml` + `baml-runtime.d.ts` from `GET /repository/dev-artifacts` |
 
@@ -85,6 +84,7 @@ karak new-agent my-agent --template simple --tags support,demo
 karak tool new weather --bundle support    # v2 TypeScript tool (@karakara/tool)
 karak tool build ./weather                 # derive descriptor + digest
 karak tool test ./weather --input '{"message":"hi"}'
+karak publish --path ./weather --yes       # vendor JS and ingest the .ktool
 karak new-static-tool github   # platform-internal (monorepo contributors only)
 ```
 
@@ -122,7 +122,8 @@ Unchanged in role from the former SDK:
 
 (The v1 `sandbox-bind-sync`, `sandbox-oci-prepare`, and `check-external-tool`
 commands were retired with the v1 bind/rootfs scaffold — external tools v2 uses
-`karak tool new|build|test` instead.)
+`karak tool new|build|publish|test` instead. `karak publish` auto-detects tool
+projects and uses the same tool publish path.)
 
 ## Skills
 

@@ -7,7 +7,10 @@
 //! Request and response types for the REST API surface, plus RFC 7807
 //! error mapping from `RepositoryError`.
 
-use baml_rt_tools::{external_tools::ExternalToolSnapshot, mcp_snapshot::McpServerSnapshot};
+use baml_rt_tools::{
+    external_tools::ExternalToolSnapshot,
+    mcp_snapshot::{Digest, McpServerSnapshot},
+};
 use http_api_problem::{HttpApiProblem, StatusCode as ProblemStatusCode};
 use serde::{Deserialize, Serialize};
 
@@ -283,6 +286,17 @@ pub struct ImportExternalToolSnapshotRequest {
     pub snapshot: ExternalToolSnapshot,
 }
 
+/// POST /external-tools/publish?approved_by=...
+#[derive(Debug, Deserialize)]
+pub struct PublishExternalToolQuery {
+    #[serde(default = "default_external_tool_approver")]
+    pub approved_by: String,
+}
+
+fn default_external_tool_approver() -> String {
+    "operator".to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Response types
 // ---------------------------------------------------------------------------
@@ -406,4 +420,14 @@ pub struct ExternalToolSnapshotsResponse {
 #[derive(Debug, Serialize)]
 pub struct ImportExternalToolSnapshotResponse {
     pub version: ExternalToolRegistryToolVersion,
+}
+
+/// Response for an ingested `.ktool` bundle.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PublishExternalToolResponse {
+    pub tool_name: String,
+    pub version: u32,
+    pub descriptor_digest: Digest,
+    pub bundle_digest: Digest,
+    pub tool_digest: Digest,
 }

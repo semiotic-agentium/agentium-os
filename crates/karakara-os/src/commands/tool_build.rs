@@ -71,6 +71,12 @@ pub(crate) fn ensure_built(dir: &Path) -> Result<()> {
     if dir.join("dist/tool.js").is_file() {
         return Ok(());
     }
+    rebuild(dir)
+}
+
+/// Recompile even when an older `dist/tool.js` exists. Publish uses this so
+/// the bundle always covers the current source tree.
+pub(crate) fn rebuild(dir: &Path) -> Result<()> {
     if !dir.join("node_modules").is_dir() {
         bail!(
             "Error: dependencies not installed in {}.\nHint: run `npm install` first (the @karakara/tool SDK must be resolvable).",
@@ -95,7 +101,7 @@ pub(crate) fn ensure_built(dir: &Path) -> Result<()> {
 }
 
 /// Run node to print `defineTool(...).descriptor()` as JSON.
-fn extract_descriptor_json(dir: &Path) -> Result<String> {
+pub(crate) fn extract_descriptor_json(dir: &Path) -> Result<String> {
     let entry = dir.join("dist/tool.js").canonicalize()?;
     let entry_url = format!("file://{}", entry.display());
     let script = format!(

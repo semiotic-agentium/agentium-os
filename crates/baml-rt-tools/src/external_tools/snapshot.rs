@@ -13,10 +13,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{
-    ExternalToolManifest, ExternalToolMetadata, MetadataSchemas, ToolRuntime, ToolSchemaResult,
+    ExternalToolManifest, ExternalToolMetadata, KtoolRuntimeImage, MetadataSchemas, SideEffect,
+    ToolRuntime, ToolSchemaResult, UnifiedToolDescriptor, compute_descriptor_digest,
     metadata::metadata_schema_digest, runtime::DEFAULT_PROCESS_COMMAND,
 };
 use crate::{
+    ToolAccess,
     approval::{ApprovalRecord, ApprovalState},
     mcp_snapshot::{Digest, canonical_digest},
 };
@@ -74,8 +76,21 @@ pub struct ExternalToolSnapshot {
     pub tool: ExternalToolMetadata,
     pub describe: ExternalToolDescribeSnapshot,
     pub digests: ExternalToolSnapshotDigests,
+    /// V2 executable identity. Absent on legacy discovery snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub v2: Option<ExternalToolV2Snapshot>,
     pub approval: ApprovalRecord<ExternalApprovalState>,
     pub created_at: String,
+}
+
+/// V2 contract and executable-byte identity stored with the approval snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExternalToolV2Snapshot {
+    pub descriptor: UnifiedToolDescriptor,
+    pub descriptor_digest: Digest,
+    pub bundle_digest: Digest,
+    pub tool_digest: Digest,
+    pub runtime_image: KtoolRuntimeImage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -163,6 +178,7 @@ impl ExternalToolSnapshot {
                 runtime_digest,
                 snapshot_digest: schema_digest,
             },
+            v2: None,
             approval: ApprovalRecord::pending(),
             created_at: created_at.into(),
         };
@@ -171,6 +187,116 @@ impl ExternalToolSnapshot {
         snapshot.digests.snapshot_digest = snapshot_digest;
         Ok(snapshot)
     }
+
+    /// Build an approved v2 snapshot from a host-audited `.ktool` bundle.
+    pub fn from_v2_bundle(
+        descriptor: UnifiedToolDescriptor,
+        bundle_digest: Digest,
+        tool_digest: Digest,
+        runtime_image: KtoolRuntimeImage,
+        approved_by: impl Into<String>,
+        created_at: impl Into<String>,
+    ) -> Result<Self> {
+        let descriptor_digest = compute_descriptor_digest(&descriptor);
+        let tool = metadata_from_v2_descriptor(&descriptor)?;
+        let created_at = created_at.into();
+        let approval = ApprovalRecord {
+            state: ApprovalState::Approved,
+            owner: Some(approved_by.into()),
+            reviewed_at: Some(created_at.clone()),
+            expires_at: None,
+        };
+        let mut snapshot = Self {
+            snapshot_schema_version: EXTERNAL_TOOL_SNAPSHOT_SCHEMA_VERSION,
+            source: EXTERNAL_TOOL_SOURCE.to_string(),
+            snapshot_digest: descriptor_digest,
+            tool,
+            describe: ExternalToolDescribeSnapshot {
+                protocol_version: "2".to_string(),
+                supported_methods: vec!["load_tool".to_string(), "invoke".to_string()],
+                max_payload_bytes: None,
+                schema_digest: Some(descriptor_digest),
+            },
+            // Keep the legacy registry columns populated during the v1→v2
+            // storage migration. The full v2 identities above are authoritative.
+            digests: ExternalToolSnapshotDigests {
+                manifest_digest: descriptor_digest,
+                schema_digest: descriptor_digest,
+                runtime_digest: runtime_image.digest,
+                snapshot_digest: descriptor_digest,
+            },
+            v2: Some(ExternalToolV2Snapshot {
+                descriptor,
+                descriptor_digest,
+                bundle_digest,
+                tool_digest,
+                runtime_image,
+            }),
+            approval,
+            created_at,
+        };
+        let snapshot_digest = compute_snapshot_digest(&snapshot)?;
+        snapshot.snapshot_digest = snapshot_digest;
+        snapshot.digests.snapshot_digest = snapshot_digest;
+        Ok(snapshot)
+    }
+}
+
+fn metadata_from_v2_descriptor(descriptor: &UnifiedToolDescriptor) -> Result<ExternalToolMetadata> {
+    let (bundle, local_name) = descriptor.name.split_once('/').ok_or_else(|| {
+        BamlRtError::InvalidArgument(format!(
+            "tool descriptor name '{}' must be bundle/local_name",
+            descriptor.name
+        ))
+    })?;
+    if bundle.is_empty() || local_name.is_empty() || local_name.contains('/') {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "tool descriptor name '{}' must be bundle/local_name",
+            descriptor.name
+        )));
+    }
+
+    Ok(ExternalToolMetadata {
+        tool_abi_version: "2".to_string(),
+        name: descriptor.name.clone(),
+        description: descriptor.description.clone(),
+        bundle: bundle.to_string(),
+        local_name: local_name.to_string(),
+        access_level: match descriptor.side_effect {
+            SideEffect::Read => ToolAccess::Read,
+            SideEffect::Write => ToolAccess::Write,
+            SideEffect::Irreversible => ToolAccess::Delete,
+        },
+        tags: Vec::new(),
+        invocation_mode: super::InvocationMode::SingleShot,
+        session_policy: Default::default(),
+        schemas: MetadataSchemas {
+            input: descriptor.input_schema.clone(),
+            output: descriptor.output_schema.clone(),
+            events: Vec::new(),
+        },
+        event_sources: Vec::new(),
+        datasources: Vec::new(),
+        secrets: descriptor
+            .requested
+            .secrets
+            .iter()
+            .map(|request| request.name.clone())
+            .collect(),
+        secret_scope: Default::default(),
+        capabilities: serde_json::to_value(&descriptor.requested).map_err(|e| {
+            BamlRtError::InvalidArgumentWithSource {
+                message: "failed to serialize v2 capability requests".to_string(),
+                source: Box::new(e),
+            }
+        })?,
+        config_bundle: None,
+        // P3 dispatches v2 snapshots by `v2.runtime_image`; the retired v1
+        // process/sandbox declaration must not decide how these bytes run.
+        runtime: None,
+        coordination: None,
+        coordination_baml: None,
+    })
 }
 
 fn validate_datasource_event_contract(
@@ -241,6 +367,9 @@ pub fn validate_external_tool_snapshot(snapshot: &ExternalToolSnapshot) -> Resul
             snapshot.tool.name
         )));
     }
+    if let Some(v2) = &snapshot.v2 {
+        return validate_v2_snapshot(snapshot, v2);
+    }
 
     let manifest = ExternalToolManifest::from(snapshot.tool.clone());
     let manifest_digest = compute_manifest_digest(&manifest);
@@ -285,6 +414,53 @@ pub fn validate_external_tool_snapshot(snapshot: &ExternalToolSnapshot) -> Resul
         )));
     }
 
+    Ok(())
+}
+
+fn validate_v2_snapshot(
+    snapshot: &ExternalToolSnapshot,
+    v2: &ExternalToolV2Snapshot,
+) -> Result<()> {
+    let descriptor_digest = compute_descriptor_digest(&v2.descriptor);
+    if v2.descriptor_digest != descriptor_digest {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "external tool snapshot '{}' descriptor_digest mismatch: expected {}, computed {}",
+            snapshot.tool.name, v2.descriptor_digest, descriptor_digest
+        )));
+    }
+    let projected = metadata_from_v2_descriptor(&v2.descriptor)?;
+    if snapshot.tool.name != projected.name
+        || snapshot.tool.description != projected.description
+        || snapshot.tool.access_level != projected.access_level
+        || snapshot.tool.schemas.input != projected.schemas.input
+        || snapshot.tool.schemas.output != projected.schemas.output
+        || snapshot.tool.secrets != projected.secrets
+        || snapshot.tool.capabilities != projected.capabilities
+    {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "external tool snapshot '{}' metadata does not match its v2 descriptor",
+            snapshot.tool.name
+        )));
+    }
+    if snapshot.digests.manifest_digest != descriptor_digest
+        || snapshot.digests.schema_digest != descriptor_digest
+        || snapshot.digests.runtime_digest != v2.runtime_image.digest
+        || snapshot.describe.schema_digest != Some(descriptor_digest)
+    {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "external tool snapshot '{}' v2 compatibility digests do not match its identities",
+            snapshot.tool.name
+        )));
+    }
+    let snapshot_digest = compute_snapshot_digest(snapshot)?;
+    if snapshot.snapshot_digest != snapshot_digest
+        || snapshot.digests.snapshot_digest != snapshot_digest
+    {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "external tool snapshot '{}' snapshot_digest mismatch: expected {}, computed {}",
+            snapshot.tool.name, snapshot.snapshot_digest, snapshot_digest
+        )));
+    }
     Ok(())
 }
 

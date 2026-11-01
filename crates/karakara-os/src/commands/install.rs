@@ -3,7 +3,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! `karak install agent|tool` — publish source and deploy (or enable tool).
+//! `karak install agent` — publish agent source and deploy it.
 
 use std::path::{Path, PathBuf};
 
@@ -56,29 +56,6 @@ pub fn install_agent(
         &base_url,
         runner_token,
     )
-}
-
-pub fn install_tool(
-    dir: &str,
-    repository_url: Option<&str>,
-    runner_token: Option<&str>,
-    sandbox_rootfs: Option<&str>,
-    approved_by: Option<&str>,
-    yes: bool,
-    json: bool,
-) -> Result<()> {
-    let (cfg, _) = project::discover_config(None)?;
-    let repo = cfg.repository_url();
-    let repo_url = repository_url.unwrap_or(&repo);
-    super::external_tool::enable(super::external_tool::EnableParams {
-        dir,
-        repository_url: Some(repo_url),
-        runner_token,
-        sandbox_rootfs,
-        approved_by,
-        yes,
-        json_output: json,
-    })
 }
 
 fn resolve_agent_path(path: Option<&str>, cfg: &KarakaraConfig, cwd: &Path) -> Result<PathBuf> {

@@ -33,6 +33,8 @@ reqwest-eventsource = "0.6"
 futures-util = { workspace = true }
 uuid = { workspace = true }
 sha2 = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
 console = "0.15"
 indicatif = "0.17"
 inquire = "0.7"

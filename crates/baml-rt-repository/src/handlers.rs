@@ -16,6 +16,7 @@
 use std::sync::Arc;
 
 use axum::{
+    body::Bytes,
     extract::{Json, Path, Query, State},
     http::{HeaderValue, header},
     response::{IntoResponse, Response},
@@ -33,8 +34,8 @@ use crate::{
         ImportMcpSnapshotRequest, ImportMcpSnapshotResponse, LineagePath, LineageQuery,
         LineageResponse, ListAgentsResponse, ListVersionsPath, ListVersionsResponse, McpServerPath,
         McpServerVersionPath, McpServerVersionsResponse, McpServersResponse, McpToolLookupResponse,
-        McpToolQuery, RemoveTagRequest, RepositoryToolSummary, SearchResponse, TagPath, ToolsQuery,
-        ToolsResponse,
+        McpToolQuery, PublishExternalToolQuery, PublishExternalToolResponse, RemoveTagRequest,
+        RepositoryToolSummary, SearchResponse, TagPath, ToolsQuery, ToolsResponse,
     },
     ids::Version,
     search::SearchQuery,
@@ -469,6 +470,53 @@ pub async fn get_external_tool_snapshot(
     }
 }
 
+/// Audit and ingest a `.ktool` bundle (POST /repository/external-tools/publish).
+///
+/// The host derives the snapshot from inert bundle metadata. It never trusts a
+/// client-supplied digest or executes the tool during ingest.
+pub async fn publish_external_tool(
+    State(svc): State<RepoState>,
+    Query(query): Query<PublishExternalToolQuery>,
+    body: Bytes,
+) -> HttpResult<PublishExternalToolResponse> {
+    if query.approved_by.trim().is_empty() {
+        return Err(bad_request("approved_by must not be empty"));
+    }
+    let audited = baml_rt_tools::external_tools::audit_ktool_bundle(&body)
+        .map_err(|e| bad_request(format!("invalid .ktool bundle: {e}")))?;
+    baml_rt_tools::ToolName::parse(&audited.descriptor.name).map_err(|e| {
+        bad_request(format!(
+            "invalid tool name '{}': {e}",
+            audited.descriptor.name
+        ))
+    })?;
+    let snapshot = baml_rt_tools::external_tools::ExternalToolSnapshot::from_v2_bundle(
+        audited.descriptor.clone(),
+        audited.bundle_digest,
+        audited.tool_digest,
+        audited.manifest.runtime_image.clone(),
+        query.approved_by.trim(),
+        baml_rt_tools::external_tools::now_snapshot_timestamp(),
+    )
+    .map_err(|e| bad_request(format!("invalid v2 external-tool snapshot: {e}")))?;
+    let descriptor_digest = snapshot
+        .v2
+        .as_ref()
+        .expect("from_v2_bundle always sets v2 identity")
+        .descriptor_digest;
+    let version = svc
+        .put_external_tool_bundle(&body, &snapshot)
+        .await
+        .map_err(HttpApiProblem::from)?;
+    Ok(Json(PublishExternalToolResponse {
+        tool_name: audited.descriptor.name,
+        version: version.version,
+        descriptor_digest,
+        bundle_digest: audited.bundle_digest,
+        tool_digest: audited.tool_digest,
+    }))
+}
+
 /// Import a full external-tool snapshot as a new registry version
 /// (POST /repository/external-tools/snapshots/import).
 ///
@@ -479,6 +527,11 @@ pub async fn import_external_tool_snapshot(
     Json(body): Json<ImportExternalToolSnapshotRequest>,
 ) -> HttpResult<ImportExternalToolSnapshotResponse> {
     let snapshot = &body.snapshot;
+    if snapshot.v2.is_some() {
+        return Err(bad_request(
+            "v2 snapshots must be created by POST /external-tools/publish with the .ktool bytes",
+        ));
+    }
     if snapshot.source != baml_rt_tools::external_tools::EXTERNAL_TOOL_SOURCE {
         return Err(bad_request(format!(
             "unexpected snapshot source '{}', expected '{}'",

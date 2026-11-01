@@ -687,9 +687,9 @@ test-build:
 test-crate crate:
     cargo nextest run -p {{crate}}
 
-# End-to-end for the v2 TS tool authoring loop (karak tool build + test).
+# End-to-end for the v2 TS tool authoring loop (build, test, bundle, publish).
 # Needs node + npm + network (first install). Uses the in-repo @karakara/tool
-# via a file-link; see crates/karakara-os/tests/fixtures/ts-echo.
+# via a file-link and a local mock repository endpoint.
 tool-e2e:
     KARAKARA_TOOL_E2E=1 cargo test -p karakara-os --test tool_e2e -- --nocapture
 

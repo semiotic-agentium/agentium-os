@@ -64,23 +64,6 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                     token,
                 )
             }
-            InstallCommands::Tool {
-                dir,
-                repository_url,
-                runner_token,
-                sandbox_rootfs,
-                approved_by,
-                yes,
-                json,
-            } => commands::install::install_tool(
-                &dir,
-                repository_url.as_deref(),
-                runner_token.as_deref(),
-                sandbox_rootfs.as_deref(),
-                approved_by.as_deref(),
-                yes,
-                json,
-            ),
         },
 
         Commands::SyncTypes { path, runner_token } => {
@@ -139,6 +122,22 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                 dry_run,
             }),
             ToolCommands::Build { dir } => commands::tool_build::run(&dir),
+            ToolCommands::Publish {
+                dir,
+                repository_url,
+                approved_by,
+                yes,
+                runner_token,
+            } => {
+                let token = resolve_runner_token(runner_token.as_deref())?;
+                commands::tool_publish::run(
+                    &dir,
+                    &repository_url,
+                    approved_by.as_deref(),
+                    yes,
+                    token,
+                )
+            }
             ToolCommands::Test { dir, input } => commands::tool_test::run(&dir, input.as_deref()),
         },
 
@@ -197,10 +196,20 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             repository_url,
             rationale,
             origin,
+            approved_by,
+            yes,
             runner_token,
         } => {
             let token = resolve_runner_token(runner_token.as_deref())?;
-            commands::publish::run(&agent_dir, &repository_url, &rationale, origin, token)
+            commands::publish::run_auto(
+                &agent_dir,
+                &repository_url,
+                &rationale,
+                origin,
+                approved_by.as_deref(),
+                yes,
+                token,
+            )
         }
 
         Commands::Deploy {
