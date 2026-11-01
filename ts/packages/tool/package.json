@@ -1,0 +1,26 @@
+{
+  "name": "@karakara/tool",
+  "version": "0.1.0",
+  "description": "Blessed authoring SDK for Karakara external tools (v2). Write one typed function; the SDK derives the descriptor and runs the wire.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.0"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.0"
+  }
+}
