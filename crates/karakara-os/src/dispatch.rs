@@ -228,46 +228,6 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             output,
         } => commands::export_snapshot_cache::run(&repository_url, &output),
 
-        Commands::CheckExternalTool { path } => commands::check_external_tool::run(&path),
-
-        Commands::SandboxBindSync {
-            tool_dir,
-            rootfs,
-            dockerfile,
-            image,
-            force,
-            check,
-            dry_run,
-            json,
-        } => {
-            commands::sandbox_bind_sync::run(commands::sandbox_bind_sync::SandboxBindSyncRunArgs {
-                tool_dir: &tool_dir,
-                rootfs: rootfs.as_deref(),
-                dockerfile: dockerfile.as_deref(),
-                image: image.as_deref(),
-                force,
-                check,
-                dry_run,
-                as_json: json,
-            })
-        }
-
-        Commands::SandboxOciPrepare {
-            tool_dir,
-            output,
-            check,
-            dry_run,
-            json,
-        } => commands::sandbox_oci_prepare::run(
-            commands::sandbox_oci_prepare::SandboxOciPrepareRunArgs {
-                tool_dir: &tool_dir,
-                output: output.as_deref(),
-                check,
-                dry_run,
-                as_json: json,
-            },
-        ),
-
         Commands::SnapshotReport {
             snapshot_cache,
             json,

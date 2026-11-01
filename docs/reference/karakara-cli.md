@@ -118,9 +118,11 @@ Unchanged in role from the former SDK:
 
 - `external-tool enable|inspect|refresh`
 - `mcp list|enable|server|versions|tool`
-- `sandbox-bind-sync`, `sandbox-oci-prepare`
 - `export-snapshot-cache`, `snapshot-report`, `doctor`, `list-*`
-- `check-external-tool`
+
+(The v1 `sandbox-bind-sync`, `sandbox-oci-prepare`, and `check-external-tool`
+commands were retired with the v1 bind/rootfs scaffold — external tools v2 uses
+`karak tool new|build|test` instead.)
 
 ## Skills
 
