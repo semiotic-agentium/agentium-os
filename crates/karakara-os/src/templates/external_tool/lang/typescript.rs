@@ -3,224 +3,127 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use baml_rt_tools::external_tools::{
-    ERR_INTERNAL, ERR_METHOD_NOT_FOUND, ERR_PARSE_ERROR, METHOD_DESCRIBE, METHOD_INVOKE,
-    METHOD_SCHEMA, PROTOCOL_VERSION, SUPPORTED_METHODS,
-};
+//! V2 TypeScript scaffold — the **blessed path** (`plans/external-tools-v2.md`
+//! §3.1, `-ts-sdk.md`). A tool is one typed `defineTool` function; the
+//! `@karakara/tool` SDK derives the descriptor and runs the wire. There is no
+//! hand-written JSON-RPC framing, no `tool-manifest.json`, no `tool/schema`
+//! response, and no `tool-server` wrapper — all of which the v1 scaffold
+//! emitted and v2 deletes (no backwards-compatibility requirement).
 
-use super::super::{
-    GeneratedFile, STARTER_INPUT_KEY, STARTER_OUTPUT_KEY, ScaffoldContext, bind_sandbox,
-    tool_server_wrapper,
-};
+use super::super::{GeneratedFile, ScaffoldContext};
 
-// ----- TypeScript toolchain pins -----
-//
-// Scaffolded projects copy these exact version specifiers. Bump them in this
-// one place when the workspace's TS toolchain moves; the scaffolder is the
-// single source of truth for starter dev-dependency versions.
-const TYPESCRIPT_VERSION: &str = "^5.9.0";
-const TYPES_NODE_VERSION: &str = "^22.0.0";
+// Toolchain pins for scaffolded projects — bump here, the single source of
+// truth for starter dependency versions.
+const KARAKARA_TOOL_VERSION: &str = "^0.1.0";
+const TYPESCRIPT_VERSION: &str = "^6.0.0";
 
 pub fn generate(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
     let tool_id = ctx.tool_id();
-    let tool_name = ctx.name;
-    // Tool-owned schema + a digest computed with the runner's canonicalization,
-    // so the scaffolded tool's `tool/schema` response validates at discovery.
-    let (schema_input, schema_output, schema_content_digest) =
-        bind_sandbox::starter_schema_parts(ctx);
-    // Render SUPPORTED_METHODS as a TypeScript array literal.
-    let supported_methods_ts = SUPPORTED_METHODS
-        .iter()
-        .map(|m| format!("{:?}", m))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let pkg_name = ctx.name;
+    let description = ctx.description;
 
     let package_json = format!(
         r#"{{
-  "name": "{tool_name}-external-tool",
+  "name": "{pkg_name}-tool",
   "version": "0.1.0",
   "private": true,
-  "type": "commonjs",
+  "type": "module",
   "scripts": {{
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/main.js"
+    "build": "tsc -p tsconfig.json"
+  }},
+  "dependencies": {{
+    "@karakara/tool": "{karakara_tool_version}"
   }},
   "devDependencies": {{
-    "typescript": "{typescript_version}",
-    "@types/node": "{types_node_version}"
+    "typescript": "{typescript_version}"
   }}
 }}
 "#,
+        karakara_tool_version = KARAKARA_TOOL_VERSION,
         typescript_version = TYPESCRIPT_VERSION,
-        types_node_version = TYPES_NODE_VERSION,
     );
 
+    // Matches the agent builder's toolchain: bundler resolution, TS 6.
     let tsconfig_json = r#"{
   "compilerOptions": {
     "target": "ES2022",
-    "module": "CommonJS",
-    "moduleResolution": "node16",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
-    "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-    "skipLibCheck": true,
-    "types": ["node"]
+    "skipLibCheck": true
   },
   "include": ["src/**/*.ts"]
 }
 "#;
 
-    let main_ts = format!(
-        r#"import {{ stdin, stdout, stderr }} from "node:process";
+    // The entire tool: one typed function. Starter is a trivial echo so a new
+    // author can build + test immediately; swap the schemas and body for real
+    // logic. Declare `net`/`secrets` only when the tool needs them.
+    let tool_ts = format!(
+        r#"import {{ defineTool, Type, type Static }} from "@karakara/tool";
 
-const PROTOCOL_VERSION = "{protocol_version}";
-const METHOD_DESCRIBE = "{method_describe}";
-const METHOD_SCHEMA = "{method_schema}";
-const METHOD_INVOKE = "{method_invoke}";
-// Matches the scaffold's `SUPPORTED_METHODS`. Describe response echoes this
-// so a caller knows which methods the tool handles.
-const SUPPORTED_METHODS: ReadonlyArray<string> = [{supported_methods_ts}];
-const ERR_METHOD_NOT_FOUND = {err_method_not_found};
-const ERR_PARSE_ERROR = {err_parse_error};
-const ERR_INTERNAL = {err_internal};
-
-// Starter-contract field names — schema in tool-manifest.json and this
-// handler must agree, so both come from the scaffold generator.
-const INPUT_KEY = "{input_key}";
-const OUTPUT_KEY = "{output_key}";
-
-// Tool-owned schema. This tool is the single source of truth for its own
-// contract; the runner discovers it via `tool/schema` and never reads a schema
-// file. `content_digest` is baked at scaffold time with the runner's
-// canonicalization, so the runner's discovery-time recomputation matches.
-const SCHEMA_INPUT: unknown = JSON.parse('{schema_input}');
-const SCHEMA_OUTPUT: unknown = JSON.parse('{schema_output}');
-const SCHEMA_CONTENT_DIGEST = "{schema_content_digest}";
-
-type JsonRpcId = string | number | null;
-
-type JsonRpcRequest = {{
-  jsonrpc: "2.0";
-  id: JsonRpcId;
-  method: string;
-  params?: any;
-}};
-
-type ErrorClass =
-  | "configuration"
-  | "invalid_argument"
-  | "transient"
-  | "permission"
-  | "execution";
-
-function writeResult(id: JsonRpcId, result: unknown): void {{
-  stdout.write(JSON.stringify({{ jsonrpc: "2.0", id, result }}) + "\n");
-}}
-
-function writeError(
-  id: JsonRpcId,
-  code: number,
-  message: string,
-  errorClass: ErrorClass = "execution"
-): void {{
-  stdout.write(
-    JSON.stringify({{
-      jsonrpc: "2.0",
-      id,
-      error: {{
-        code,
-        message,
-        data: {{ error_class: errorClass }}
-      }}
-    }}) + "\n"
-  );
-}}
-
-function handleDescribe(id: JsonRpcId): void {{
-  writeResult(id, {{
-    protocol_version: PROTOCOL_VERSION,
-    tool_name: "{tool_id}",
-    supported_methods: SUPPORTED_METHODS,
-    schema_digest: SCHEMA_CONTENT_DIGEST
-  }});
-}}
-
-function handleSchema(id: JsonRpcId): void {{
-  writeResult(id, {{
-    schema_version: 1,
-    tool_name: "{tool_id}",
-    content_type: "application/schema+json",
-    content_digest: SCHEMA_CONTENT_DIGEST,
-    input: SCHEMA_INPUT,
-    output: SCHEMA_OUTPUT
-  }});
-}}
-
-function handleInvoke(id: JsonRpcId, req: JsonRpcRequest): void {{
-  const input = req.params?.input ?? {{}};
-  const raw = input[INPUT_KEY];
-  const message = typeof raw === "string" ? raw : "";
-  stderr.write(`invoke ${{INPUT_KEY}}=${{JSON.stringify(message)}}\n`);
-  writeResult(id, {{ output: {{ [OUTPUT_KEY]: message }}, done: true }});
-}}
-
-async function main(): Promise<void> {{
-  const chunks: Buffer[] = [];
-  for await (const chunk of stdin) {{
-    chunks.push(Buffer.from(chunk));
-  }}
-
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
-  if (!raw) {{
-    writeError(null, ERR_PARSE_ERROR, "empty request", "invalid_argument");
-    return;
-  }}
-
-  let req: JsonRpcRequest;
-  try {{
-    req = JSON.parse(raw);
-  }} catch {{
-    writeError(null, ERR_PARSE_ERROR, "invalid JSON", "invalid_argument");
-    return;
-  }}
-
-  const id = req.id ?? null;
-
-  if (req.method === METHOD_DESCRIBE) {{
-    handleDescribe(id);
-    return;
-  }}
-
-  if (req.method === METHOD_SCHEMA) {{
-    handleSchema(id);
-    return;
-  }}
-
-  if (req.method === METHOD_INVOKE) {{
-    handleInvoke(id, req);
-    return;
-  }}
-
-  writeError(id, ERR_METHOD_NOT_FOUND, `method not found: ${{req.method}}`, "invalid_argument");
-}}
-
-main().catch((err) => {{
-  stderr.write(`fatal: ${{String(err)}}\n`);
-  writeError(null, ERR_INTERNAL, "tool execution failure", "execution");
+// Input/output are the single source of truth: these TypeBox types produce
+// both the static TS types AND the JSON Schema in the tool's descriptor.
+const Input = Type.Object({{
+  message: Type.String({{ description: "Text to echo back." }}),
 }});
+const Output = Type.Object({{
+  echoed: Type.String(),
+}});
+
+export default defineTool(
+  {{
+    name: "{tool_id}",
+    version: "0.1.0",
+    description: {description:?},
+    // read | write | irreversible — drives host disposition + idempotency.
+    sideEffect: "read",
+    input: Input,
+    output: Output,
+    // Declare outbound hosts the tool needs (resolved to a CIDR allow-grant):
+    //   net: ["api.example.com:443"],
+    // Declare secrets by name (value is injected by the host on egress; never
+    // visible in this process):
+    //   secrets: {{ API_KEY: "egress_bound" }},
+  }},
+  async (input: Static<typeof Input>, _ctx): Promise<Static<typeof Output>> => {{
+    // Real tools call `ctx.fetch(...)` (restricted to declared hosts) and may
+    // `throw ctx.error("transient", "...")` to classify failures.
+    return {{ echoed: input.message }};
+  }},
+);
 "#,
-        protocol_version = PROTOCOL_VERSION,
-        method_describe = METHOD_DESCRIBE,
-        method_schema = METHOD_SCHEMA,
-        method_invoke = METHOD_INVOKE,
-        supported_methods_ts = supported_methods_ts,
-        err_method_not_found = ERR_METHOD_NOT_FOUND,
-        err_parse_error = ERR_PARSE_ERROR,
-        err_internal = ERR_INTERNAL,
-        input_key = STARTER_INPUT_KEY,
-        output_key = STARTER_OUTPUT_KEY,
+        tool_id = tool_id,
+        description = description,
+    );
+
+    let readme_md = format!(
+        r#"# {tool_id}
+
+A Karakara external tool (v2), authored with `@karakara/tool`. The whole tool is
+the typed function in `src/tool.ts`.
+
+## Develop
+
+```bash
+npm install
+karak tool test      # run under the DevBackend (same wire as prod, no microVM)
+```
+
+## Ship
+
+```bash
+karak publish        # derive the descriptor, bundle the JS, sign, store
+```
+
+The descriptor (schemas, side-effect, requested capabilities) is **derived** from
+`src/tool.ts` at build time — there is no manifest or schema file to maintain.
+"#,
+        tool_id = tool_id,
     );
 
     let gitignore = "node_modules/\ndist/\n";
@@ -228,8 +131,8 @@ main().catch((err) => {{
     vec![
         GeneratedFile::new("package.json", package_json),
         GeneratedFile::new("tsconfig.json", tsconfig_json),
-        GeneratedFile::new("src/main.ts", main_ts),
+        GeneratedFile::new("src/tool.ts", tool_ts),
+        GeneratedFile::new("README.md", readme_md),
         GeneratedFile::new(".gitignore", gitignore),
-        tool_server_wrapper("node \"$DIR/dist/main.js\""),
     ]
 }

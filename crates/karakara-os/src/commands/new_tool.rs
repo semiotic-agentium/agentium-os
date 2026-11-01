@@ -254,6 +254,13 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
 ///
 /// Exposed so tests can snapshot-check the scaffold without touching the CLI.
 pub fn build_file_set(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
+    // v2 blessed path: TypeScript tools are self-describing. The scaffold emits
+    // only the typed-function project (its own README + package/tsconfig/tool.ts);
+    // the descriptor + manifest are derived at `karak tool build`, so there is no
+    // hand-written tool-manifest.json / tool-schema.json / tool-server wrapper.
+    if ctx.language == Language::Typescript {
+        return ctx.language.files(ctx);
+    }
     let mut files = vec![
         GeneratedFile::new("tool-manifest.json", manifest_json::generate(ctx)),
         GeneratedFile::new("README.md", readme_md::generate(ctx)),
@@ -614,16 +621,22 @@ mod tests {
         assert_scaffold_has(&py_files, "main.py");
         assert_scaffold_has(&py_files, "tool-server");
 
+        // v2 blessed TS path: typed-function project, self-describing.
         let ts_files = build_file_set(&ctx(Language::Typescript));
         assert_scaffold_has(&ts_files, "package.json");
         assert_scaffold_has(&ts_files, "tsconfig.json");
-        assert_scaffold_has(&ts_files, "src/main.ts");
-        assert_scaffold_has(&ts_files, "tool-server");
+        assert_scaffold_has(&ts_files, "src/tool.ts");
+        assert_scaffold_has(&ts_files, "README.md");
+        // No v1 artifacts: framing wrapper, hand-written manifest, legacy entry.
+        assert_scaffold_lacks(&ts_files, "tool-server");
+        assert_scaffold_lacks(&ts_files, "tool-manifest.json");
+        assert_scaffold_lacks(&ts_files, "src/main.ts");
     }
 
     #[test]
     fn sandbox_scaffold_omits_host_tool_server_except_bash() {
-        for lang in [Language::Rust, Language::Python, Language::Typescript] {
+        // Typescript is excluded: the v2 path has no runtime/sandbox concept.
+        for lang in [Language::Rust, Language::Python] {
             let mut sandbox_ctx = ctx(lang);
             sandbox_ctx.runtime = Runtime::Sandbox;
             sandbox_ctx.sandbox_source = Some(SandboxSource::Oci);
@@ -650,12 +663,9 @@ mod tests {
     /// `tool-manifest.json` must round-trip through runtime manifest parser.
     #[test]
     fn scaffolded_manifest_is_loadable_by_runtime_parser() {
-        for lang in [
-            Language::Rust,
-            Language::Bash,
-            Language::Python,
-            Language::Typescript,
-        ] {
+        // Typescript (v2) derives its manifest at build; it has no scaffold-time
+        // tool-manifest.json, so it is not part of this v1-manifest check.
+        for lang in [Language::Rust, Language::Bash, Language::Python] {
             let ctx = ctx(lang);
             let raw = manifest_json::generate(&ctx);
             serde_json::from_str::<ExternalToolManifest>(&raw)
