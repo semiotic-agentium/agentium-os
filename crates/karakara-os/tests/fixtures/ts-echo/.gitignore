@@ -1,0 +1,5 @@
+node_modules/
+dist/
+tool-descriptor.json
+tool.lock.json
+package-lock.json

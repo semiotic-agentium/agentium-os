@@ -687,6 +687,12 @@ test-build:
 test-crate crate:
     cargo nextest run -p {{crate}}
 
+# End-to-end for the v2 TS tool authoring loop (karak tool build + test).
+# Needs node + npm + network (first install). Uses the in-repo @karakara/tool
+# via a file-link; see crates/karakara-os/tests/fixtures/ts-echo.
+tool-e2e:
+    KARAKARA_TOOL_E2E=1 cargo test -p karakara-os --test tool_e2e -- --nocapture
+
 # Run tests that don't need FalkorDB or API keys (unit tests only).
 test-unit:
     cargo nextest run --workspace --features baml-rt-builder/http-tools,baml-rt-builder/dev-tools,baml-agent-runner/http-tools,baml-agent-runner/memory
