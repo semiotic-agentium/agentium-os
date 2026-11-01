@@ -14,7 +14,7 @@ use baml_rt_core::clock_events;
 use baml_rt_hash::AgentIdentityDigest;
 use baml_rt_tools::{
     StaticToolCatalogResponse,
-    external_tools::{ExternalToolSnapshot, audit_ktool_bundle, validate_external_tool_snapshot},
+    external_tools::{ExternalToolSnapshot, audit_ktool_bundle},
     mcp_snapshot::{Digest, McpServerSnapshot},
 };
 
@@ -173,26 +173,11 @@ impl RepositoryService {
             audit_ktool_bundle(bytes).map_err(|e| RepositoryError::InvalidSourceBundle {
                 reason: e.to_string(),
             })?;
-        let Some(v2) = &snapshot.v2 else {
-            return Err(RepositoryError::InvalidSourceBundle {
-                reason: "a .ktool bundle requires a v2 external-tool snapshot".to_string(),
-            });
-        };
-        if v2.bundle_digest != audited.bundle_digest
-            || v2.tool_digest != audited.tool_digest
-            || v2.descriptor != audited.descriptor
-            || v2.runtime_image != audited.manifest.runtime_image
-        {
-            return Err(RepositoryError::InvalidSourceBundle {
-                reason: "the external-tool snapshot does not match the audited .ktool bundle"
-                    .to_string(),
-            });
-        }
-        validate_external_tool_snapshot(snapshot).map_err(|e| {
-            RepositoryError::InvalidSourceBundle {
+        audited
+            .verify_snapshot(snapshot)
+            .map_err(|e| RepositoryError::InvalidSourceBundle {
                 reason: e.to_string(),
-            }
-        })?;
+            })?;
 
         let content_hash: ContentHash = audited
             .bundle_digest

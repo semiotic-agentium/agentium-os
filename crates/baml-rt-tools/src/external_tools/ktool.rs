@@ -86,6 +86,27 @@ pub struct AuditedKtoolBundle {
     pub tool_digest: Digest,
 }
 
+impl AuditedKtoolBundle {
+    /// Match audited bytes to the approved contract without executing the bundle.
+    pub fn verify_snapshot(&self, snapshot: &super::ExternalToolSnapshot) -> Result<()> {
+        super::validate_external_tool_snapshot(snapshot)?;
+        let v2 = snapshot
+            .v2
+            .as_ref()
+            .ok_or_else(|| invalid("a .ktool bundle requires a v2 snapshot"))?;
+        if v2.bundle_digest != self.bundle_digest
+            || v2.tool_digest != self.tool_digest
+            || v2.descriptor != self.descriptor
+            || v2.runtime_image != self.manifest.runtime_image
+        {
+            return Err(invalid(
+                "the external-tool snapshot does not match the audited .ktool bundle",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Compute the exact bundle-byte digest used as the repository blob key.
 pub fn compute_bundle_digest(bytes: &[u8]) -> Digest {
     Digest::from_bytes(Sha256::digest(bytes).into())

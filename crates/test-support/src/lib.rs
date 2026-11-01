@@ -7,6 +7,7 @@
 #![recursion_limit = "256"]
 
 pub mod common;
+pub mod external_tools_v2;
 pub mod incident_fixtures;
 pub mod support;
 pub mod testing;

@@ -70,7 +70,15 @@ pub enum CodecError {
 /// providers (microsandbox `ExecHandle`) and fakes (in-memory duplex) both
 /// fit behind the same type.
 pub struct TsrpcChannel {
+    reader: FrameReader,
+    writer: FrameWriter,
+}
+
+pub struct FrameReader {
     reader: Pin<Box<dyn AsyncRead + Send + Unpin>>,
+}
+
+pub struct FrameWriter {
     writer: Pin<Box<dyn AsyncWrite + Send + Unpin>>,
 }
 
@@ -81,14 +89,63 @@ impl TsrpcChannel {
         W: AsyncWrite + Send + Unpin + 'static,
     {
         Self {
+            reader: FrameReader {
+                reader: Box::pin(reader),
+            },
+            writer: FrameWriter {
+                writer: Box::pin(writer),
+            },
+        }
+    }
+
+    /// Split for concurrent reads and writes on a persistent connection.
+    pub fn into_split(self) -> (FrameReader, FrameWriter) {
+        (self.reader, self.writer)
+    }
+
+    pub async fn send(&mut self, value: &Value) -> Result<(), CodecError> {
+        self.writer.send(value).await
+    }
+
+    pub async fn recv(&mut self) -> Result<Value, CodecError> {
+        self.reader.recv().await
+    }
+
+    pub async fn send_bytes(&mut self, bytes: &[u8]) -> Result<(), CodecError> {
+        self.writer.send_bytes(bytes).await
+    }
+
+    pub async fn recv_bytes(&mut self) -> Result<Vec<u8>, CodecError> {
+        self.reader.recv_bytes().await
+    }
+
+    pub async fn shutdown(&mut self) -> Result<(), CodecError> {
+        self.writer.shutdown().await
+    }
+}
+
+impl FrameReader {
+    pub fn new<R: AsyncRead + Send + Unpin + 'static>(reader: R) -> Self {
+        Self {
             reader: Box::pin(reader),
+        }
+    }
+}
+
+impl FrameWriter {
+    pub fn new<W: AsyncWrite + Send + Unpin + 'static>(writer: W) -> Self {
+        Self {
             writer: Box::pin(writer),
         }
     }
 
-    /// Send one JSON value as a length-prefixed frame.
     pub async fn send(&mut self, value: &Value) -> Result<(), CodecError> {
         let bytes = serde_json::to_vec(value).map_err(|source| CodecError::Serialize { source })?;
+        self.send_bytes(&bytes).await
+    }
+
+    /// Send a bounded binary frame using the same framing as JSON messages.
+    pub async fn send_bytes(&mut self, bytes: &[u8]) -> Result<(), CodecError> {
         if bytes.len() > MAX_FRAME_BYTES {
             return Err(CodecError::FrameTooLarge {
                 len: bytes.len(),
@@ -104,7 +161,7 @@ impl TsrpcChannel {
                 source,
             })?;
         self.writer
-            .write_all(&bytes)
+            .write_all(bytes)
             .await
             .map_err(|source| CodecError::Io {
                 op: "write body",
@@ -132,12 +189,19 @@ impl TsrpcChannel {
                 source,
             })
     }
+}
 
-    /// Receive one JSON value from a length-prefixed frame.
+impl FrameReader {
+    pub async fn recv(&mut self) -> Result<Value, CodecError> {
+        let body = self.recv_bytes().await?;
+        serde_json::from_slice(&body).map_err(|source| CodecError::Deserialize { source })
+    }
+
+    /// Receive one bounded binary frame.
     ///
     /// Returns `Err(CodecError::Io)` on EOF or other I/O failure (the host
     /// maps that to `RpcChannelUnavailable` in the §13 failure taxonomy).
-    pub async fn recv(&mut self) -> Result<Value, CodecError> {
+    pub async fn recv_bytes(&mut self) -> Result<Vec<u8>, CodecError> {
         let mut len_buf = [0u8; 4];
         self.reader
             .read_exact(&mut len_buf)
@@ -161,7 +225,7 @@ impl TsrpcChannel {
                 op: "read body",
                 source,
             })?;
-        serde_json::from_slice(&body).map_err(|source| CodecError::Deserialize { source })
+        Ok(body)
     }
 }
 

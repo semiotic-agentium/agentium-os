@@ -31,10 +31,13 @@ use crate::{
     tools::{ToolFunctionMetadata, ToolHandler, ToolSessionContext},
 };
 
+pub type SessionInvokerFactory =
+    Arc<dyn Fn(ToolSessionContext) -> Arc<dyn ExternalInvoker> + Send + Sync>;
+
 /// `ToolHandler` that routes invocations through an [`ExternalInvoker`].
 pub struct ProcessToolHandler {
     metadata: ToolFunctionMetadata,
-    invoker: Arc<dyn ExternalInvoker>,
+    invoker: SessionInvokerFactory,
     pub(crate) policy: Arc<InvocationPolicy>,
     lifecycle_recorder: Option<ExternalLifecycleRecorder>,
     /// Secrets resolved by the runner at registration time. Passed per-invocation.
@@ -52,6 +55,15 @@ impl ProcessToolHandler {
     pub fn new(
         metadata: ToolFunctionMetadata,
         invoker: Arc<dyn ExternalInvoker>,
+        invoke_timeout: std::time::Duration,
+    ) -> Self {
+        Self::new_scoped(metadata, Arc::new(move |_| invoker.clone()), invoke_timeout)
+    }
+
+    /// Bind host-owned session identity and secret access when opening a session.
+    pub fn new_scoped(
+        metadata: ToolFunctionMetadata,
+        invoker: SessionInvokerFactory,
         invoke_timeout: std::time::Duration,
     ) -> Self {
         let quota = ToolQuota {
@@ -118,12 +130,12 @@ impl ToolHandler for ProcessToolHandler {
 
     async fn open_session(
         &self,
-        _ctx: ToolSessionContext,
+        ctx: ToolSessionContext,
         _open_input: Value,
     ) -> Result<Box<dyn ToolSession>> {
         Ok(Box::new(ProcessToolSession {
             tool_name: self.metadata.name.clone(),
-            invoker: self.invoker.clone(),
+            invoker: (self.invoker)(ctx),
             policy: self.policy.clone(),
             lifecycle_recorder: self.lifecycle_recorder.clone(),
             secrets: self.secrets.clone(),

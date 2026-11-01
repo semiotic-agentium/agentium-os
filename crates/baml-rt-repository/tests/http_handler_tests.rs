@@ -13,15 +13,7 @@ use baml_rt_repository::{
     entry::{ChangeRationale, SourceBundle, Tag},
     lineage::EdgeDescription,
 };
-use baml_rt_tools::external_tools::{
-    CapabilityRequest, DESCRIPTOR_ABI, ErrorClass, KTOOL_BUNDLE_SCHEMA_VERSION,
-    KTOOL_DESCRIPTOR_PATH, KTOOL_MANIFEST_PATH, KTOOL_NODE_ENTRYPOINT, KTOOL_SBOM_PATH,
-    KtoolManifest, KtoolRuntimeTier, OutputTrust, SideEffect, UnifiedToolDescriptor,
-    compute_descriptor_digest, default_node_runtime_image,
-};
-use flate2::{Compression, GzBuilder};
-use serde_json::json;
-use tar::{Builder, Header};
+use baml_rt_tools::external_tools::CapabilityRequest;
 #[path = "support/common.rs"]
 mod common;
 use common::setup_app;
@@ -873,54 +865,11 @@ async fn mcp_tool_lookup_and_mark_stale_routes_work() {
 }
 
 fn ktool_bundle() -> Vec<u8> {
-    let descriptor = UnifiedToolDescriptor {
-        descriptor_abi: DESCRIPTOR_ABI,
-        name: "support/http-echo".into(),
-        version: "0.1.0".into(),
-        description: "HTTP publish fixture".into(),
-        input_schema: json!({"type": "object"}),
-        output_schema: json!({"type": "object"}),
-        error_classes: vec![ErrorClass::Execution],
-        side_effect: SideEffect::Read,
-        idempotent: true,
-        output_trust: OutputTrust::Untrusted,
-        requested: CapabilityRequest::default(),
-    };
-    let manifest = KtoolManifest {
-        bundle_schema_version: KTOOL_BUNDLE_SCHEMA_VERSION,
-        name: descriptor.name.clone(),
-        runtime_tier: KtoolRuntimeTier::Sandbox,
-        runtime_image: default_node_runtime_image(),
-        entrypoint: KTOOL_NODE_ENTRYPOINT.into(),
-        descriptor_digest: compute_descriptor_digest(&descriptor),
-        requested: descriptor.requested.clone(),
-    };
-
-    let mut bytes = Vec::new();
-    let encoder = GzBuilder::new()
-        .mtime(0)
-        .write(&mut bytes, Compression::default());
-    let mut archive = Builder::new(encoder);
-    for (path, body) in [
-        (
-            KTOOL_DESCRIPTOR_PATH,
-            serde_json::to_vec(&descriptor).unwrap(),
-        ),
-        (KTOOL_MANIFEST_PATH, serde_json::to_vec(&manifest).unwrap()),
-        (KTOOL_SBOM_PATH, b"{}".to_vec()),
-        (KTOOL_NODE_ENTRYPOINT, b"export default {};".to_vec()),
-    ] {
-        let mut header = Header::new_gnu();
-        header.set_size(body.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        archive
-            .append_data(&mut header, path, body.as_slice())
-            .unwrap();
-    }
-    let encoder = archive.into_inner().unwrap();
-    encoder.finish().unwrap();
-    bytes
+    // Shared fixture: the host tests and the repository tests must agree on bytes.
+    test_support::external_tools_v2::bundle(&test_support::external_tools_v2::descriptor(
+        "support/http-echo",
+        CapabilityRequest::default(),
+    ))
 }
 
 #[tokio::test]

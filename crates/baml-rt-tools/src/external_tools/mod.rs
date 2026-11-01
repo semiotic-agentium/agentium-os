@@ -14,6 +14,7 @@ pub mod descriptor;
 pub mod discovery;
 pub mod drift;
 pub mod handler;
+pub mod host;
 pub mod invoker;
 pub mod ktool;
 pub mod lockfile;
@@ -41,7 +42,7 @@ pub use descriptor::{
 };
 pub use discovery::{DEFAULT_DISCOVERY_TIMEOUT, discover_snapshot};
 pub use drift::DriftGuard;
-pub use handler::{ProcessToolHandler, ProcessToolSession};
+pub use handler::{ProcessToolHandler, ProcessToolSession, SessionInvokerFactory};
 pub use invoker::{
     ExternalInvoker, InvokeRequest, InvokeResponse, ToolDescribe, ToolInvoker, map_jsonrpc_error,
 };

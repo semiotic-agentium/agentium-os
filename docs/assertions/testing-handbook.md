@@ -261,6 +261,7 @@ Single source of truth for each behavior; do not add overlapping coverage elsewh
 | Discovery introspection/extrospection output+scope insta | `baml-tools-system/tests/discovery_sessions_test.rs` — `discovery_session_output_and_scope_snapshot_matrix` | `introspection_session_snapshots_*`, `extrospection_session_snapshots_cross_scope_request` |
 | Exported graph shape (sequence flow) | `baml-rt-provenance/tests/graph_export_sequence_integration_test.rs` — `file_backed_export_renders_expected_sequence_flow` (uses `test_support::testing` graph assertions) | Ad-hoc node/edge counts only |
 | TypeScript tool declarations (graph DTOs, catalog maps, session API) | `baml-rt-builder/tests/mixed_origin_typescript_test.rs` — `mixed_origin_typescript_authority`; boundary snapshots in `tool_schema_graph_typescript_test.rs` and `tool_typescript_catalog_test.rs` | Per-DTO TS unit shards; duplicate graph/IR ownership tests |
+| External-tool v2 host grants, VM reuse, and supervisor multiplexing | `baml-rt-tools/tests/external_tools_host_v2_test.rs` — `tool_grant_denial_matrix`, `vm_is_reused_within_a_grant_class_and_split_on_secret_rotation`, `idle_vms_are_evicted_before_the_budget_is_exceeded`, `concurrent_calls_share_one_stream_without_crossing_requests` | Per-refusal unit shards in `external_tools/host/`; duplicate CIDR/secret checks in provider tests |
 
 ### Do-not-duplicate checklist
 

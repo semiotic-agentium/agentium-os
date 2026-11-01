@@ -469,7 +469,11 @@ impl Default for ToolSecrets {
 }
 
 impl ToolSecrets {
-    fn scoped(resolver: Option<Arc<dyn ToolSecretResolver>>, requests: &[SecretRequest]) -> Self {
+    /// Restrict a runner-owned resolver to a tool's declared secret names.
+    pub fn scoped(
+        resolver: Option<Arc<dyn ToolSecretResolver>>,
+        requests: &[SecretRequest],
+    ) -> Self {
         Self {
             resolver,
             allowed: Arc::new(

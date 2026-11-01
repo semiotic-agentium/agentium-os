@@ -36,13 +36,14 @@ futures-util = { workspace = true }
 http = { workspace = true }
 bytes = { workspace = true }
 zeroize = { version = "1", features = ["derive"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # microsandbox is a beta crate ("expect breaking changes"). Exact pin per
 # tool_sandbox.md §7.3; bumps go through explicit review. Linux-only dep
 # behind the `sandbox-provider` feature; non-Linux targets compile the stub
 # provider without linking microsandbox.
-microsandbox = { version = "=0.3.13", optional = true }
+microsandbox = { version = "=0.7.13", optional = true }
 
 [features]
 default = []

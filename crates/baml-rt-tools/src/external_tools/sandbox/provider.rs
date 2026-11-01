@@ -33,6 +33,22 @@ use super::{
 ///   (§9.4 decision: in-process reattach only in v1).
 #[async_trait]
 pub trait SandboxProvider: Send + Sync {
+    /// Start a shared v2 VM and accept its persistent supervisor connection.
+    /// Providers without vsock support must fail rather than fall back to exec stdin.
+    async fn create_vm(
+        &self,
+        _spec: super::super::host::VmSpec,
+    ) -> Result<(SandboxHandle, TsrpcChannel)> {
+        Err(baml_rt_core::BamlRtError::InvalidArgument(
+            "provider does not support v2 supervisor VMs".into(),
+        ))
+    }
+
+    /// Remove provider-owned warm templates at runner shutdown.
+    async fn clear_vm_templates(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Create a new sandbox. Returns a handle the runtime caches and passes
     /// to the other methods.
     async fn create(&self, spec: SandboxSpec) -> Result<SandboxHandle>;

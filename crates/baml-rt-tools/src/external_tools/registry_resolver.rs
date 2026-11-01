@@ -96,6 +96,34 @@ impl ExternalRegistryResolver {
         Ok(Self { entries })
     }
 
+    /// Register repository-loaded v2 bundles through the host authority.
+    pub fn from_v2_bundles(
+        host: Arc<super::host::ToolHost>,
+        bundles: Vec<(ExternalToolSnapshot, Arc<[u8]>)>,
+    ) -> Result<Self> {
+        let mut entries = std::collections::HashMap::new();
+        for (snapshot, bytes) in bundles {
+            let name = ToolName::parse(&snapshot.tool.name)?;
+            let handler = host.handler(snapshot, bytes)?;
+            let metadata = handler.metadata().clone();
+            if entries
+                .insert(
+                    name.clone(),
+                    RegistryToolEntry {
+                        metadata,
+                        handler: Arc::new(handler),
+                    },
+                )
+                .is_some()
+            {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "duplicate external tool snapshot '{name}'"
+                )));
+            }
+        }
+        Ok(Self { entries })
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -193,6 +221,11 @@ fn load_snapshot(
     recorder: Option<&ExternalLifecycleRecorder>,
 ) -> Result<(ToolName, RegistryToolEntry)> {
     let tool_name = ToolName::parse(&snapshot.tool.name)?;
+    if snapshot.v2.is_some() {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "v2 tool '{tool_name}' requires ToolHost and repository bundle bytes; use from_v2_bundles"
+        )));
+    }
     // Registry/cache snapshots must be source-dir independent. Validation in
     // `from_snapshots` rejects coordination specs unless `coordination_baml` was
     // inlined at approval time, so an empty source path cannot silently drop a

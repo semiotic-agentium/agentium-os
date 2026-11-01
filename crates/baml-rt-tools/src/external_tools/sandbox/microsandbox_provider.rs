@@ -21,7 +21,7 @@
 //! - macOS / Windows: always stub — microsandbox is not linked; `create` and
 //!   `reattach` return errors at runtime if invoked
 //!
-//! ## API mapping to microsandbox 0.3.13
+//! ## API mapping to microsandbox 0.7.13
 //! | Trait method | microsandbox API |
 //! |---|---|
 //! | `create` | `Sandbox::builder(name)...create_detached()` (or `.create()`) |
@@ -56,6 +56,10 @@ use futures_util::stream::{self, BoxStream};
 #[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 use tracing::{debug, info, warn};
 
+#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
+#[path = "microsandbox_v2.rs"]
+mod v2;
+
 use super::{
     channel::TsrpcChannel,
     provider::SandboxProvider,
@@ -86,6 +90,8 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct MicrosandboxProvider {
     #[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
     live: Arc<DashMap<String, microsandbox::Sandbox>>,
+    #[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
+    v2: v2::VmBackend,
     #[cfg(not(all(feature = "sandbox-provider", target_os = "linux")))]
     _unused: std::marker::PhantomData<()>,
 }
@@ -96,6 +102,7 @@ impl MicrosandboxProvider {
         {
             Ok(Self {
                 live: Arc::new(DashMap::new()),
+                v2: v2::VmBackend::new()?,
             })
         }
         #[cfg(all(feature = "sandbox-provider", not(target_os = "linux")))]
@@ -139,14 +146,25 @@ fn clamp_cpus(cpus: u32) -> u8 {
 }
 
 // PullPolicy mapping lives inline in `create()` because the concrete
-// microsandbox_image::PullPolicy type isn't re-exported from microsandbox
-// 0.3.13, and adding it as a direct dep would widen our surface without
-// value. The builder's default is `IfMissing`, which is also our default,
-// so non-default policies fall through to a no-op until §D.
+// microsandbox_image::PullPolicy type isn't re-exported from microsandbox,
+// and adding it as a direct dep would widen our surface without value. The
+// builder's default is `IfMissing`, which is also our default, so non-default
+// policies fall through to a no-op until §D.
 
 #[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 #[async_trait]
 impl SandboxProvider for MicrosandboxProvider {
+    async fn create_vm(
+        &self,
+        spec: super::super::host::VmSpec,
+    ) -> Result<(SandboxHandle, TsrpcChannel)> {
+        self.create_supervisor_vm(spec).await
+    }
+
+    async fn clear_vm_templates(&self) -> Result<()> {
+        self.clear_supervisor_templates().await
+    }
+
     async fn create(&self, spec: SandboxSpec) -> Result<SandboxHandle> {
         let name = spec.name.clone();
         let idle_timeout = spec.idle_timeout;
@@ -244,11 +262,38 @@ impl SandboxProvider for MicrosandboxProvider {
             builder = builder.script(name, content);
         }
 
-        // NetworkPolicy: until metadata/runner-policy compilation is wired,
-        // default to `public_only()` so outbound internet APIs work in
-        // sandboxed tools while still denying loopback/link-local/private/
-        // metadata destinations.
-        builder = builder.network(|n| n.policy(microsandbox::NetworkPolicy::public_only()));
+        // Legacy callers may supply only exact, public TCP CIDRs. Empty means deny-all.
+        let mut grants = Vec::new();
+        for rule in &spec.network_policy.allow {
+            let super::spec::Destination::Cidr(cidr) = &rule.destination else {
+                return Err(to_rt_err(
+                    "network policy",
+                    "CIDR-compiled destinations required",
+                ));
+            };
+            let (ip, prefix) = cidr
+                .split_once('/')
+                .ok_or_else(|| to_rt_err("network policy", "invalid CIDR"))?;
+            let ip: std::net::IpAddr = ip.parse().map_err(|e| to_rt_err("network policy", e))?;
+            if !super::super::host::public_ip(ip)
+                || prefix != if ip.is_ipv4() { "32" } else { "128" }
+                || rule.protocol != Some(super::spec::Protocol::Tcp)
+            {
+                return Err(to_rt_err(
+                    "network policy",
+                    "only exact public TCP destinations are supported",
+                ));
+            }
+            grants.push(super::super::host::CidrGrant {
+                cidr: cidr.clone(),
+                port: rule
+                    .port
+                    .filter(|p| *p != 0)
+                    .ok_or_else(|| to_rt_err("network policy", "explicit port required"))?,
+            });
+        }
+        let policy = v2::compile_network(&grants)?;
+        builder = builder.network(|n| n.policy(policy));
 
         let sandbox = if spec.detached {
             builder.create_detached().await.map_err(|e| {
@@ -329,7 +374,7 @@ impl SandboxProvider for MicrosandboxProvider {
     }
 
     async fn teardown(&self, handle: &SandboxHandle) -> Result<()> {
-        let Some((_, sandbox)) = self.live.remove(&handle.name) else {
+        let Some(sandbox) = self.live.get(&handle.name).map(|s| s.clone()) else {
             // "Already gone" is fine per SandboxProvider contract.
             return Ok(());
         };
@@ -337,14 +382,16 @@ impl SandboxProvider for MicrosandboxProvider {
         match tokio::time::timeout(STOP_TIMEOUT, sandbox.stop_and_wait()).await {
             Ok(Ok(_status)) => {
                 debug!(sandbox = %handle.name, "sandbox stopped cleanly");
+                self.live.remove(&handle.name);
                 Ok(())
             }
             Ok(Err(err)) => {
                 warn!(sandbox = %handle.name, ?err, "stop_and_wait failed; falling back to kill");
-                if let Err(k) = sandbox.kill().await {
-                    warn!(sandbox = %handle.name, ?k, "kill fallback also failed");
-                }
-                // teardown is best-effort per trait contract
+                sandbox
+                    .kill()
+                    .await
+                    .map_err(|e| to_rt_err("kill tool VM", e))?;
+                self.live.remove(&handle.name);
                 Ok(())
             }
             Err(_timeout) => {
@@ -353,28 +400,42 @@ impl SandboxProvider for MicrosandboxProvider {
                     timeout_secs = STOP_TIMEOUT.as_secs(),
                     "stop_and_wait timed out; falling back to kill"
                 );
-                if let Err(k) = sandbox.kill().await {
-                    warn!(sandbox = %handle.name, ?k, "kill fallback failed after timeout");
-                }
+                sandbox
+                    .kill()
+                    .await
+                    .map_err(|e| to_rt_err("kill tool VM after timeout", e))?;
+                self.live.remove(&handle.name);
                 Ok(())
             }
         }
     }
 
     fn events(&self, _handle: &SandboxHandle) -> BoxStream<'_, SandboxEvent> {
-        // microsandbox 0.3.13 doesn't expose a per-sandbox lifecycle event
-        // stream as a public API. Until it lands, consumers rely on
-        // observability spans emitted by our provider methods + the
-        // ExternalLifecycleRecorder on the resolver.
+        // microsandbox exposes no per-sandbox lifecycle event stream from the
+        // provider handle. Consumers rely on the observability spans emitted by
+        // our provider methods plus the ExternalLifecycleRecorder on the resolver.
         Box::pin(stream::empty())
     }
 
     async fn list_owned(&self, runner_id: &str) -> Result<Vec<SandboxHandle>> {
         let long_prefix = format!("baml:{runner_id}:");
         let short_prefix = format!("baml:{}:", runner_id.chars().take(8).collect::<String>());
-        let all = microsandbox::Sandbox::list()
-            .await
-            .map_err(|e| to_rt_err("microsandbox Sandbox::list() failed", e))?;
+        let mut all = Vec::new();
+        let mut cursor = None;
+        loop {
+            let mut query = microsandbox::SandboxListBuilder::default();
+            if let Some(value) = cursor {
+                query = query.cursor(value);
+            }
+            let page = microsandbox::Sandbox::list_with(|_| query)
+                .await
+                .map_err(|e| to_rt_err("microsandbox Sandbox::list() failed", e))?;
+            all.extend(page.sandboxes);
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
         Ok(all
             .into_iter()
             .filter(|h| {

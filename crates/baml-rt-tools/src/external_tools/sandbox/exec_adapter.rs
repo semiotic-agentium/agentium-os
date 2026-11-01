@@ -84,6 +84,10 @@ pub fn exec_handle_into_channel(mut handle: ExecHandle) -> Result<TsrpcChannel, 
                     );
                     break;
                 }
+                ExecEvent::Failed(_) | ExecEvent::StdinError(_) => {
+                    warn!("sandbox exec stream failed; closing channel");
+                    break;
+                }
                 ExecEvent::Started { pid } => {
                     info!(pid, "sandbox tool-adapter started");
                 }
