@@ -82,11 +82,13 @@ karak eval run --min-pass-rate 0.9
 
 ```bash
 karak new-agent my-agent --template simple --tags support,demo
-karak new-tool weather --bundle support --lang rust
+karak tool new weather --bundle support    # v2 TypeScript tool (@karakara/tool)
+karak tool build ./weather                 # derive descriptor + digest
+karak tool test ./weather --input '{"message":"hi"}'
 karak new-static-tool github   # platform-internal (monorepo contributors only)
 ```
 
-Interactive mode: omit positional names (`karak new-agent`, `karak new-tool`, …).
+Interactive mode: omit positional names (`karak new-agent`, `karak tool new`, …).
 
 ## Eval harness
 

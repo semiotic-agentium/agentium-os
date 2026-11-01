@@ -1,5 +1,12 @@
 # Sandboxed external tool + agent quickstart
 
+> **Superseded (external tools v2).** The v1 flow below — `new-tool --runtime
+> sandbox --sandbox-source bind --generate-docker`, hand-written
+> `tool-manifest.json`/`tool-schema.json`, and `tool/describe`/`tool/schema`/
+> `tool/invoke` framing — has been retired. The blessed path is now a TypeScript
+> tool: `karak tool new <name>` → edit one `defineTool` function → `karak tool
+> build` / `karak tool test`. This runbook is kept only for historical reference.
+
 Fast integration checklist for a sandboxed external tool and an agent that uses it.
 For CLI details see [`../reference/sdk-cli.md`](../reference/sdk-cli.md). For runtime and
 security see [`../reference/host-tool-guide.md`](../reference/host-tool-guide.md).

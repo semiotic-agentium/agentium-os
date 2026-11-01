@@ -3,18 +3,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! `new-tool` subcommand implementation (default, external-tool path).
+//! `karak tool new` — scaffold a v2 TypeScript external tool.
 //!
-//! Creates a standalone external tool scaffold in its own directory —
-//! not compiled into the platform workspace. The runner picks the tool up via
-//! `BAML_EXTERNAL_TOOLS_DIR` at deploy time.
-//!
-//! For scaffolding a tool *inside* the platform workspace (system bundles,
-//! compiled-in integrations), use `new-static-tool` instead.
-//!
-//! Most stringly-typed knobs were lifted into typed enums
-//! ([`Access`], [`Language`]) so clap validates user input and the template
-//! dispatcher gets an exhaustive `match`. Bundle stays free-form by design.
+//! One blessed path (`plans/external-tools-v2.md` §3.1): a typed `defineTool`
+//! function authored against `@karakara/tool`. The scaffold is a four-file
+//! project; the descriptor and manifest are derived at `karak tool build`, so
+//! there is no `tool-manifest.json`, `tool-schema.json`, `tool-server`, or any
+//! `runtime`/`access`/`sandbox` knob (all retired in v2).
 
 use std::{
     fs,
@@ -22,76 +17,35 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
-use baml_rt_tools::{
-    BundleName,
-    external_tools::{RUNTIME_LOCK_FILE_NAME, SandboxImageRef},
-};
+use baml_rt_tools::BundleName;
 use console::style;
 
 use crate::{
-    templates::external_tool::{
-        Access, GeneratedFile, InvocationMode, Language, Runtime, SandboxSource, ScaffoldContext,
-        manifest_json, readme_md,
-    },
+    templates::external_tool::{GeneratedFile, lang, tool_id},
     transaction::TransactionalWriter,
 };
 
-/// Execution mode for the scaffolder. Collapses the two `bool` flags that used
-/// to be carried around separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
-    /// Write files after printing the summary. Default CLI behaviour.
     Apply,
-    /// Print the plan, prompt for confirmation before writing.
     Confirm,
-    /// Print the plan and stop; never touch the filesystem.
     DryRun,
 }
 
-impl RunMode {
-    fn shows_summary(self) -> bool {
-        matches!(self, Self::Confirm | Self::DryRun)
-    }
+/// Build the v2 TS scaffold file set (exposed for tests).
+pub fn build_file_set(name: &str, bundle: &str, description: &str) -> Vec<GeneratedFile> {
+    lang::typescript::generate(name, bundle, description)
 }
 
-/// Inputs for the `new-tool` scaffolder entrypoint.
-#[derive(Debug, Clone)]
-pub struct NewToolRunArgs<'a> {
-    pub name: &'a str,
-    pub bundle: &'a str,
-    pub lang: Language,
-    pub access: Access,
-    pub runtime: Runtime,
-    pub invocation_mode: InvocationMode,
-    pub sandbox_source: SandboxSource,
-    pub sandbox_image: Option<&'a str>,
-    pub sandbox_entrypoint: &'a [String],
-    pub generate_docker: bool,
-    pub description: &'a str,
-    pub output: Option<&'a str>,
-    pub mode: RunMode,
-}
-
-pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
-    let NewToolRunArgs {
-        name,
-        bundle,
-        lang,
-        access,
-        runtime,
-        invocation_mode,
-        sandbox_source,
-        sandbox_image,
-        sandbox_entrypoint,
-        generate_docker,
-        description,
-        output,
-        mode,
-    } = args;
-
+/// Core scaffolder entrypoint.
+pub fn run(
+    name: &str,
+    bundle: &str,
+    description: &str,
+    output: Option<&str>,
+    mode: RunMode,
+) -> Result<()> {
     validate_tool_name(name)?;
-    // Reuse the runtime's BundleName rule (non-empty, no '/') so the scaffolder
-    // can't produce a tool-manifest.json the runner would later reject.
     BundleName::new(bundle).map_err(|e| {
         anyhow!("Error: invalid bundle '{bundle}': {e}\nHint: use a non-empty name without '/'.")
     })?;
@@ -101,88 +55,27 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
         .unwrap_or_else(|| PathBuf::from(name));
     validate_output_dir(&output_dir)?;
 
-    let default_description = format!("{} external tool for BAML runtime", capitalize_first(name));
+    let default_description = format!("{} external tool", capitalize_first(name));
     let description = if description.trim().is_empty() {
         default_description.as_str()
     } else {
         description.trim()
     };
 
-    validate_generate_docker_option(runtime, sandbox_source, generate_docker)?;
-    validate_invocation_mode(runtime, invocation_mode)?;
+    let files = build_file_set(name, bundle, description);
 
-    let sandbox_image = validate_runtime_options(
-        name,
-        bundle,
-        runtime,
-        sandbox_source,
-        sandbox_image,
-        sandbox_entrypoint,
-    )?;
-
-    let ctx = ScaffoldContext {
-        name,
-        bundle,
-        access,
-        language: lang,
-        description,
-        runtime,
-        invocation_mode,
-        sandbox_source: Some(sandbox_source),
-        sandbox_image,
-        sandbox_entrypoint: sandbox_entrypoint.to_vec(),
-        generate_docker,
-    };
-
-    let files = build_file_set(&ctx);
-
-    if mode.shows_summary() {
+    if matches!(mode, RunMode::Confirm | RunMode::DryRun) {
         println!();
         println!("{}", style("Summary:").bold());
-        println!("  Name:      {}", style(name).cyan());
-        println!("  Tool ID:   {}", style(ctx.tool_id()).cyan());
-        println!("  Language:  {}", style(lang.as_str()).cyan());
-        println!("  Access:    {}", style(access.as_str()).cyan());
-        println!("  Runtime:   {}", style(runtime.as_str()).cyan());
-        println!("  Invoke:    {}", style(invocation_mode.as_str()).cyan());
-        if runtime == Runtime::Sandbox {
-            println!(
-                "  Source:    {}",
-                style(match ctx.sandbox_source.unwrap_or(SandboxSource::Oci) {
-                    SandboxSource::Oci => "oci",
-                    SandboxSource::Bind => "bind",
-                })
-                .cyan()
-            );
-            println!(
-                "  Image:     {}",
-                style(format!("{:?}", ctx.sandbox_image)).cyan()
-            );
-            if !ctx.sandbox_entrypoint.is_empty() {
-                println!(
-                    "  Entrypoint:{}",
-                    style(format!(" {}", ctx.sandbox_entrypoint.join(" "))).cyan()
-                );
-            }
-            if ctx.sandbox_source == Some(SandboxSource::Bind) {
-                println!(
-                    "  Docker:    {}",
-                    style(if ctx.generate_docker {
-                        "generate adapter Dockerfile"
-                    } else {
-                        "manual rootfs mode"
-                    })
-                    .cyan()
-                );
-            }
-        }
-        println!("  Output:    {}", style(output_dir.display()).cyan());
-        println!("  Desc:      {}", style(description).cyan());
+        println!("  Name:     {}", style(name).cyan());
+        println!("  Tool ID:  {}", style(tool_id(bundle, name)).cyan());
+        println!("  Language: {}", style("typescript").cyan());
+        println!("  Output:   {}", style(output_dir.display()).cyan());
+        println!("  Desc:     {}", style(description).cyan());
     }
 
     let mut writer = TransactionalWriter::new();
     writer.stage_mkdir(&output_dir);
-
     for file in &files {
         writer.stage_create(
             output_dir.join(&file.relative_path),
@@ -221,11 +114,9 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
     println!("{}", style("Applying changes...").cyan());
     writer.commit().map_err(|e| {
         anyhow!(
-            "Error: failed to apply scaffold files.\nCause: {e}\nHint: verify write permissions and output path."
+            "Error: failed to apply scaffold files.\nCause: {e}\nHint: verify write permissions."
         )
     })?;
-
-    set_executable_bits(&output_dir, &files)?;
 
     println!();
     println!(
@@ -236,71 +127,53 @@ pub fn run(args: NewToolRunArgs<'_>) -> Result<()> {
     println!("  Path: {}", style(output_dir.display()).cyan());
     println!();
     println!("{}", style("Next steps:").bold());
-    println!("  1. Implement logic in scaffolded language files");
-    println!(
-        "  2. Run setup/build instructions in {}",
-        style(output_dir.join("README.md").display()).cyan()
-    );
-    println!(
-        "  3. Set {} and run an agent that references {}",
-        style("BAML_EXTERNAL_TOOLS_DIR").cyan(),
-        style(ctx.tool_id()).cyan()
-    );
+    println!("  1. Edit src/tool.ts (one typed defineTool function).");
+    println!("  2. {}", style("npm install && karak tool build").cyan());
+    println!("  3. {}", style("karak tool test").cyan());
 
     Ok(())
 }
 
-/// Compose metadata + README + language-specific files into the final set.
-///
-/// Exposed so tests can snapshot-check the scaffold without touching the CLI.
-pub fn build_file_set(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
-    // v2 blessed path: TypeScript tools are self-describing. The scaffold emits
-    // only the typed-function project (its own README + package/tsconfig/tool.ts);
-    // the descriptor + manifest are derived at `karak tool build`, so there is no
-    // hand-written tool-manifest.json / tool-schema.json / tool-server wrapper.
-    if ctx.language == Language::Typescript {
-        return ctx.language.files(ctx);
-    }
-    let mut files = vec![
-        GeneratedFile::new("tool-manifest.json", manifest_json::generate(ctx)),
-        GeneratedFile::new("README.md", readme_md::generate(ctx)),
-    ];
-    let mut language_files = ctx.language.files(ctx);
-    if ctx.runtime == Runtime::Sandbox && ctx.language != Language::Bash {
-        // Sandbox execution enters through `/tool-adapter` inside the guest.
-        // For non-Bash starters, `tool-server` is only a host-side wrapper
-        // around the language source and can be mistaken for sandbox coverage.
-        // Bash is the exception: its `tool-server` file is the actual script
-        // implementation that the generated adapter delegates to.
-        language_files.retain(|file| file.relative_path != "tool-server");
-    }
-    files.extend(language_files);
-    if ctx.runtime == Runtime::Sandbox && ctx.sandbox_source == Some(SandboxSource::Bind) {
-        files.extend(crate::templates::external_tool::bind_sandbox::files(ctx));
-        ensure_gitignore_entry(&mut files, ".tmp/");
-        // The host-resolved bind sidecar (written by `sandbox-bind-sync`) is
-        // per-machine and must never be committed. Keeping the rule next to
-        // the tool means it travels with the tool if the package is moved or
-        // published, instead of relying on a workspace-level wildcard.
-        ensure_gitignore_entry(&mut files, RUNTIME_LOCK_FILE_NAME);
-    }
-    files
+/// CLI-facing entry: resolve interactive prompts then scaffold.
+pub struct ToolNewCli {
+    pub name: Option<String>,
+    pub bundle: Option<String>,
+    pub description: Option<String>,
+    pub output: Option<String>,
+    pub dry_run: bool,
 }
 
-fn ensure_gitignore_entry(files: &mut Vec<GeneratedFile>, entry: &str) {
-    if let Some(file) = files.iter_mut().find(|f| f.relative_path == ".gitignore") {
-        let has_entry = file.content.lines().any(|line| line.trim() == entry);
-        if !has_entry {
-            if !file.content.is_empty() && !file.content.ends_with('\n') {
-                file.content.push('\n');
-            }
-            file.content.push_str(entry);
-            file.content.push('\n');
-        }
-        return;
-    }
+pub fn run_cli(cmd: ToolNewCli) -> Result<()> {
+    use crate::{interactive, templates::external_tool::DEFAULT_BUNDLE};
 
-    files.push(GeneratedFile::new(".gitignore", format!("{entry}\n")));
+    let interactive_mode = cmd.name.is_none();
+    let name = match cmd.name {
+        Some(n) => n,
+        None => interactive::prompt_tool_name()?,
+    };
+    let bundle = match cmd.bundle {
+        Some(b) => b,
+        None if interactive_mode => interactive::prompt_external_tool_bundle()?,
+        None => DEFAULT_BUNDLE.to_string(),
+    };
+    let description = match cmd.description {
+        Some(d) => d,
+        None if interactive_mode => interactive::prompt_tool_description()?,
+        None => String::new(),
+    };
+    let output = match cmd.output {
+        Some(o) => Some(o),
+        None if interactive_mode => Some(interactive::prompt_external_tool_output(&name)?),
+        None => None,
+    };
+    let mode = if interactive_mode {
+        RunMode::Confirm
+    } else if cmd.dry_run {
+        RunMode::DryRun
+    } else {
+        RunMode::Apply
+    };
+    run(&name, &bundle, &description, output.as_deref(), mode)
 }
 
 fn validate_output_dir(output_dir: &Path) -> Result<()> {
@@ -311,8 +184,7 @@ fn validate_output_dir(output_dir: &Path) -> Result<()> {
                 output_dir.display()
             );
         }
-        let entries = fs::read_dir(output_dir)?;
-        if entries.count() > 0 {
+        if fs::read_dir(output_dir)?.count() > 0 {
             bail!(
                 "Error: output directory already exists and is non-empty: {}\nHint: pass --output <new-dir> or clean the directory.",
                 output_dir.display()
@@ -325,20 +197,17 @@ fn validate_output_dir(output_dir: &Path) -> Result<()> {
 fn validate_tool_name(name: &str) -> Result<()> {
     if name.is_empty() {
         bail!(
-            "Error: tool name cannot be empty.\nHint: use lowercase like `echo`, `clickup_sync`, or `clickup-sync`."
+            "Error: tool name cannot be empty.\nHint: use lowercase like `weather` or `clickup-sync`."
         );
     }
-
     if !name
         .chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
     {
         bail!(
-            "Error: invalid tool name '{}'.\nHint: use lowercase letters, numbers, underscores, or hyphens only.",
-            name
+            "Error: invalid tool name '{name}'.\nHint: lowercase letters, numbers, underscores, or hyphens only."
         );
     }
-
     if name.starts_with('_')
         || name.ends_with('_')
         || name.starts_with('-')
@@ -347,88 +216,7 @@ fn validate_tool_name(name: &str) -> Result<()> {
         || name.contains("--")
     {
         bail!(
-            "Error: invalid tool name '{}'.\nHint: avoid leading/trailing separators and consecutive '_' or '-'.",
-            name
-        );
-    }
-
-    Ok(())
-}
-
-/// Build the conventional bind rootfs path scaffolds advertise in source
-/// metadata: a tool-relative `./.tmp/<bundle>-<safe_name>-rootfs`. Matches
-/// the rootfs dir the setup script writes to (see `bind_sandbox.rs`).
-fn default_bind_rootfs_path(name: &str, bundle: &str) -> PathBuf {
-    let safe_name = name.replace('_', "-");
-    PathBuf::from(format!("./.tmp/{bundle}-{safe_name}-rootfs"))
-}
-
-fn validate_runtime_options(
-    name: &str,
-    bundle: &str,
-    runtime: Runtime,
-    sandbox_source: SandboxSource,
-    sandbox_image: Option<&str>,
-    sandbox_entrypoint: &[String],
-) -> Result<Option<SandboxImageRef>> {
-    match runtime {
-        Runtime::Process => {
-            if sandbox_image.is_some() || !sandbox_entrypoint.is_empty() {
-                bail!(
-                    "Error: sandbox-only options were supplied with --runtime process.\nHint: remove --sandbox-* options or use --runtime sandbox."
-                );
-            }
-            Ok(None)
-        }
-        Runtime::Sandbox => match sandbox_source {
-            SandboxSource::Oci => {
-                let image = sandbox_image.ok_or_else(|| {
-                    anyhow!("Error: --runtime sandbox --sandbox-source oci requires --sandbox-image <ref@sha256:...>.")
-                })?;
-                let Some((_, digest_from_image)) = image.split_once("@") else {
-                    bail!(
-                        "Error: --sandbox-image must be digest-pinned (missing @sha256:): {image}"
-                    );
-                };
-                validate_image_digest(digest_from_image)?;
-                Ok(Some(SandboxImageRef::Oci {
-                    r#ref: image.to_string(),
-                }))
-            }
-            SandboxSource::Bind => Ok(Some(SandboxImageRef::Bind {
-                path: default_bind_rootfs_path(name, bundle),
-            })),
-        },
-    }
-}
-
-fn validate_image_digest(digest: &str) -> Result<()> {
-    let digest_ok = digest.starts_with("sha256:")
-        && digest.len() == 71
-        && digest[7..].chars().all(|c| c.is_ascii_hexdigit());
-    if !digest_ok {
-        bail!("Error: OCI image digest must match sha256:<64-hex>; got '{digest}'.");
-    }
-    Ok(())
-}
-
-fn validate_generate_docker_option(
-    runtime: Runtime,
-    sandbox_source: SandboxSource,
-    generate_docker: bool,
-) -> Result<()> {
-    if generate_docker && !(runtime == Runtime::Sandbox && sandbox_source == SandboxSource::Bind) {
-        bail!(
-            "Error: --generate-docker is only supported with --runtime sandbox --sandbox-source bind."
-        );
-    }
-    Ok(())
-}
-
-fn validate_invocation_mode(runtime: Runtime, invocation_mode: InvocationMode) -> Result<()> {
-    if invocation_mode == InvocationMode::Session && runtime != Runtime::Sandbox {
-        bail!(
-            "Error: --invocation-mode session requires --runtime sandbox.\nHint: use --runtime sandbox or switch to --invocation-mode single-shot."
+            "Error: invalid tool name '{name}'.\nHint: avoid leading/trailing separators and consecutive '_' or '-'."
         );
     }
     Ok(())
@@ -442,530 +230,49 @@ fn capitalize_first(s: &str) -> String {
     }
 }
 
-fn set_executable_bits(output_dir: &Path, files: &[GeneratedFile]) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        for file in files.iter().filter(|f| f.executable) {
-            let path = output_dir.join(&file.relative_path);
-            let metadata = fs::metadata(&path)?;
-            let mut perms = metadata.permissions();
-            let mode = perms.mode();
-            perms.set_mode(mode | 0o111);
-            fs::set_permissions(path, perms)?;
-        }
-    }
-
-    Ok(())
-}
-
-/// CLI-facing entry: resolves interactive prompts then runs the scaffolder.
-pub struct NewToolCli {
-    pub name: Option<String>,
-    pub bundle: Option<String>,
-    pub lang: Language,
-    pub access: Option<Access>,
-    pub runtime: Runtime,
-    pub invocation_mode: InvocationMode,
-    pub sandbox_source: SandboxSource,
-    pub sandbox_image: Option<String>,
-    pub sandbox_entrypoint: Vec<String>,
-    pub generate_docker: bool,
-    pub description: Option<String>,
-    pub output: Option<String>,
-    pub dry_run: bool,
-}
-
-pub fn run_cli(cmd: NewToolCli) -> Result<()> {
-    use crate::{
-        cli::{parse_access_or_default, parse_language_or_default, parse_runtime_or_default},
-        interactive,
-        templates::external_tool::DEFAULT_BUNDLE,
-    };
-
-    let interactive_mode = cmd.name.is_none();
-    let name = match cmd.name {
-        Some(n) => n,
-        None => interactive::prompt_tool_name()?,
-    };
-    let bundle = match cmd.bundle {
-        Some(b) => b,
-        None if interactive_mode => interactive::prompt_external_tool_bundle()?,
-        None => DEFAULT_BUNDLE.to_string(),
-    };
-    let access = match cmd.access {
-        Some(a) => a,
-        None if interactive_mode => {
-            parse_access_or_default(&interactive::prompt_external_tool_access()?)
-        }
-        None => Access::Read,
-    };
-    let description = match cmd.description {
-        Some(d) => d,
-        None if interactive_mode => interactive::prompt_tool_description()?,
-        None => String::new(),
-    };
-    let output = match cmd.output {
-        Some(o) => Some(o),
-        None if interactive_mode => Some(interactive::prompt_external_tool_output(&name)?),
-        None => None,
-    };
-    let lang = if interactive_mode {
-        parse_language_or_default(&interactive::prompt_external_tool_language()?)
-    } else {
-        cmd.lang
-    };
-    let runtime = if interactive_mode {
-        parse_runtime_or_default(&interactive::prompt_external_tool_runtime()?)
-    } else {
-        cmd.runtime
-    };
-    let (sandbox_image, sandbox_entrypoint) = if runtime == Runtime::Sandbox {
-        let entrypoint = if interactive_mode {
-            interactive::prompt_external_tool_sandbox_entrypoint()?
-        } else {
-            cmd.sandbox_entrypoint
-        };
-        match cmd.sandbox_source {
-            SandboxSource::Oci => {
-                let image = match cmd.sandbox_image {
-                    Some(v) if !interactive_mode => v,
-                    _ => interactive::prompt_external_tool_sandbox_image()?,
-                };
-                (Some(image), entrypoint)
-            }
-            SandboxSource::Bind => (None, entrypoint),
-        }
-    } else {
-        (None, Vec::new())
-    };
-    let mode = if interactive_mode {
-        RunMode::Confirm
-    } else if cmd.dry_run {
-        RunMode::DryRun
-    } else {
-        RunMode::Apply
-    };
-    run(NewToolRunArgs {
-        name: &name,
-        bundle: &bundle,
-        lang,
-        access,
-        runtime,
-        invocation_mode: cmd.invocation_mode,
-        sandbox_source: cmd.sandbox_source,
-        sandbox_image: sandbox_image.as_deref(),
-        sandbox_entrypoint: &sandbox_entrypoint,
-        generate_docker: cmd.generate_docker,
-        description: &description,
-        output: output.as_deref(),
-        mode,
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use baml_rt_tools::external_tools::{ExternalToolManifest, SandboxImageRef, ToolRuntime};
-
     use super::*;
 
-    fn ctx<'a>(lang: Language) -> ScaffoldContext<'a> {
-        ScaffoldContext {
-            name: "echo",
-            bundle: "dev",
-            access: Access::Read,
-            language: lang,
-            description: "Echo external tool",
-            runtime: Runtime::Process,
-            invocation_mode: InvocationMode::SingleShot,
-            sandbox_source: Some(SandboxSource::Oci),
-            sandbox_image: None,
-            sandbox_entrypoint: Vec::new(),
-            generate_docker: false,
-        }
-    }
-
-    fn assert_scaffold_has(files: &[GeneratedFile], path: &str) {
-        assert!(
-            files.iter().any(|f| f.relative_path == path),
-            "scaffold missing expected file `{path}`; got {:?}",
-            files.iter().map(|f| &f.relative_path).collect::<Vec<_>>()
-        );
-    }
-
-    fn assert_scaffold_lacks(files: &[GeneratedFile], path: &str) {
-        assert!(
-            files.iter().all(|f| f.relative_path != path),
-            "scaffold unexpectedly included `{path}`; got {:?}",
-            files.iter().map(|f| &f.relative_path).collect::<Vec<_>>()
-        );
-    }
-
-    /// Golden fixtures per language — catches silent drift when adding a
-    /// language or renaming a scaffolded file.
-    #[test]
-    fn scaffold_contains_expected_files() {
-        let rust_files = build_file_set(&ctx(Language::Rust));
-        assert_scaffold_has(&rust_files, "tool-manifest.json");
-        assert_scaffold_has(&rust_files, "README.md");
-        assert_scaffold_has(&rust_files, "Cargo.toml");
-        assert_scaffold_has(&rust_files, "src/main.rs");
-        assert_scaffold_has(&rust_files, "tool-server");
-
-        let bash_files = build_file_set(&ctx(Language::Bash));
-        assert_scaffold_has(&bash_files, "tool-manifest.json");
-        assert_scaffold_has(&bash_files, "tool-server");
-
-        let py_files = build_file_set(&ctx(Language::Python));
-        assert_scaffold_has(&py_files, "main.py");
-        assert_scaffold_has(&py_files, "tool-server");
-
-        // v2 blessed TS path: typed-function project, self-describing.
-        let ts_files = build_file_set(&ctx(Language::Typescript));
-        assert_scaffold_has(&ts_files, "package.json");
-        assert_scaffold_has(&ts_files, "tsconfig.json");
-        assert_scaffold_has(&ts_files, "src/tool.ts");
-        assert_scaffold_has(&ts_files, "README.md");
-        // No v1 artifacts: framing wrapper, hand-written manifest, legacy entry.
-        assert_scaffold_lacks(&ts_files, "tool-server");
-        assert_scaffold_lacks(&ts_files, "tool-manifest.json");
-        assert_scaffold_lacks(&ts_files, "src/main.ts");
+    fn has(files: &[GeneratedFile], path: &str) -> bool {
+        files.iter().any(|f| f.relative_path == path)
     }
 
     #[test]
-    fn sandbox_scaffold_omits_host_tool_server_except_bash() {
-        // Typescript is excluded: the v2 path has no runtime/sandbox concept.
-        for lang in [Language::Rust, Language::Python] {
-            let mut sandbox_ctx = ctx(lang);
-            sandbox_ctx.runtime = Runtime::Sandbox;
-            sandbox_ctx.sandbox_source = Some(SandboxSource::Oci);
-            sandbox_ctx.sandbox_image = Some(SandboxImageRef::Oci {
-                r#ref: "ghcr.io/org/echo@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                    .to_string(),
-            });
-
-            let files = build_file_set(&sandbox_ctx);
-            assert_scaffold_lacks(&files, "tool-server");
-        }
-
-        let mut bash_ctx = ctx(Language::Bash);
-        bash_ctx.runtime = Runtime::Sandbox;
-        bash_ctx.sandbox_source = Some(SandboxSource::Oci);
-        bash_ctx.sandbox_image = Some(SandboxImageRef::Oci {
-            r#ref: "ghcr.io/org/echo@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                .to_string(),
-        });
-        let bash_files = build_file_set(&bash_ctx);
-        assert_scaffold_has(&bash_files, "tool-server");
-    }
-
-    /// `tool-manifest.json` must round-trip through runtime manifest parser.
-    #[test]
-    fn scaffolded_manifest_is_loadable_by_runtime_parser() {
-        // Typescript (v2) derives its manifest at build; it has no scaffold-time
-        // tool-manifest.json, so it is not part of this v1-manifest check.
-        for lang in [Language::Rust, Language::Bash, Language::Python] {
-            let ctx = ctx(lang);
-            let raw = manifest_json::generate(&ctx);
-            serde_json::from_str::<ExternalToolManifest>(&raw)
-                .unwrap_or_else(|e| panic!("{lang:?} manifest should parse: {e}"));
-        }
-    }
-
-    /// Generated manifest JSON parses as valid JSON (no bad escapes from
-    /// control chars, quotes, etc.).
-    #[test]
-    fn scaffolded_metadata_is_valid_json() {
-        let mut desc_with_specials = String::from("weird ");
-        desc_with_specials.push('\u{0007}'); // control char
-        desc_with_specials.push('"');
-        desc_with_specials.push('\\');
-        desc_with_specials.push_str(" text");
-
-        let ctx = ScaffoldContext {
-            name: "echo",
-            bundle: "dev",
-            access: Access::Read,
-            language: Language::Bash,
-            description: &desc_with_specials,
-            runtime: Runtime::Process,
-            invocation_mode: InvocationMode::SingleShot,
-            sandbox_source: Some(SandboxSource::Oci),
-            sandbox_image: None,
-            sandbox_entrypoint: Vec::new(),
-            generate_docker: false,
-        };
-
-        let raw = manifest_json::generate(&ctx);
-        serde_json::from_str::<serde_json::Value>(&raw)
-            .expect("manifest must round-trip through serde_json regardless of description chars");
+    fn scaffold_emits_v2_typescript_layout() {
+        let files = build_file_set("weather", "support", "Weather tool");
+        assert!(has(&files, "package.json"));
+        assert!(has(&files, "tsconfig.json"));
+        assert!(has(&files, "src/tool.ts"));
+        assert!(has(&files, "README.md"));
+        // No v1 artifacts.
+        assert!(!has(&files, "tool-server"));
+        assert!(!has(&files, "tool-manifest.json"));
+        assert!(!has(&files, "src/main.ts"));
     }
 
     #[test]
-    fn scaffolded_metadata_emits_explicit_process_runtime_block() {
-        let ctx = ctx(Language::Rust);
-        let raw = manifest_json::generate(&ctx);
-        let parsed: ExternalToolManifest = serde_json::from_str(&raw).expect("manifest parses");
-
-        match parsed.runtime {
-            Some(ToolRuntime::Process(spec)) => {
-                assert_eq!(spec.command, vec!["./tool-server".to_string()]);
-            }
-            other => panic!("expected explicit process runtime, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn scaffolded_metadata_emits_sandbox_runtime_block_when_requested() {
-        let mut ctx = ctx(Language::Rust);
-        ctx.runtime = Runtime::Sandbox;
-        ctx.invocation_mode = InvocationMode::Session;
-        ctx.sandbox_source = Some(SandboxSource::Oci);
-        ctx.sandbox_image = Some(SandboxImageRef::Oci {
-            r#ref: "ghcr.io/org/echo@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                .to_string(),
-        });
-        ctx.sandbox_entrypoint = vec!["/app/tool-adapter".to_string()];
-
-        let raw = manifest_json::generate(&ctx);
-        let parsed: ExternalToolManifest = serde_json::from_str(&raw).expect("manifest parses");
-
-        match parsed.runtime {
-            Some(ToolRuntime::Sandbox(spec)) => {
-                match spec.image {
-                    SandboxImageRef::Oci { r#ref } => assert!(r#ref.contains("@sha256:")),
-                    _ => panic!("expected oci image"),
-                }
-                assert_eq!(spec.entrypoint, vec!["/app/tool-adapter".to_string()]);
-                let adapter = spec
-                    .adapter
-                    .expect("sandbox runtime should include adapter block");
-                assert_eq!(adapter.protocol, "jsonrpc-stdio");
-                assert!(!adapter.command.is_empty());
-            }
-            other => panic!("expected sandbox runtime, got {other:?}"),
-        }
-        assert!(matches!(
-            parsed.invocation_mode,
-            baml_rt_tools::external_tools::InvocationMode::Session
-        ));
-    }
-
-    #[test]
-    fn bind_sandbox_defaults_to_tool_relative_rootfs() {
-        let image = validate_runtime_options(
-            "echo",
-            "dev",
-            Runtime::Sandbox,
-            SandboxSource::Bind,
-            None,
-            &[],
-        )
-        .expect("bind scaffolding defaults should be valid");
-
-        match image {
-            Some(SandboxImageRef::Bind { path }) => {
-                assert_eq!(path, PathBuf::from("./.tmp/dev-echo-rootfs"));
-            }
-            other => panic!("expected bind image, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn bind_scaffold_does_not_emit_setup_or_docker_artifacts_by_default() {
-        let mut bind_ctx = ctx(Language::Python);
-        bind_ctx.runtime = Runtime::Sandbox;
-        bind_ctx.sandbox_source = Some(SandboxSource::Bind);
-        bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
-            path: PathBuf::from("./.tmp/dev-echo-rootfs"),
-        });
-
-        let files = build_file_set(&bind_ctx);
-        assert!(
-            files
-                .iter()
-                .all(|f| f.relative_path != "setup_bind_sandbox.sh"),
-            "default bind scaffolds should not emit bind setup script"
-        );
-        assert!(
-            files
-                .iter()
-                .all(|f| f.relative_path != "adapter/Dockerfile"),
-            "default bind scaffolds should not emit adapter Dockerfile"
-        );
-        assert!(
-            files
-                .iter()
-                .all(|f| f.relative_path != "adapter/tool-adapter"),
-            "default bind scaffolds should not emit adapter tool-adapter"
-        );
-    }
-
-    #[test]
-    fn bind_scaffold_can_emit_docker_artifacts_when_requested() {
-        let mut bind_ctx = ctx(Language::Python);
-        bind_ctx.runtime = Runtime::Sandbox;
-        bind_ctx.sandbox_source = Some(SandboxSource::Bind);
-        bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
-            path: PathBuf::from("./.tmp/dev-echo-rootfs"),
-        });
-        bind_ctx.generate_docker = true;
-
-        let files = build_file_set(&bind_ctx);
-        assert_scaffold_has(&files, "setup_bind_sandbox.sh");
-        assert_scaffold_has(&files, "inspect_tool.py");
-        assert_scaffold_has(&files, "adapter/Dockerfile");
-        assert_scaffold_has(&files, "adapter/tool-adapter");
-    }
-
-    #[test]
-    fn generate_docker_flag_is_restricted_to_bind_sandbox() {
-        assert!(
-            validate_generate_docker_option(Runtime::Sandbox, SandboxSource::Bind, true).is_ok()
-        );
-        assert!(
-            validate_generate_docker_option(Runtime::Process, SandboxSource::Bind, true).is_err()
-        );
-        assert!(
-            validate_generate_docker_option(Runtime::Sandbox, SandboxSource::Oci, true).is_err()
-        );
-    }
-
-    #[test]
-    fn session_invocation_mode_requires_sandbox_runtime() {
-        assert!(validate_invocation_mode(Runtime::Sandbox, InvocationMode::Session).is_ok());
-        assert!(validate_invocation_mode(Runtime::Process, InvocationMode::Session).is_err());
-        assert!(validate_invocation_mode(Runtime::Process, InvocationMode::SingleShot).is_ok());
-    }
-
-    #[test]
-    fn readme_supported_methods_do_not_duplicate_describe() {
-        let files = build_file_set(&ctx(Language::Python));
-        let readme = files
+    fn scaffold_references_the_sdk_and_tool_id() {
+        let files = build_file_set("weather", "support", "Weather tool");
+        let pkg = files
             .iter()
-            .find(|f| f.relative_path == "README.md")
-            .expect("README emitted");
-
-        let describe_bullet_count = readme.content.matches("- `tool/describe`").count();
-        assert_eq!(
-            describe_bullet_count, 1,
-            "README should list tool/describe only once in supported-methods bullets"
-        );
+            .find(|f| f.relative_path == "package.json")
+            .unwrap();
+        assert!(pkg.content.contains("@karakara/tool"));
+        let tool = files
+            .iter()
+            .find(|f| f.relative_path == "src/tool.ts")
+            .unwrap();
+        assert!(tool.content.contains("defineTool"));
+        assert!(tool.content.contains("support/weather"));
     }
 
     #[test]
-    fn session_readme_lists_session_methods() {
-        let mut session_ctx = ctx(Language::Python);
-        session_ctx.runtime = Runtime::Sandbox;
-        session_ctx.invocation_mode = InvocationMode::Session;
-        session_ctx.sandbox_source = Some(SandboxSource::Oci);
-        session_ctx.sandbox_image = Some(SandboxImageRef::Oci {
-            r#ref: "ghcr.io/org/echo@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                .to_string(),
-        });
-        let files = build_file_set(&session_ctx);
-        let readme = files
-            .iter()
-            .find(|f| f.relative_path == "README.md")
-            .expect("README emitted");
-
-        assert!(readme.content.contains("- `tool/session_open`"));
-        assert!(readme.content.contains("- `tool/session_read`"));
-        assert!(readme.content.contains("payloadless"));
-    }
-
-    #[test]
-    fn bind_setup_script_uses_tool_relative_rootfs_and_sync_command() {
-        let mut bind_ctx = ctx(Language::Python);
-        bind_ctx.runtime = Runtime::Sandbox;
-        bind_ctx.sandbox_source = Some(SandboxSource::Bind);
-        bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
-            path: PathBuf::from("./.tmp/dev-echo-rootfs"),
-        });
-        bind_ctx.generate_docker = true;
-
-        let files = build_file_set(&bind_ctx);
-        let script = files
-            .iter()
-            .find(|f| f.relative_path == "setup_bind_sandbox.sh")
-            .expect("setup script emitted");
-
-        assert!(
-            script.content.contains("ROOTFS=\"$TOOL_DIR/.tmp/"),
-            "script should default ROOTFS under TOOL_DIR"
-        );
-        assert!(
-            script.content.contains("sandbox-bind-sync"),
-            "script should delegate to sandbox-bind-sync"
-        );
-    }
-
-    #[test]
-    fn bind_scaffold_gitignore_ignores_runtime_lock_sidecar() {
-        let mut bind_ctx = ctx(Language::Python);
-        bind_ctx.runtime = Runtime::Sandbox;
-        bind_ctx.sandbox_source = Some(SandboxSource::Bind);
-        bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
-            path: PathBuf::from("./.tmp/dev-echo-rootfs"),
-        });
-
-        let files = build_file_set(&bind_ctx);
-        let gitignore = files
-            .iter()
-            .find(|f| f.relative_path == ".gitignore")
-            .expect(".gitignore emitted");
-
-        assert!(
-            gitignore
-                .content
-                .lines()
-                .any(|line| line.trim() == "tool-manifest.lock.json"),
-            ".gitignore should ignore tool-manifest.lock.json"
-        );
-    }
-
-    #[test]
-    fn bind_scaffold_gitignore_ignores_tmp_rootfs() {
-        let mut bind_ctx = ctx(Language::Python);
-        bind_ctx.runtime = Runtime::Sandbox;
-        bind_ctx.sandbox_source = Some(SandboxSource::Bind);
-        bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
-            path: PathBuf::from("./.tmp/dev-echo-rootfs"),
-        });
-
-        let files = build_file_set(&bind_ctx);
-        let gitignore = files
-            .iter()
-            .find(|f| f.relative_path == ".gitignore")
-            .expect(".gitignore emitted");
-
-        assert!(
-            gitignore.content.lines().any(|line| line.trim() == ".tmp/"),
-            ".gitignore should ignore local bind rootfs artifacts"
-        );
-    }
-
-    #[test]
-    fn bind_scaffold_adds_gitignore_for_languages_without_one() {
-        let mut bind_ctx = ctx(Language::Bash);
-        bind_ctx.runtime = Runtime::Sandbox;
-        bind_ctx.sandbox_source = Some(SandboxSource::Bind);
-        bind_ctx.sandbox_image = Some(SandboxImageRef::Bind {
-            path: PathBuf::from("./.tmp/dev-echo-rootfs"),
-        });
-
-        let files = build_file_set(&bind_ctx);
-        let gitignore = files
-            .iter()
-            .find(|f| f.relative_path == ".gitignore")
-            .expect(".gitignore emitted for bash bind scaffold");
-
-        let lines: Vec<&str> = gitignore.content.lines().collect();
-        assert!(lines.contains(&".tmp/"), "expected .tmp/, got {lines:?}");
-        assert!(
-            lines.contains(&"tool-manifest.lock.json"),
-            "expected tool-manifest.lock.json, got {lines:?}"
-        );
+    fn rejects_bad_names() {
+        assert!(validate_tool_name("").is_err());
+        assert!(validate_tool_name("Weather").is_err());
+        assert!(validate_tool_name("-x").is_err());
+        assert!(validate_tool_name("a--b").is_err());
+        assert!(validate_tool_name("clickup-sync").is_ok());
     }
 }

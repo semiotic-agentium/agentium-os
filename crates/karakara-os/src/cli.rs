@@ -5,12 +5,9 @@
 
 //! Clap command definitions for `karak`.
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 
-use crate::{
-    commands::publish::PublishOriginArg,
-    templates::external_tool::{Access, InvocationMode, Language, Runtime, SandboxSource},
-};
+use crate::commands::publish::PublishOriginArg;
 
 /// Karakara — unified platform host and developer SDK
 #[derive(Parser)]
@@ -76,71 +73,15 @@ pub enum Commands {
         command: EvalCommands,
     },
 
-    /// Create a standalone external tool scaffold (Rust/Bash/Python/TypeScript).
-    /// This is the default for most users — it produces a self-contained
-    /// directory the runner picks up via `BAML_EXTERNAL_TOOLS_DIR` without
-    /// touching the platform workspace.
-    NewTool {
-        /// Tool name in lowercase (e.g., echo, clickup_sync, clickup-sync). Omit for interactive mode.
-        name: Option<String>,
-
-        /// Bundle namespace. Free-form string (e.g. `support`, `travel`, `acme`).
-        /// Defaults to `support`. Must be non-empty and not contain `/`.
-        #[arg(long)]
-        bundle: Option<String>,
-
-        /// Scaffold language
-        #[arg(long, value_enum, default_value_t = Language::Rust)]
-        lang: Language,
-
-        /// Access level: read (default), write, or delete
-        #[arg(long, value_enum)]
-        access: Option<Access>,
-
-        /// Runtime declaration to scaffold into tool-manifest.json
-        #[arg(long, value_enum, default_value_t = Runtime::Process)]
-        runtime: Runtime,
-
-        /// Invocation contract to scaffold into tool-manifest.json.
-        ///
-        /// - `single-shot`: stateless `tool/invoke`
-        /// - `session`: `tool/session_*` protocol (requires `--runtime sandbox`)
-        #[arg(long, value_enum, default_value_t = InvocationMode::SingleShot)]
-        invocation_mode: InvocationMode,
-
-        /// Sandbox source kind when --runtime sandbox
-        #[arg(long, value_enum, default_value_t = SandboxSource::Oci)]
-        sandbox_source: SandboxSource,
-
-        /// Sandbox OCI image reference (`...@sha256:...`) when --sandbox-source oci
-        #[arg(long)]
-        sandbox_image: Option<String>,
-
-        /// Optional sandbox entrypoint argv, comma-separated
-        #[arg(long, value_delimiter = ',')]
-        sandbox_entrypoint: Vec<String>,
-
-        /// For bind sandbox scaffolds, also generate Docker adapter artifacts
-        /// and a Docker-assisted setup script (`setup_bind_sandbox.sh`).
-        #[arg(long)]
-        generate_docker: bool,
-
-        /// Human-readable description for this tool
-        #[arg(long)]
-        description: Option<String>,
-
-        /// Output directory (default: ./<name>)
-        #[arg(long)]
-        output: Option<String>,
-
-        /// Validate and print planned changes without writing files; exits non-zero on validation failures (non-interactive only)
-        #[arg(long)]
-        dry_run: bool,
+    /// Author external tools (v2): scaffold, build, and test a TypeScript tool.
+    Tool {
+        #[command(subcommand)]
+        command: ToolCommands,
     },
 
     /// Create a new *static* tool crate — compiled into the platform workspace.
     /// Use this only when extending the platform itself (e.g., adding a
-    /// system-level bundle). For every other case, prefer `new-tool`.
+    /// system-level bundle). For every other case, prefer `tool new`.
     NewStaticTool {
         /// Tool name in kebab-case (e.g., github, jira, linear). Omit for interactive mode.
         name: Option<String>,
@@ -438,6 +379,43 @@ pub enum Commands {
     },
 }
 
+/// `karak tool <new|build|test>` — the v2 external-tool authoring workflow.
+#[derive(Subcommand)]
+pub enum ToolCommands {
+    /// Scaffold a new TypeScript tool (one typed `defineTool` function).
+    New {
+        /// Tool name in lowercase (e.g. weather, clickup-sync). Omit for interactive mode.
+        name: Option<String>,
+        /// Bundle namespace (free-form, no `/`). Defaults to `support`.
+        #[arg(long)]
+        bundle: Option<String>,
+        /// Human-readable description.
+        #[arg(long)]
+        description: Option<String>,
+        /// Output directory (default: ./<name>).
+        #[arg(long)]
+        output: Option<String>,
+        /// Validate and print planned changes without writing (non-interactive only).
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Derive the descriptor + digest for a tool project (writes tool-descriptor.json).
+    Build {
+        /// Tool project directory (default: current directory).
+        #[arg(default_value = ".")]
+        dir: String,
+    },
+    /// Run one invocation through the SDK over a stdio DevBackend.
+    Test {
+        /// Tool project directory (default: current directory).
+        #[arg(default_value = ".")]
+        dir: String,
+        /// JSON input for the invocation (default: `{}`).
+        #[arg(long)]
+        input: Option<String>,
+    },
+}
+
 #[derive(Subcommand)]
 pub enum ConfigCommands {
     /// Show resolved project config
@@ -657,19 +635,4 @@ pub enum McpCommands {
         #[arg(long)]
         json: bool,
     },
-}
-pub(crate) fn parse_access_or_default(raw: &str) -> Access {
-    Access::from_str(raw.trim(), true).unwrap_or(Access::Read)
-}
-
-/// Parse an interactive-prompt string into a [`Language`]; fall back to Rust
-/// when the user typed something unexpected.
-pub(crate) fn parse_language_or_default(raw: &str) -> Language {
-    Language::from_str(raw.trim(), true).unwrap_or(Language::Rust)
-}
-
-/// Parse an interactive-prompt string into a [`Runtime`]; fall back to Process
-/// when the user typed something unexpected.
-pub(crate) fn parse_runtime_or_default(raw: &str) -> Runtime {
-    Runtime::from_str(raw.trim(), true).unwrap_or(Runtime::Process)
 }

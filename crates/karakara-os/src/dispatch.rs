@@ -8,10 +8,10 @@
 use crate::{
     cli::{
         Cli, Commands, ConfigCommands, EvalCommands, ExternalToolCommands, InstallCommands,
-        McpCommands, SkillCommands,
+        McpCommands, SkillCommands, ToolCommands,
     },
     commands::{
-        self, new_agent::NewAgentCli, new_static_tool::NewStaticToolCli, new_tool::NewToolCli,
+        self, new_agent::NewAgentCli, new_static_tool::NewStaticToolCli, tool_new::ToolNewCli,
         utils::resolve_runner_token,
     },
     eval, serve, skills,
@@ -124,35 +124,23 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             EvalCommands::Report => eval::report_last_run(),
         },
 
-        Commands::NewTool {
-            name,
-            bundle,
-            lang,
-            access,
-            runtime,
-            invocation_mode,
-            sandbox_source,
-            sandbox_image,
-            sandbox_entrypoint,
-            generate_docker,
-            description,
-            output,
-            dry_run,
-        } => commands::new_tool::run_cli(NewToolCli {
-            name,
-            bundle,
-            lang,
-            access,
-            runtime,
-            invocation_mode,
-            sandbox_source,
-            sandbox_image,
-            sandbox_entrypoint,
-            generate_docker,
-            description,
-            output,
-            dry_run,
-        }),
+        Commands::Tool { command } => match command {
+            ToolCommands::New {
+                name,
+                bundle,
+                description,
+                output,
+                dry_run,
+            } => commands::tool_new::run_cli(ToolNewCli {
+                name,
+                bundle,
+                description,
+                output,
+                dry_run,
+            }),
+            ToolCommands::Build { dir } => commands::tool_build::run(&dir),
+            ToolCommands::Test { dir, input } => commands::tool_test::run(&dir, input.as_deref()),
+        },
 
         Commands::NewStaticTool {
             name,

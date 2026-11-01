@@ -10,17 +10,16 @@
 //! response, and no `tool-server` wrapper — all of which the v1 scaffold
 //! emitted and v2 deletes (no backwards-compatibility requirement).
 
-use super::super::{GeneratedFile, ScaffoldContext};
+use super::super::{GeneratedFile, tool_id as make_tool_id};
 
 // Toolchain pins for scaffolded projects — bump here, the single source of
 // truth for starter dependency versions.
 const KARAKARA_TOOL_VERSION: &str = "^0.1.0";
 const TYPESCRIPT_VERSION: &str = "^6.0.0";
 
-pub fn generate(ctx: &ScaffoldContext<'_>) -> Vec<GeneratedFile> {
-    let tool_id = ctx.tool_id();
-    let pkg_name = ctx.name;
-    let description = ctx.description;
+pub fn generate(name: &str, bundle: &str, description: &str) -> Vec<GeneratedFile> {
+    let tool_id = make_tool_id(bundle, name);
+    let pkg_name = name;
 
     let package_json = format!(
         r#"{{

@@ -3,9 +3,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Language-specific scaffold templates for external tools.
+//! Language scaffold templates. v2 ships one blessed path: TypeScript.
 
-pub mod bash;
-pub mod python;
-pub mod rust;
 pub mod typescript;
