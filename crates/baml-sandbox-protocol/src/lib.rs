@@ -20,6 +20,7 @@
 
 pub mod codec;
 pub mod protocol;
+pub mod protocol_v2;
 pub mod session;
 
 pub use codec::{CodecError, MAX_FRAME_BYTES, TsrpcChannel};
@@ -30,6 +31,9 @@ pub use protocol::{
     ERR_UNSUPPORTED_PROTOCOL, ErrorClass, EventSchema, JsonRpcError, JsonRpcRequest,
     JsonRpcResponse, METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA, PROTOCOL_VERSION,
     SUPPORTED_METHODS, ToolDescribeResult, ToolInvokeParams, ToolInvokeResult, ToolSchemaResult,
+};
+pub use protocol_v2::{
+    CallContext, GuestMessage, HostMessage, InvokeRequest, PROTOCOL_V2_VERSION, RevealedSecret,
 };
 pub use session::{
     METHOD_SESSION_ABORT, METHOD_SESSION_FINISH, METHOD_SESSION_OPEN, METHOD_SESSION_READ,
