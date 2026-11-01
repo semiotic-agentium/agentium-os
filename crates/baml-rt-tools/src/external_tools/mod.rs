@@ -10,6 +10,7 @@
 //! Phase 1 scope: stateless, single-shot subprocess invocation. Later phases
 //! extend the same protocol to Wasm or keep-alive transports.
 
+pub mod descriptor;
 pub mod discovery;
 pub mod drift;
 pub mod handler;
@@ -33,6 +34,10 @@ pub mod stdio;
 
 use std::sync::Arc;
 
+pub use descriptor::{
+    CapabilityRequest, DESCRIPTOR_ABI, HostPort, McpMappingError, OutputTrust, SecretBinding,
+    SecretRequest, SideEffect, ToolDescriptor as UnifiedToolDescriptor, compute_descriptor_digest,
+};
 pub use discovery::{DEFAULT_DISCOVERY_TIMEOUT, discover_snapshot};
 pub use drift::DriftGuard;
 pub use handler::{ProcessToolHandler, ProcessToolSession};
