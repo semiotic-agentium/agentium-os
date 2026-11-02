@@ -126,6 +126,19 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "contexts_pinned_to_revision",
             retryability_for_a2a(error),
         ),
+        BamlRtError::Reachability(reachability) => mapping(
+            error,
+            -32010,
+            "External tool unreachable",
+            Some(serde_json::json!({
+                "tool_name": reachability.tool_name,
+                "tool_digest": reachability.tool_digest,
+                "target_kind": reachability.target_kind.to_string(),
+                "target": reachability.target,
+            })),
+            "external_tool_unreachable",
+            retryability_for_a2a(error),
+        ),
         BamlRtError::InvalidArgumentWithSource { .. } => mapping(
             error,
             -32600,

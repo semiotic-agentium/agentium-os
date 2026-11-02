@@ -11,10 +11,14 @@
 //! dials it. There is **no** `grants.rs` CIDR/secret machinery on this path;
 //! authority is the operator-trust record (P5.2 `TrustedHost`).
 //!
-//! P5.1 scope: the `Spawn` launch mode on the local node. The OS spawns
-//! `baml-tool-supervisor --tier trusted --uds <path>` and hands the accepted
-//! connection to a `SupervisorChannel`. `Attach` (operator-run daemon) and
-//! remote nodes are later phases.
+//! Two launch modes exist on the local node (P5.1, P5.5):
+//!
+//! - `Spawn` — the OS spawns `baml-tool-supervisor --tier trusted --uds <path>`
+//!   and hands the accepted connection to a `SupervisorChannel`.
+//! - `Attach` — the operator already runs a supervisor that *listens* on a
+//!   host-local socket; the OS connects to it and never owns its lifetime.
+//!
+//! Remote nodes are a later phase.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -33,12 +37,18 @@ use baml_sandbox_protocol::{
     protocol_v2::{CallContext, GuestMessage},
 };
 use serde_json::json;
-use tokio::{net::UnixListener, process::Command, sync::Mutex as AsyncMutex};
+use tokio::{
+    net::{UnixListener, UnixStream},
+    process::Command,
+    sync::Mutex as AsyncMutex,
+};
 
 use super::{audit_approved_bundle, channel::SupervisorChannel, invalid};
 use crate::{
     ToolSessionContext,
-    external_tools::{ExternalToolSnapshot, KtoolRuntimeTier, ToolRuntime},
+    external_tools::{
+        ExternalToolSnapshot, KtoolRuntimeTier, ToolRuntime, TrustedLaunch as DeclaredLaunch,
+    },
     mcp_snapshot::{Digest, canonical_digest},
 };
 
@@ -76,6 +86,7 @@ pub struct TrustGrant {
     runtime_image_digest: Digest,
     node: Option<String>,
     descriptor_name: String,
+    target: TrustedTarget,
 }
 
 impl TrustGrant {
@@ -91,6 +102,22 @@ impl TrustGrant {
     pub fn descriptor_name(&self) -> &str {
         &self.descriptor_name
     }
+    /// Socket of an operator-run daemon this grant attaches to, if any.
+    pub fn attached_socket(&self) -> Option<&Path> {
+        match &self.target {
+            TrustedTarget::Attach(path) => Some(path),
+            TrustedTarget::Spawn => None,
+        }
+    }
+}
+
+/// How the host obtains the supervisor for one trusted tool on its node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TrustedTarget {
+    /// The host spawns the supervisor (blessed DX; `karak tool publish`).
+    Spawn,
+    /// An operator-run daemon listens on this socket.
+    Attach(PathBuf),
 }
 
 /// Host configuration for the trusted tier. The supervisor binary and env are
@@ -110,9 +137,10 @@ pub struct TrustedHostConfig {
 type TrustedKey = (Digest, Option<String>);
 
 struct TrustedEntry {
-    // Dropping the entry kills the process (kill_on_drop) and unlinks the
-    // socket; the channel's Drop retires the connection.
-    _process: TrustedSupervisor,
+    // Some: the host spawned it, so dropping the entry kills the process
+    // (kill_on_drop) and unlinks the socket. None: an operator daemon we
+    // attached to, which keeps running after this host lets go.
+    _process: Option<TrustedSupervisor>,
     channel: SupervisorChannel,
 }
 
@@ -169,6 +197,7 @@ impl TrustedHost {
             runtime_image_digest: audited.manifest.runtime_image.digest,
             node: trusted_node(snapshot),
             descriptor_name: audited.descriptor.name.clone(),
+            target: trusted_target(snapshot),
         })
     }
 
@@ -253,27 +282,39 @@ impl TrustedHost {
             }
             processes.remove(&key);
         }
-        let id = NEXT_TRUSTED_ID.fetch_add(1, Ordering::Relaxed);
-        let socket = self.config.root_dir.join(format!("trusted-{id}.sock"));
-        let root = self.config.root_dir.join(format!("trusted-root-{id}"));
-        std::fs::create_dir_all(&root)
-            .map_err(|error| invalid(format!("cannot create trusted process root: {error}")))?;
-        let (process, io) = TrustedSupervisor::spawn(
-            &self.config.supervisor_bin,
-            &root,
-            &socket,
-            &self.config.process_env,
-            self.config.control_timeout,
-        )
-        .await?;
+        let (process, io) = match &grant.target {
+            // An operator daemon owns its own lifetime; the host only connects.
+            TrustedTarget::Attach(socket) => (
+                None,
+                connect_attached(socket, self.config.control_timeout).await?,
+            ),
+            TrustedTarget::Spawn => {
+                let id = NEXT_TRUSTED_ID.fetch_add(1, Ordering::Relaxed);
+                let socket = self.config.root_dir.join(format!("trusted-{id}.sock"));
+                let root = self.config.root_dir.join(format!("trusted-root-{id}"));
+                std::fs::create_dir_all(&root).map_err(|error| {
+                    invalid(format!("cannot create trusted process root: {error}"))
+                })?;
+                let (process, io) = TrustedSupervisor::spawn(
+                    &self.config.supervisor_bin,
+                    &root,
+                    &socket,
+                    &self.config.process_env,
+                    self.config.control_timeout,
+                )
+                .await?;
+                (Some(process), io)
+            }
+        };
         // The grant class gains the process no authority; it only labels the
         // handshake (the host is the authority).
         let grant_class = canonical_digest(&json!({
             "trust": grant.agent_id,
             "tool": grant.tool_digest.to_string(),
         }));
-        // On handshake failure `process` drops at scope end, killing the
-        // supervisor and unlinking the socket.
+        // On handshake failure a spawned `process` drops at scope end, killing
+        // the supervisor and unlinking the socket. An attached daemon is left
+        // running. `_process: None` ⇒ nothing to own.
         let channel =
             SupervisorChannel::connect(io, grant_class, self.config.control_timeout).await?;
         let entry = Arc::new(TrustedEntry {
@@ -307,6 +348,38 @@ fn trusted_node(snapshot: &ExternalToolSnapshot) -> Option<String> {
         Some(ToolRuntime::Trusted(spec)) => spec.node.clone(),
         _ => None,
     }
+}
+
+/// The launch mode a trusted tool declares. A bundle published before the
+/// launch declaration existed (P5.3) spawns the OS supervisor.
+fn trusted_target(snapshot: &ExternalToolSnapshot) -> TrustedTarget {
+    match snapshot.tool.runtime.as_ref() {
+        Some(ToolRuntime::Trusted(spec)) => match &spec.launch {
+            DeclaredLaunch::Attach { socket_path } => TrustedTarget::Attach(socket_path.clone()),
+            DeclaredLaunch::Spawn { .. } => TrustedTarget::Spawn,
+        },
+        _ => TrustedTarget::Spawn,
+    }
+}
+
+/// Connect to an operator-run supervisor that listens on `socket`.
+async fn connect_attached(socket: &Path, timeout: Duration) -> Result<TsrpcChannel> {
+    let stream = tokio::time::timeout(timeout, UnixStream::connect(socket))
+        .await
+        .map_err(|_| {
+            invalid(format!(
+                "trusted daemon at '{}' did not accept a connection before the timeout",
+                socket.display()
+            ))
+        })?
+        .map_err(|error| {
+            invalid(format!(
+                "cannot connect to trusted daemon at '{}': {error}",
+                socket.display()
+            ))
+        })?;
+    let (reader, writer) = stream.into_split();
+    Ok(TsrpcChannel::new(reader, writer))
 }
 
 /// A spawned trusted-tool process plus the socket it dialed. Dropping it kills

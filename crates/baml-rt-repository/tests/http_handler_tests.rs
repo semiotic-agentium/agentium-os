@@ -922,6 +922,56 @@ async fn external_tool_publish_ingests_bundle_and_v2_snapshot() {
 }
 
 #[tokio::test]
+async fn external_tool_publish_records_trusted_attach_placement() {
+    let app = setup_app().await;
+    let launch = baml_rt_tools::external_tools::KtoolTrustedLaunch::Attach {
+        socket_path: std::path::PathBuf::from("/run/karakara/gpu.sock"),
+        node: Some("gpu-1".into()),
+    };
+    let bytes = test_support::external_tools_v2::trusted_bundle(
+        &test_support::external_tools_v2::descriptor("support/gpu-echo"),
+        launch,
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/external-tools/publish?approved_by=repository-test")
+                .header("content-type", "application/vnd.karakara.ktool+gzip")
+                .body(Body::from(bytes))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/external-tools/snapshot?tool_name=support%2Fgpu-echo")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let snapshot: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    // The placement declaration survives publish, so the deploy gate and the
+    // trusted host read one contract (P5.5).
+    assert_eq!(snapshot["tool"]["runtime"]["kind"], "trusted");
+    assert_eq!(snapshot["tool"]["runtime"]["node"], "gpu-1");
+    assert_eq!(snapshot["tool"]["runtime"]["launch"]["mode"], "attach");
+    assert_eq!(
+        snapshot["tool"]["runtime"]["launch"]["socket_path"],
+        "/run/karakara/gpu.sock"
+    );
+}
+
+#[tokio::test]
 async fn external_tool_bundle_is_stored_by_exact_content_digest() {
     let service = common::setup_service().await;
     let bytes = ktool_bundle();

@@ -12,10 +12,10 @@
 pub use baml_ktool::ktool::{
     AuditedKtoolBundle, BundleFile, KTOOL_BUNDLE_SCHEMA_VERSION, KTOOL_DESCRIPTOR_PATH,
     KTOOL_MANIFEST_PATH, KTOOL_NODE_ENTRYPOINT, KTOOL_SBOM_PATH, KTOOL_TOOLS_PATH, KtoolManifest,
-    KtoolRuntimeImage, KtoolRuntimeTier, KtoolToolEntry, MAX_KTOOL_BUNDLE_BYTES,
-    MAX_KTOOL_UNPACKED_BYTES, build_ktool_bundle, build_ktool_bundle_for_tier,
-    compute_bundle_digest, compute_tool_digest_v2, default_node_runtime_image,
-    host_native_runtime_image, runtime_image_for_tier,
+    KtoolRuntimeImage, KtoolRuntimeTier, KtoolToolEntry, KtoolTrustedLaunch,
+    MAX_KTOOL_BUNDLE_BYTES, MAX_KTOOL_UNPACKED_BYTES, build_ktool_bundle,
+    build_ktool_bundle_for_tier, compute_bundle_digest, compute_tool_digest_v2,
+    default_node_runtime_image, host_native_runtime_image, runtime_image_for_tier,
 };
 use baml_rt_core::{BamlRtError, Result};
 

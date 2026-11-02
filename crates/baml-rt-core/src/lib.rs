@@ -95,8 +95,8 @@ pub use dispatch_ingress::{
 };
 pub use error::{
     BamlRtError, ClassifiedToolError, ContextBindingConflict, ContextsPinnedToRevision,
-    HeartbeatErrorKind, Result, SessionLifecycleError, baml_error_disposition,
-    retryability_for_a2a,
+    HeartbeatErrorKind, ReachabilityError, ReachabilityTargetKind, Result, SessionLifecycleError,
+    baml_error_disposition, retryability_for_a2a,
 };
 pub use event_delivery::{
     AgentDispatchPort, DiscoveryPublishClient, HostPublishClient, HostPublishService,

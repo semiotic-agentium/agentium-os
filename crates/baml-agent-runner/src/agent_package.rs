@@ -17,7 +17,7 @@ use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use baml_rt_api::RuntimeProgressMeter;
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentDiscoveryEntry, AgentLister, AgentManifest,
-    AgentPackageName, ArtifactHash, BamlRtError, DeploymentContentHash, Result,
+    AgentPackageName, ArtifactHash, BamlRtError, DeploymentContentHash, ReachabilityError, Result,
     bus::BusStream,
     context::{InvocationScope, generate_context_id},
     ids::AgentId,
@@ -38,9 +38,9 @@ use baml_rt_tools::{
     external_tools::{
         EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLifecycleEvent, ExternalLifecycleRecorder,
         ExternalLockfileMode, ExternalRegistryResolver, ExternalToolsLockfile, ServiceHost,
-        ToolDelivery,
+        ToolDelivery, host_native_runtime_image,
         resolver::SandboxRuntimeWiring,
-        runtime::{SandboxImageRef, ToolRuntime},
+        runtime::{SandboxImageRef, ToolRuntime, TrustedLaunch},
     },
     register_manifest_tools_with_fallback,
 };
@@ -257,6 +257,13 @@ impl AgentPackage {
             for snapshot in &packaged_snapshots {
                 lockfile.verify_snapshot(snapshot)?;
             }
+            verify_deploy_reachability(
+                &manifest_tool_names,
+                &lockfile,
+                &packaged_snapshots,
+                lifecycle_recorder.clone(),
+            )
+            .await?;
         }
         let registry_external_resolver = if has_packaged_external_snapshots {
             match external_tool_cache::read_approved_snapshots(&self.extract_dir) {
@@ -393,7 +400,6 @@ impl AgentPackage {
                     )?
                     .with_lifecycle_recorder(lifecycle_recorder.clone()),
                 );
-                host.verify(&snapshot).await?;
                 let resolver = ExternalRegistryResolver::from_v2_services(host, vec![snapshot])?;
                 composite.push(Box::new(resolver) as Box<dyn ExternalToolResolver>);
             }
@@ -975,6 +981,193 @@ pub(crate) fn build_sandbox_wiring(
     }
 }
 
+/// Verify placement constraints for the exact approved snapshots selected by
+/// lockfile v2. A failed check stops deployment here. It must not trigger a
+/// build or select a different node or endpoint.
+async fn verify_deploy_reachability(
+    manifest_tools: &ManifestToolNames,
+    lockfile: &ExternalToolsLockfile,
+    snapshots: &[baml_rt_tools::external_tools::ExternalToolSnapshot],
+    lifecycle_recorder: ExternalLifecycleRecorder,
+) -> Result<()> {
+    let local_node = std::env::var("KARAKARA_NODE_ID")
+        .ok()
+        .filter(|node| !node.trim().is_empty())
+        .unwrap_or_else(|| "local".to_string());
+    let mut checked_toolsets = HashSet::new();
+
+    for name in manifest_tools.iter() {
+        let Some(toolset) = lockfile.toolset_for(name) else {
+            // Static tools are not external-tool lockfile entries.
+            continue;
+        };
+        let snapshot = lockfile.select_approved_snapshot(name, snapshots)?;
+        let tool_digest = snapshot
+            .tool_digest()
+            .map(|digest| digest.to_string())
+            .unwrap_or_else(|| toolset.tool_digest.clone());
+        // Resolve every used interface pin, then probe each toolset only once.
+        // ServiceHost::verify already checks every descriptor in its toolset.
+        if !checked_toolsets.insert((toolset.name.clone(), tool_digest.clone())) {
+            continue;
+        }
+
+        match toolset.tier.as_str() {
+            // Snapshot validation above remains the Sandbox image-presence
+            // check. Sandbox placement has no extra node constraint.
+            "sandbox" => {}
+            "trusted" => {
+                let is_trusted_bundle = snapshot.v2.as_ref().is_some_and(|v2| {
+                    matches!(
+                        &v2.delivery,
+                        ToolDelivery::Bundled { runtime_image, .. }
+                            if *runtime_image == host_native_runtime_image()
+                    )
+                });
+                if !is_trusted_bundle {
+                    return Err(BamlRtError::InvalidArgument(format!(
+                        "trusted lockfile entry '{}' does not resolve to a trusted bundle",
+                        name
+                    )));
+                }
+                verify_trusted_reachability(snapshot, &tool_digest, &local_node)?;
+            }
+            "service" => {
+                verify_service_reachability(snapshot, &tool_digest, lifecycle_recorder.clone())
+                    .await?
+            }
+            tier => {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "external tool '{}' has unsupported lockfile tier '{tier}'",
+                    name
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn verify_trusted_reachability(
+    snapshot: &baml_rt_tools::external_tools::ExternalToolSnapshot,
+    tool_digest: &str,
+    local_node: &str,
+) -> Result<()> {
+    // Bundled Trusted toolsets from P5.3 have no separate launch declaration:
+    // their host supervisor is installed by the runner. When an operator adds
+    // a Trusted runtime declaration, it is an explicit placement contract and
+    // both launch modes are checked here.
+    let Some(ToolRuntime::Trusted(runtime)) = snapshot.tool.runtime.as_ref() else {
+        return Ok(());
+    };
+    let required_node = runtime.node.as_deref().unwrap_or("local");
+    if required_node != local_node {
+        return Err(BamlRtError::Reachability(Box::new(
+            ReachabilityError::node(&snapshot.tool.name, tool_digest, required_node),
+        )));
+    }
+
+    let reachable = match &runtime.launch {
+        // An empty argv is a bundle-declared placement with no host program: the
+        // runner spawns its own installed supervisor. Only a declared program
+        // can be probed from here.
+        TrustedLaunch::Spawn { argv, .. } => argv
+            .first()
+            .is_none_or(|program| trusted_spawn_is_installed(program)),
+        TrustedLaunch::Attach { socket_path } => trusted_attach_socket_exists(socket_path),
+    };
+    if reachable {
+        Ok(())
+    } else {
+        Err(BamlRtError::Reachability(Box::new(
+            ReachabilityError::node(&snapshot.tool.name, tool_digest, required_node),
+        )))
+    }
+}
+
+fn trusted_spawn_is_installed(program: &str) -> bool {
+    let path = Path::new(program);
+    if path.components().count() > 1 || path.is_absolute() {
+        return path.is_file();
+    }
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
+}
+
+fn trusted_attach_socket_exists(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+
+        path.metadata()
+            .is_ok_and(|metadata| metadata.file_type().is_socket())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+async fn verify_service_reachability(
+    snapshot: &baml_rt_tools::external_tools::ExternalToolSnapshot,
+    tool_digest: &str,
+    lifecycle_recorder: ExternalLifecycleRecorder,
+) -> Result<()> {
+    let v2 = snapshot.v2.as_ref().ok_or_else(|| {
+        BamlRtError::InvalidArgument(format!(
+            "service tool '{}' is missing v2 delivery metadata",
+            snapshot.tool.name
+        ))
+    })?;
+    let (endpoint, source) = match &v2.delivery {
+        ToolDelivery::Reference {
+            endpoint,
+            descriptor_source,
+        } => (endpoint.clone(), descriptor_source),
+        ToolDelivery::Bundled { .. } => {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "service tool '{}' has bundled delivery metadata",
+                snapshot.tool.name
+            )));
+        }
+    };
+    let endpoint_name = match &endpoint {
+        baml_rt_tools::external_tools::ServiceEndpoint::Mcp { url } => url.clone(),
+        _ => format!("{endpoint:?}"),
+    };
+    let local_name = v2
+        .descriptor
+        .name
+        .rsplit_once('/')
+        .map(|(_, local)| local.to_string())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            BamlRtError::InvalidArgument(format!(
+                "Service descriptor '{}' has no local tool name",
+                v2.descriptor.name
+            ))
+        })?;
+    let result = async {
+        let client = Arc::new(McpServiceClient::from_http(endpoint, local_name, source)?);
+        let host = ServiceHost::new(
+            client,
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(120),
+        )?
+        .with_lifecycle_recorder(lifecycle_recorder);
+        host.verify(snapshot).await
+    }
+    .await;
+    result.map_err(|error| {
+        BamlRtError::Reachability(Box::new(ReachabilityError::endpoint(
+            &snapshot.tool.name,
+            tool_digest,
+            endpoint_name,
+            error,
+        )))
+    })
+}
+
 async fn build_allowed_dirs_resolver(
     lifecycle_recorder: Option<ExternalLifecycleRecorder>,
     lockfile_path: &Path,
@@ -1157,15 +1350,23 @@ impl BundleRegistrar for MemoryBundleRegistrar {
 mod tests {
     use std::{fs, os::unix::fs::PermissionsExt, path::Path, sync::OnceLock};
 
-    use baml_rt_tools::external_tools::{
-        ExternalToolInterfaceLockEntry, ExternalToolMetadata, ExternalToolsLockfile,
-        ExternalToolsetLockEntry, compute_external_schema_digest,
+    use baml_rt_tools::{
+        external_tools::{
+            CapabilityRequest, DescribeProvenance, ErrorClass, ExternalToolInterfaceLockEntry,
+            ExternalToolMetadata, ExternalToolSnapshot, ExternalToolsLockfile,
+            ExternalToolsetLockEntry, KtoolRuntimeTier, OutputTrust, ServiceEndpoint, SideEffect,
+            ToolRuntime, TrustedLaunch, TrustedRuntimeSpec, UnifiedToolDescriptor,
+            compute_external_schema_digest, runtime_image_for_tier,
+        },
+        mcp_snapshot::canonical_digest,
     };
+    use serde_json::json;
     use tempfile::tempdir;
 
     use super::{
-        AgentPackage, EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLockfileMode,
-        build_allowed_dirs_resolver,
+        AgentPackage, EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLifecycleRecorder,
+        ExternalLockfileMode, ManifestToolNames, build_allowed_dirs_resolver,
+        verify_deploy_reachability,
     };
 
     fn packaged_identity_fixture(root: &Path, source: &str) -> AgentPackage {
@@ -1209,6 +1410,64 @@ mod tests {
             first.derived_agent_id().expect("derive first ID"),
             changed.derived_agent_id().expect("derive changed ID"),
         );
+    }
+
+    fn trusted_snapshot(launch: TrustedLaunch, node: Option<&str>) -> ExternalToolSnapshot {
+        let descriptor = UnifiedToolDescriptor {
+            descriptor_abi: 1,
+            name: "support/trusted".into(),
+            version: "1.0.0".into(),
+            description: "trusted reachability fixture".into(),
+            input_schema: json!({"type": "object"}),
+            output_schema: json!({"type": "object"}),
+            error_classes: vec![ErrorClass::Execution],
+            side_effect: SideEffect::Read,
+            idempotent: true,
+            output_trust: OutputTrust::Untrusted,
+        };
+        let bundle_digest = canonical_digest(&json!("bundle"));
+        let tool_digest = canonical_digest(&json!("tool"));
+        let mut snapshot = ExternalToolSnapshot::from_v2_bundle(
+            descriptor,
+            CapabilityRequest::default(),
+            bundle_digest,
+            tool_digest,
+            runtime_image_for_tier(KtoolRuntimeTier::Trusted),
+            "operator",
+            "2026-01-01T00:00:00Z",
+        )
+        .expect("trusted snapshot");
+        snapshot.tool.runtime = Some(ToolRuntime::Trusted(TrustedRuntimeSpec {
+            launch,
+            node: node.map(str::to_string),
+        }));
+        snapshot
+    }
+
+    fn trusted_lockfile(snapshot: &ExternalToolSnapshot) -> ExternalToolsLockfile {
+        ExternalToolsLockfile {
+            version: "2".to_string(),
+            toolsets: vec![ExternalToolsetLockEntry {
+                name: "support".to_string(),
+                version: "1.0.0".to_string(),
+                requirement: "*".to_string(),
+                tier: "trusted".to_string(),
+                tool_digest: snapshot.tool_digest().expect("tool digest").to_string(),
+                tools: vec![ExternalToolInterfaceLockEntry {
+                    name: "trusted".to_string(),
+                    descriptor_digest: snapshot
+                        .v2
+                        .as_ref()
+                        .expect("v2")
+                        .descriptor_digest
+                        .to_string(),
+                }],
+            }],
+        }
+    }
+
+    fn lifecycle_recorder() -> ExternalLifecycleRecorder {
+        std::sync::Arc::new(|_| {})
     }
 
     fn env_lock() -> &'static tokio::sync::Mutex<()> {
@@ -1259,6 +1518,120 @@ mod tests {
         let mut perms = fs::metadata(&bin).expect("stat tool-server").permissions();
         perms.set_mode(0o755);
         fs::set_permissions(&bin, perms).expect("chmod tool-server");
+    }
+
+    #[tokio::test]
+    async fn deploy_gate_rejects_trusted_tool_on_another_node() {
+        let snapshot = trusted_snapshot(
+            TrustedLaunch::Spawn {
+                argv: vec!["sh".into()],
+                cwd: None,
+                env_allowlist: Vec::new(),
+            },
+            Some("gpu-1"),
+        );
+        let lockfile = trusted_lockfile(&snapshot);
+        let tools = ManifestToolNames::parse(&["support/trusted".to_string()]).unwrap();
+
+        let error =
+            verify_deploy_reachability(&tools, &lockfile, &[snapshot], lifecycle_recorder())
+                .await
+                .expect_err("a remote trusted node must not be silently selected");
+        let baml_rt_core::BamlRtError::Reachability(error) = error else {
+            panic!("expected ReachabilityError");
+        };
+        assert_eq!(error.tool_name, "support/trusted");
+        assert_eq!(error.target_kind.to_string(), "node");
+        assert_eq!(error.target, "gpu-1");
+    }
+
+    #[tokio::test]
+    async fn deploy_gate_rejects_missing_trusted_spawn_argv() {
+        let snapshot = trusted_snapshot(
+            TrustedLaunch::Spawn {
+                argv: vec!["karakara-command-that-is-not-installed".into()],
+                cwd: None,
+                env_allowlist: Vec::new(),
+            },
+            None,
+        );
+        let lockfile = trusted_lockfile(&snapshot);
+        let tools = ManifestToolNames::parse(&["support/trusted".to_string()]).unwrap();
+
+        let error =
+            verify_deploy_reachability(&tools, &lockfile, &[snapshot], lifecycle_recorder())
+                .await
+                .expect_err("a missing trusted command must block deployment");
+        assert!(matches!(error, baml_rt_core::BamlRtError::Reachability(_)));
+    }
+
+    #[tokio::test]
+    async fn deploy_gate_rejects_missing_trusted_attach_socket() {
+        let socket = tempfile::tempdir().unwrap().path().join("missing.sock");
+        let snapshot = trusted_snapshot(
+            TrustedLaunch::Attach {
+                socket_path: socket,
+            },
+            None,
+        );
+        let lockfile = trusted_lockfile(&snapshot);
+        let tools = ManifestToolNames::parse(&["support/trusted".to_string()]).unwrap();
+
+        let error =
+            verify_deploy_reachability(&tools, &lockfile, &[snapshot], lifecycle_recorder())
+                .await
+                .expect_err("a missing attached daemon socket must block deployment");
+        let baml_rt_core::BamlRtError::Reachability(error) = error else {
+            panic!("expected ReachabilityError");
+        };
+        assert_eq!(error.target_kind.to_string(), "node");
+        assert_eq!(error.target, "local");
+    }
+
+    #[tokio::test]
+    async fn deploy_gate_names_unreachable_service_endpoint() {
+        let descriptor = test_support::external_tools_v2::descriptor("support/service");
+        let snapshot = ExternalToolSnapshot::from_v2_service(
+            descriptor,
+            ServiceEndpoint::Mcp {
+                url: "http://127.0.0.1:1/mcp".into(),
+            },
+            DescribeProvenance::McpToolsList {
+                protocol_version: "2025-06-18".into(),
+                server_identity_digest: canonical_digest(&json!("server")),
+                tools_digest: canonical_digest(&json!(["service"])),
+                tool_name: "service".into(),
+            },
+            "operator",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+        let lockfile = ExternalToolsLockfile {
+            version: "2".into(),
+            toolsets: vec![ExternalToolsetLockEntry {
+                name: "support".into(),
+                version: "1.0.0".into(),
+                requirement: "*".into(),
+                tier: "service".into(),
+                tool_digest: snapshot.tool_digest().unwrap().to_string(),
+                tools: vec![ExternalToolInterfaceLockEntry {
+                    name: "service".into(),
+                    descriptor_digest: snapshot.v2.as_ref().unwrap().descriptor_digest.to_string(),
+                }],
+            }],
+        };
+        let tools = ManifestToolNames::parse(&["support/service".to_string()]).unwrap();
+
+        let error =
+            verify_deploy_reachability(&tools, &lockfile, &[snapshot], lifecycle_recorder())
+                .await
+                .expect_err("an invalid endpoint must block deployment");
+        let baml_rt_core::BamlRtError::Reachability(error) = error else {
+            panic!("expected ReachabilityError");
+        };
+        assert_eq!(error.tool_name, "support/service");
+        assert_eq!(error.target_kind.to_string(), "endpoint");
+        assert_eq!(error.target, "http://127.0.0.1:1/mcp");
     }
 
     #[tokio::test]

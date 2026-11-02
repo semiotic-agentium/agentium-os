@@ -491,7 +491,7 @@ pub async fn publish_external_tool(
             audited.descriptor.name
         ))
     })?;
-    let snapshot = baml_rt_tools::external_tools::ExternalToolSnapshot::from_v2_bundle(
+    let mut snapshot = baml_rt_tools::external_tools::ExternalToolSnapshot::from_v2_bundle(
         audited.descriptor.clone(),
         audited.manifest.requested.clone(),
         audited.bundle_digest,
@@ -501,6 +501,14 @@ pub async fn publish_external_tool(
         baml_rt_tools::external_tools::now_snapshot_timestamp(),
     )
     .map_err(|e| bad_request(format!("invalid v2 external-tool snapshot: {e}")))?;
+    // P5.5: a Trusted toolset may declare where its supervisor lives (spawn on a
+    // node, or attach to an operator daemon). Record it on the snapshot so the
+    // deploy reachability gate and the trusted host read one placement contract.
+    if let Some(launch) = &audited.manifest.trusted_launch {
+        snapshot.tool.runtime = Some(baml_rt_tools::external_tools::ToolRuntime::Trusted(
+            baml_rt_tools::external_tools::TrustedRuntimeSpec::from(launch),
+        ));
+    }
     let descriptor_digest = snapshot
         .v2
         .as_ref()

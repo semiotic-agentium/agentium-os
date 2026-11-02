@@ -130,6 +130,15 @@ pub(crate) fn build_bundle(project_dir: &Path, tier: KtoolRuntimeTier) -> Result
     let built = tool_build::build_toolset(project_dir, true)?;
     let descriptors = built.descriptors;
     let requested = built.config.capabilities;
+    // Placement is only meaningful for the Trusted tier; the audit rejects it on
+    // Sandbox, so fail here with a message that names the config key.
+    let trusted_launch = match (tier, built.config.trusted.as_ref()) {
+        (_, None) => None,
+        (KtoolRuntimeTier::Trusted, Some(section)) => Some(section.into()),
+        (KtoolRuntimeTier::Sandbox, Some(_)) => {
+            bail!("[toolset.trusted] in karakara.toml requires `karak tool publish --trusted`")
+        }
+    };
     let manifest = KtoolManifest {
         bundle_schema_version: KTOOL_BUNDLE_SCHEMA_VERSION,
         name: built.config.name,
@@ -145,6 +154,7 @@ pub(crate) fn build_bundle(project_dir: &Path, tier: KtoolRuntimeTier) -> Result
                 descriptor_digest: compute_descriptor_digest(descriptor),
             })
             .collect(),
+        trusted_launch,
     };
 
     let mut files = BTreeMap::<String, (Vec<u8>, u32)>::new();

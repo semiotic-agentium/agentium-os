@@ -100,6 +100,41 @@ pub struct KtoolManifest {
     pub command: Vec<String>,
     pub requested: CapabilityRequest,
     pub tools: Vec<KtoolToolEntry>,
+    /// How the OS obtains this toolset's supervisor on its node (P5.5). Only
+    /// meaningful for the `Trusted` tier; absent ⇒ the OS spawns its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_launch: Option<KtoolTrustedLaunch>,
+}
+
+/// Placement declaration for a `Trusted` toolset's supervisor (§P5.3).
+///
+/// This is a scheduling fact, not authority: the host still requires an
+/// operator-trust record before the process runs, and deploy fails when the
+/// declared node or socket is unreachable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum KtoolTrustedLaunch {
+    /// The OS spawns `baml-tool-supervisor --tier trusted` for this toolset.
+    Spawn {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node: Option<String>,
+    },
+    /// The operator already runs the supervisor; the OS attaches to its socket.
+    Attach {
+        /// Host-local stream socket the operator's daemon listens on.
+        socket_path: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node: Option<String>,
+    },
+}
+
+impl KtoolTrustedLaunch {
+    /// Node this toolset is pinned to. `None` means the local node.
+    pub fn node(&self) -> Option<&str> {
+        match self {
+            Self::Spawn { node } | Self::Attach { node, .. } => node.as_deref(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -293,6 +328,20 @@ pub fn audit_ktool_bundle(bytes: &[u8]) -> KtoolResult<AuditedKtoolBundle> {
             manifest.runtime_image.digest
         )));
     }
+    // A launch declaration on a tier the OS runs itself would be a lie about
+    // placement. Only `Trusted` tools can be pinned or attached.
+    if manifest.trusted_launch.is_some() && manifest.runtime_tier != KtoolRuntimeTier::Trusted {
+        return Err(invalid(
+            "trusted_launch is only valid for the trusted runtime tier",
+        ));
+    }
+    if let Some(KtoolTrustedLaunch::Attach { socket_path, .. }) = &manifest.trusted_launch
+        && !socket_path.is_absolute()
+    {
+        return Err(invalid(
+            "trusted_launch attach socket_path must be absolute",
+        ));
+    }
     let bundle_name = manifest.name.clone();
     if descriptors.iter().any(|descriptor| {
         descriptor
@@ -458,6 +507,9 @@ pub fn build_ktool_bundle_for_tier(
             name: descriptor.name.clone(),
             descriptor_digest: compute_descriptor_digest(descriptor),
         }],
+        // The convenience builder never declares placement; the publish path
+        // sets it from `karakara.toml`.
+        trusted_launch: None,
     };
 
     let mut files = vec![
@@ -657,6 +709,71 @@ mod tests {
     }
 
     #[test]
+    fn trusted_launch_round_trips_and_changes_identity() {
+        let bytes = build_ktool_bundle_for_tier(
+            &descriptor(),
+            KtoolRuntimeTier::Trusted,
+            b"export default {};".to_vec(),
+            vec![],
+            br#"{}"#.to_vec(),
+        )
+        .unwrap();
+        let plain = audit_ktool_bundle(&bytes).unwrap();
+        let declared = rewrite_manifest(&bytes, |manifest| {
+            manifest.trusted_launch = Some(KtoolTrustedLaunch::Attach {
+                socket_path: PathBuf::from("/run/karakara/gpu.sock"),
+                node: Some("gpu-1".into()),
+            });
+        });
+        let audited = audit_ktool_bundle(&declared).unwrap();
+
+        let launch = audited.manifest.trusted_launch.clone().unwrap();
+        assert_eq!(launch.node(), Some("gpu-1"));
+        assert!(matches!(
+            launch,
+            KtoolTrustedLaunch::Attach { ref socket_path, .. }
+                if socket_path == Path::new("/run/karakara/gpu.sock")
+        ));
+        // Placement is part of the artifact's declared contract, so it is part
+        // of the executable identity the operator approves.
+        assert_ne!(plain.tool_digest, audited.tool_digest);
+    }
+
+    #[test]
+    fn rejects_trusted_launch_on_sandbox_tier() {
+        let bytes = bundle();
+        let tampered = rewrite_manifest(&bytes, |manifest| {
+            manifest.trusted_launch = Some(KtoolTrustedLaunch::Spawn { node: None });
+        });
+        let err = audit_ktool_bundle(&tampered).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("only valid for the trusted runtime tier"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rejects_relative_attach_socket() {
+        let bytes = build_ktool_bundle_for_tier(
+            &descriptor(),
+            KtoolRuntimeTier::Trusted,
+            b"export default {};".to_vec(),
+            vec![],
+            br#"{}"#.to_vec(),
+        )
+        .unwrap();
+        let tampered = rewrite_manifest(&bytes, |manifest| {
+            manifest.trusted_launch = Some(KtoolTrustedLaunch::Attach {
+                socket_path: PathBuf::from("relative.sock"),
+                node: None,
+            });
+        });
+        let err = audit_ktool_bundle(&tampered).unwrap_err();
+        assert!(err.to_string().contains("must be absolute"), "{err}");
+    }
+
+    #[test]
     fn rejects_descriptor_drift() {
         let mut descriptor = descriptor();
         descriptor.side_effect = SideEffect::Irreversible;
@@ -821,6 +938,7 @@ mod tests {
                 name: descriptor.name.clone(),
                 descriptor_digest: compute_descriptor_digest(&descriptor),
             }],
+            trusted_launch: None,
         };
         let files = vec![
             BundleFile::new(

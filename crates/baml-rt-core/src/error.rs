@@ -35,6 +35,68 @@ pub struct ContextBindingConflict {
     pub resolved_artifact_hash: String,
 }
 
+/// The deployment target cannot reach a pinned external tool dependency.
+///
+/// This is a scheduling constraint, not an invocation failure. Deploy must
+/// surface it rather than building the tool or selecting another target.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error(
+    "external tool '{tool_name}' ({tool_digest}) requires reachable {target_kind} '{target}', which is not reachable{detail}"
+)]
+pub struct ReachabilityError {
+    pub tool_name: String,
+    pub tool_digest: String,
+    pub target_kind: ReachabilityTargetKind,
+    pub target: String,
+    pub detail: String,
+}
+
+impl ReachabilityError {
+    pub fn node(
+        tool_name: impl Into<String>,
+        tool_digest: impl Into<String>,
+        node: impl Into<String>,
+    ) -> Self {
+        Self {
+            tool_name: tool_name.into(),
+            tool_digest: tool_digest.into(),
+            target_kind: ReachabilityTargetKind::Node,
+            target: node.into(),
+            detail: String::new(),
+        }
+    }
+
+    pub fn endpoint(
+        tool_name: impl Into<String>,
+        tool_digest: impl Into<String>,
+        endpoint: impl Into<String>,
+        reason: impl std::fmt::Display,
+    ) -> Self {
+        Self {
+            tool_name: tool_name.into(),
+            tool_digest: tool_digest.into(),
+            target_kind: ReachabilityTargetKind::Endpoint,
+            target: endpoint.into(),
+            detail: format!(" ({reason})"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReachabilityTargetKind {
+    Node,
+    Endpoint,
+}
+
+impl std::fmt::Display for ReachabilityTargetKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Node => "node",
+            Self::Endpoint => "endpoint",
+        })
+    }
+}
+
 /// An undeploy was refused because recently active contexts still pin the exact
 /// revision being removed. The operator must pass an explicit override.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,6 +253,10 @@ pub enum BamlRtError {
     /// Undeploy refused because active contexts still pin the removed revision.
     #[error(transparent)]
     ContextsPinnedToRevision(Box<ContextsPinnedToRevision>),
+
+    /// A pinned external dependency cannot be reached from this deployment target.
+    #[error(transparent)]
+    Reachability(Box<ReachabilityError>),
 
     /// Tool session plan step violated a correctable contract (structured for `StepExecutorOutcome`).
     #[error(transparent)]
@@ -401,6 +467,7 @@ fn code_for_classified(err: &BamlRtError, disposition: ErrorDisposition) -> Stri
         BamlRtError::Conflict(_) => "conflict".to_string(),
         BamlRtError::ContextBindingConflict(_) => "context_binding_conflict".to_string(),
         BamlRtError::ContextsPinnedToRevision(_) => "contexts_pinned_to_revision".to_string(),
+        BamlRtError::Reachability(_) => "external_tool_unreachable".to_string(),
         _ => "runtime_error".to_string(),
     }
 }
@@ -421,7 +488,8 @@ pub fn baml_error_disposition(err: &BamlRtError) -> ErrorDisposition {
         BamlRtError::AgentDraining(_) => ErrorDisposition::HostRetriable,
         BamlRtError::Conflict(_)
         | BamlRtError::ContextBindingConflict(_)
-        | BamlRtError::ContextsPinnedToRevision(_) => ErrorDisposition::HostRetriable,
+        | BamlRtError::ContextsPinnedToRevision(_)
+        | BamlRtError::Reachability(_) => ErrorDisposition::HostRetriable,
         BamlRtError::SessionLifecycle(
             SessionLifecycleError::ToolSessionNotFound { .. }
             | SessionLifecycleError::ToolSessionClosed { .. },

@@ -34,7 +34,7 @@ use baml_rt_tools::{
     SessionPlanFunctionsMap, UnifiedStepExecutorFunctionsMap, external_tool_cache,
     external_tools::{
         EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalToolInterfaceLockEntry, ExternalToolsLockfile,
-        ExternalToolsetLockEntry, ToolDelivery,
+        ExternalToolsetLockEntry, KtoolRuntimeTier, ToolDelivery, runtime_image_for_tier,
     },
     gather_coordination_fragments, split_manifest_tool_entry,
     tools::{ToolFunctionMetadata, ToolName},
@@ -697,7 +697,18 @@ fn resolve_lockfile_toolsets(
             ))
         })?;
         let (tool_digest, tier) = match &v2.delivery {
-            ToolDelivery::Bundled { tool_digest, .. } => (tool_digest.to_string(), "sandbox"),
+            ToolDelivery::Bundled {
+                tool_digest,
+                runtime_image,
+                ..
+            } => (
+                tool_digest.to_string(),
+                if *runtime_image == runtime_image_for_tier(KtoolRuntimeTier::Trusted) {
+                    "trusted"
+                } else {
+                    "sandbox"
+                },
+            ),
             ToolDelivery::Reference { endpoint, .. } => (
                 baml_rt_tools::mcp_snapshot::canonical_digest(endpoint).to_string(),
                 "service",
@@ -817,13 +828,24 @@ mod external_tools_lockfile_tests {
     use std::collections::{BTreeMap, HashSet};
 
     use baml_rt_tools::{
-        external_tools::{CapabilityRequest, ExternalToolSnapshot, default_node_runtime_image},
+        external_tools::{
+            CapabilityRequest, ExternalToolSnapshot, KtoolRuntimeTier, runtime_image_for_tier,
+        },
         mcp_snapshot::Digest,
     };
 
     use super::{ToolsetRequirement, parse_toolset_requirements, resolve_lockfile_toolsets};
 
     fn v2_snapshot(name: &str, version: &str, seed: u8) -> ExternalToolSnapshot {
+        v2_snapshot_for_tier(name, version, seed, KtoolRuntimeTier::Sandbox)
+    }
+
+    fn v2_snapshot_for_tier(
+        name: &str,
+        version: &str,
+        seed: u8,
+        tier: KtoolRuntimeTier,
+    ) -> ExternalToolSnapshot {
         let mut descriptor = test_support::external_tools_v2::descriptor(name);
         descriptor.version = version.to_string();
         ExternalToolSnapshot::from_v2_bundle(
@@ -831,7 +853,7 @@ mod external_tools_lockfile_tests {
             CapabilityRequest::default(),
             Digest::from_bytes([seed; 32]),
             Digest::from_bytes([seed.wrapping_add(1); 32]),
-            default_node_runtime_image(),
+            runtime_image_for_tier(tier),
             "operator",
             "2026-11-02T00:00:00Z",
         )
@@ -869,6 +891,16 @@ mod external_tools_lockfile_tests {
         assert_eq!(set.requirement, "^1.2");
         assert_eq!(set.tools.len(), 1);
         assert_eq!(set.tools[0].name, "clickup");
+    }
+
+    #[test]
+    fn records_trusted_bundle_tier_in_lockfile() {
+        let snapshot = v2_snapshot_for_tier("support/gpu", "1.0.0", 7, KtoolRuntimeTier::Trusted);
+
+        let lock =
+            resolve_lockfile_toolsets(&names(&["support/gpu"]), &BTreeMap::new(), &[snapshot])
+                .unwrap();
+        assert_eq!(lock.toolsets[0].tier, "trusted");
     }
 
     #[test]

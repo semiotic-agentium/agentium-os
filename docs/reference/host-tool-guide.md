@@ -133,6 +133,30 @@ tool's canonical descriptor into `tools.json`; MCP annotations map to Karakara
 semantics (`readOnlyHint` ⇒ Read, `destructiveHint` ⇒ Irreversible, else Write;
 `idempotentHint`). Other languages follow with their runtime images.
 
+### Trusted placement
+
+A `Trusted` toolset runs unsandboxed as a crash-isolated host process under one
+operator-trust record; there are no per-device or per-path grants. Declare where
+its supervisor lives in the same file, then publish with `--trusted`:
+
+```toml
+[toolset]
+name = "gpu"
+version = "0.1.0"
+
+[toolset.trusted]
+mode = "attach"                       # or "spawn"
+socket_path = "/run/karakara/gpu.sock" # attach only; must be absolute
+node = "gpu-1"                         # omit for the local node
+```
+
+`attach` connects to a supervisor the operator already runs (hardware daemons);
+`spawn` lets the runner start its own supervisor for the workflow.
+`karak tool publish --trusted` records the declaration in `ktool.json`, so it is
+part of `tool_digest`. Deploy then checks the declared node and socket, and
+fails with `tool '<name>' (<digest>) requires reachable node|endpoint '<target>',
+which is not reachable` instead of building or moving the agent.
+
 ### Identity: two digests
 
 Each tool carries two independent digests:

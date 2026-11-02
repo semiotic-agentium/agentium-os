@@ -201,6 +201,31 @@ pub enum ServiceEndpoint {
     Mcp { url: String },
 }
 
+impl From<&baml_ktool::ktool::KtoolTrustedLaunch> for TrustedRuntimeSpec {
+    /// Project a `.ktool` placement declaration onto the host runtime spec, so
+    /// the deploy gate and the trusted host read one shape (P5.5).
+    fn from(launch: &baml_ktool::ktool::KtoolTrustedLaunch) -> Self {
+        use baml_ktool::ktool::KtoolTrustedLaunch;
+
+        match launch {
+            KtoolTrustedLaunch::Spawn { node } => Self {
+                launch: TrustedLaunch::Spawn {
+                    argv: Vec::new(),
+                    cwd: None,
+                    env_allowlist: Vec::new(),
+                },
+                node: node.clone(),
+            },
+            KtoolTrustedLaunch::Attach { socket_path, node } => Self {
+                launch: TrustedLaunch::Attach {
+                    socket_path: socket_path.clone(),
+                },
+                node: node.clone(),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum SandboxImageRefCompat {

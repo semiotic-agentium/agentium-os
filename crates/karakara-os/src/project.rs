@@ -32,6 +32,35 @@ pub struct ToolsetConfig {
     pub version: Version,
     #[serde(default)]
     pub capabilities: CapabilityRequest,
+    /// Placement for a `Trusted` toolset (external tools v2 §P5.3/P5.5).
+    #[serde(default)]
+    pub trusted: Option<TrustedSection>,
+}
+
+/// `[toolset.trusted]` in `karakara.toml`: where a `Trusted` toolset's
+/// supervisor runs. Absent ⇒ the runner spawns its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TrustedSection {
+    /// The OS spawns the supervisor on `node` (default: local).
+    Spawn { node: Option<String> },
+    /// The operator runs the supervisor; the OS attaches to `socket_path`.
+    Attach {
+        socket_path: PathBuf,
+        node: Option<String>,
+    },
+}
+
+impl From<&TrustedSection> for baml_rt_tools::external_tools::KtoolTrustedLaunch {
+    fn from(section: &TrustedSection) -> Self {
+        match section {
+            TrustedSection::Spawn { node } => Self::Spawn { node: node.clone() },
+            TrustedSection::Attach { socket_path, node } => Self::Attach {
+                socket_path: socket_path.clone(),
+                node: node.clone(),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +178,56 @@ binding = "egress_bound"
         assert_eq!(toolset.version, Version::new(1, 2, 3));
         assert_eq!(toolset.capabilities.net[0].host, "api.example.test");
         assert_eq!(toolset.capabilities.secrets[0].name, "API_TOKEN");
+    }
+
+    #[test]
+    fn trusted_attach_placement_parses_from_project_toml() {
+        let config: KarakaraConfig = toml::from_str(
+            r#"
+[toolset]
+name = "gpu"
+version = "0.1.0"
+
+[toolset.trusted]
+mode = "attach"
+socket_path = "/run/karakara/gpu.sock"
+node = "gpu-1"
+"#,
+        )
+        .unwrap();
+        let trusted = config.toolset.unwrap().trusted.unwrap();
+        assert_eq!(
+            trusted,
+            TrustedSection::Attach {
+                socket_path: PathBuf::from("/run/karakara/gpu.sock"),
+                node: Some("gpu-1".into()),
+            }
+        );
+        // The bundler and the host must agree on the placement shape.
+        assert!(matches!(
+            baml_rt_tools::external_tools::KtoolTrustedLaunch::from(&trusted),
+            baml_rt_tools::external_tools::KtoolTrustedLaunch::Attach { ref node, .. }
+                if node.as_deref() == Some("gpu-1")
+        ));
+    }
+
+    #[test]
+    fn trusted_spawn_placement_parses_without_a_node() {
+        let config: KarakaraConfig = toml::from_str(
+            r#"
+[toolset]
+name = "native"
+version = "0.1.0"
+
+[toolset.trusted]
+mode = "spawn"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.toolset.unwrap().trusted.unwrap(),
+            TrustedSection::Spawn { node: None }
+        );
     }
 }
 

@@ -7,8 +7,9 @@
 use baml_rt_tools::external_tools::{
     CapabilityRequest, DESCRIPTOR_ABI, ErrorClass, KTOOL_BUNDLE_SCHEMA_VERSION,
     KTOOL_DESCRIPTOR_PATH, KTOOL_MANIFEST_PATH, KTOOL_NODE_ENTRYPOINT, KTOOL_SBOM_PATH,
-    KTOOL_TOOLS_PATH, KtoolManifest, KtoolRuntimeTier, KtoolToolEntry, OutputTrust, SideEffect, UnifiedToolDescriptor,
-    compute_descriptor_digest, default_node_runtime_image,
+    KTOOL_TOOLS_PATH, KtoolManifest, KtoolRuntimeTier, KtoolToolEntry, KtoolTrustedLaunch,
+    OutputTrust, SideEffect, UnifiedToolDescriptor, compute_descriptor_digest,
+    host_native_runtime_image,
 };
 use flate2::{Compression, GzBuilder};
 use serde_json::json;
@@ -33,18 +34,49 @@ pub fn descriptor(name: &str) -> UnifiedToolDescriptor {
 /// `requested` (R1 §R1.1: capabilities live on the manifest, not the
 /// descriptor).
 pub fn bundle(descriptor: &UnifiedToolDescriptor, requested: CapabilityRequest) -> Vec<u8> {
+    bundle_with_launch(descriptor, requested, KtoolRuntimeTier::Sandbox, None)
+}
+
+/// Build a `Trusted` `.ktool` that declares where its supervisor lives
+/// (`Spawn` on a node, or `Attach` to an operator daemon). Used by the deploy
+/// reachability tests (P5.5).
+pub fn trusted_bundle(descriptor: &UnifiedToolDescriptor, launch: KtoolTrustedLaunch) -> Vec<u8> {
+    bundle_with_launch(
+        descriptor,
+        CapabilityRequest::default(),
+        KtoolRuntimeTier::Trusted,
+        Some(launch),
+    )
+}
+
+fn bundle_with_launch(
+    descriptor: &UnifiedToolDescriptor,
+    requested: CapabilityRequest,
+    tier: KtoolRuntimeTier,
+    trusted_launch: Option<KtoolTrustedLaunch>,
+) -> Vec<u8> {
+    let runtime_image = match tier {
+        KtoolRuntimeTier::Sandbox => baml_rt_tools::external_tools::default_node_runtime_image(),
+        KtoolRuntimeTier::Trusted => host_native_runtime_image(),
+    };
     let manifest = KtoolManifest {
         bundle_schema_version: KTOOL_BUNDLE_SCHEMA_VERSION,
-        name: descriptor.name.split_once('/').map(|(bundle, _)| bundle).unwrap_or(&descriptor.name).into(),
+        name: descriptor
+            .name
+            .split_once('/')
+            .map(|(bundle, _)| bundle)
+            .unwrap_or(&descriptor.name)
+            .into(),
         version: semver::Version::new(0, 1, 0),
-        runtime_tier: KtoolRuntimeTier::Sandbox,
-        runtime_image: default_node_runtime_image(),
+        runtime_tier: tier,
+        runtime_image,
         command: vec!["node".into(), KTOOL_NODE_ENTRYPOINT.into()],
         requested,
         tools: vec![KtoolToolEntry {
             name: descriptor.name.clone(),
             descriptor_digest: compute_descriptor_digest(descriptor),
         }],
+        trusted_launch,
     };
     let encoder = GzBuilder::new()
         .mtime(0)
@@ -56,7 +88,10 @@ pub fn bundle(descriptor: &UnifiedToolDescriptor, requested: CapabilityRequest) 
             serde_json::to_vec(descriptor).unwrap(),
         ),
         (KTOOL_MANIFEST_PATH, serde_json::to_vec(&manifest).unwrap()),
-        (KTOOL_TOOLS_PATH, serde_json::to_vec(&vec![descriptor]).unwrap()),
+        (
+            KTOOL_TOOLS_PATH,
+            serde_json::to_vec(&vec![descriptor]).unwrap(),
+        ),
         (KTOOL_SBOM_PATH, b"{}".to_vec()),
         (KTOOL_NODE_ENTRYPOINT, b"export default {};".to_vec()),
     ] {
