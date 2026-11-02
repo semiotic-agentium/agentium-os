@@ -23,8 +23,40 @@ pub use grants::{
 };
 pub use pool::{PoolPolicy, VmBudget, VmPool, VmSpec};
 
-use super::{ExternalToolSnapshot, audit_ktool_bundle, verify_ktool_snapshot};
+use super::{
+    AuditedKtoolBundle, ExternalToolSnapshot, audit_ktool_bundle, verify_ktool_snapshot,
+};
+pub use trusted::{TrustGrant, TrustedHost, TrustedHostConfig, TrustedPolicy};
+
 use crate::ToolSessionContext;
+
+/// Shared authorization prelude for every v2 tier that runs approved `.ktool`
+/// bytes (Sandbox and Trusted). It fails closed and pins the *exact* approved
+/// bytes; the tier-specific authority (capability grants vs operator trust) is
+/// layered on top by the caller. Keeping this in one place stops the two tiers'
+/// approval/expiry/identity checks from drifting apart.
+pub(super) fn audit_approved_bundle(
+    snapshot: &ExternalToolSnapshot,
+    bytes: &[u8],
+    ctx: &ToolSessionContext,
+) -> Result<AuditedKtoolBundle> {
+    if !snapshot.approval.state.is_approved() {
+        return Err(invalid("external tool is not approved"));
+    }
+    if let Some(expiry) = &snapshot.approval.expires_at {
+        let expiry = chrono::DateTime::parse_from_rfc3339(expiry)
+            .map_err(|_| invalid("invalid tool approval expiry"))?;
+        if expiry <= chrono::Utc::now() {
+            return Err(invalid("external tool approval expired"));
+        }
+    }
+    let audited = audit_ktool_bundle(bytes)?;
+    verify_ktool_snapshot(&audited, snapshot)?;
+    if ctx.tool_name.to_string() != audited.descriptor.name {
+        return Err(invalid("tool session identity does not match bundle"));
+    }
+    Ok(audited)
+}
 
 pub struct ToolHost {
     pool: Arc<VmPool>,
@@ -63,21 +95,7 @@ impl ToolHost {
         bytes: &[u8],
         ctx: &ToolSessionContext,
     ) -> Result<ToolGrant> {
-        if !snapshot.approval.state.is_approved() {
-            return Err(invalid("external tool is not approved"));
-        }
-        if let Some(expiry) = &snapshot.approval.expires_at {
-            let expiry = chrono::DateTime::parse_from_rfc3339(expiry)
-                .map_err(|_| invalid("invalid tool approval expiry"))?;
-            if expiry <= chrono::Utc::now() {
-                return Err(invalid("external tool approval expired"));
-            }
-        }
-        let audited = audit_ktool_bundle(bytes)?;
-        verify_ktool_snapshot(&audited, snapshot)?;
-        if ctx.tool_name.to_string() != audited.descriptor.name {
-            return Err(invalid("tool session identity does not match bundle"));
-        }
+        let audited = audit_approved_bundle(snapshot, bytes, ctx)?;
         let policy = self
             .policy
             .tools

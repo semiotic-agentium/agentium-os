@@ -17,26 +17,291 @@
 //! connection to a `SupervisorChannel`. `Attach` (operator-run daemon) and
 //! remote nodes are later phases.
 
-// The transport is exercised by the gated e2e test below; the P5.2 `TrustedHost`
-// is the first non-test consumer.
-#![allow(dead_code)]
 
 use std::{
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     process::Stdio,
-    time::Duration,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use baml_rt_core::Result;
-use baml_sandbox_protocol::TsrpcChannel;
-use tokio::{net::UnixListener, process::Command};
+use baml_sandbox_protocol::{
+    TsrpcChannel,
+    protocol_v2::{CallContext, GuestMessage},
+};
+use serde_json::json;
+use tokio::{net::UnixListener, process::Command, sync::Mutex as AsyncMutex};
 
-use super::invalid;
+use super::{audit_approved_bundle, channel::SupervisorChannel, invalid};
+use crate::{
+    ToolSessionContext,
+    external_tools::{ExternalToolSnapshot, ToolRuntime},
+    mcp_snapshot::{Digest, canonical_digest},
+};
+
+static NEXT_TRUSTED_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Operator-trust policy: the presence of `(agent_id, tool_digest)` *is* the
+/// authority for a `Trusted` tool. There are no capability fields — trust is
+/// all-or-nothing (§3.2). Empty ⇒ deny all.
+#[derive(Debug, Clone, Default)]
+pub struct TrustedPolicy {
+    trusted: HashSet<(String, Digest)>,
+}
+
+impl TrustedPolicy {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record that the operator vouches for this agent running this exact tool.
+    pub fn trust(&mut self, agent_id: impl Into<String>, tool_digest: Digest) {
+        self.trusted.insert((agent_id.into(), tool_digest));
+    }
+
+    pub fn is_trusted(&self, agent_id: &str, tool_digest: &Digest) -> bool {
+        self.trusted.contains(&(agent_id.to_string(), *tool_digest))
+    }
+}
+
+/// The sole authority artifact for a trusted invocation (contrast `ToolGrant`,
+/// which carries CIDR/secret grants). Recorded in provenance.
+#[derive(Debug, Clone)]
+pub struct TrustGrant {
+    agent_id: String,
+    tool_digest: Digest,
+    runtime_image_digest: Digest,
+    node: Option<String>,
+    descriptor_name: String,
+}
+
+impl TrustGrant {
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+    pub fn tool_digest(&self) -> Digest {
+        self.tool_digest
+    }
+    pub fn node(&self) -> Option<&str> {
+        self.node.as_deref()
+    }
+    pub fn descriptor_name(&self) -> &str {
+        &self.descriptor_name
+    }
+}
+
+/// Host configuration for the trusted tier. The supervisor binary and env are
+/// operator-controlled; nothing here comes from the agent or the bundle.
+pub struct TrustedHostConfig {
+    /// Path to the `baml-tool-supervisor` the OS spawns for trusted tools.
+    pub supervisor_bin: PathBuf,
+    /// Runner-private directory for per-process sockets and scratch roots.
+    pub root_dir: PathBuf,
+    pub policy: TrustedPolicy,
+    pub control_timeout: Duration,
+    pub call_timeout: Duration,
+    /// Operator environment passed to each trusted process (never the agent's).
+    pub process_env: Vec<(String, String)>,
+}
+
+type TrustedKey = (Digest, Option<String>);
+
+struct TrustedEntry {
+    // Dropping the entry kills the process (kill_on_drop) and unlinks the
+    // socket; the channel's Drop retires the connection.
+    _process: TrustedSupervisor,
+    channel: SupervisorChannel,
+}
+
+/// Runs `Trusted`-tier tools: operator-trusted, unsandboxed host processes over
+/// the P4 wire. No `grants.rs` CIDR/secret machinery — authority is the
+/// operator-trust policy, and the exact approved bytes are still pinned.
+pub struct TrustedHost {
+    config: TrustedHostConfig,
+    processes: AsyncMutex<HashMap<TrustedKey, Arc<TrustedEntry>>>,
+}
+
+impl TrustedHost {
+    pub fn new(config: TrustedHostConfig) -> Result<Self> {
+        if config.control_timeout.is_zero() || config.call_timeout.is_zero() {
+            return Err(invalid("trusted host timeouts must be nonzero"));
+        }
+        std::fs::create_dir_all(&config.root_dir)
+            .map_err(|error| invalid(format!("cannot create trusted root: {error}")))?;
+        Ok(Self {
+            config,
+            processes: AsyncMutex::new(HashMap::new()),
+        })
+    }
+
+    /// Fail-closed operator-trust check. Shares the approval/expiry/audit/
+    /// identity prelude with the Sandbox tier, then requires operator trust
+    /// instead of resolving capability grants.
+    pub fn authorize(
+        &self,
+        snapshot: &ExternalToolSnapshot,
+        bytes: &[u8],
+        ctx: &ToolSessionContext,
+    ) -> Result<TrustGrant> {
+        let audited = audit_approved_bundle(snapshot, bytes, ctx)?;
+        let agent_id = ctx.agent_id.to_string();
+        if !self.config.policy.is_trusted(&agent_id, &audited.tool_digest) {
+            return Err(invalid(format!(
+                "agent '{}' is not operator-trusted for tool '{}' ({})",
+                agent_id, audited.descriptor.name, audited.tool_digest
+            )));
+        }
+        Ok(TrustGrant {
+            agent_id,
+            tool_digest: audited.tool_digest,
+            runtime_image_digest: audited.manifest.runtime_image.digest,
+            node: trusted_node(snapshot),
+            descriptor_name: audited.descriptor.name.clone(),
+        })
+    }
+
+    /// Authorize, then run one invocation on the trusted process for this tool
+    /// (spawning or reusing it), with the host deadline cap.
+    pub async fn invoke(
+        &self,
+        snapshot: &ExternalToolSnapshot,
+        bytes: &[u8],
+        ctx: &ToolSessionContext,
+        mut context: CallContext,
+        input: serde_json::Value,
+    ) -> Result<GuestMessage> {
+        let grant = self.authorize(snapshot, bytes, ctx)?;
+        context.agent_id = grant.agent_id.clone();
+        context.context_id = ctx.context_id.to_string();
+        context.task_id = ctx
+            .task_id
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| invalid("host clock precedes Unix epoch"))?;
+        let host_deadline = now
+            .saturating_add(self.config.call_timeout)
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        context.deadline_ms = if context.deadline_ms == 0 {
+            host_deadline
+        } else {
+            context.deadline_ms.min(host_deadline)
+        };
+        let deadline = context.deadline_ms;
+        let remaining = || -> Result<Duration> {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| invalid("invalid host clock"))?
+                .as_millis() as u64;
+            if deadline <= now {
+                return Err(invalid("trusted invocation deadline elapsed"));
+            }
+            Ok(Duration::from_millis(deadline - now))
+        };
+        remaining()?;
+
+        let entry = self.acquire(&grant).await?;
+        let outcome = async {
+            entry
+                .channel
+                .load(grant.tool_digest, grant.runtime_image_digest, bytes)
+                .await?;
+            // Reveal secrets are off by default for the trusted tier (§P5.6); a
+            // trusted tool already has full host access.
+            entry
+                .channel
+                .invoke(grant.tool_digest, context, input, remaining()?, &[])
+                .await
+        }
+        .await;
+        if outcome.is_err() {
+            self.evict_unhealthy(&grant).await;
+        }
+        outcome
+    }
+
+    /// Reuse the live trusted process for this (tool, node), or spawn one.
+    async fn acquire(&self, grant: &TrustGrant) -> Result<Arc<TrustedEntry>> {
+        let key = (grant.tool_digest, grant.node.clone());
+        let mut processes = self.processes.lock().await;
+        if let Some(entry) = processes.get(&key) {
+            if entry.channel.healthy() {
+                return Ok(entry.clone());
+            }
+            processes.remove(&key);
+        }
+        let id = NEXT_TRUSTED_ID.fetch_add(1, Ordering::Relaxed);
+        let socket = self.config.root_dir.join(format!("trusted-{id}.sock"));
+        let root = self.config.root_dir.join(format!("trusted-root-{id}"));
+        std::fs::create_dir_all(&root)
+            .map_err(|error| invalid(format!("cannot create trusted process root: {error}")))?;
+        let (process, io) = TrustedSupervisor::spawn(
+            &self.config.supervisor_bin,
+            &root,
+            &socket,
+            &self.config.process_env,
+            self.config.control_timeout,
+        )
+        .await?;
+        // The grant class gains the process no authority; it only labels the
+        // handshake (the host is the authority).
+        let grant_class = canonical_digest(&json!({
+            "trust": grant.agent_id,
+            "tool": grant.tool_digest.to_string(),
+        }));
+        // On handshake failure `process` drops at scope end, killing the
+        // supervisor and unlinking the socket.
+        let channel =
+            SupervisorChannel::connect(io, grant_class, self.config.control_timeout).await?;
+        let entry = Arc::new(TrustedEntry {
+            _process: process,
+            channel,
+        });
+        processes.insert(key, entry.clone());
+        Ok(entry)
+    }
+
+    async fn evict_unhealthy(&self, grant: &TrustGrant) {
+        let key = (grant.tool_digest, grant.node.clone());
+        let mut processes = self.processes.lock().await;
+        if processes
+            .get(&key)
+            .is_some_and(|entry| !entry.channel.healthy())
+        {
+            processes.remove(&key);
+        }
+    }
+
+    /// Kill every trusted process. Entries drop here, killing their processes.
+    pub async fn shutdown(&self) {
+        self.processes.lock().await.clear();
+    }
+}
+
+/// The node a trusted tool is pinned to, from its runtime spec. `None` = local.
+fn trusted_node(snapshot: &ExternalToolSnapshot) -> Option<String> {
+    match snapshot.tool.runtime.as_ref() {
+        Some(ToolRuntime::Trusted(spec)) => spec.node.clone(),
+        _ => None,
+    }
+}
 
 /// A spawned trusted-tool process plus the socket it dialed. Dropping it kills
 /// the process (crash isolation: a dead runner never orphans a trusted process)
 /// and unlinks the socket.
 pub(super) struct TrustedSupervisor {
+    // Held so `kill_on_drop` terminates the process when the entry is dropped
+    // (eviction/shutdown). Read only through `Drop`/`reap`, so allow dead_code.
+    #[allow(dead_code)]
     child: tokio::process::Child,
     socket_path: PathBuf,
 }
@@ -94,7 +359,10 @@ impl TrustedSupervisor {
         Ok((process, TsrpcChannel::new(reader, writer)))
     }
 
-    /// Reap the process (best effort) after the channel is retired.
+    /// Reap the process (best effort) after the channel is retired. Used by the
+    /// P5.1 live test and the deterministic-shutdown path; pool eviction relies
+    /// on `Drop`/`kill_on_drop` instead.
+    #[allow(dead_code)]
     pub(super) async fn reap(mut self) {
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
