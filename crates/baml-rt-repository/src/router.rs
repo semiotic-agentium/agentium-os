@@ -99,6 +99,10 @@ pub fn repository_mutation_router(service: Arc<RepositoryService>) -> Router {
             )),
         )
         .route(
+            "/external-tools/service/publish",
+            post(handlers::publish_service_tool),
+        )
+        .route(
             "/external-tools/snapshots/import",
             post(handlers::import_external_tool_snapshot),
         )
@@ -163,6 +167,10 @@ fn repository_router_full(service: Arc<RepositoryService>) -> Router {
             post(handlers::publish_external_tool).layer(DefaultBodyLimit::max(
                 baml_rt_tools::external_tools::MAX_KTOOL_BUNDLE_BYTES,
             )),
+        )
+        .route(
+            "/external-tools/service/publish",
+            post(handlers::publish_service_tool),
         )
         .route(
             "/external-tools/snapshots/import",

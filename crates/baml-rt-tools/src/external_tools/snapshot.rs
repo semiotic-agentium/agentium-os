@@ -13,9 +13,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{
-    ExternalToolManifest, ExternalToolMetadata, KtoolRuntimeImage, MetadataSchemas, SideEffect,
-    ToolRuntime, ToolSchemaResult, UnifiedToolDescriptor, compute_descriptor_digest,
-    metadata::metadata_schema_digest, runtime::DEFAULT_PROCESS_COMMAND,
+    ExternalToolManifest, ExternalToolMetadata, KtoolRuntimeImage, MetadataSchemas,
+    ServiceEndpoint, ServiceRuntimeSpec, SideEffect, ToolRuntime, ToolSchemaResult,
+    UnifiedToolDescriptor, compute_descriptor_digest, metadata::metadata_schema_digest,
+    runtime::DEFAULT_PROCESS_COMMAND,
 };
 use crate::{
     ToolAccess,
@@ -88,9 +89,44 @@ pub struct ExternalToolSnapshot {
 pub struct ExternalToolV2Snapshot {
     pub descriptor: UnifiedToolDescriptor,
     pub descriptor_digest: Digest,
-    pub bundle_digest: Digest,
-    pub tool_digest: Digest,
-    pub runtime_image: KtoolRuntimeImage,
+    pub delivery: ToolDelivery,
+}
+
+/// How a v2 tool reaches its execution environment.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ToolDelivery {
+    /// Sandbox and Trusted tools carry an audited `.ktool` bundle.
+    Bundled {
+        bundle_digest: Digest,
+        tool_digest: Digest,
+        runtime_image: KtoolRuntimeImage,
+    },
+    /// Service tools carry no executable bytes. The endpoint is resolved by the
+    /// operator at deploy time.
+    Reference {
+        endpoint: ServiceEndpointRef,
+        descriptor_source: DescribeProvenance,
+    },
+}
+
+/// Opaque endpoint reference stored in a Service snapshot.
+///
+/// The endpoint is deliberately separate from the runtime declaration so the
+/// published snapshot remains the identity of one approved service reference.
+pub type ServiceEndpointRef = ServiceEndpoint;
+
+/// Records how the descriptor was obtained during Service publish.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DescribeProvenance {
+    /// The descriptor came from an MCP `initialize` plus `tools/list` exchange.
+    McpToolsList {
+        protocol_version: String,
+        server_identity_digest: Digest,
+        tools_digest: Digest,
+        tool_name: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -228,9 +264,11 @@ impl ExternalToolSnapshot {
             v2: Some(ExternalToolV2Snapshot {
                 descriptor,
                 descriptor_digest,
-                bundle_digest,
-                tool_digest,
-                runtime_image,
+                delivery: ToolDelivery::Bundled {
+                    bundle_digest,
+                    tool_digest,
+                    runtime_image,
+                },
             }),
             approval,
             created_at,
@@ -240,6 +278,78 @@ impl ExternalToolSnapshot {
         snapshot.digests.snapshot_digest = snapshot_digest;
         Ok(snapshot)
     }
+
+    /// Build an approved Service snapshot from a descriptor obtained from the
+    /// referenced endpoint. Service snapshots never carry bundle bytes.
+    pub fn from_v2_service(
+        descriptor: UnifiedToolDescriptor,
+        endpoint: ServiceEndpointRef,
+        descriptor_source: DescribeProvenance,
+        approved_by: impl Into<String>,
+        created_at: impl Into<String>,
+    ) -> Result<Self> {
+        let descriptor_digest = compute_descriptor_digest(&descriptor);
+        let mut tool = metadata_from_v2_descriptor(&descriptor)?;
+        tool.runtime = Some(ToolRuntime::Service(ServiceRuntimeSpec {
+            endpoint: endpoint.clone(),
+        }));
+        let schema_digest = compute_descriptor_schema_digest(&descriptor);
+        let endpoint_digest = canonical_digest(&endpoint);
+        let created_at = created_at.into();
+        let approval = ApprovalRecord {
+            state: ApprovalState::Approved,
+            owner: Some(approved_by.into()),
+            reviewed_at: Some(created_at.clone()),
+            expires_at: None,
+        };
+        let mut snapshot = Self {
+            snapshot_schema_version: EXTERNAL_TOOL_SNAPSHOT_SCHEMA_VERSION,
+            source: EXTERNAL_TOOL_SOURCE.to_string(),
+            snapshot_digest: descriptor_digest,
+            tool,
+            describe: ExternalToolDescribeSnapshot {
+                protocol_version: "2".to_string(),
+                supported_methods: vec!["describe".to_string(), "invoke".to_string()],
+                max_payload_bytes: None,
+                schema_digest: Some(schema_digest),
+            },
+            digests: ExternalToolSnapshotDigests {
+                manifest_digest: descriptor_digest,
+                schema_digest,
+                runtime_digest: endpoint_digest,
+                snapshot_digest: descriptor_digest,
+            },
+            v2: Some(ExternalToolV2Snapshot {
+                descriptor,
+                descriptor_digest,
+                delivery: ToolDelivery::Reference {
+                    endpoint,
+                    descriptor_source,
+                },
+            }),
+            approval,
+            created_at,
+        };
+        let snapshot_digest = compute_snapshot_digest(&snapshot)?;
+        snapshot.snapshot_digest = snapshot_digest;
+        snapshot.digests.snapshot_digest = snapshot_digest;
+        validate_external_tool_snapshot(&snapshot)?;
+        Ok(snapshot)
+    }
+}
+
+/// Digest the input/output part of a descriptor using the legacy schema-drift
+/// contract. It is kept alongside the full descriptor digest because a Service
+/// re-checks the live endpoint's callable schema before its first invoke.
+pub fn compute_descriptor_schema_digest(descriptor: &UnifiedToolDescriptor) -> Digest {
+    compute_schema_digest(&descriptor.input_schema, &descriptor.output_schema)
+}
+
+pub fn compute_schema_digest(input: &Value, output: &Value) -> Digest {
+    canonical_digest(&json!({
+        "input": input,
+        "output": output,
+    }))
 }
 
 fn metadata_from_v2_descriptor(descriptor: &UnifiedToolDescriptor) -> Result<ExternalToolMetadata> {
@@ -291,8 +401,8 @@ fn metadata_from_v2_descriptor(descriptor: &UnifiedToolDescriptor) -> Result<Ext
             }
         })?,
         config_bundle: None,
-        // P3 dispatches v2 snapshots by `v2.runtime_image`; the retired v1
-        // process/sandbox declaration must not decide how these bytes run.
+        // P3 dispatches v2 snapshots by `v2.delivery`; the retired v1
+        // process/sandbox declaration must not decide how bundled bytes run.
         runtime: None,
         coordination: None,
         coordination_baml: None,
@@ -451,15 +561,69 @@ fn validate_v2_snapshot(
             snapshot.tool.name
         )));
     }
-    if snapshot.digests.manifest_digest != descriptor_digest
-        || snapshot.digests.schema_digest != descriptor_digest
-        || snapshot.digests.runtime_digest != v2.runtime_image.digest
-        || snapshot.describe.schema_digest != Some(descriptor_digest)
-    {
+    if snapshot.digests.manifest_digest != descriptor_digest {
         return Err(BamlRtError::InvalidArgument(format!(
-            "external tool snapshot '{}' v2 compatibility digests do not match its identities",
+            "external tool snapshot '{}' v2 manifest digest does not match its descriptor",
             snapshot.tool.name
         )));
+    }
+    match &v2.delivery {
+        ToolDelivery::Bundled { runtime_image, .. } => {
+            if snapshot.digests.schema_digest != descriptor_digest
+                || snapshot.digests.runtime_digest != runtime_image.digest
+                || snapshot.describe.schema_digest != Some(descriptor_digest)
+            {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "external tool snapshot '{}' bundled compatibility digests do not match its identities",
+                    snapshot.tool.name
+                )));
+            }
+        }
+        ToolDelivery::Reference {
+            endpoint,
+            descriptor_source,
+        } => {
+            let endpoint_digest = canonical_digest(endpoint);
+            if snapshot.tool.runtime
+                != Some(ToolRuntime::Service(ServiceRuntimeSpec {
+                    endpoint: endpoint.clone(),
+                }))
+            {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "external tool snapshot '{}' Service runtime does not match its reference",
+                    snapshot.tool.name
+                )));
+            }
+            let expected_local_name = v2
+                .descriptor
+                .name
+                .rsplit_once('/')
+                .map(|(_, local)| local)
+                .unwrap_or_default();
+            let DescribeProvenance::McpToolsList { tool_name, .. } = descriptor_source;
+            if tool_name != expected_local_name {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "external tool snapshot '{}' descriptor provenance names '{}', expected '{}'",
+                    snapshot.tool.name, tool_name, expected_local_name
+                )));
+            }
+            let schema_digest = compute_descriptor_schema_digest(&v2.descriptor);
+            if snapshot.digests.schema_digest != schema_digest
+                || snapshot.digests.runtime_digest != endpoint_digest
+                || snapshot.describe.schema_digest != Some(schema_digest)
+            {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "external tool snapshot '{}' service reference digests do not match its identities",
+                    snapshot.tool.name
+                )));
+            }
+            if matches!(endpoint, ServiceEndpoint::Mcp { url } if url.trim().is_empty()) {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "external tool snapshot '{}' has an empty service endpoint",
+                    snapshot.tool.name
+                )));
+            }
+        }
     }
     let snapshot_digest = compute_snapshot_digest(snapshot)?;
     if snapshot.snapshot_digest != snapshot_digest
@@ -557,8 +721,9 @@ mod tests {
     use crate::{
         ToolAccess,
         external_tools::{
-            EventSchema, ExternalDatasourceManifest, ExternalDatasourceMode, InvocationMode,
-            ToolDescribeResult,
+            CapabilityRequest, DESCRIPTOR_ABI, EventSchema, ExternalDatasourceManifest,
+            ExternalDatasourceMode, InvocationMode, OutputTrust, ServiceEndpoint, SideEffect,
+            ToolDescribeResult, UnifiedToolDescriptor,
             metadata::{schema_digest_from_events, schema_digest_from_io},
         },
     };
@@ -704,6 +869,48 @@ mod tests {
         assert_eq!(
             snapshot.digests.schema_digest.to_string(),
             schema_digest_from_events(&snapshot.tool.schemas.events)
+        );
+    }
+
+    #[test]
+    fn service_delivery_round_trips_and_validates_without_bundle_identity() {
+        let descriptor = UnifiedToolDescriptor {
+            descriptor_abi: DESCRIPTOR_ABI,
+            name: "support/remote_echo".into(),
+            version: "1.0.0".into(),
+            description: "remote echo".into(),
+            input_schema: json!({"type": "object"}),
+            output_schema: json!({"type": "object"}),
+            error_classes: vec![super::super::ErrorClass::Execution],
+            side_effect: SideEffect::Read,
+            idempotent: true,
+            output_trust: OutputTrust::Untrusted,
+            requested: CapabilityRequest::default(),
+        };
+        let snapshot = ExternalToolSnapshot::from_v2_service(
+            descriptor,
+            ServiceEndpoint::Mcp {
+                url: "https://mcp.example.test/mcp".into(),
+            },
+            DescribeProvenance::McpToolsList {
+                protocol_version: "2025-06-18".into(),
+                server_identity_digest: canonical_digest(&json!({"server": "mcp"})),
+                tools_digest: canonical_digest(&json!(["remote_echo"])),
+                tool_name: "remote_echo".into(),
+            },
+            "ops",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+
+        validate_external_tool_snapshot(&snapshot).unwrap();
+        let delivery = &snapshot.v2.as_ref().unwrap().delivery;
+        assert!(matches!(delivery, ToolDelivery::Reference { .. }));
+        let encoded = serde_json::to_string(&snapshot).unwrap();
+        let decoded: ExternalToolSnapshot = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            serde_json::to_value(snapshot).unwrap(),
+            serde_json::to_value(decoded).unwrap()
         );
     }
 

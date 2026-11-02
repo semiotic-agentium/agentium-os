@@ -25,7 +25,7 @@ use baml_rt_core::{
 use baml_rt_hash::AgentIdentityDigest;
 use baml_rt_mcp::{
     composite::CompositeResolver, importer::SecretResolver as McpSecretResolver,
-    resolver::default_mcp_resolver_for_agent,
+    resolver::default_mcp_resolver_for_agent, service::McpServiceClient,
 };
 use baml_rt_observability::spans;
 use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, index_tools};
@@ -37,7 +37,8 @@ use baml_rt_tools::{
     ToolAccessPolicy, ToolRegistry, external_tool_cache,
     external_tools::{
         EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLifecycleEvent, ExternalLifecycleRecorder,
-        ExternalLockfileMode, ExternalRegistryResolver, ExternalToolsLockfile,
+        ExternalLockfileMode, ExternalRegistryResolver, ExternalToolsLockfile, ServiceHost,
+        ToolDelivery,
         resolver::SandboxRuntimeWiring,
         runtime::{SandboxImageRef, ToolRuntime},
     },
@@ -246,6 +247,11 @@ impl AgentPackage {
         };
         let package_external_root = self.extract_dir.join("external-tools");
         let has_packaged_external_snapshots = package_external_root.exists();
+        let packaged_snapshots = if has_packaged_external_snapshots {
+            external_tool_cache::read_approved_snapshots(&self.extract_dir)?
+        } else {
+            Vec::new()
+        };
         let registry_external_resolver = if has_packaged_external_snapshots {
             match external_tool_cache::read_approved_snapshots(&self.extract_dir) {
                 Ok(snapshots) => {
@@ -344,6 +350,48 @@ impl AgentPackage {
             .await?
         };
         let mut composite = CompositeResolver::new();
+        if has_packaged_external_snapshots {
+            for snapshot in packaged_snapshots.into_iter().filter(|snapshot| {
+                matches!(
+                    snapshot.v2.as_ref().map(|v2| &v2.delivery),
+                    Some(ToolDelivery::Reference { .. })
+                )
+            }) {
+                let v2 = snapshot.v2.as_ref().ok_or_else(|| {
+                    BamlRtError::InvalidArgument("missing Service identity".into())
+                })?;
+                let (endpoint, source) = match &v2.delivery {
+                    ToolDelivery::Reference {
+                        endpoint,
+                        descriptor_source,
+                    } => (endpoint.clone(), descriptor_source),
+                    ToolDelivery::Bundled { .. } => continue,
+                };
+                let local_name = v2
+                    .descriptor
+                    .name
+                    .rsplit_once('/')
+                    .map(|(_, local)| local.to_string())
+                    .ok_or_else(|| {
+                        BamlRtError::InvalidArgument(format!(
+                            "Service descriptor '{}' has no local tool name",
+                            v2.descriptor.name
+                        ))
+                    })?;
+                let client = Arc::new(McpServiceClient::from_http(endpoint, local_name, source)?);
+                let host = Arc::new(
+                    ServiceHost::new(
+                        client,
+                        std::time::Duration::from_secs(30),
+                        std::time::Duration::from_secs(120),
+                    )?
+                    .with_lifecycle_recorder(lifecycle_recorder.clone()),
+                );
+                host.verify(&snapshot).await?;
+                let resolver = ExternalRegistryResolver::from_v2_services(host, vec![snapshot])?;
+                composite.push(Box::new(resolver) as Box<dyn ExternalToolResolver>);
+            }
+        }
         if let Some(registry) = registry_external_resolver {
             composite.push(Box::new(registry) as Box<dyn ExternalToolResolver>);
         }

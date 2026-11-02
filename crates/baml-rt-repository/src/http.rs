@@ -8,7 +8,9 @@
 //! error mapping from `RepositoryError`.
 
 use baml_rt_tools::{
-    external_tools::ExternalToolSnapshot,
+    external_tools::{
+        DescribeProvenance, ExternalToolSnapshot, ServiceEndpointRef, UnifiedToolDescriptor,
+    },
     mcp_snapshot::{Digest, McpServerSnapshot},
 };
 use http_api_problem::{HttpApiProblem, StatusCode as ProblemStatusCode};
@@ -293,6 +295,14 @@ pub struct PublishExternalToolQuery {
     pub approved_by: String,
 }
 
+/// JSON request for a Service-tier publish. No executable bytes are accepted.
+#[derive(Debug, Deserialize)]
+pub struct PublishServiceToolRequest {
+    pub descriptor: UnifiedToolDescriptor,
+    pub endpoint: ServiceEndpointRef,
+    pub descriptor_source: DescribeProvenance,
+}
+
 fn default_external_tool_approver() -> String {
     "operator".to_string()
 }
@@ -430,4 +440,14 @@ pub struct PublishExternalToolResponse {
     pub descriptor_digest: Digest,
     pub bundle_digest: Digest,
     pub tool_digest: Digest,
+}
+
+/// Response for a Service-tier publish. Service identity is the descriptor plus
+/// endpoint reference, so there is no bundle or tool digest.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PublishServiceToolResponse {
+    pub tool_name: String,
+    pub version: u32,
+    pub descriptor_digest: Digest,
+    pub snapshot_digest: Digest,
 }

@@ -43,6 +43,7 @@ pub use descriptor::{
 pub use discovery::{DEFAULT_DISCOVERY_TIMEOUT, discover_snapshot};
 pub use drift::DriftGuard;
 pub use handler::{ProcessToolHandler, ProcessToolSession, SessionInvokerFactory};
+pub use host::{ServiceClient, ServiceHost};
 pub use invoker::{
     ExternalInvoker, InvokeRequest, InvokeResponse, ToolDescribe, ToolInvoker, map_jsonrpc_error,
 };
@@ -100,11 +101,13 @@ pub use sidecar_bundle::{
     render_sidecar_bundle,
 };
 pub use snapshot::{
-    EXTERNAL_TOOL_SNAPSHOT_SCHEMA_VERSION, EXTERNAL_TOOL_SOURCE, ExternalApprovalState,
-    ExternalToolDescribeSnapshot, ExternalToolSnapshot, ExternalToolSnapshotDigests,
-    ExternalToolV2Snapshot, compute_external_schema_digest, compute_manifest_digest,
-    compute_runtime_digest, compute_snapshot_digest, format_unix_rfc3339_utc,
-    now_snapshot_timestamp, validate_describe_schema_support, validate_external_tool_snapshot,
+    DescribeProvenance, EXTERNAL_TOOL_SNAPSHOT_SCHEMA_VERSION, EXTERNAL_TOOL_SOURCE,
+    ExternalApprovalState, ExternalToolDescribeSnapshot, ExternalToolSnapshot,
+    ExternalToolSnapshotDigests, ExternalToolV2Snapshot, ServiceEndpointRef, ToolDelivery,
+    compute_descriptor_schema_digest, compute_external_schema_digest, compute_manifest_digest,
+    compute_runtime_digest, compute_schema_digest, compute_snapshot_digest,
+    format_unix_rfc3339_utc, now_snapshot_timestamp, validate_describe_schema_support,
+    validate_external_tool_snapshot,
 };
 pub use snapshot_catalog::{ExternalToolRegistryCatalog, ExternalToolSnapshotCatalog};
 pub use stdio::StdioSubprocessInvoker;

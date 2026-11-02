@@ -17,4 +17,5 @@ pub mod importer;
 pub mod resolver;
 pub mod runtime;
 pub mod sandbox;
+pub mod service;
 pub mod wire;

@@ -34,14 +34,15 @@ impl ToolHost {
         verify_ktool_snapshot(&audit_ktool_bundle(&bytes)?, &snapshot)?;
         let tool_name = ToolName::parse(&snapshot.tool.name)?;
         let mut metadata = build_tool_metadata(Path::new(""), &snapshot.tool, &tool_name)?;
-        metadata.digest = Some(
-            snapshot
-                .v2
-                .as_ref()
-                .expect("audited v2 snapshot")
-                .tool_digest
-                .to_string(),
-        );
+        let tool_digest = match &snapshot.v2.as_ref().expect("audited v2 snapshot").delivery {
+            super::super::ToolDelivery::Bundled { tool_digest, .. } => *tool_digest,
+            super::super::ToolDelivery::Reference { .. } => {
+                return Err(invalid(
+                    "Service snapshots must use ServiceHost, not ToolHost",
+                ));
+            }
+        };
+        metadata.digest = Some(tool_digest.to_string());
         let snapshot = Arc::new(snapshot);
         let host = self.clone();
         Ok(ProcessToolHandler::new_scoped(

@@ -8,6 +8,7 @@ mod channel;
 mod grants;
 mod handler;
 mod pool;
+mod service;
 mod trusted;
 
 use std::{
@@ -22,12 +23,10 @@ pub use grants::{
     ToolGrant, ToolPolicy, TrustDomain, VmKey, public_ip,
 };
 pub use pool::{PoolPolicy, VmBudget, VmPool, VmSpec};
-
-use super::{
-    AuditedKtoolBundle, ExternalToolSnapshot, audit_ktool_bundle, verify_ktool_snapshot,
-};
+pub use service::{ServiceClient, ServiceHost};
 pub use trusted::{TrustGrant, TrustedHost, TrustedHostConfig, TrustedPolicy};
 
+use super::{AuditedKtoolBundle, ExternalToolSnapshot, audit_ktool_bundle, verify_ktool_snapshot};
 use crate::ToolSessionContext;
 
 /// Shared authorization prelude for every v2 tier that runs approved `.ktool`
@@ -164,10 +163,18 @@ impl ToolHost {
         };
         remaining()?;
         let v2 = snapshot.v2.as_ref().expect("authorized v2 snapshot");
+        let runtime_image = match &v2.delivery {
+            super::ToolDelivery::Bundled { runtime_image, .. } => runtime_image.clone(),
+            super::ToolDelivery::Reference { .. } => {
+                return Err(invalid(
+                    "Service snapshots must use ServiceHost, not ToolHost",
+                ));
+            }
+        };
         let vm = self
             .pool
             .acquire(
-                v2.runtime_image.clone(),
+                runtime_image,
                 grant.clone(),
                 self.policy.memory_mib,
                 self.policy.control_timeout,

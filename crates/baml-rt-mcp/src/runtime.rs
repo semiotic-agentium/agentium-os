@@ -23,6 +23,7 @@ use std::{
 
 use baml_rt_observability::{record_mcp_digest_mismatch, record_mcp_session_expired};
 use baml_rt_tools::{
+    external_tools::UnifiedToolDescriptor,
     mcp_cache::mark_server_stale,
     mcp_config::{HttpHeader as ConfigHttpHeader, HttpNetworkPolicyConfig},
     mcp_schema_normalize::digest_input_schema,
@@ -537,6 +538,40 @@ impl McpConnection {
         self.service
             .get()
             .is_some_and(|service| service.is_closed())
+    }
+
+    /// Read one live MCP tool definition after the connection has completed
+    /// initialize and tools/list. The caller converts it to the platform's
+    /// unified descriptor before hashing it.
+    pub async fn describe_tool(
+        &self,
+        mcp_tool_name: &str,
+    ) -> Result<UnifiedToolDescriptor, ConnectionError> {
+        let service = self.service().await?;
+        let tools = service.peer().list_all_tools().await.map_err(|err| {
+            ConnectionError::StartupToolsListFailed {
+                server_id: self.launch.server_id.clone(),
+                reason: err.to_string(),
+            }
+        })?;
+        let tool = tools
+            .into_iter()
+            .find(|tool| tool.name == mcp_tool_name)
+            .ok_or_else(|| ConnectionError::StartupToolsListFailed {
+                server_id: self.launch.server_id.clone(),
+                reason: format!("MCP tool `{mcp_tool_name}` is not advertised"),
+            })?;
+        let value =
+            serde_json::to_value(tool).map_err(|err| ConnectionError::StartupToolsListFailed {
+                server_id: self.launch.server_id.clone(),
+                reason: err.to_string(),
+            })?;
+        UnifiedToolDescriptor::from_mcp(&value).map_err(|err| {
+            ConnectionError::StartupToolsListFailed {
+                server_id: self.launch.server_id.clone(),
+                reason: err.to_string(),
+            }
+        })
     }
 
     pub async fn call_tool(

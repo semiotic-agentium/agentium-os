@@ -34,7 +34,8 @@ use crate::{
         ImportMcpSnapshotRequest, ImportMcpSnapshotResponse, LineagePath, LineageQuery,
         LineageResponse, ListAgentsResponse, ListVersionsPath, ListVersionsResponse, McpServerPath,
         McpServerVersionPath, McpServerVersionsResponse, McpServersResponse, McpToolLookupResponse,
-        McpToolQuery, PublishExternalToolQuery, PublishExternalToolResponse, RemoveTagRequest,
+        McpToolQuery, PublishExternalToolQuery, PublishExternalToolResponse,
+        PublishServiceToolRequest, PublishServiceToolResponse, RemoveTagRequest,
         RepositoryToolSummary, SearchResponse, TagPath, ToolsQuery, ToolsResponse,
     },
     ids::Version,
@@ -514,6 +515,44 @@ pub async fn publish_external_tool(
         descriptor_digest,
         bundle_digest: audited.bundle_digest,
         tool_digest: audited.tool_digest,
+    }))
+}
+
+/// Register an MCP-backed Service tool without storing executable bytes.
+pub async fn publish_service_tool(
+    State(svc): State<RepoState>,
+    Query(query): Query<PublishExternalToolQuery>,
+    Json(body): Json<PublishServiceToolRequest>,
+) -> HttpResult<PublishServiceToolResponse> {
+    if query.approved_by.trim().is_empty() {
+        return Err(bad_request("approved_by must not be empty"));
+    }
+    baml_rt_tools::ToolName::parse(&body.descriptor.name)
+        .map_err(|e| bad_request(format!("invalid tool name '{}': {e}", body.descriptor.name)))?;
+    let snapshot = baml_rt_tools::external_tools::ExternalToolSnapshot::from_v2_service(
+        body.descriptor,
+        body.endpoint,
+        body.descriptor_source,
+        query.approved_by.trim(),
+        baml_rt_tools::external_tools::now_snapshot_timestamp(),
+    )
+    .map_err(|e| bad_request(format!("invalid Service snapshot: {e}")))?;
+    let descriptor_digest = snapshot
+        .v2
+        .as_ref()
+        .expect("from_v2_service always sets v2 identity")
+        .descriptor_digest;
+    let snapshot_digest = snapshot.snapshot_digest;
+    let tool_name = snapshot.tool.name.clone();
+    let version = svc
+        .put_external_tool_snapshot(&snapshot)
+        .await
+        .map_err(HttpApiProblem::from)?;
+    Ok(Json(PublishServiceToolResponse {
+        tool_name,
+        version: version.version,
+        descriptor_digest,
+        snapshot_digest,
     }))
 }
 

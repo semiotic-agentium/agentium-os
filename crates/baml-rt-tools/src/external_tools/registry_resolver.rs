@@ -54,6 +54,12 @@ impl ExternalRegistryResolver {
         recorder: Option<ExternalLifecycleRecorder>,
     ) -> Result<Self> {
         let snapshots = external_tool_cache::read_approved_snapshots(root)?;
+        // v2 snapshots are served by their tier-specific host. Keep the v1
+        // registry resolver focused on source-backed process/sandbox entries.
+        let snapshots = snapshots
+            .into_iter()
+            .filter(|snapshot| snapshot.v2.is_none())
+            .collect();
         Self::from_snapshots(snapshots, sandbox, recorder)
     }
 
@@ -105,6 +111,40 @@ impl ExternalRegistryResolver {
         for (snapshot, bytes) in bundles {
             let name = ToolName::parse(&snapshot.tool.name)?;
             let handler = host.handler(snapshot, bytes)?;
+            let metadata = handler.metadata().clone();
+            if entries
+                .insert(
+                    name.clone(),
+                    RegistryToolEntry {
+                        metadata,
+                        handler: Arc::new(handler),
+                    },
+                )
+                .is_some()
+            {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "duplicate external tool snapshot '{name}'"
+                )));
+            }
+        }
+        Ok(Self { entries })
+    }
+
+    /// Register approved Service references through a client-backed host.
+    /// Unlike bundled v2 tools, this path does not load or verify executable
+    /// bytes. The ServiceHost performs the lazy live-schema check on invoke.
+    pub fn from_v2_services(
+        host: Arc<super::host::ServiceHost>,
+        snapshots: Vec<ExternalToolSnapshot>,
+    ) -> Result<Self> {
+        let mut entries = std::collections::HashMap::new();
+        for snapshot in snapshots {
+            if !snapshot.approval.state.is_approved() {
+                continue;
+            }
+            validate_external_tool_snapshot(&snapshot)?;
+            let name = ToolName::parse(&snapshot.tool.name)?;
+            let handler = host.handler(snapshot)?;
             let metadata = handler.metadata().clone();
             if entries
                 .insert(

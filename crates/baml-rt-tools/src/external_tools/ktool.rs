@@ -18,7 +18,7 @@ pub use baml_ktool::ktool::{
 };
 use baml_rt_core::{BamlRtError, Result};
 
-use super::{ExternalToolSnapshot, validate_external_tool_snapshot};
+use super::{ExternalToolSnapshot, ToolDelivery, validate_external_tool_snapshot};
 
 /// Audit a `.ktool` without running it, mapping bundle errors into the host
 /// error taxonomy.
@@ -36,10 +36,18 @@ pub fn verify_ktool_snapshot(
         .v2
         .as_ref()
         .ok_or_else(|| invalid("a .ktool bundle requires a v2 snapshot"))?;
-    if v2.bundle_digest != audited.bundle_digest
-        || v2.tool_digest != audited.tool_digest
+    let ToolDelivery::Bundled {
+        bundle_digest,
+        tool_digest,
+        runtime_image,
+    } = &v2.delivery
+    else {
+        return Err(invalid("a Service snapshot has no .ktool bundle identity"));
+    };
+    if *bundle_digest != audited.bundle_digest
+        || *tool_digest != audited.tool_digest
         || v2.descriptor != audited.descriptor
-        || v2.runtime_image != audited.manifest.runtime_image
+        || *runtime_image != audited.manifest.runtime_image
     {
         return Err(invalid(
             "the external-tool snapshot does not match the audited .ktool bundle",
