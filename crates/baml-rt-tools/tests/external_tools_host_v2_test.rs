@@ -256,15 +256,17 @@ struct Fixture {
 
 fn build(
     descriptor: &baml_rt_tools::external_tools::UnifiedToolDescriptor,
+    requested: CapabilityRequest,
     policy: ToolPolicy,
     ctx: &ToolSessionContext,
     pool_policy: PoolPolicy,
     memory_mib: u32,
 ) -> Fixture {
-    let bytes = bundle(descriptor);
+    let bytes = bundle(descriptor, requested.clone());
     let audited = baml_rt_tools::external_tools::audit_ktool_bundle(&bytes).unwrap();
     let snapshot = ExternalToolSnapshot::from_v2_bundle(
         descriptor.clone(),
+        requested,
         audited.bundle_digest,
         audited.tool_digest,
         audited.manifest.runtime_image.clone(),
@@ -300,7 +302,8 @@ fn fixture(
 ) -> (Fixture, ToolSessionContext) {
     let ctx = session_ctx(secret);
     let f = build(
-        &descriptor(TOOL, requested.clone()),
+        &descriptor(TOOL),
+        requested.clone(),
         policy,
         &ctx,
         PoolPolicy::default(),
@@ -416,10 +419,10 @@ async fn tool_grant_denial_matrix() {
     } in cases
     {
         let (mut f, ctx) = fixture(requested, policy, secret);
-        if let Some(other) = substituted {
-            let mut other = descriptor("support/other_fixture", other);
+        if let Some(other_requested) = substituted {
+            let mut other = descriptor("support/other_fixture");
             other.description = TOOL.into();
-            f.bytes = bundle(&other);
+            f.bytes = bundle(&other, other_requested);
         }
         let err = f
             .host
@@ -484,7 +487,8 @@ async fn idle_vms_are_evicted_before_the_budget_is_exceeded() {
     let requested = full_request();
     let ctx = session_ctx("first");
     let f = build(
-        &descriptor(TOOL, requested.clone()),
+        &descriptor(TOOL),
+        requested.clone(),
         policy(requested),
         &ctx,
         PoolPolicy {
@@ -582,7 +586,8 @@ async fn oversized_vm_request_is_refused_before_boot() {
     let requested = net("api.example.com");
     let ctx = session_ctx("s3cret");
     let f = build(
-        &descriptor(TOOL, requested.clone()),
+        &descriptor(TOOL),
+        requested.clone(),
         policy(requested),
         &ctx,
         PoolPolicy {

@@ -1,7 +1,7 @@
 {
   "name": "@karakara/tool",
   "version": "0.1.0",
-  "description": "Blessed authoring SDK for Karakara external tools (v2). Write one typed function; the SDK derives the descriptor and runs the wire.",
+  "description": "Small authoring helpers for MCP tools running on Karakara.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.js",
@@ -18,7 +18,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@sinclair/typebox": "^0.34.0"
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^3.25.0",
+    "zod-to-json-schema": "^3.25.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

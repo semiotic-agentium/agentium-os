@@ -1,0 +1,7 @@
+[toolset]
+name = "support"
+version = "0.1.0"
+
+[toolset.capabilities]
+net = []
+secrets = []

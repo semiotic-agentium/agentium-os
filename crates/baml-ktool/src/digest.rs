@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 /// Validated SHA-256 digest rendered on the wire as `sha256:<64 lowercase hex>`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Digest([u8; 32]);
 
 impl Digest {

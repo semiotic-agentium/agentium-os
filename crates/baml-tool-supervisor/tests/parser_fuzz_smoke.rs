@@ -14,7 +14,7 @@ use std::{
 };
 
 use baml_ktool::{
-    CapabilityRequest, DESCRIPTOR_ABI, SideEffect, ToolDescriptor, audit_ktool_bundle,
+    DESCRIPTOR_ABI, SideEffect, ToolDescriptor, audit_ktool_bundle,
     build_ktool_bundle, unpack_ktool_bundle,
 };
 use baml_sandbox_protocol::{
@@ -54,7 +54,6 @@ fn descriptor() -> ToolDescriptor {
         side_effect: SideEffect::Read,
         idempotent: true,
         output_trust: baml_ktool::OutputTrust::Untrusted,
-        requested: CapabilityRequest::default(),
     }
 }
 

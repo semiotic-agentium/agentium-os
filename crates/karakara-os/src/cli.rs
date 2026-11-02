@@ -73,7 +73,7 @@ pub enum Commands {
         command: EvalCommands,
     },
 
-    /// Author external tools (v2): scaffold, build, test, and publish a TypeScript tool.
+    /// Author MCP toolsets: scaffold, build, test, and publish a TypeScript server.
     Tool {
         #[command(subcommand)]
         command: ToolCommands,
@@ -315,10 +315,10 @@ pub enum Commands {
     },
 }
 
-/// `karak tool <new|build|publish|test>` — the v2 external-tool authoring workflow.
+/// `karak tool <new|build|publish|test>` authors MCP toolsets.
 #[derive(Subcommand)]
 pub enum ToolCommands {
-    /// Scaffold a new TypeScript tool (one typed `defineTool` function).
+    /// Scaffold a TypeScript MCP server with optional `defineTool` sugar.
     New {
         /// Tool name in lowercase (e.g. weather, clickup-sync). Omit for interactive mode.
         name: Option<String>,
@@ -335,7 +335,7 @@ pub enum ToolCommands {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Derive the descriptor + digest for a tool project (writes tool-descriptor.json).
+    /// Run MCP tools/list and write canonical tools.json plus descriptor digests.
     Build {
         /// Tool project directory (default: current directory).
         #[arg(default_value = ".")]
@@ -363,7 +363,7 @@ pub enum ToolCommands {
         #[arg(long)]
         runner_token: Option<String>,
     },
-    /// Run one invocation through the SDK over a stdio DevBackend.
+    /// Run one MCP tool invocation through the stdio DevBackend.
     Test {
         /// Tool project directory (default: current directory).
         #[arg(default_value = ".")]

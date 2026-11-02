@@ -95,7 +95,6 @@ fn descriptor() -> ToolDescriptor {
         side_effect: SideEffect::Read,
         idempotent: true,
         output_trust: OutputTrust::Untrusted,
-        requested: CapabilityRequest::default(),
     }
 }
 
@@ -151,6 +150,7 @@ async fn real_vm_supervisor_runs_the_isolation_matrix() {
     let descriptor = descriptor();
     let snapshot = ExternalToolSnapshot::from_v2_bundle(
         descriptor,
+        CapabilityRequest::default(),
         audited.bundle_digest,
         audited.tool_digest,
         audited.manifest.runtime_image,

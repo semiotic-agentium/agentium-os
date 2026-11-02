@@ -28,17 +28,18 @@ pub struct SupervisorLimits {
     pub worker_idle_timeout: Duration,
     /// Bound warm workers per VM (each holds a uid + namespaces open).
     pub max_warm_workers: usize,
+    /// Concurrent MCP requests allowed on one toolset worker connection.
+    pub max_inflight_per_worker: usize,
     pub max_call_ms: u64,
     pub uid_base: u32,
     pub gid_base: u32,
     /// Per-worker address-space cap.
     pub memory_bytes: u64,
-    /// `node_modules` mounted at `/node_modules` so bare imports resolve (the
-    /// runtime image ships `@karakara/tool` there; `karak tool test` points at
-    /// the project's install).
+    /// Optional dependency directory mounted at `/node_modules` for test
+    /// harnesses. Published MCP toolsets vendor their own dependencies.
     pub node_modules: Option<PathBuf>,
-    /// DevBackend/test override for the worker entry harness. Unset in prod:
-    /// the image contract is the `@karakara/tool` `serve()` loop.
+    /// DevBackend/test override for a worker harness. Production workers run
+    /// the MCP server command from the audited manifest.
     pub worker_harness: Option<String>,
     /// Apply the pinned seccomp allowlist in the root backend.
     pub seccomp: bool,
@@ -54,6 +55,7 @@ impl Default for SupervisorLimits {
             max_result_bytes: 4 * 1024 * 1024,
             worker_idle_timeout: Duration::from_secs(300),
             max_warm_workers: 16,
+            max_inflight_per_worker: 16,
             max_call_ms: DEFAULT_MAX_CALL_MS,
             uid_base: 100_000,
             gid_base: 100_000,
@@ -97,6 +99,12 @@ impl SupervisorLimits {
         {
             limits.worker_idle_timeout = Duration::from_millis(ms);
         }
+        if let Ok(count) = std::env::var("KARAKARA_MAX_INFLIGHT")
+            && let Ok(count) = count.parse::<usize>()
+            && count > 0
+        {
+            limits.max_inflight_per_worker = count;
+        }
         limits
     }
 }
@@ -110,6 +118,7 @@ mod tests {
         let limits = SupervisorLimits::default();
         assert!(limits.max_unpacked_bytes >= limits.max_bundle_bytes);
         assert!(!limits.worker_idle_timeout.is_zero());
+        assert!(limits.max_inflight_per_worker > 0);
         assert!(limits.max_result_bytes > 0);
         assert!(limits.max_call_ms > 0);
     }

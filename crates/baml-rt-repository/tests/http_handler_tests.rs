@@ -866,10 +866,10 @@ async fn mcp_tool_lookup_and_mark_stale_routes_work() {
 
 fn ktool_bundle() -> Vec<u8> {
     // Shared fixture: the host tests and the repository tests must agree on bytes.
-    test_support::external_tools_v2::bundle(&test_support::external_tools_v2::descriptor(
-        "support/http-echo",
+    test_support::external_tools_v2::bundle(
+        &test_support::external_tools_v2::descriptor("support/http-echo"),
         CapabilityRequest::default(),
-    ))
+    )
 }
 
 #[tokio::test]
@@ -927,7 +927,8 @@ async fn external_tool_bundle_is_stored_by_exact_content_digest() {
     let bytes = ktool_bundle();
     let audited = baml_rt_tools::external_tools::audit_ktool_bundle(&bytes).unwrap();
     let snapshot = baml_rt_tools::external_tools::ExternalToolSnapshot::from_v2_bundle(
-        audited.descriptor,
+        audited.descriptor.clone(),
+        audited.manifest.requested.clone(),
         audited.bundle_digest,
         audited.tool_digest,
         audited.manifest.runtime_image,

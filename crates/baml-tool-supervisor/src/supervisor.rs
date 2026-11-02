@@ -22,6 +22,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use baml_ktool::KtoolRuntimeTier;
 use baml_sandbox_protocol::{
     ErrorClass,
     codec::{CodecError, FrameReader},
@@ -52,6 +53,7 @@ const MAX_REVEALS_PER_CALL: usize = 16;
 pub struct Supervisor {
     limits: SupervisorLimits,
     root: PathBuf,
+    tier: KtoolRuntimeTier,
     backend: Arc<dyn WorkerBackend>,
     state: Arc<State>,
 }
@@ -74,6 +76,9 @@ struct Inflight {
     worker_started: AtomicBool,
     /// Worker process group id, or 0 before spawn.
     pgid: AtomicI32,
+    /// Set once the call has acquired a worker, so cancellation can notify
+    /// MCP before using the process-group kill fallback.
+    worker: StdMutex<Option<Arc<Worker>>>,
     killed: AtomicBool,
 }
 
@@ -84,6 +89,7 @@ impl Inflight {
             reveal_error: StdMutex::new(None),
             worker_started: AtomicBool::new(false),
             pgid: AtomicI32::new(0),
+            worker: StdMutex::new(None),
             killed: AtomicBool::new(false),
         }
     }
@@ -103,6 +109,18 @@ impl Supervisor {
         root: PathBuf,
         backend: Arc<dyn WorkerBackend>,
         outbound: mpsc::UnboundedSender<GuestMessage>,
+    ) -> io::Result<Arc<Self>> {
+        Self::new_for_tier(limits, root, backend, outbound, KtoolRuntimeTier::Sandbox)
+    }
+
+    /// Construct a supervisor for one execution tier. The load path rejects a
+    /// bundle declared for the other tier before it can start a worker.
+    pub fn new_for_tier(
+        limits: SupervisorLimits,
+        root: PathBuf,
+        backend: Arc<dyn WorkerBackend>,
+        outbound: mpsc::UnboundedSender<GuestMessage>,
+        tier: KtoolRuntimeTier,
     ) -> io::Result<Arc<Self>> {
         if !root.is_absolute() {
             return Err(io::Error::new(
@@ -132,6 +150,7 @@ impl Supervisor {
         Ok(Arc::new(Self {
             limits,
             root,
+            tier,
             backend,
             state: Arc::new(State {
                 outbound,
@@ -341,17 +360,75 @@ impl Supervisor {
 
         match unpacked {
             Ok(Ok(unpacked)) => {
+                if unpacked.manifest.runtime_tier != self.tier {
+                    self.state.send(GuestMessage::LoadAck {
+                        tool_digest,
+                        ok: false,
+                        error: Some(format!(
+                            "bundle tier {:?} does not match supervisor tier {:?}",
+                            unpacked.manifest.runtime_tier, self.tier
+                        )),
+                    });
+                    return Ok(());
+                }
                 let tool = Arc::new(LoadedTool::from_unpacked(unpacked, uid, gid, &self.limits));
-                self.state
-                    .loaded
-                    .lock()
-                    .await
-                    .insert(tool_digest.clone(), tool);
-                self.state.send(GuestMessage::LoadAck {
-                    tool_digest,
-                    ok: true,
-                    error: None,
-                });
+                // Spawn once at load time. The MCP initialize/tools/list
+                // handshake is the executable-side re-verification gate, so a
+                // worker with drift never enters the warm cache.
+                match Worker::spawn(&tool, self.backend.as_ref(), &self.limits, &[]) {
+                    Ok(worker) => {
+                        let verify = tokio::time::timeout(
+                            Duration::from_millis(self.limits.max_call_ms),
+                            worker.verify_tools(
+                                &tool.descriptors,
+                                Duration::from_millis(self.limits.max_call_ms),
+                            ),
+                        )
+                        .await;
+                        match verify {
+                            Ok(Ok(())) => {
+                                self.state
+                                    .workers
+                                    .lock()
+                                    .await
+                                    .insert(tool_digest.clone(), worker);
+                                self.state
+                                    .loaded
+                                    .lock()
+                                    .await
+                                    .insert(tool_digest.clone(), tool);
+                                self.state.send(GuestMessage::LoadAck {
+                                    tool_digest,
+                                    ok: true,
+                                    error: None,
+                                });
+                            }
+                            Ok(Err(error)) => {
+                                worker.signal_kill();
+                                worker.reap().await;
+                                self.state.send(GuestMessage::LoadAck {
+                                    tool_digest,
+                                    ok: false,
+                                    error: Some(error),
+                                });
+                            }
+                            Err(_) => {
+                                worker.signal_kill();
+                                worker.reap().await;
+                                self.state.send(GuestMessage::LoadAck {
+                                    tool_digest,
+                                    ok: false,
+                                    error: Some("MCP tools/list handshake timed out".into()),
+                                });
+                            }
+                        }
+                    }
+                    Err(error) => self.state.send(GuestMessage::LoadAck {
+                        tool_digest,
+                        ok: false,
+                        error: Some(format!("cannot start MCP worker: {error}")),
+                    }),
+                }
             }
             Ok(Err(error)) => {
                 self.state.send(GuestMessage::LoadAck {
@@ -436,15 +513,28 @@ impl Supervisor {
             return;
         };
         inflight.killed.store(true, Ordering::Release);
-        let pgid = inflight.pgid.load(Ordering::Acquire);
-        if pgid > 0 {
-            // SAFETY: the negative pid targets the process group. The direct
-            // signal also kills the root-backend shim when the PID-namespace
-            // worker cannot join that group. Its parent-death signal then
-            // kills the worker too. ESRCH is benign for both calls.
-            unsafe {
-                libc::kill(-pgid, libc::SIGKILL);
-                libc::kill(pgid, libc::SIGKILL);
+        if let Some(worker) = inflight.worker.lock().unwrap().clone() {
+            let worker_for_cancel = worker.clone();
+            let pgid = inflight.pgid.load(Ordering::Acquire);
+            tokio::spawn(async move {
+                worker_for_cancel.cancel(request_id).await;
+                // Give the MCP server a short grace period to terminate the
+                // call before killing the process group.
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                if pgid > 0 {
+                    unsafe {
+                        libc::kill(-pgid, libc::SIGKILL);
+                        libc::kill(pgid, libc::SIGKILL);
+                    }
+                }
+            });
+        } else {
+            let pgid = inflight.pgid.load(Ordering::Acquire);
+            if pgid > 0 {
+                unsafe {
+                    libc::kill(-pgid, libc::SIGKILL);
+                    libc::kill(pgid, libc::SIGKILL);
+                }
             }
         }
     }
@@ -524,11 +614,28 @@ impl Supervisor {
                 error_result(
                     request_id,
                     ErrorClass::Configuration,
-                    format!("tool {} is not loaded", request.tool_digest),
+                    format!("toolset {} is not loaded", request.tool_digest),
                 ),
                 None,
             );
         };
+        if !tool
+            .descriptors
+            .iter()
+            .any(|descriptor| descriptor.name == request.tool)
+        {
+            return (
+                error_result(
+                    request_id,
+                    ErrorClass::InvalidArgument,
+                    format!(
+                        "tool '{}' is not present in toolset {}",
+                        request.tool, request.tool_digest
+                    ),
+                ),
+                None,
+            );
+        }
 
         let reveals = std::mem::take(&mut *inflight.reveals.lock().unwrap());
         let fresh = !reveals.is_empty();
@@ -559,28 +666,9 @@ impl Supervisor {
                 None,
             );
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let guard = match tokio::time::timeout(remaining, worker.call_lock.lock()).await {
-            Ok(guard) => guard,
-            Err(_) => {
-                // Never kill a worker that is busy with someone else's call.
-                // A per-call reveal worker has no other call, so retire it.
-                if fresh {
-                    self.retire_worker(&worker, fresh).await;
-                }
-                return (
-                    error_result(
-                        request_id,
-                        ErrorClass::Transient,
-                        "deadline exceeded while waiting for the worker".to_string(),
-                    ),
-                    None,
-                );
-            }
-        };
         inflight.pgid.store(worker.pid as i32, Ordering::Release);
+        *inflight.worker.lock().unwrap() = Some(worker.clone());
         if inflight.killed.load(Ordering::Acquire) {
-            drop(guard);
             if fresh {
                 self.retire_worker(&worker, fresh).await;
             }
@@ -601,7 +689,7 @@ impl Supervisor {
                 &self.state.outbound,
             )
             .await;
-        drop(guard);
+        *inflight.worker.lock().unwrap() = None;
 
         if outcome.retire || fresh {
             self.retire_worker(&worker, fresh).await;
@@ -622,11 +710,23 @@ impl Supervisor {
     ) -> io::Result<Arc<Worker>> {
         if fresh {
             // Reveal secrets are scoped to one call: never a warm worker.
-            return Worker::spawn(tool, self.backend.as_ref(), &self.limits, reveals);
+            let worker = Worker::spawn(tool, self.backend.as_ref(), &self.limits, reveals)?;
+            if let Err(error) = worker
+                .verify_tools(
+                    &tool.descriptors,
+                    Duration::from_millis(self.limits.max_call_ms),
+                )
+                .await
+            {
+                worker.signal_kill();
+                worker.reap().await;
+                return Err(io::Error::other(error));
+            }
+            return Ok(worker);
         }
         let mut workers = self.state.workers.lock().await;
         if let Some(worker) = workers.get(&tool.digest).cloned() {
-            if worker.is_alive() {
+            if worker.is_healthy() {
                 worker.touch();
                 return Ok(worker);
             }
@@ -651,6 +751,13 @@ impl Supervisor {
             }
         }
         let worker = Worker::spawn(tool, self.backend.as_ref(), &self.limits, &[])?;
+        worker
+            .verify_tools(
+                &tool.descriptors,
+                Duration::from_millis(self.limits.max_call_ms),
+            )
+            .await
+            .map_err(io::Error::other)?;
         workers.insert(tool.digest.clone(), worker.clone());
         Ok(worker)
     }

@@ -10,6 +10,7 @@
 
 use std::{path::PathBuf, process::ExitCode, sync::Arc, time::Duration};
 
+use baml_ktool::KtoolRuntimeTier;
 use baml_sandbox_protocol::codec::FrameWriter;
 use baml_tool_supervisor::{
     BwrapBackend, DirectBackend, Supervisor, SupervisorLimits, WorkerBackend, transport,
@@ -25,12 +26,13 @@ enum Backend {
 
 struct Options {
     dev: bool,
+    tier: KtoolRuntimeTier,
     backend: Backend,
     root: PathBuf,
     vsock_port: u32,
     connect_timeout: Duration,
-    /// `Trusted` tier (P5.1): dial the host over this `AF_UNIX` path instead of
-    /// vsock/stdio. The process is unsandboxed (operator-trusted).
+    /// Trusted tier transport: dial the host over this `AF_UNIX` path instead
+    /// of vsock/stdio.
     uds: Option<PathBuf>,
 }
 
@@ -66,7 +68,7 @@ async fn serve(options: Options) -> Result<(), String> {
     if options.vsock_port != baml_tool_supervisor::limits::DEFAULT_VSOCK_PORT {
         limits.vsock_port = options.vsock_port;
     }
-    if !options.dev && options.uds.is_none() {
+    if !options.dev && options.tier == KtoolRuntimeTier::Sandbox {
         // The harness override is a DevBackend/trusted-test knob only. In the VM
         // the image contract fixes the worker entry; the vsock path clears it.
         limits.worker_harness = None;
@@ -126,9 +128,11 @@ async fn serve(options: Options) -> Result<(), String> {
     });
 
     // DevBackend and host-spawned trusted roots are per-run scratch space.
-    let ephemeral_root = (options.dev || options.uds.is_some()).then(|| options.root.clone());
-    let supervisor = Supervisor::new(limits, options.root, backend, outbound)
-        .map_err(|error| format!("cannot initialize supervisor: {error}"))?;
+    let ephemeral_root =
+        (options.dev || options.tier == KtoolRuntimeTier::Trusted).then(|| options.root.clone());
+    let supervisor =
+        Supervisor::new_for_tier(limits, options.root, backend, outbound, options.tier)
+            .map_err(|error| format!("cannot initialize supervisor: {error}"))?;
     eprintln!(
         "baml-tool-supervisor: serving ({})",
         supervisor.backend_name()
@@ -170,10 +174,19 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut vsock_port = baml_tool_supervisor::limits::DEFAULT_VSOCK_PORT;
     let mut connect_timeout = Duration::from_secs(15);
     let mut uds = None;
+    let mut tier = None;
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--dev" => dev = true,
+            "--tier" => {
+                let value = args.next().ok_or("--tier needs a value")?;
+                tier = Some(match value.as_str() {
+                    "sandbox" => KtoolRuntimeTier::Sandbox,
+                    "trusted" => KtoolRuntimeTier::Trusted,
+                    other => return Err(format!("unknown tier '{other}'")),
+                });
+            }
             "--backend" => {
                 let value = args.next().ok_or("--backend needs a value")?;
                 backend = Some(match value.as_str() {
@@ -206,22 +219,31 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
             "--help" | "-h" => {
                 println!(
                     "baml-tool-supervisor [--dev] [--backend root|bwrap|direct] \
-                     [--root DIR] [--vsock-port N] [--uds PATH]"
+                     [--root DIR] [--vsock-port N] [--tier sandbox|trusted] [--uds PATH]"
                 );
                 std::process::exit(0);
             }
             other => return Err(format!("unknown argument '{other}'")),
         }
     }
-    let trusted = uds.is_some();
-    if dev && trusted {
-        return Err("--dev and --uds are mutually exclusive transports".to_string());
+    let tier = tier.unwrap_or(KtoolRuntimeTier::Sandbox);
+    if dev && tier == KtoolRuntimeTier::Trusted {
+        return Err("--dev cannot use the trusted tier".to_string());
     }
-    // Trusted (--uds) tools are unsandboxed host processes, so there is no VM
-    // and the root backend is meaningless; default to the direct backend.
+    match (tier, uds.is_some()) {
+        (KtoolRuntimeTier::Trusted, false) => {
+            return Err("the trusted tier requires --uds PATH".to_string());
+        }
+        (KtoolRuntimeTier::Sandbox, true) => {
+            return Err("--uds requires --tier trusted".to_string());
+        }
+        _ => {}
+    }
+    // Trusted tools are host processes. Sandbox tools retain the existing VM
+    // backend rules.
     let backend = backend.unwrap_or(if dev {
         Backend::Bwrap
-    } else if trusted {
+    } else if tier == KtoolRuntimeTier::Trusted {
         Backend::Direct
     } else {
         Backend::Root
@@ -229,18 +251,15 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
     if dev && backend == Backend::Root {
         return Err("--dev cannot use the root backend (use bwrap or direct)".to_string());
     }
-    if trusted {
-        if backend == Backend::Root {
-            return Err(
-                "the trusted (--uds) transport runs unsandboxed; use `--backend direct`"
-                    .to_string(),
-            );
+    if tier == KtoolRuntimeTier::Trusted {
+        if backend != Backend::Direct {
+            return Err("the trusted tier must use the direct backend".to_string());
         }
     } else if !dev && backend != Backend::Root {
-        return Err("a VM supervisor must use the root backend".to_string());
+        return Err("a sandbox VM supervisor must use the root backend".to_string());
     }
     let root = root.unwrap_or_else(|| {
-        if dev || trusted {
+        if dev || tier == KtoolRuntimeTier::Trusted {
             std::env::temp_dir().join(format!(
                 "karakara-supervisor-{}-{}",
                 std::process::id(),
@@ -255,6 +274,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<Options, String> {
     });
     Ok(Options {
         dev,
+        tier,
         backend,
         root,
         vsock_port,
@@ -287,7 +307,17 @@ mod tests {
     fn prod_requires_the_root_backend() {
         assert!(parse(args(&["--backend", "bwrap"])).is_err());
         let options = parse(args(&[])).unwrap();
+        assert_eq!(options.tier, KtoolRuntimeTier::Sandbox);
         assert_eq!(options.backend, Backend::Root);
         assert_eq!(options.root, PathBuf::from("/run/ktool"));
+    }
+
+    #[test]
+    fn trusted_tier_requires_uds_and_uses_direct_backend() {
+        assert!(parse(args(&["--tier", "trusted"])).is_err());
+        assert!(parse(args(&["--uds", "/tmp/tool.sock"])).is_err());
+        let options = parse(args(&["--tier", "trusted", "--uds", "/tmp/tool.sock"])).unwrap();
+        assert_eq!(options.tier, KtoolRuntimeTier::Trusted);
+        assert_eq!(options.backend, Backend::Direct);
     }
 }

@@ -168,6 +168,23 @@ pub fn parse_tool_name_and_class(name: &str) -> Result<(ToolName, String)> {
     Ok((parsed, class_name))
 }
 
+/// Split a manifest `tools` entry into its tool name and optional semver
+/// requirement (R1 §R1.6).
+///
+/// Manifest entries may carry a toolset version requirement after `@`, e.g.
+/// `"support/clickup@^1.2"`. The requirement constrains the *toolset* version
+/// the builder resolves against; it is not part of tool identity, so callers
+/// that only need the tool name strip it with this helper before
+/// [`ToolName::parse`]. Tool-name components never contain `@`, so splitting on
+/// the first `@` is unambiguous. Returns `(name, Some(requirement))` when a
+/// requirement is present, else `(name, None)`.
+pub fn split_manifest_tool_entry(entry: &str) -> (&str, Option<&str>) {
+    match entry.split_once('@') {
+        Some((name, requirement)) => (name.trim(), Some(requirement.trim())),
+        None => (entry.trim(), None),
+    }
+}
+
 /// Trait for BAML tools that can be called by LLMs or JavaScript
 ///
 /// Tools implement this trait to provide:
@@ -748,6 +765,13 @@ impl ToolName {
             bundle: BundleName::new(parts[0].to_string())?,
             local: LocalToolName::new(parts[1].to_string())?,
         })
+    }
+
+    /// Parse a manifest `tools` entry that may carry a `@<semver-req>` suffix
+    /// (R1 §R1.6), discarding the requirement. Use
+    /// [`split_manifest_tool_entry`] when the requirement itself is needed.
+    pub fn parse_manifest_entry(entry: &str) -> Result<Self> {
+        Self::parse(split_manifest_tool_entry(entry).0)
     }
 
     pub fn qualified(bundle: BundleName, local: LocalToolName) -> Self {
@@ -3837,7 +3861,33 @@ mod session_type_names_alignment_tests {
 mod tool_name_identifier_tests {
     use super::{
         BundleName, LocalToolName, ToolFunctionMetadata, ToolName, parse_tool_name_and_class,
+        split_manifest_tool_entry,
     };
+
+    #[test]
+    fn split_manifest_tool_entry_separates_version_requirement() {
+        assert_eq!(
+            split_manifest_tool_entry("support/clickup@^1.2"),
+            ("support/clickup", Some("^1.2"))
+        );
+        assert_eq!(
+            split_manifest_tool_entry("support/clickup"),
+            ("support/clickup", None)
+        );
+        // Whitespace around the entry and requirement is trimmed.
+        assert_eq!(
+            split_manifest_tool_entry(" support/clickup @ >=1.0, <2 "),
+            ("support/clickup", Some(">=1.0, <2"))
+        );
+    }
+
+    #[test]
+    fn parse_manifest_entry_ignores_version_requirement() {
+        let bare = ToolName::parse_manifest_entry("support/clickup").unwrap();
+        let ranged = ToolName::parse_manifest_entry("support/clickup@^1.2").unwrap();
+        assert_eq!(bare, ranged);
+        assert_eq!(ranged.to_string(), "support/clickup");
+    }
 
     #[test]
     fn accepts_ascii_lowercase_identifier_components() {

@@ -127,6 +127,7 @@ async-channel = "2"
 async-stream = "0.3"
 futures-core = "0.3"
 sha2 = "0.10"
+semver = { version = "1", features = ["serde"] }
 subtle = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 flate2 = "1"

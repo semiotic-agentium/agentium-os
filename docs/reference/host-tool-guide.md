@@ -11,12 +11,12 @@ Host tools in Karakara OS provide agents with capabilities beyond LLM inference.
 - **Use cases**: APIs, databases, file systems
 - **Registry**: Cached server snapshots with schema validation
 
-### External Tools  
-- **Protocol**: Custom execution environments
-- **Lifecycle**: Sandboxed process execution
-- **State**: Stateful session management
-- **Use cases**: Complex workflows, interactive tools
-- **Registry**: Validated tool implementations with metadata
+### External Tools (v2 toolsets)
+- **Protocol**: MCP — stdio to a supervised worker (Sandbox/Trusted) or Streamable HTTP (Service)
+- **Unit**: one `.ktool` = one MCP server = N tools (a toolset)
+- **Lifecycle**: a long-lived worker per toolset; microVM (Sandbox), host process (Trusted), or external endpoint (Service)
+- **Identity**: two digests — `descriptor_digest` (interface) and `tool_digest` (exact bytes); approvals are records keyed by `tool_digest`
+- **Registry**: content-addressed toolset snapshots with operator approval
 
 ## MCP Server Integration
 
@@ -80,207 +80,90 @@ Generated TypeScript also owns `ToolName`, the input/output/open-input maps, and
 
 The schema graph supports primitives, literals, homogeneous enums, arrays, typed maps, fixed objects, local `$defs` or `definitions` references, nullable values, `oneOf`, `anyOf`, `vec_or_one`, tagged object unions, and `OpaqueJson`. The builder rejects external `$ref` values, boolean schemas, unresolved local references, empty or unsupported objects, and other shapes it cannot represent in BAML. Use `OpaqueJson` when a tool accepts arbitrary JSON rather than publishing an unrepresentable schema.
 
-## External Tool Development
+## External Tools (v2 — toolsets)
 
-### Tool Manifest
+External tools run outside the OS process as **MCP servers**. The unit of
+distribution, approval, capability grant, and identity is the **toolset**: one
+`.ktool` bundle = one MCP server = N tools.
 
-Every external tool requires `tool-manifest.json`:
+### Tiers
 
-```json
-{
-  "name": "weather-api",
-  "version": "1.0.0",
-  "description": "Weather data retrieval tool",
-  "interface": {
-    "operations": {
-      "get_weather": {
-        "input_schema": {
-          "type": "object",
-          "properties": {
-            "location": {"type": "string"},
-            "units": {"type": "string", "enum": ["metric", "imperial"]}
-          },
-          "required": ["location"]
-        },
-        "output_schema": {
-          "type": "object",
-          "properties": {
-            "temperature": {"type": "number"},
-            "conditions": {"type": "string"}
-          }
-        }
-      }
-    }
-  },
-  "runtime": {
-    "type": "container",
-    "image": "weather-tool:latest",
-    "entrypoint": ["/app/tool-adapter"]
-  }
-}
+| Tier | Where the worker runs | Transport to the worker |
+|---|---|---|
+| `Static` | compiled into the OS | in-process (first-party only) |
+| `Sandbox` | microVM (microsandbox) | MCP stdio, via the guest supervisor |
+| `Trusted` | host process, operator-vouched | MCP stdio, via a host-side supervisor (`baml-tool-supervisor --tier trusted --uds`) |
+| `Service` | external endpoint the operator runs | MCP Streamable HTTP |
+
+Every non-Static tool is an MCP server; the tiers differ only in *where* the
+supervisor runs. The three protocol layers are: runner ↔ supervisor
+(`protocol_v2`), supervisor ↔ worker (**MCP stdio**), and runner ↔ Service
+(**MCP HTTP**).
+
+### Authoring (TypeScript)
+
+`@karakara/tool` is thin sugar over the official `@modelcontextprotocol/sdk`; a
+plain MCP server with no Karakara import is equally valid. Toolset-level
+capabilities live in `karakara.toml` next to `package.json` (they are a property
+of the one process the `.ktool` ships, not of an individual tool):
+
+```toml
+[toolset]
+name = "support"
+version = "1.2.0"
+
+[[toolset.capabilities.net]]
+host = "api.example.com"
+port = 443
+
+[[toolset.capabilities.secrets]]
+name = "EXAMPLE_API_KEY"
 ```
 
-### Tool Adapter Protocol
+Workflow:
 
-External tools communicate via JSON-RPC over stdin/stdout:
-
-```json
-// Request
-{"jsonrpc": "2.0", "id": 1, "method": "get_weather", "params": {"location": "San Francisco"}}
-
-// Response  
-{"jsonrpc": "2.0", "id": 1, "result": {"temperature": 18, "conditions": "cloudy"}}
-
-// Error
-{"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "API unavailable"}}
-```
-
-### Session State Management
-
-External tools follow a session FSM:
-
-```
-Open → Send → SearchRead/PageRead → Send → ... → Finish/Abort
-```
-
-**States:**
-- `Open` - Initialize tool session
-- `Send` - Execute operation with parameters
-- `SearchRead` - Query operation results
-- `PageRead` - Paginate through results
-- `Finish` - Clean session termination
-- `Abort` - Force session cleanup
-
-### Language Templates
-
-The CLI generates tool adapters in multiple languages:
-
-#### Python Template
-```python
-#!/usr/bin/env python3
-import json
-import sys
-from typing import Dict, Any
-
-def handle_get_weather(params: Dict[str, Any]) -> Dict[str, Any]:
-    location = params["location"]
-    # Implementation here
-    return {"temperature": 20, "conditions": "sunny"}
-
-def main():
-    for line in sys.stdin:
-        request = json.loads(line)
-        method = request["method"]
-        
-        if method == "get_weather":
-            result = handle_get_weather(request["params"])
-            response = {"jsonrpc": "2.0", "id": request["id"], "result": result}
-        else:
-            response = {"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32601, "message": "Method not found"}}
-        
-        print(json.dumps(response))
-        sys.stdout.flush()
-
-if __name__ == "__main__":
-    main()
-```
-
-#### Rust Template
-```rust
-use serde_json::{json, Value};
-use std::io::{self, BufRead, BufReader};
-
-fn handle_get_weather(params: &Value) -> Result<Value, String> {
-    let location = params["location"].as_str().ok_or("Missing location")?;
-    // Implementation here
-    Ok(json!({"temperature": 20, "conditions": "sunny"}))
-}
-
-fn main() -> io::Result<()> {
-    let stdin = io::stdin();
-    let reader = BufReader::new(stdin.lock());
-    
-    for line in reader.lines() {
-        let line = line?;
-        let request: Value = serde_json::from_str(&line).unwrap();
-        
-        let response = match request["method"].as_str() {
-            Some("get_weather") => {
-                match handle_get_weather(&request["params"]) {
-                    Ok(result) => json!({
-                        "jsonrpc": "2.0",
-                        "id": request["id"],
-                        "result": result
-                    }),
-                    Err(err) => json!({
-                        "jsonrpc": "2.0", 
-                        "id": request["id"],
-                        "error": {"code": -32000, "message": err}
-                    })
-                }
-            },
-            _ => json!({
-                "jsonrpc": "2.0",
-                "id": request["id"], 
-                "error": {"code": -32601, "message": "Method not found"}
-            })
-        };
-        
-        println!("{}", response);
-    }
-    Ok(())
-}
-```
-
-## Tool Registration Workflow
-
-### 1. Enable External Tool
 ```bash
-builder external-tool enable ./tools/weather-api --repository-url http://localhost:18080/repository
+karak tool new --lang ts ./tools/support   # scaffold an MCP-server toolset
+karak tool build ./tools/support           # runs the server, reads tools/list, assembles the .ktool
+karak tool publish ./tools/support          # host audits the bundle, records the approval
 ```
 
-This:
-- Validates `tool-manifest.json`
-- Generates language-specific adapter code
-- Creates sandbox binding if requested
-- Imports approved snapshot into registry
+`karak tool build` asks the built MCP server for `tools/list` and records each
+tool's canonical descriptor into `tools.json`; MCP annotations map to Karakara
+semantics (`readOnlyHint` ⇒ Read, `destructiveHint` ⇒ Irreversible, else Write;
+`idempotentHint`). Other languages follow with their runtime images.
 
-### 2. Refresh Tool
-```bash
-builder external-tool refresh weather-api --dir ./tools/weather-api
-```
+### Identity: two digests
 
-Updates existing tool with new implementation.
+Each tool carries two independent digests:
 
-### 3. Inspect Tool
-```bash
-builder external-tool inspect support/weather --json
-```
+- **`descriptor_digest`** — the tool's *interface* (name, schemas, side effect,
+  idempotency, output trust). It is the only tool input to an agent's artifact
+  identity, so replacing an implementation with the same interface leaves the
+  agent artifact unchanged.
+- **`tool_digest`** — the exact `.ktool` bytes plus the runtime image digest.
+  It pins the deployed implementation in the lockfile.
 
-Shows tool metadata and interface details.
+Approvals and timestamps are **records keyed by `tool_digest`**, never hashed
+into identity. Widening a toolset's capabilities changes `tool_digest` (so it
+needs operator approval) but not `descriptor_digest` (so it needs no agent
+rebuild). For a Service endpoint, verification compares the live `tools/list`
+against **all** of the toolset's approved descriptors, so drift in any tool of
+the endpoint fails the approved toolset.
 
-## BAML Integration
+### Manifest versions and the lockfile
 
-External tools are exposed as BAML classes:
+An agent manifest lists tools as `bundle/local` or with a semver requirement on
+the toolset version, `bundle/local@^1.2`. The builder resolves the requirement
+to the **newest approved toolset version** satisfying it and pins
+`version`, `requirement`, `tier`, `tool_digest`, and the per-tool
+`descriptor_digest`s into `external_tools.lock.json` (lockfile v2). The lockfile
+is always enforced at deploy; an operator-approved same-interface implementation
+swap (a different `tool_digest` whose descriptors match the pinned
+`descriptor_digest`s) is accepted and recorded in provenance.
 
-```typescript
-// Generated from tool manifest
-class WeatherAPI {
-  async get_weather(location: string, units?: string): Promise<{temperature: number, conditions: string}> {
-    // Runtime handles tool session lifecycle
-  }
-}
-```
+See the `karakara-tool-authoring` skill for the full authoring walkthrough.
 
-Usage in agents:
-
-```typescript
-import { WeatherAPI } from "./baml_client"
-
-const weather = new WeatherAPI()
-const result = await weather.get_weather("San Francisco", "metric")
-console.log(`Temperature: ${result.temperature}°C, Conditions: ${result.conditions}`)
-```
 
 ## Registry Architecture
 
@@ -291,10 +174,10 @@ The Karakara registry provides:
 - **Schema cache** - Tool/resource definitions
 - **Version tracking** - Immutable snapshot references
 
-### External Tool Snapshots  
-- **Manifest validation** - Schema compliance
-- **Implementation artifacts** - Container images, binaries
-- **Interface contracts** - Operation schemas
+### External Tool Snapshots (v2 toolsets)
+- **Content-addressed identity** - `tool_digest` (exact `.ktool` bytes + runtime image) and per-tool `descriptor_digest` (interface)
+- **Approval records** - keyed by `tool_digest`, carrying the toolset capability grant; never hashed into identity
+- **Delivery** - `Bundled` (audited `.ktool` bytes) or `Reference` (a Service endpoint, verified against its live `tools/list`)
 
 ### Offline Capabilities
 - **Snapshot export** - Bundle for CI/test environments
@@ -331,13 +214,13 @@ The Karakara registry provides:
 - Ensure registry URL is accessible
 
 **Schema validation errors**
-- Compare manifest schema with BAML expectations
+- Compare the toolset's `tools/list` descriptors with BAML expectations
 - Regenerate BAML types after tool changes
 - Validate JSON schema syntax
 
 **Session timeout**
-- Check tool adapter responsiveness
-- Verify container resource limits
+- Check the MCP worker's responsiveness
+- Verify the sandbox/VM resource limits
 - Review tool operation complexity
 
 **Registry connection issues**
@@ -348,15 +231,15 @@ The Karakara registry provides:
 ### Debug Commands
 
 ```bash
-# Validate tool manifest
-builder check-external-tool ./tools/weather-api
+# Build a toolset: run its MCP server, read tools/list, assemble the .ktool
+karak tool build ./tools/support
 
-# Inspect registry snapshot
-builder external-tool inspect weather-api --json
+# Invoke one tool through the stdio DevBackend
+karak tool test ./tools/support --tool support/clickup --input '{}'
 
-# Report snapshot cache contents
-builder snapshot-report --snapshot-cache ./cache
+# List tools from the runner/repository catalog or an offline snapshot cache
+karak list-tools
 
 # Workspace integrity check
-builder doctor --ci
+karak doctor
 ```

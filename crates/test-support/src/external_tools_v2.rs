@@ -7,14 +7,14 @@
 use baml_rt_tools::external_tools::{
     CapabilityRequest, DESCRIPTOR_ABI, ErrorClass, KTOOL_BUNDLE_SCHEMA_VERSION,
     KTOOL_DESCRIPTOR_PATH, KTOOL_MANIFEST_PATH, KTOOL_NODE_ENTRYPOINT, KTOOL_SBOM_PATH,
-    KtoolManifest, KtoolRuntimeTier, OutputTrust, SideEffect, UnifiedToolDescriptor,
+    KTOOL_TOOLS_PATH, KtoolManifest, KtoolRuntimeTier, KtoolToolEntry, OutputTrust, SideEffect, UnifiedToolDescriptor,
     compute_descriptor_digest, default_node_runtime_image,
 };
 use flate2::{Compression, GzBuilder};
 use serde_json::json;
 use tar::{Builder, Header};
 
-pub fn descriptor(name: &str, requested: CapabilityRequest) -> UnifiedToolDescriptor {
+pub fn descriptor(name: &str) -> UnifiedToolDescriptor {
     UnifiedToolDescriptor {
         descriptor_abi: DESCRIPTOR_ABI,
         name: name.into(),
@@ -26,19 +26,25 @@ pub fn descriptor(name: &str, requested: CapabilityRequest) -> UnifiedToolDescri
         side_effect: SideEffect::Read,
         idempotent: true,
         output_trust: OutputTrust::Untrusted,
-        requested,
     }
 }
 
-pub fn bundle(descriptor: &UnifiedToolDescriptor) -> Vec<u8> {
+/// Build a single-tool `.ktool` whose toolset-level capability requests are
+/// `requested` (R1 §R1.1: capabilities live on the manifest, not the
+/// descriptor).
+pub fn bundle(descriptor: &UnifiedToolDescriptor, requested: CapabilityRequest) -> Vec<u8> {
     let manifest = KtoolManifest {
         bundle_schema_version: KTOOL_BUNDLE_SCHEMA_VERSION,
-        name: descriptor.name.clone(),
+        name: descriptor.name.split_once('/').map(|(bundle, _)| bundle).unwrap_or(&descriptor.name).into(),
+        version: semver::Version::new(0, 1, 0),
         runtime_tier: KtoolRuntimeTier::Sandbox,
         runtime_image: default_node_runtime_image(),
-        entrypoint: KTOOL_NODE_ENTRYPOINT.into(),
-        descriptor_digest: compute_descriptor_digest(descriptor),
-        requested: descriptor.requested.clone(),
+        command: vec!["node".into(), KTOOL_NODE_ENTRYPOINT.into()],
+        requested,
+        tools: vec![KtoolToolEntry {
+            name: descriptor.name.clone(),
+            descriptor_digest: compute_descriptor_digest(descriptor),
+        }],
     };
     let encoder = GzBuilder::new()
         .mtime(0)
@@ -50,6 +56,7 @@ pub fn bundle(descriptor: &UnifiedToolDescriptor) -> Vec<u8> {
             serde_json::to_vec(descriptor).unwrap(),
         ),
         (KTOOL_MANIFEST_PATH, serde_json::to_vec(&manifest).unwrap()),
+        (KTOOL_TOOLS_PATH, serde_json::to_vec(&vec![descriptor]).unwrap()),
         (KTOOL_SBOM_PATH, b"{}".to_vec()),
         (KTOOL_NODE_ENTRYPOINT, b"export default {};".to_vec()),
     ] {

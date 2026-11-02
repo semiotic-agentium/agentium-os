@@ -7,7 +7,7 @@
 //! ```text
 //! <root>/external-tools/
 //!   tools/<tool_slug>/tool-snapshot.json
-//!   pending/<tool_slug>/<snapshot_digest>.json
+//!   pending/<tool_slug>/<tool_digest>.json
 //! ```
 
 use std::{
@@ -70,8 +70,8 @@ pub fn pending_tool_dir(root: &Path, tool_name: &str) -> Result<PathBuf> {
 }
 
 pub fn pending_snapshot_path(root: &Path, snapshot: &ExternalToolSnapshot) -> Result<PathBuf> {
-    Ok(pending_tool_dir(root, &snapshot.tool.name)?
-        .join(format!("{}.json", snapshot.snapshot_digest)))
+    let digest = snapshot.tool_digest().unwrap_or(snapshot.snapshot_digest);
+    Ok(pending_tool_dir(root, &snapshot.tool.name)?.join(format!("{digest}.json")))
 }
 
 pub fn write_approved_snapshot(root: &Path, snapshot: &ExternalToolSnapshot) -> io::Result<()> {

@@ -17,16 +17,16 @@ provider.with_runtime_image(default_node_runtime_image(), "registry/tool-runtime
 ```
 
 `default_node_runtime_image()` covers `{node_major, protocol, supervisor_abi}`.
-Changing node major, the protocol, the supervisor ABI, or the SDK runtime
-changes the registry digest, so every tool digest changes too. That is the
-point: it is a contract break, not a silent upgrade.
+Changing node major, the protocol, or the supervisor ABI changes the registry
+digest, so every tool digest changes too. Toolsets vendor their own MCP SDK and
+dependencies.
 
 ## Contract
 
 | Path | Purpose |
 | --- | --- |
 | `/usr/local/bin/baml-tool-supervisor` | Entrypoint/PID 1, the only process on the vsock |
-| `/node_modules/@karakara/tool` | Prebuilt SDK runtime (`serve`, `revealTransport`) |
+| `/tool/code/node_modules` | Vendored MCP SDK and tool dependencies |
 | `/tool` | Read-only bundle mount per worker (created by the supervisor) |
 | `/run/ktool` | Private bundle tmpfs root (mounted by the supervisor as root) |
 | `/tmp` | Per-worker sized tmpfs |

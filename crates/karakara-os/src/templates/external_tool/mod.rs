@@ -5,12 +5,9 @@
 
 //! Templates for the external-tool scaffold (v2).
 //!
-//! v2 has exactly one blessed authoring path: a TypeScript tool written against
-//! `@karakara/tool` (`plans/external-tools-v2.md` §3.1). The v1 scaffold
-//! machinery — per-language JSON-RPC stdio generators, hand-written
-//! `tool-manifest.json`/`tool-schema.json`, the `tool-server` wrapper, bind
-//! rootfs/Docker helpers, and the `access`/`runtime`/`sandbox` knobs — has been
-//! retired (no backwards-compatibility requirement; no external users).
+//! TypeScript starters use the official MCP SDK. Karakara packages the MCP
+//! server as a toolset after reading `tools/list`. The retired v1 scaffold
+//! emitted hand-written schemas, a server wrapper, and rootfs helpers.
 
 pub mod lang;
 

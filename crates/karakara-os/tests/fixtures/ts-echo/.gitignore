@@ -1,5 +1,5 @@
 node_modules/
 dist/
-tool-descriptor.json
+tools.json
 tool.lock.json
 package-lock.json

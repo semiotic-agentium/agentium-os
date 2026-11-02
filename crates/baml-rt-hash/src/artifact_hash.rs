@@ -25,8 +25,17 @@ pub struct ArtifactHashParseError {
 }
 
 impl ArtifactHash {
-    /// Hash exact stored artifact bytes.
+    /// Hash exact stored artifact bytes. This remains available for blob-store
+    /// callers and for legacy records.
     pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self(format!("{:x}", Sha256::digest(bytes)))
+    }
+
+    /// Hash a canonical agent identity projection rather than the package
+    /// archive. Agent artifact identity uses this form so executable bytes of
+    /// an external tool do not re-key an agent whose tool interfaces did not
+    /// change.
+    pub fn from_identity_bytes(bytes: &[u8]) -> Self {
         Self(format!("{:x}", Sha256::digest(bytes)))
     }
 

@@ -29,10 +29,11 @@ use crate::{
     error::{KtoolError, KtoolResult, invalid},
 };
 
-pub const KTOOL_BUNDLE_SCHEMA_VERSION: u32 = 1;
-pub const KTOOL_MANIFEST_PATH: &str = "manifest.json";
+pub const KTOOL_BUNDLE_SCHEMA_VERSION: u32 = 2;
+pub const KTOOL_MANIFEST_PATH: &str = "ktool.json";
+pub const KTOOL_TOOLS_PATH: &str = "tools.json";
 pub const KTOOL_DESCRIPTOR_PATH: &str = "tool-descriptor.json";
-pub const KTOOL_SBOM_PATH: &str = "sbom.spdx.json";
+pub const KTOOL_SBOM_PATH: &str = "sbom.json";
 pub const KTOOL_NODE_ENTRYPOINT: &str = "code/tool.js";
 pub const MAX_KTOOL_BUNDLE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_KTOOL_UNPACKED_BYTES: u64 = 256 * 1024 * 1024;
@@ -89,12 +90,22 @@ pub struct KtoolRuntimeImage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KtoolManifest {
     pub bundle_schema_version: u32,
+    /// Toolset name. Individual tools are identified by `name` in `tools`.
     pub name: String,
+    pub version: semver::Version,
     pub runtime_tier: KtoolRuntimeTier,
     pub runtime_image: KtoolRuntimeImage,
-    pub entrypoint: String,
-    pub descriptor_digest: Digest,
+    /// MCP server argv, relative to the unpacked bundle root. `node` and
+    /// `python3` are allowed as image interpreters.
+    pub command: Vec<String>,
     pub requested: CapabilityRequest,
+    pub tools: Vec<KtoolToolEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KtoolToolEntry {
+    pub name: String,
+    pub descriptor_digest: Digest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,7 +120,10 @@ pub enum KtoolRuntimeTier {
 /// Result of auditing a bundle's inert metadata and exact bytes.
 #[derive(Debug, Clone)]
 pub struct AuditedKtoolBundle {
+    /// Compatibility view for callers that still consume a single-tool
+    /// snapshot. New code must use `descriptors`.
     pub descriptor: ToolDescriptor,
+    pub descriptors: Vec<ToolDescriptor>,
     pub manifest: KtoolManifest,
     pub bundle_digest: Digest,
     pub tool_digest: Digest,
@@ -149,10 +163,10 @@ pub fn audit_ktool_bundle(bytes: &[u8]) -> KtoolResult<AuditedKtoolBundle> {
 
     let mut seen = HashSet::new();
     let mut unpacked = 0_u64;
-    let mut descriptor_json = None;
+    let mut tools_json = None;
     let mut manifest_json = None;
     let mut has_sbom = false;
-    let mut has_entrypoint = false;
+    let mut files = HashSet::new();
 
     for entry in entries {
         let mut entry = entry.map_err(|e| invalid(format!("invalid .ktool entry: {e}")))?;
@@ -185,22 +199,26 @@ pub fn audit_ktool_bundle(bytes: &[u8]) -> KtoolResult<AuditedKtoolBundle> {
         }
 
         match path.as_str() {
-            KTOOL_DESCRIPTOR_PATH => descriptor_json = Some(read_entry(&mut entry, &path)?),
+            KTOOL_DESCRIPTOR_PATH => {
+                let _ = read_entry(&mut entry, &path)?;
+            }
+            KTOOL_TOOLS_PATH => tools_json = Some(read_entry(&mut entry, &path)?),
             KTOOL_MANIFEST_PATH => manifest_json = Some(read_entry(&mut entry, &path)?),
             KTOOL_SBOM_PATH => {
                 let _: serde_json::Value = serde_json::from_slice(&read_entry(&mut entry, &path)?)
                     .map_err(|e| invalid(format!("invalid {KTOOL_SBOM_PATH}: {e}")))?;
                 has_sbom = true;
             }
-            KTOOL_NODE_ENTRYPOINT => has_entrypoint = true,
-            _ => {}
+            _ => {
+                files.insert(path);
+            }
         }
     }
 
-    let descriptor: ToolDescriptor = serde_json::from_slice(
-        &descriptor_json.ok_or_else(|| invalid(format!("missing {KTOOL_DESCRIPTOR_PATH}")))?,
+    let descriptors: Vec<ToolDescriptor> = serde_json::from_slice(
+        &tools_json.ok_or_else(|| invalid(format!("missing {KTOOL_TOOLS_PATH}")))?,
     )
-    .map_err(|e| invalid(format!("invalid {KTOOL_DESCRIPTOR_PATH}: {e}")))?;
+    .map_err(|e| invalid(format!("invalid {KTOOL_TOOLS_PATH}: {e}")))?;
     let manifest: KtoolManifest = serde_json::from_slice(
         &manifest_json.ok_or_else(|| invalid(format!("missing {KTOOL_MANIFEST_PATH}")))?,
     )
@@ -209,15 +227,52 @@ pub fn audit_ktool_bundle(bytes: &[u8]) -> KtoolResult<AuditedKtoolBundle> {
     if !has_sbom {
         return Err(invalid(format!("missing {KTOOL_SBOM_PATH}")));
     }
-    if !has_entrypoint || manifest.entrypoint != KTOOL_NODE_ENTRYPOINT {
-        return Err(invalid(format!(
-            "node bundle entrypoint must be {KTOOL_NODE_ENTRYPOINT}"
-        )));
-    }
     if manifest.bundle_schema_version != KTOOL_BUNDLE_SCHEMA_VERSION {
         return Err(invalid(format!(
             "unsupported .ktool schema version {} (expected {})",
             manifest.bundle_schema_version, KTOOL_BUNDLE_SCHEMA_VERSION
+        )));
+    }
+    if descriptors.is_empty() || manifest.tools.len() != descriptors.len() {
+        return Err(invalid(
+            "tools.json and manifest.tools must contain the same non-empty set",
+        ));
+    }
+    let mut names = HashSet::new();
+    for pair in descriptors.windows(2) {
+        if pair[0].name >= pair[1].name {
+            return Err(invalid("tools.json must be sorted by unique tool name"));
+        }
+    }
+    for descriptor in &descriptors {
+        if !names.insert(descriptor.name.clone()) {
+            return Err(invalid(format!("duplicate tool name: {}", descriptor.name)));
+        }
+    }
+    let mut manifest_tools = manifest.tools.clone();
+    manifest_tools.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut expected_tools = descriptors
+        .iter()
+        .map(|descriptor| KtoolToolEntry {
+            name: descriptor.name.clone(),
+            descriptor_digest: compute_descriptor_digest(descriptor),
+        })
+        .collect::<Vec<_>>();
+    expected_tools.sort_by(|a, b| a.name.cmp(&b.name));
+    if manifest_tools != expected_tools {
+        return Err(invalid(
+            "tools.json and manifest.tools descriptor digests do not match",
+        ));
+    }
+    if manifest.command.is_empty() {
+        return Err(invalid("ktool command must not be empty"));
+    }
+    let command_exists = files.contains(&manifest.command[0]);
+    let interpreter = matches!(manifest.command[0].as_str(), "node" | "python3");
+    if !command_exists && !interpreter {
+        return Err(invalid(format!(
+            "command[0] '{}' is not present in the bundle or a supported image interpreter",
+            manifest.command[0]
         )));
     }
     // Each tier pins exactly one registered runtime image. Trusted uses the
@@ -238,30 +293,27 @@ pub fn audit_ktool_bundle(bytes: &[u8]) -> KtoolResult<AuditedKtoolBundle> {
             manifest.runtime_image.digest
         )));
     }
-    if manifest.name != descriptor.name {
-        return Err(invalid(format!(
-            "manifest name '{}' does not match descriptor name '{}'",
-            manifest.name, descriptor.name
-        )));
-    }
-    if manifest.requested != descriptor.requested {
+    let bundle_name = manifest.name.clone();
+    if descriptors.iter().any(|descriptor| {
+        descriptor
+            .name
+            .split_once('/')
+            .is_some_and(|(bundle, _)| bundle != bundle_name.as_str())
+    }) {
         return Err(invalid(
-            "manifest capability requests do not match the descriptor",
+            "tool names must use the manifest toolset name as their bundle prefix",
         ));
-    }
-
-    let descriptor_digest = compute_descriptor_digest(&descriptor);
-    if manifest.descriptor_digest != descriptor_digest {
-        return Err(invalid(format!(
-            "descriptor digest mismatch: manifest has {}, computed {}",
-            manifest.descriptor_digest, descriptor_digest
-        )));
     }
 
     let bundle_digest = compute_bundle_digest(bytes);
     let tool_digest = compute_tool_digest_v2(bytes, manifest.runtime_image.digest);
+    let descriptor = descriptors
+        .first()
+        .cloned()
+        .ok_or_else(|| invalid("tools.json must contain at least one descriptor"))?;
     Ok(AuditedKtoolBundle {
         descriptor,
+        descriptors,
         manifest,
         bundle_digest,
         tool_digest,
@@ -272,6 +324,7 @@ pub fn audit_ktool_bundle(bytes: &[u8]) -> KtoolResult<AuditedKtoolBundle> {
 #[derive(Debug)]
 pub struct UnpackedKtool {
     pub descriptor: ToolDescriptor,
+    pub descriptors: Vec<ToolDescriptor>,
     pub manifest: KtoolManifest,
     pub bundle_digest: Digest,
     pub tool_digest: Digest,
@@ -322,6 +375,7 @@ pub fn unpack_ktool_bundle(
 
     Ok(UnpackedKtool {
         descriptor: audited.descriptor,
+        descriptors: audited.descriptors,
         manifest: audited.manifest,
         bundle_digest: audited.bundle_digest,
         tool_digest: audited.tool_digest,
@@ -384,17 +438,31 @@ pub fn build_ktool_bundle_for_tier(
     extra: Vec<BundleFile>,
     sbom: impl Into<Vec<u8>>,
 ) -> KtoolResult<Vec<u8>> {
+    let toolset_name = descriptor
+        .name
+        .split_once('/')
+        .map(|(bundle, _)| bundle.to_string())
+        .unwrap_or_else(|| descriptor.name.clone());
     let manifest = KtoolManifest {
         bundle_schema_version: KTOOL_BUNDLE_SCHEMA_VERSION,
-        name: descriptor.name.clone(),
+        name: toolset_name,
+        version: semver::Version::new(0, 1, 0),
         runtime_tier: tier,
         runtime_image: runtime_image_for_tier(tier),
-        entrypoint: KTOOL_NODE_ENTRYPOINT.to_string(),
-        descriptor_digest: compute_descriptor_digest(descriptor),
-        requested: descriptor.requested.clone(),
+        command: vec!["node".to_string(), KTOOL_NODE_ENTRYPOINT.to_string()],
+        // R1 (§R1.1): capabilities are toolset-level and live only on the
+        // manifest. The convenience builders produce a no-capability toolset;
+        // the publish path sets `requested` explicitly from `karakara.toml`.
+        requested: CapabilityRequest::default(),
+        tools: vec![KtoolToolEntry {
+            name: descriptor.name.clone(),
+            descriptor_digest: compute_descriptor_digest(descriptor),
+        }],
     };
 
     let mut files = vec![
+        // Keep the singular descriptor as a harmless compatibility aid for
+        // local tooling. Audit identity comes only from tools.json.
         BundleFile::new(
             KTOOL_DESCRIPTOR_PATH,
             serde_json::to_vec(descriptor).map_err(|e| invalid(e.to_string()))?,
@@ -402,6 +470,10 @@ pub fn build_ktool_bundle_for_tier(
         BundleFile::new(
             KTOOL_MANIFEST_PATH,
             serde_json::to_vec(&manifest).map_err(|e| invalid(e.to_string()))?,
+        ),
+        BundleFile::new(
+            KTOOL_TOOLS_PATH,
+            serde_json::to_vec(&vec![descriptor]).map_err(|e| invalid(e.to_string()))?,
         ),
         BundleFile::new(KTOOL_SBOM_PATH, sbom),
         BundleFile::new(KTOOL_NODE_ENTRYPOINT, entrypoint),
@@ -559,7 +631,6 @@ mod tests {
             side_effect: SideEffect::Read,
             idempotent: true,
             output_trust: OutputTrust::Untrusted,
-            requested: CapabilityRequest::default(),
         }
     }
 
@@ -598,10 +669,14 @@ mod tests {
         .unwrap();
         // Rewrite the manifest digest while keeping descriptor bytes intact.
         let bytes = rewrite_manifest(&bytes, |manifest| {
-            manifest.descriptor_digest = Digest::new(format!("sha256:{}", "f".repeat(64)));
+            manifest.tools[0].descriptor_digest = Digest::new(format!("sha256:{}", "f".repeat(64)));
         });
         let err = audit_ktool_bundle(&bytes).unwrap_err();
-        assert!(err.to_string().contains("descriptor digest mismatch"));
+        assert!(
+            err.to_string()
+                .contains("tools.json and manifest.tools descriptor digests do not match"),
+            "unexpected audit error: {err}"
+        );
     }
 
     #[test]
@@ -736,16 +811,27 @@ mod tests {
         let descriptor = descriptor();
         let manifest = KtoolManifest {
             bundle_schema_version: KTOOL_BUNDLE_SCHEMA_VERSION,
-            name: descriptor.name.clone(),
+            name: "support".into(),
+            version: semver::Version::new(0, 1, 0),
             runtime_tier: KtoolRuntimeTier::Trusted,
             runtime_image: default_node_runtime_image(),
-            entrypoint: KTOOL_NODE_ENTRYPOINT.to_string(),
-            descriptor_digest: compute_descriptor_digest(&descriptor),
-            requested: descriptor.requested.clone(),
+            command: vec!["node".into(), KTOOL_NODE_ENTRYPOINT.into()],
+            requested: CapabilityRequest::default(),
+            tools: vec![KtoolToolEntry {
+                name: descriptor.name.clone(),
+                descriptor_digest: compute_descriptor_digest(&descriptor),
+            }],
         };
         let files = vec![
-            BundleFile::new(KTOOL_DESCRIPTOR_PATH, serde_json::to_vec(&descriptor).unwrap()),
+            BundleFile::new(
+                KTOOL_DESCRIPTOR_PATH,
+                serde_json::to_vec(&descriptor).unwrap(),
+            ),
             BundleFile::new(KTOOL_MANIFEST_PATH, serde_json::to_vec(&manifest).unwrap()),
+            BundleFile::new(
+                KTOOL_TOOLS_PATH,
+                serde_json::to_vec(&vec![descriptor]).unwrap(),
+            ),
             BundleFile::new(KTOOL_SBOM_PATH, b"{}".to_vec()),
             BundleFile::new(KTOOL_NODE_ENTRYPOINT, b"export default {};".to_vec()),
         ];
@@ -768,7 +854,8 @@ mod tests {
         }
         let err = audit_ktool_bundle(&out).unwrap_err();
         assert!(
-            err.to_string().contains("not registered for the Trusted tier"),
+            err.to_string()
+                .contains("not registered for the Trusted tier"),
             "{err}"
         );
     }

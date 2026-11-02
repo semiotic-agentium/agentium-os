@@ -2,59 +2,79 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//! The agent's external-tool lockfile.
+//!
+//! Version 2 pins a toolset's executable digest separately from the interface
+//! digest of each tool it exposes. Agent identity uses the latter. This lets an
+//! operator replace an implementation without rebuilding an agent when the
+//! MCP contract is unchanged.
+
 use std::{collections::HashMap, fs, path::Path};
 
 use baml_rt_core::{BamlRtError, Result};
 use serde::{Deserialize, Serialize};
 
 use super::metadata::{compute_tool_digest, read_external_manifest};
-use crate::ToolName;
+use crate::{ToolName, external_tools::ExternalToolSnapshot, mcp_snapshot::Digest};
 
 pub const EXTERNAL_TOOLS_LOCKFILE_NAME: &str = "external_tools.lock.json";
 
+/// Kept as a source-compatibility shim for callers that still pass the old
+/// setting. R1 always enforces the lockfile; the old modes no longer change
+/// runtime behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ExternalLockfileMode {
     Off,
-    #[default]
     Permissive,
+    #[default]
     Enforce,
 }
 
 impl ExternalLockfileMode {
     pub fn from_env() -> Self {
-        match std::env::var("BAML_EXTERNAL_LOCKFILE_MODE") {
-            Ok(value) => Self::parse(&value).unwrap_or_default(),
-            Err(_) => Self::default(),
-        }
+        Self::Enforce
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "off" => Some(Self::Off),
-            "permissive" => Some(Self::Permissive),
-            "enforce" => Some(Self::Enforce),
+            "off" | "permissive" | "enforce" => Some(Self::Enforce),
             _ => None,
         }
     }
 
     pub fn should_enforce(self) -> bool {
-        matches!(self, Self::Enforce)
+        true
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalToolsLockfile {
     pub version: String,
-    #[serde(default)]
-    pub tools: Vec<ExternalToolLockEntry>,
+    pub toolsets: Vec<ExternalToolsetLockEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalToolsetLockEntry {
+    pub name: String,
+    pub version: String,
+    pub requirement: String,
+    pub tier: String,
+    pub tool_digest: String,
+    pub tools: Vec<ExternalToolInterfaceLockEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalToolInterfaceLockEntry {
+    pub name: String,
+    pub descriptor_digest: String,
 }
 
 impl ExternalToolsLockfile {
     pub fn empty() -> Self {
         Self {
-            version: "1".to_string(),
-            tools: Vec::new(),
+            version: "2".to_string(),
+            toolsets: Vec::new(),
         }
     }
 
@@ -68,12 +88,13 @@ impl ExternalToolsLockfile {
                 message: format!("failed to parse {}", path.display()),
                 source: Box::new(e),
             })?;
-        if parsed.version != "1" {
+        if parsed.version != "2" {
             return Err(BamlRtError::InvalidArgument(format!(
-                "unsupported external tools lockfile version '{}' (expected '1')",
+                "unsupported external tools lockfile version '{}' (expected '2')",
                 parsed.version
             )));
         }
+        validate(&parsed)?;
         Ok(parsed)
     }
 
@@ -81,24 +102,111 @@ impl ExternalToolsLockfile {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(BamlRtError::Io)?;
         }
-        let json = serde_json::to_string_pretty(self).map_err(BamlRtError::Json)?;
+        let mut value = self.clone();
+        value.version = "2".to_string();
+        validate(&value)?;
+        let json = serde_json::to_string_pretty(&value).map_err(BamlRtError::Json)?;
         fs::write(path, json).map_err(BamlRtError::Io)?;
         Ok(())
     }
 
-    pub fn by_name(&self, name: &ToolName) -> Option<&ExternalToolLockEntry> {
-        self.tools.iter().find(|entry| {
-            let Some((bundle, local)) = entry.name.split_once('/') else {
-                return false;
-            };
-            bundle == name.bundle().as_str() && local == name.local().as_str()
+    /// Find the toolset entry containing a fully-qualified tool name.
+    pub fn by_name(&self, name: &ToolName) -> Option<&ExternalToolInterfaceLockEntry> {
+        let qualified = name.to_string();
+        self.toolsets
+            .iter()
+            .find(|set| set.name == name.bundle().as_str())
+            .and_then(|set| {
+                set.tools
+                    .iter()
+                    .find(|entry| entry.name == name.local().as_str() || entry.name == qualified)
+            })
+    }
+
+    pub fn toolset_for(&self, name: &ToolName) -> Option<&ExternalToolsetLockEntry> {
+        let qualified = name.to_string();
+        self.toolsets.iter().find(|set| {
+            set.name == name.bundle().as_str()
+                && set
+                    .tools
+                    .iter()
+                    .any(|tool| tool.name == name.local().as_str() || tool.name == qualified)
         })
     }
 
-    pub fn from_tool_dirs(dirs: &[std::path::PathBuf]) -> Result<Self> {
-        let mut entries = Vec::new();
-        let mut seen = HashMap::<String, std::path::PathBuf>::new();
+    /// Verify the interface pin carried by a packaged approved snapshot. The
+    /// executable digest is intentionally not required to equal the lockfile
+    /// pin here: an approved same-interface implementation swap is allowed at
+    /// deploy time and is recorded by the host.
+    pub fn verify_snapshot(&self, snapshot: &ExternalToolSnapshot) -> Result<()> {
+        let Some(v2) = snapshot.v2.as_ref() else {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "lockfile v2 cannot verify legacy external tool '{}'",
+                snapshot.tool.name
+            )));
+        };
+        let name = ToolName::parse(&v2.descriptor.name)?;
+        let Some(entry) = self.by_name(&name) else {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "external tool '{}' is missing from lockfile v2",
+                v2.descriptor.name
+            )));
+        };
+        if entry.descriptor_digest != v2.descriptor_digest.to_string() {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "external tool '{}' descriptor digest mismatch: lockfile {}, snapshot {}",
+                v2.descriptor.name, entry.descriptor_digest, v2.descriptor_digest
+            )));
+        }
+        Ok(())
+    }
 
+    /// Resolve an approved implementation for one locked interface. The pinned
+    /// executable is preferred, but an operator-approved implementation with
+    /// the same descriptor is a valid swap.
+    pub fn select_approved_snapshot<'a>(
+        &self,
+        name: &ToolName,
+        snapshots: &'a [ExternalToolSnapshot],
+    ) -> Result<&'a ExternalToolSnapshot> {
+        let qualified = name.to_string();
+        let entry = self.by_name(name).ok_or_else(|| {
+            BamlRtError::InvalidArgument(format!(
+                "external tool '{qualified}' is missing from lockfile v2"
+            ))
+        })?;
+        let matching: Vec<&ExternalToolSnapshot> = snapshots
+            .iter()
+            .filter(|snapshot| {
+                snapshot.tool.name == qualified
+                    && snapshot.approval.state.is_approved()
+                    && snapshot.v2.as_ref().is_some_and(|v2| {
+                        v2.descriptor_digest.to_string() == entry.descriptor_digest
+                    })
+            })
+            .collect();
+        if let Some(snapshot) = matching.iter().find(|snapshot| {
+            snapshot.tool_digest().is_some_and(|digest| {
+                self.toolset_for(name)
+                    .is_some_and(|set| set.tool_digest == digest.to_string())
+            })
+        }) {
+            return Ok(snapshot);
+        }
+        matching.into_iter().next().ok_or_else(|| {
+            BamlRtError::InvalidArgument(format!(
+                "no approved implementation for external tool '{qualified}' matches descriptor digest {}",
+                entry.descriptor_digest
+            ))
+        })
+    }
+
+    /// Legacy source-directory helper. New packages are resolved from approved
+    /// snapshots, but keeping this helper makes local tooling fail closed while
+    /// it migrates to `.ktool` toolsets.
+    pub fn from_tool_dirs(dirs: &[std::path::PathBuf]) -> Result<Self> {
+        let mut toolsets = Vec::new();
+        let mut seen = HashMap::<String, std::path::PathBuf>::new();
         for dir in dirs {
             let manifest = read_external_manifest(dir)?;
             let digest = compute_tool_digest(dir)?;
@@ -110,124 +218,92 @@ impl ExternalToolsLockfile {
                     dir.display()
                 )));
             }
-            entries.push(ExternalToolLockEntry {
-                name: manifest.name,
-                digest,
-                abi_version: manifest.tool_abi_version,
-                protocol_version: "1".to_string(),
-                oci_ref: None,
-                platform: None,
-                signer: None,
-                capabilities: None,
+            let (bundle, local) = manifest.name.split_once('/').ok_or_else(|| {
+                BamlRtError::InvalidArgument(format!(
+                    "invalid external tool name '{}'",
+                    manifest.name
+                ))
+            })?;
+            toolsets.push(ExternalToolsetLockEntry {
+                name: bundle.to_string(),
+                version: "0.0.0".to_string(),
+                requirement: "*".to_string(),
+                tier: "sandbox".to_string(),
+                tool_digest: digest.to_string(),
+                tools: vec![ExternalToolInterfaceLockEntry {
+                    name: local.to_string(),
+                    descriptor_digest: digest.to_string(),
+                }],
             });
         }
-
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        toolsets.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(Self {
-            version: "1".to_string(),
-            tools: entries,
+            version: "2".to_string(),
+            toolsets,
         })
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExternalToolLockEntry {
-    pub name: String,
-    pub digest: String,
-    pub abi_version: String,
-    pub protocol_version: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub oci_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub platform: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signer: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capabilities: Option<serde_json::Value>,
+fn validate(lockfile: &ExternalToolsLockfile) -> Result<()> {
+    let mut names = HashMap::<String, ()>::new();
+    for set in &lockfile.toolsets {
+        if set.name.trim().is_empty()
+            || set.tool_digest.parse::<Digest>().is_err()
+            || set.version.trim().is_empty()
+        {
+            return Err(BamlRtError::InvalidArgument(
+                "lockfile v2 toolsets require valid name, version, and tool_digest".to_string(),
+            ));
+        }
+        for tool in &set.tools {
+            let key = format!("{}/{}", set.name, tool.name);
+            if names.insert(key.clone(), ()).is_some() {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "duplicate external tool '{}' in lockfile v2",
+                    key
+                )));
+            }
+            if tool.name.trim().is_empty() || tool.descriptor_digest.parse::<Digest>().is_err() {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "invalid lockfile v2 tool entry '{}'",
+                    tool.name
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
-
-    use super::ExternalToolsLockfile;
+    use super::{ExternalToolInterfaceLockEntry, ExternalToolsLockfile, ExternalToolsetLockEntry};
 
     #[test]
-    fn lockfile_allows_sandbox_tool_without_tool_server() {
-        let dir = unique_temp_dir("lockfile-sandbox-no-bin");
-        fs::create_dir_all(&dir).expect("create temp tool dir");
-        let manifest = serde_json::json!({
-            "tool_abi_version": "1",
-            "name": "support/sbox_no_bin",
-            "description": "sandbox",
-            "bundle": "support",
-            "local_name": "sbox_no_bin",
-            "access_level": "read",
-            "invocation_mode": "single_shot",
-            "schemas": {
-                "input": {"type": "object"},
-                "output": {"type": "object"}
-            },
-            "secrets": [],
-            "capabilities": {},
-            "runtime": {
-                "kind": "sandbox",
-                "image": {"kind": "bind", "path": "/tmp/sbox-rootfs"},
-                "entrypoint": ["/tool-adapter"]
-            }
-        });
-        fs::write(
-            dir.join("tool-manifest.json"),
-            serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
-        )
-        .expect("write manifest");
-
-        let lockfile = ExternalToolsLockfile::from_tool_dirs(std::slice::from_ref(&dir))
-            .expect("sandbox lockfile should succeed without tool-server");
-        assert_eq!(lockfile.tools.len(), 1);
-        assert_eq!(lockfile.tools[0].name, "support/sbox_no_bin");
-        assert!(lockfile.tools[0].digest.starts_with("sha256:"));
-
-        let _ = fs::remove_dir_all(&dir);
+    fn v1_is_rejected() {
+        let path = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(path.path(), br#"{"version":"1","tools":[]}"#).unwrap();
+        assert!(ExternalToolsLockfile::read_from_path(path.path()).is_err());
     }
 
     #[test]
-    fn lockfile_process_tool_without_tool_server_fails() {
-        let dir = unique_temp_dir("lockfile-process-missing-bin");
-        fs::create_dir_all(&dir).expect("create temp tool dir");
-        let manifest = serde_json::json!({
-            "tool_abi_version": "1",
-            "name": "support/proc_missing_bin",
-            "description": "process",
-            "bundle": "support",
-            "local_name": "proc_missing_bin",
-            "access_level": "read",
-            "invocation_mode": "single_shot",
-            "schemas": {
-                "input": {"type": "object"},
-                "output": {"type": "object"}
-            },
-            "secrets": [],
-            "capabilities": {}
-        });
-        fs::write(
-            dir.join("tool-manifest.json"),
-            serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
-        )
-        .expect("write manifest");
-
-        let err = ExternalToolsLockfile::from_tool_dirs(std::slice::from_ref(&dir))
-            .expect_err("process lockfile should fail when tool-server missing");
-        assert!(
-            err.to_string()
-                .contains("failed to read external tool binary"),
-            "unexpected error: {err}"
+    fn same_interface_pin_is_independent_of_tool_digest() {
+        let lock = ExternalToolsLockfile {
+            version: "2".into(),
+            toolsets: vec![ExternalToolsetLockEntry {
+                name: "support".into(),
+                version: "1.0.0".into(),
+                requirement: "^1".into(),
+                tier: "sandbox".into(),
+                tool_digest: "sha256:old".into(),
+                tools: vec![ExternalToolInterfaceLockEntry {
+                    name: "support/echo".into(),
+                    descriptor_digest: "sha256:interface".into(),
+                }],
+            }],
+        };
+        assert_eq!(
+            lock.toolsets[0].tools[0].descriptor_digest,
+            "sha256:interface"
         );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    fn unique_temp_dir(prefix: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("{prefix}-{}", uuid::Uuid::new_v4()))
     }
 }

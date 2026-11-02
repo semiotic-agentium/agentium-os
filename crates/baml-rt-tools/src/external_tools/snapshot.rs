@@ -13,10 +13,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{
-    ExternalToolManifest, ExternalToolMetadata, KtoolRuntimeImage, MetadataSchemas,
-    ServiceEndpoint, ServiceRuntimeSpec, SideEffect, ToolRuntime, ToolSchemaResult,
-    UnifiedToolDescriptor, compute_descriptor_digest, metadata::metadata_schema_digest,
-    runtime::DEFAULT_PROCESS_COMMAND,
+    CapabilityRequest, ExternalToolManifest, ExternalToolMetadata, KtoolRuntimeImage,
+    MetadataSchemas, ServiceEndpoint, ServiceRuntimeSpec, SideEffect, ToolRuntime,
+    ToolSchemaResult, UnifiedToolDescriptor, compute_descriptor_digest,
+    metadata::metadata_schema_digest, runtime::DEFAULT_PROCESS_COMMAND,
 };
 use crate::{
     ToolAccess,
@@ -87,9 +87,55 @@ pub struct ExternalToolSnapshot {
 /// V2 contract and executable-byte identity stored with the approval snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExternalToolV2Snapshot {
+    /// Compatibility projection for a single-tool caller.
     pub descriptor: UnifiedToolDescriptor,
     pub descriptor_digest: Digest,
+    /// Complete toolset interface. The order is canonicalized by publish.
+    #[serde(default)]
+    pub descriptors: Vec<UnifiedToolDescriptor>,
+    /// Toolset-level capability requests approved with this snapshot (R1 §R1.1).
+    /// Capabilities are a property of the one process a `.ktool` ships, not of
+    /// an individual tool, so they live here and on the manifest — never on the
+    /// interface descriptor. The host grant and approval diff read this.
+    #[serde(default)]
+    pub requested: CapabilityRequest,
+    /// Compatibility projections for clients that read the v2 identity fields
+    /// directly. `delivery` remains authoritative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_digest: Option<Digest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_digest: Option<Digest>,
     pub delivery: ToolDelivery,
+}
+
+/// Content-addressed toolset content. Approval and publication metadata are
+/// intentionally not part of this value.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolsetSnapshot {
+    pub tool_digest: Digest,
+    pub descriptor_digest: Digest,
+    pub descriptor: UnifiedToolDescriptor,
+    #[serde(default)]
+    pub descriptors: Vec<UnifiedToolDescriptor>,
+    pub delivery: ToolDelivery,
+}
+
+/// Mutable operator approval record keyed by executable identity. It is never
+/// included in a toolset or agent identity digest.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolsetApproval {
+    pub tool_digest: Digest,
+    pub approved_by: String,
+    pub approved_at: String,
+    pub capability_grant: CapabilityRequest,
+}
+
+/// Publication metadata kept separate from content identity and approval.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolsetPublishRecord {
+    pub tool_digest: Digest,
+    pub created_at: String,
+    pub source: String,
 }
 
 /// How a v2 tool reaches its execution environment.
@@ -108,6 +154,26 @@ pub enum ToolDelivery {
         endpoint: ServiceEndpointRef,
         descriptor_source: DescribeProvenance,
     },
+}
+
+impl ToolsetSnapshot {
+    pub fn from_v2(v2: &ExternalToolV2Snapshot) -> Self {
+        let tool_digest = match &v2.delivery {
+            ToolDelivery::Bundled { tool_digest, .. } => *tool_digest,
+            ToolDelivery::Reference { endpoint, .. } => canonical_digest(endpoint),
+        };
+        Self {
+            tool_digest,
+            descriptor_digest: v2.descriptor_digest,
+            descriptor: v2.descriptor.clone(),
+            descriptors: if v2.descriptors.is_empty() {
+                vec![v2.descriptor.clone()]
+            } else {
+                v2.descriptors.clone()
+            },
+            delivery: v2.delivery.clone(),
+        }
+    }
 }
 
 /// Opaque endpoint reference stored in a Service snapshot.
@@ -148,6 +214,37 @@ pub struct ExternalToolSnapshotDigests {
 }
 
 impl ExternalToolSnapshot {
+    /// The stable v2 identity. It is the executable/runtime digest for a
+    /// bundled toolset and the endpoint reference digest for a Service.
+    pub fn tool_digest(&self) -> Option<Digest> {
+        self.v2.as_ref().map(|v2| match &v2.delivery {
+            ToolDelivery::Bundled { tool_digest, .. } => *tool_digest,
+            ToolDelivery::Reference { endpoint, .. } => canonical_digest(endpoint),
+        })
+    }
+
+    pub fn toolset_snapshot(&self) -> Option<ToolsetSnapshot> {
+        self.v2.as_ref().map(ToolsetSnapshot::from_v2)
+    }
+
+    pub fn approval_record(&self) -> Option<ToolsetApproval> {
+        let tool_digest = self.tool_digest()?;
+        Some(ToolsetApproval {
+            tool_digest,
+            approved_by: self.approval.owner.clone().unwrap_or_default(),
+            approved_at: self
+                .approval
+                .reviewed_at
+                .clone()
+                .unwrap_or_else(|| self.created_at.clone()),
+            capability_grant: self
+                .v2
+                .as_ref()
+                .map(|v2| v2.requested.clone())
+                .unwrap_or_default(),
+        })
+    }
+
     pub fn from_parts(
         tool_dir: &Path,
         manifest: ExternalToolManifest,
@@ -227,6 +324,7 @@ impl ExternalToolSnapshot {
     /// Build an approved v2 snapshot from a host-audited `.ktool` bundle.
     pub fn from_v2_bundle(
         descriptor: UnifiedToolDescriptor,
+        requested: CapabilityRequest,
         bundle_digest: Digest,
         tool_digest: Digest,
         runtime_image: KtoolRuntimeImage,
@@ -234,7 +332,7 @@ impl ExternalToolSnapshot {
         created_at: impl Into<String>,
     ) -> Result<Self> {
         let descriptor_digest = compute_descriptor_digest(&descriptor);
-        let tool = metadata_from_v2_descriptor(&descriptor)?;
+        let tool = metadata_from_v2_descriptor(&descriptor, &requested)?;
         let created_at = created_at.into();
         let approval = ApprovalRecord {
             state: ApprovalState::Approved,
@@ -242,10 +340,12 @@ impl ExternalToolSnapshot {
             reviewed_at: Some(created_at.clone()),
             expires_at: None,
         };
-        let mut snapshot = Self {
+        let snapshot = Self {
             snapshot_schema_version: EXTERNAL_TOOL_SNAPSHOT_SCHEMA_VERSION,
             source: EXTERNAL_TOOL_SOURCE.to_string(),
-            snapshot_digest: descriptor_digest,
+            // Deprecated compatibility field. R1 identity is tool_digest,
+            // never the publication record or timestamp.
+            snapshot_digest: tool_digest,
             tool,
             describe: ExternalToolDescribeSnapshot {
                 protocol_version: "2".to_string(),
@@ -259,11 +359,15 @@ impl ExternalToolSnapshot {
                 manifest_digest: descriptor_digest,
                 schema_digest: descriptor_digest,
                 runtime_digest: runtime_image.digest,
-                snapshot_digest: descriptor_digest,
+                snapshot_digest: tool_digest,
             },
             v2: Some(ExternalToolV2Snapshot {
-                descriptor,
+                descriptor: descriptor.clone(),
                 descriptor_digest,
+                descriptors: vec![descriptor],
+                requested,
+                bundle_digest: Some(bundle_digest),
+                tool_digest: Some(tool_digest),
                 delivery: ToolDelivery::Bundled {
                     bundle_digest,
                     tool_digest,
@@ -273,14 +377,18 @@ impl ExternalToolSnapshot {
             approval,
             created_at,
         };
-        let snapshot_digest = compute_snapshot_digest(&snapshot)?;
-        snapshot.snapshot_digest = snapshot_digest;
-        snapshot.digests.snapshot_digest = snapshot_digest;
         Ok(snapshot)
     }
 
     /// Build an approved Service snapshot from a descriptor obtained from the
     /// referenced endpoint. Service snapshots never carry bundle bytes.
+    ///
+    /// The snapshot registers the single `descriptor`, but records the endpoint's
+    /// full toolset interface as `[descriptor]` so a later
+    /// [`from_v2_service_toolset`](Self::from_v2_service_toolset) stays the one
+    /// place that threads sibling tools. Use the toolset constructor when the
+    /// endpoint exposes more than one tool so drift verification (R1 §R1.8/§R1.g)
+    /// can check them all.
     pub fn from_v2_service(
         descriptor: UnifiedToolDescriptor,
         endpoint: ServiceEndpointRef,
@@ -288,8 +396,52 @@ impl ExternalToolSnapshot {
         approved_by: impl Into<String>,
         created_at: impl Into<String>,
     ) -> Result<Self> {
+        let toolset = vec![descriptor.clone()];
+        Self::from_v2_service_toolset(
+            descriptor,
+            toolset,
+            endpoint,
+            descriptor_source,
+            approved_by,
+            created_at,
+        )
+    }
+
+    /// Build an approved Service snapshot that records the endpoint's whole
+    /// toolset interface (R1 §R1.g). The snapshot still registers one tool
+    /// (`descriptor`), but `v2.descriptors` carries every tool the endpoint
+    /// exposes, sorted by name, so `ServiceHost::verify` can compare the live
+    /// `tools/list` against all of them and catch drift in any sibling tool —
+    /// not only the one being invoked. `descriptor` must be one of
+    /// `toolset_descriptors`.
+    pub fn from_v2_service_toolset(
+        descriptor: UnifiedToolDescriptor,
+        mut toolset_descriptors: Vec<UnifiedToolDescriptor>,
+        endpoint: ServiceEndpointRef,
+        descriptor_source: DescribeProvenance,
+        approved_by: impl Into<String>,
+        created_at: impl Into<String>,
+    ) -> Result<Self> {
+        if toolset_descriptors.is_empty() {
+            toolset_descriptors.push(descriptor.clone());
+        }
+        toolset_descriptors.sort_by(|a, b| a.name.cmp(&b.name));
+        toolset_descriptors.dedup_by(|a, b| a.name == b.name);
+        if !toolset_descriptors
+            .iter()
+            .any(|entry| entry.name == descriptor.name)
+        {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "service tool '{}' is not part of its endpoint toolset",
+                descriptor.name
+            )));
+        }
         let descriptor_digest = compute_descriptor_digest(&descriptor);
-        let mut tool = metadata_from_v2_descriptor(&descriptor)?;
+        // A Service reference's egress/secrets are the operator's remote
+        // concern; the OS holds no bundle and grants nothing, so no toolset
+        // capabilities are recorded here (R1 §R1.8).
+        let requested = CapabilityRequest::default();
+        let mut tool = metadata_from_v2_descriptor(&descriptor, &requested)?;
         tool.runtime = Some(ToolRuntime::Service(ServiceRuntimeSpec {
             endpoint: endpoint.clone(),
         }));
@@ -302,10 +454,11 @@ impl ExternalToolSnapshot {
             reviewed_at: Some(created_at.clone()),
             expires_at: None,
         };
-        let mut snapshot = Self {
+        let snapshot = Self {
             snapshot_schema_version: EXTERNAL_TOOL_SNAPSHOT_SCHEMA_VERSION,
             source: EXTERNAL_TOOL_SOURCE.to_string(),
-            snapshot_digest: descriptor_digest,
+            // Service identity is the endpoint reference plus its descriptor.
+            snapshot_digest: endpoint_digest,
             tool,
             describe: ExternalToolDescribeSnapshot {
                 protocol_version: "2".to_string(),
@@ -317,11 +470,15 @@ impl ExternalToolSnapshot {
                 manifest_digest: descriptor_digest,
                 schema_digest,
                 runtime_digest: endpoint_digest,
-                snapshot_digest: descriptor_digest,
+                snapshot_digest: endpoint_digest,
             },
             v2: Some(ExternalToolV2Snapshot {
-                descriptor,
+                descriptor: descriptor.clone(),
                 descriptor_digest,
+                descriptors: toolset_descriptors,
+                requested,
+                bundle_digest: None,
+                tool_digest: Some(endpoint_digest),
                 delivery: ToolDelivery::Reference {
                     endpoint,
                     descriptor_source,
@@ -330,9 +487,6 @@ impl ExternalToolSnapshot {
             approval,
             created_at,
         };
-        let snapshot_digest = compute_snapshot_digest(&snapshot)?;
-        snapshot.snapshot_digest = snapshot_digest;
-        snapshot.digests.snapshot_digest = snapshot_digest;
         validate_external_tool_snapshot(&snapshot)?;
         Ok(snapshot)
     }
@@ -352,7 +506,10 @@ pub fn compute_schema_digest(input: &Value, output: &Value) -> Digest {
     }))
 }
 
-fn metadata_from_v2_descriptor(descriptor: &UnifiedToolDescriptor) -> Result<ExternalToolMetadata> {
+fn metadata_from_v2_descriptor(
+    descriptor: &UnifiedToolDescriptor,
+    requested: &CapabilityRequest,
+) -> Result<ExternalToolMetadata> {
     let (bundle, local_name) = descriptor.name.split_once('/').ok_or_else(|| {
         BamlRtError::InvalidArgument(format!(
             "tool descriptor name '{}' must be bundle/local_name",
@@ -387,14 +544,13 @@ fn metadata_from_v2_descriptor(descriptor: &UnifiedToolDescriptor) -> Result<Ext
         },
         event_sources: Vec::new(),
         datasources: Vec::new(),
-        secrets: descriptor
-            .requested
+        secrets: requested
             .secrets
             .iter()
             .map(|request| request.name.clone())
             .collect(),
         secret_scope: Default::default(),
-        capabilities: serde_json::to_value(&descriptor.requested).map_err(|e| {
+        capabilities: serde_json::to_value(requested).map_err(|e| {
             BamlRtError::InvalidArgumentWithSource {
                 message: "failed to serialize v2 capability requests".to_string(),
                 source: Box::new(e),
@@ -547,7 +703,7 @@ fn validate_v2_snapshot(
             snapshot.tool.name, v2.descriptor_digest, descriptor_digest
         )));
     }
-    let projected = metadata_from_v2_descriptor(&v2.descriptor)?;
+    let projected = metadata_from_v2_descriptor(&v2.descriptor, &v2.requested)?;
     if snapshot.tool.name != projected.name
         || snapshot.tool.description != projected.description
         || snapshot.tool.access_level != projected.access_level
@@ -625,13 +781,25 @@ fn validate_v2_snapshot(
             }
         }
     }
-    let snapshot_digest = compute_snapshot_digest(snapshot)?;
-    if snapshot.snapshot_digest != snapshot_digest
-        || snapshot.digests.snapshot_digest != snapshot_digest
+    let identity = match &v2.delivery {
+        ToolDelivery::Bundled { tool_digest, .. } => *tool_digest,
+        ToolDelivery::Reference { endpoint, .. } => canonical_digest(endpoint),
+    };
+    if snapshot.snapshot_digest != identity
+        || snapshot.digests.snapshot_digest != identity
+        || v2.tool_digest != Some(identity)
     {
         return Err(BamlRtError::InvalidArgument(format!(
-            "external tool snapshot '{}' snapshot_digest mismatch: expected {}, computed {}",
-            snapshot.tool.name, snapshot.snapshot_digest, snapshot_digest
+            "external tool snapshot '{}' identity mismatch: expected {}, computed {}",
+            snapshot.tool.name, identity, snapshot.snapshot_digest
+        )));
+    }
+    if let ToolDelivery::Bundled { bundle_digest, .. } = &v2.delivery
+        && v2.bundle_digest != Some(*bundle_digest)
+    {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "external tool snapshot '{}' bundle digest projection does not match delivery",
+            snapshot.tool.name
         )));
     }
     Ok(())
@@ -723,7 +891,7 @@ mod tests {
         external_tools::{
             CapabilityRequest, DESCRIPTOR_ABI, EventSchema, ExternalDatasourceManifest,
             ExternalDatasourceMode, InvocationMode, OutputTrust, ServiceEndpoint, SideEffect,
-            ToolDescribeResult, UnifiedToolDescriptor,
+            ToolDescribeResult, UnifiedToolDescriptor, default_node_runtime_image,
             metadata::{schema_digest_from_events, schema_digest_from_io},
         },
     };
@@ -873,6 +1041,45 @@ mod tests {
     }
 
     #[test]
+    fn v2_identity_ignores_approval_and_publish_metadata() {
+        let descriptor = UnifiedToolDescriptor {
+            descriptor_abi: DESCRIPTOR_ABI,
+            name: "support/echo".into(),
+            version: "1.0.0".into(),
+            description: "echo".into(),
+            input_schema: json!({"type": "object"}),
+            output_schema: json!({"type": "object"}),
+            error_classes: vec![super::super::ErrorClass::Execution],
+            side_effect: SideEffect::Read,
+            idempotent: true,
+            output_trust: OutputTrust::Untrusted,
+        };
+        let first = ExternalToolSnapshot::from_v2_bundle(
+            descriptor.clone(),
+            CapabilityRequest::default(),
+            canonical_digest(&json!({"bundle": "one"})),
+            canonical_digest(&json!({"tool": "same"})),
+            default_node_runtime_image(),
+            "alice",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+        let second = ExternalToolSnapshot::from_v2_bundle(
+            descriptor,
+            CapabilityRequest::default(),
+            canonical_digest(&json!({"bundle": "one"})),
+            canonical_digest(&json!({"tool": "same"})),
+            default_node_runtime_image(),
+            "bob",
+            "2026-02-01T00:00:00Z",
+        )
+        .unwrap();
+        assert_eq!(first.tool_digest(), second.tool_digest());
+        assert_eq!(first.snapshot_digest, second.snapshot_digest);
+        assert_ne!(first.approval.owner, second.approval.owner);
+    }
+
+    #[test]
     fn service_delivery_round_trips_and_validates_without_bundle_identity() {
         let descriptor = UnifiedToolDescriptor {
             descriptor_abi: DESCRIPTOR_ABI,
@@ -885,7 +1092,6 @@ mod tests {
             side_effect: SideEffect::Read,
             idempotent: true,
             output_trust: OutputTrust::Untrusted,
-            requested: CapabilityRequest::default(),
         };
         let snapshot = ExternalToolSnapshot::from_v2_service(
             descriptor,

@@ -1,39 +1,40 @@
 ---
 name: karakara-tool-authoring
-description: Author typed external Karakara tools with @karakara/tool. Use when scaffolding, testing, or publishing a tool outside the monorepo.
+description: Build, test, and publish MCP toolsets for Karakara. Use when creating a tool server outside the monorepo.
 ---
 
 # Karakara tool authoring
 
 ## When to apply
 
-- Creating a TypeScript external tool
-- Declaring input, output, network, or secret requirements
-- Publishing a tool for use by an agent
+- Creating an MCP stdio server
+- Declaring toolset-wide network or secret requests
+- Publishing tools for an agent
 
 ## Workflow
 
 1. Run `karak tool new <name> --bundle <bundle>`.
 2. Install dependencies with `npm install`.
-3. Implement the typed `defineTool` function in `src/tool.ts`.
-4. Run `karak tool test --input '<json>'`.
-5. Run `karak publish`. The CLI derives the descriptor, vendors the JavaScript, builds a `.ktool`, asks for approval, and uploads it to the repository.
-6. Pin the published tool name and digest from the agent.
+3. Register tools with the official MCP SDK. The generated `defineTool` helper is optional.
+4. Put toolset name, version, network requests, and secret requests in `karakara.toml`.
+5. Run `karak tool build`. It starts the server, calls `tools/list`, and writes `tools.json`.
+6. Run `karak tool test --input '<json>'`.
+7. Run `karak publish`. The CLI builds a `.ktool`, requests approval, and uploads it.
+8. Pin the published tool name and digest from the agent.
 
 ## Rules
 
-- Treat the input and output TypeBox schemas as the contract. Do not write a separate manifest or schema file.
-- Declare every outbound host and secret in `defineTool`. The declaration requests access; the host decides the grant.
-- Never read secret values in author code. The host binds them to approved egress.
-- Return structured JSON that matches the output schema.
-- Use `ctx.error(...)` to classify expected failures.
+- The MCP `tools/list` result is the interface contract. Do not maintain a second schema file.
+- Network and secret requests apply to the server process. Keep them in `karakara.toml`, not in a tool handler.
+- Do not read secret values in author code. The host applies approved bindings.
+- Return `structuredContent` that matches the MCP output schema.
 
 ## Commands
 
 | Command | Purpose |
 |---------|---------|
-| `karak tool new <name>` | Create a typed TypeScript tool |
-| `karak tool build [dir]` | Compile and derive `tool-descriptor.json` |
-| `karak tool test [dir] --input '<json>'` | Invoke through the stdio DevBackend |
+| `karak tool new <name>` | Create a TypeScript MCP server project |
+| `karak tool build [dir]` | Compile the server, call `tools/list`, and write `tools.json` |
+| `karak tool test [dir] --input '<json>'` | Invoke the first tool through the DevBackend |
 | `karak tool publish [dir]` | Build, approve, and ingest a `.ktool` |
-| `karak publish` | Auto-detect a tool project in the current directory and run the same publish path |
+| `karak publish` | Detect a tool project in the current directory and use the same publish path |

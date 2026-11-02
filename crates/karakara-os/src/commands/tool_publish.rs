@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Karakara Labs
-//
 // SPDX-License-Identifier: Apache-2.0
 
-//! Build, audit, and publish a v2 TypeScript tool as a `.ktool` bundle.
+//! Build, audit, and publish an MCP toolset as a `.ktool` bundle.
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -13,9 +12,10 @@ use std::{
 use anyhow::{Context, Result, bail};
 use baml_rt_repository::http::PublishExternalToolResponse;
 use baml_rt_tools::external_tools::{
-    KTOOL_BUNDLE_SCHEMA_VERSION, KTOOL_DESCRIPTOR_PATH, KTOOL_MANIFEST_PATH, KTOOL_NODE_ENTRYPOINT,
-    KTOOL_SBOM_PATH, KtoolManifest, KtoolRuntimeTier, MAX_KTOOL_UNPACKED_BYTES,
-    UnifiedToolDescriptor, audit_ktool_bundle, runtime_image_for_tier,
+    CapabilityRequest, KTOOL_BUNDLE_SCHEMA_VERSION, KTOOL_MANIFEST_PATH, KTOOL_NODE_ENTRYPOINT,
+    KTOOL_SBOM_PATH, KTOOL_TOOLS_PATH, KtoolManifest, KtoolRuntimeTier, KtoolToolEntry,
+    MAX_KTOOL_UNPACKED_BYTES, UnifiedToolDescriptor, audit_ktool_bundle, compute_descriptor_digest,
+    runtime_image_for_tier,
 };
 use console::style;
 use flate2::{Compression, GzBuilder};
@@ -43,23 +43,21 @@ pub fn run(
     if !project_dir.is_dir() {
         bail!("Tool directory not found: {}", project_dir.display());
     }
-
     let tier = if trusted {
         KtoolRuntimeTier::Trusted
     } else {
         KtoolRuntimeTier::Sandbox
     };
     let built = build_bundle(project_dir, tier)?;
-    print_review(&built.descriptor, &built.bundle_path);
+    print_review(&built.descriptors, &built.requested, &built.bundle_path);
     if trusted {
         println!(
             "  {}",
-            style("tier: TRUSTED — runs UNSANDBOXED with full host access; the OS enforces no network/secret grants")
-                .yellow()
+            style("tier: TRUSTED, runs unsandboxed with full host access").yellow()
         );
     }
     if !yes
-        && !Confirm::new("Approve this descriptor and its requested capabilities?")
+        && !Confirm::new("Approve this toolset and its requested capabilities?")
             .with_default(false)
             .prompt()?
     {
@@ -86,7 +84,6 @@ pub fn run(
         built.bytes,
         TOOL_PUBLISH_OP,
     )?;
-
     println!(
         "{} published {}",
         style("✓").green(),
@@ -112,13 +109,14 @@ pub fn run(
     Ok(())
 }
 
-struct BuiltBundle {
-    descriptor: UnifiedToolDescriptor,
-    bundle_path: PathBuf,
-    bytes: Vec<u8>,
+pub(crate) struct BuiltBundle {
+    pub descriptors: Vec<UnifiedToolDescriptor>,
+    pub requested: CapabilityRequest,
+    pub bundle_path: PathBuf,
+    pub bytes: Vec<u8>,
 }
 
-fn build_bundle(project_dir: &Path, tier: KtoolRuntimeTier) -> Result<BuiltBundle> {
+pub(crate) fn build_bundle(project_dir: &Path, tier: KtoolRuntimeTier) -> Result<BuiltBundle> {
     if !project_dir.join("package.json").is_file() {
         bail!("No package.json in {}", project_dir.display());
     }
@@ -129,36 +127,27 @@ fn build_bundle(project_dir: &Path, tier: KtoolRuntimeTier) -> Result<BuiltBundl
         );
     }
 
-    tool_build::rebuild(project_dir)?;
-    let descriptor_json = tool_build::extract_descriptor_json(project_dir)?;
-    let (descriptor_digest, descriptor_pretty) = tool_build::finish_build(&descriptor_json)?;
-    let descriptor: UnifiedToolDescriptor = serde_json::from_str(&descriptor_pretty)?;
-
-    let descriptor_path = project_dir.join(KTOOL_DESCRIPTOR_PATH);
-    fs::write(&descriptor_path, &descriptor_pretty)
-        .with_context(|| format!("writing {}", descriptor_path.display()))?;
-    // The lock file is written once, after packaging, with the full digest set
-    // (below). Writing a descriptor-only lock here first would leave a partial
-    // lock on disk if packaging fails.
-    let lock_path = project_dir.join("tool.lock.json");
-
+    let built = tool_build::build_toolset(project_dir, true)?;
+    let descriptors = built.descriptors;
+    let requested = built.config.capabilities;
     let manifest = KtoolManifest {
         bundle_schema_version: KTOOL_BUNDLE_SCHEMA_VERSION,
-        name: descriptor.name.clone(),
+        name: built.config.name,
+        version: built.config.version,
         runtime_tier: tier,
         runtime_image: runtime_image_for_tier(tier),
-        entrypoint: KTOOL_NODE_ENTRYPOINT.to_string(),
-        descriptor_digest,
-        requested: descriptor.requested.clone(),
+        command: vec!["node".to_string(), KTOOL_NODE_ENTRYPOINT.to_string()],
+        requested: requested.clone(),
+        tools: descriptors
+            .iter()
+            .map(|descriptor| KtoolToolEntry {
+                name: descriptor.name.clone(),
+                descriptor_digest: compute_descriptor_digest(descriptor),
+            })
+            .collect(),
     };
 
     let mut files = BTreeMap::<String, (Vec<u8>, u32)>::new();
-    add_bytes(
-        &mut files,
-        KTOOL_DESCRIPTOR_PATH,
-        descriptor_pretty.into_bytes(),
-        0o644,
-    )?;
     add_bytes(
         &mut files,
         KTOOL_MANIFEST_PATH,
@@ -167,8 +156,14 @@ fn build_bundle(project_dir: &Path, tier: KtoolRuntimeTier) -> Result<BuiltBundl
     )?;
     add_bytes(
         &mut files,
+        KTOOL_TOOLS_PATH,
+        format!("{}\n", serde_json::to_string_pretty(&descriptors)?).into_bytes(),
+        0o644,
+    )?;
+    add_bytes(
+        &mut files,
         KTOOL_SBOM_PATH,
-        render_sbom(project_dir, &descriptor, descriptor_digest)?,
+        render_sbom(project_dir, &descriptors)?,
         0o644,
     )?;
     add_bytes(
@@ -194,40 +189,41 @@ fn build_bundle(project_dir: &Path, tier: KtoolRuntimeTier) -> Result<BuiltBundl
     let unpacked: u64 = files.values().map(|(bytes, _)| bytes.len() as u64).sum();
     if unpacked > MAX_KTOOL_UNPACKED_BYTES {
         bail!(
-            "Vendored tool is {unpacked} bytes unpacked; maximum is {MAX_KTOOL_UNPACKED_BYTES} bytes"
+            "Vendored toolset is {unpacked} bytes unpacked; maximum is {MAX_KTOOL_UNPACKED_BYTES} bytes"
         );
     }
 
     let bytes = render_archive(files)?;
     let audited = audit_ktool_bundle(&bytes).context("host audit of generated .ktool failed")?;
-    if audited.descriptor != descriptor {
-        bail!("Generated .ktool descriptor changed during packaging");
+    if audited.descriptors != descriptors {
+        bail!("Generated .ktool descriptors changed during packaging");
     }
+    let lock = json!({
+        "toolset": manifest.name,
+        "version": manifest.version,
+        "tools": descriptors.iter().map(|descriptor| json!({
+            "name": descriptor.name,
+            "descriptor_digest": compute_descriptor_digest(descriptor),
+        })).collect::<Vec<_>>(),
+        "runtime_image_digest": audited.manifest.runtime_image.digest,
+        "bundle_digest": audited.bundle_digest,
+        "tool_digest": audited.tool_digest,
+    });
+    let lock_path = project_dir.join("tool.lock.json");
     fs::write(
         &lock_path,
-        format!(
-            "{}\n",
-            serde_json::to_string_pretty(&json!({
-                "descriptor_digest": descriptor_digest,
-                "runtime_image_digest": audited.manifest.runtime_image.digest,
-                "bundle_digest": audited.bundle_digest,
-                "tool_digest": audited.tool_digest,
-            }))?
-        ),
+        format!("{}\n", serde_json::to_string_pretty(&lock)?),
     )
     .with_context(|| format!("writing {}", lock_path.display()))?;
 
-    let local_name = descriptor
-        .name
-        .split_once('/')
-        .map(|(_, local)| local)
-        .unwrap_or("tool");
-    let bundle_path = project_dir.join("dist").join(format!("{local_name}.ktool"));
+    let bundle_path = project_dir
+        .join("dist")
+        .join(format!("{}.ktool", manifest.name));
     fs::write(&bundle_path, &bytes)
         .with_context(|| format!("writing {}", bundle_path.display()))?;
-
     Ok(BuiltBundle {
-        descriptor,
+        descriptors,
+        requested,
         bundle_path,
         bytes,
     })
@@ -267,23 +263,22 @@ fn collect_tree(
             actual.display()
         );
     }
-
     let canonical = actual
         .canonicalize()
         .with_context(|| format!("resolving {}", actual.display()))?;
     if !active_dirs.insert(canonical.clone()) {
         bail!("Symlink cycle while vendoring {}", actual.display());
     }
-
-    let mut entries = fs::read_dir(actual)
-        .with_context(|| format!("reading {}", actual.display()))?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut entries = fs::read_dir(actual)?.collect::<std::result::Result<Vec<_>, _>>()?;
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
         let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let child_logical = format!("{logical}/{name}");
-        collect_tree(&entry.path(), &child_logical, files, active_dirs)?;
+        collect_tree(
+            &entry.path(),
+            &format!("{logical}/{}", name.to_string_lossy()),
+            files,
+            active_dirs,
+        )?;
     }
     active_dirs.remove(&canonical);
     Ok(())
@@ -302,80 +297,81 @@ fn stable_mode(metadata: &fs::Metadata) -> u32 {
 
 fn render_archive(files: BTreeMap<String, (Vec<u8>, u32)>) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    {
-        let encoder = GzBuilder::new()
-            .mtime(0)
-            .write(&mut out, Compression::default());
-        let mut archive = Builder::new(encoder);
-        for (path, (bytes, mode)) in files {
-            let mut header = Header::new_gnu();
-            header.set_size(bytes.len() as u64);
-            header.set_mode(mode);
-            header.set_uid(0);
-            header.set_gid(0);
-            header.set_mtime(0);
-            header.set_cksum();
-            archive
-                .append_data(&mut header, path, bytes.as_slice())
-                .context("writing .ktool archive")?;
-        }
-        let encoder = archive.into_inner().context("finishing .ktool tar")?;
-        encoder.finish().context("finishing .ktool gzip")?;
+    let encoder = GzBuilder::new()
+        .mtime(0)
+        .write(&mut out, Compression::default());
+    let mut archive = Builder::new(encoder);
+    for (path, (bytes, mode)) in files {
+        let mut header = Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(mode);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_mtime(0);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, path, bytes.as_slice())
+            .context("writing .ktool archive")?;
     }
+    archive
+        .into_inner()
+        .context("finishing .ktool tar")?
+        .finish()
+        .context("finishing .ktool gzip")?;
     Ok(out)
 }
 
-fn render_sbom(
-    project_dir: &Path,
-    descriptor: &UnifiedToolDescriptor,
-    descriptor_digest: baml_rt_tools::mcp_snapshot::Digest,
-) -> Result<Vec<u8>> {
+fn render_sbom(project_dir: &Path, descriptors: &[UnifiedToolDescriptor]) -> Result<Vec<u8>> {
     let package_lock = fs::read(project_dir.join("package-lock.json")).unwrap_or_default();
     let lock_digest = format!("{:x}", Sha256::digest(&package_lock));
-    let namespace_digest = descriptor_digest
-        .to_string()
-        .trim_start_matches("sha256:")
-        .to_string();
     let sbom = json!({
         "spdxVersion": "SPDX-2.3",
         "dataLicense": "CC0-1.0",
         "SPDXID": "SPDXRef-DOCUMENT",
-        "name": descriptor.name,
-        "documentNamespace": format!("https://karakara.dev/spdx/{namespace_digest}"),
-        "creationInfo": {
-            "created": "1970-01-01T00:00:00Z",
-            "creators": ["Tool: karak"]
-        },
-        "packages": [{
+        "name": descriptors.first().map(|descriptor| descriptor.name.as_str()).unwrap_or("toolset"),
+        "creationInfo": {"created": "1970-01-01T00:00:00Z", "creators": ["Tool: karak"]},
+        "packages": descriptors.iter().map(|descriptor| json!({
             "name": descriptor.name,
-            "SPDXID": "SPDXRef-Tool",
+            "SPDXID": format!("SPDXRef-{}", descriptor.name.replace('/', "-")),
             "versionInfo": descriptor.version,
             "downloadLocation": "NOASSERTION",
             "filesAnalyzed": false,
-            "checksums": [{"algorithm": "SHA256", "checksumValue": lock_digest}]
-        }]
+            "checksums": [{"algorithm": "SHA256", "checksumValue": lock_digest}],
+        })).collect::<Vec<_>>(),
     });
     Ok(format!("{}\n", serde_json::to_string_pretty(&sbom)?).into_bytes())
 }
 
-fn print_review(descriptor: &UnifiedToolDescriptor, bundle_path: &Path) {
-    println!("{} {}", style("Tool:").bold(), descriptor.name);
-    println!("  version:     {}", descriptor.version);
-    println!("  side effect: {:?}", descriptor.side_effect);
-    println!("  output:      {:?}", descriptor.output_trust);
-    if descriptor.requested.net.is_empty() {
+fn print_review(
+    descriptors: &[UnifiedToolDescriptor],
+    requested: &CapabilityRequest,
+    bundle_path: &Path,
+) {
+    println!(
+        "{} {}",
+        style("Toolset:").bold(),
+        descriptors
+            .first()
+            .and_then(|d| d.name.split_once('/').map(|(name, _)| name))
+            .unwrap_or("unknown")
+    );
+    for descriptor in descriptors {
+        println!("  tool:        {}", descriptor.name);
+        println!("  side effect: {:?}", descriptor.side_effect);
+    }
+    if requested.net.is_empty() {
         println!("  network:     none");
     } else {
         println!("  network:");
-        for request in &descriptor.requested.net {
+        for request in &requested.net {
             println!("    - {}:{}", request.host, request.port);
         }
     }
-    if descriptor.requested.secrets.is_empty() {
+    if requested.secrets.is_empty() {
         println!("  secrets:     none");
     } else {
         println!("  secrets:");
-        for request in &descriptor.requested.secrets {
+        for request in &requested.secrets {
             println!("    - {} ({:?})", request.name, request.binding);
         }
     }

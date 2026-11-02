@@ -151,7 +151,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             digest.as_str(),
-            "4b2d087fb857ec2eb9aad97f405c9f41fe8d9a93327d53389ee5f97199a2bb93"
+            "033d5aed34df444fb5815f8df8aed4bd4a16639dfe5f365401357ea76c508854"
         );
     }
 }

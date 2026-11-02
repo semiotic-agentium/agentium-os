@@ -315,14 +315,16 @@ mod tests {
             }
             other => panic!("expected trusted spawn, got {other:?}"),
         }
-        let back = serde_json::to_string(&serde_json::from_str::<ToolRuntime>(json).unwrap()).unwrap();
+        let back =
+            serde_json::to_string(&serde_json::from_str::<ToolRuntime>(json).unwrap()).unwrap();
         assert!(back.contains(r#""kind":"trusted""#));
         assert!(back.contains(r#""mode":"spawn""#));
     }
 
     #[test]
     fn trusted_runtime_roundtrips_attach() {
-        let json = r#"{"kind":"trusted","launch":{"mode":"attach","socket_path":"/run/tool.sock"}}"#;
+        let json =
+            r#"{"kind":"trusted","launch":{"mode":"attach","socket_path":"/run/tool.sock"}}"#;
         let rt: ToolRuntime = serde_json::from_str(json).unwrap();
         match rt {
             ToolRuntime::Trusted(TrustedRuntimeSpec {

@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! End-to-end for the v2 TypeScript authoring loop: build, test, package, and
-//! publish against a fixture that file-links `@karakara/tool` from this repo.
-//! A one-request HTTP server audits the uploaded `.ktool`, so the test covers
+//! End-to-end for the TypeScript MCP authoring loop: build, test, package, and
+//! publish a toolset that uses the official MCP SDK. A one-request HTTP server
+//! audits the uploaded `.ktool`, so the test covers
 //! top-level `karak publish` auto-detection without starting the full runner.
 //!
 //! Gated behind `KARAKARA_TOOL_E2E=1` (and skipped if node/npm are absent) so
@@ -44,19 +44,10 @@ fn tool_authoring_e2e() {
     }
 
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let repo_root = crate_dir.parent().unwrap().parent().unwrap().to_path_buf();
-    let sdk_dir = repo_root.join("ts/packages/tool");
     let fixture = crate_dir.join("tests/fixtures/ts-echo");
     let karak = env!("CARGO_BIN_EXE_karak");
 
-    // 1. Build the SDK to dist (so the file-link resolves at runtime).
-    run(
-        Command::new("npm")
-            .args(["run", "build"])
-            .current_dir(&sdk_dir),
-        "sdk build",
-    );
-    // 2. Install the fixture (file-links @karakara/tool, pulls typebox).
+    // 1. Install the official MCP SDK fixture.
     run(
         Command::new("npm")
             .args(["install", "--no-audit", "--no-fund"])
@@ -64,23 +55,20 @@ fn tool_authoring_e2e() {
         "fixture install",
     );
 
-    // 3. `karak tool build` → descriptor + digest.
+    // 2. `karak tool build` asks the MCP worker for tools/list.
     run(
         Command::new(karak).args(["tool", "build", fixture.to_str().unwrap()]),
         "tool build",
     );
-    let descriptor = fixture.join("tool-descriptor.json");
-    assert!(
-        descriptor.is_file(),
-        "tool build must write tool-descriptor.json"
-    );
-    let body = std::fs::read_to_string(&descriptor).unwrap();
+    let tools = fixture.join("tools.json");
+    assert!(tools.is_file(), "tool build must write tools.json");
+    let body = std::fs::read_to_string(&tools).unwrap();
     assert!(
         body.contains("\"name\": \"support/ts-echo\""),
-        "descriptor: {body}"
+        "tools: {body}"
     );
 
-    // 4. `karak tool test` → one invocation through the real guest supervisor
+    // 3. `karak tool test` → one invocation through the real guest supervisor
     //    in DevBackend mode (same wire + worker isolation as prod).
     run(
         Command::new(env!("CARGO")).args(["build", "-p", "baml-tool-supervisor"]),
@@ -107,7 +95,7 @@ fn tool_authoring_e2e() {
         "unexpected output: {out}"
     );
 
-    // 5. Bad input is rejected by the SDK as invalid_argument (no author code).
+    // 4. Bad input is rejected by the MCP server as invalid_argument.
     let bad = Command::new(karak)
         .args([
             "tool",
@@ -124,7 +112,7 @@ fn tool_authoring_e2e() {
         "expected invalid_argument, got: {bad_out}"
     );
 
-    // 6. Top-level `karak publish` detects the tool project, emits a `.ktool`,
+    // 5. Top-level `karak publish` detects the tool project, emits a `.ktool`,
     // and uploads exact bytes. The mock repository audits the received bundle.
     let (repository_url, server) = serve_publish_once(KtoolRuntimeTier::Sandbox);
     run(
@@ -142,7 +130,7 @@ fn tool_authoring_e2e() {
     );
     server.join().expect("publish server thread");
     assert!(
-        fixture.join("dist/ts-echo.ktool").is_file(),
+        fixture.join("dist/support.ktool").is_file(),
         "tool publish must write the .ktool bundle"
     );
     let lock = std::fs::read_to_string(fixture.join("tool.lock.json")).unwrap();
@@ -151,7 +139,7 @@ fn tool_authoring_e2e() {
         "publish lock must pin executable identity"
     );
 
-    // 7. `karak tool publish --trusted` emits a Trusted-tier bundle: the same
+    // 6. `karak tool publish --trusted` emits a Trusted-tier bundle: the same
     // node entrypoint, but the host-native image sentinel and no grants. The
     // mock repository asserts the received tier server-side.
     let (trusted_url, trusted_server) = serve_publish_once(KtoolRuntimeTier::Trusted);
@@ -169,12 +157,14 @@ fn tool_authoring_e2e() {
         ]),
         "trusted tool publish",
     );
-    trusted_server.join().expect("trusted publish server thread");
+    trusted_server
+        .join()
+        .expect("trusted publish server thread");
 
     // Clean generated artifacts (also gitignored).
-    let _ = std::fs::remove_file(fixture.join("tool-descriptor.json"));
+    let _ = std::fs::remove_file(fixture.join("tools.json"));
     let _ = std::fs::remove_file(fixture.join("tool.lock.json"));
-    let _ = std::fs::remove_file(fixture.join("dist/ts-echo.ktool"));
+    let _ = std::fs::remove_file(fixture.join("dist/support.ktool"));
 }
 
 fn serve_publish_once(expected_tier: KtoolRuntimeTier) -> (String, thread::JoinHandle<()>) {

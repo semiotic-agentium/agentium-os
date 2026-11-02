@@ -11,10 +11,11 @@
 
 pub use baml_ktool::ktool::{
     AuditedKtoolBundle, BundleFile, KTOOL_BUNDLE_SCHEMA_VERSION, KTOOL_DESCRIPTOR_PATH,
-    KTOOL_MANIFEST_PATH, KTOOL_NODE_ENTRYPOINT, KTOOL_SBOM_PATH, KtoolManifest, KtoolRuntimeImage,
-    KtoolRuntimeTier, MAX_KTOOL_BUNDLE_BYTES, MAX_KTOOL_UNPACKED_BYTES, build_ktool_bundle,
-    build_ktool_bundle_for_tier, compute_bundle_digest, compute_tool_digest_v2,
-    default_node_runtime_image, host_native_runtime_image, runtime_image_for_tier,
+    KTOOL_MANIFEST_PATH, KTOOL_NODE_ENTRYPOINT, KTOOL_SBOM_PATH, KTOOL_TOOLS_PATH, KtoolManifest,
+    KtoolRuntimeImage, KtoolRuntimeTier, KtoolToolEntry, MAX_KTOOL_BUNDLE_BYTES,
+    MAX_KTOOL_UNPACKED_BYTES, build_ktool_bundle, build_ktool_bundle_for_tier,
+    compute_bundle_digest, compute_tool_digest_v2, default_node_runtime_image,
+    host_native_runtime_image, runtime_image_for_tier,
 };
 use baml_rt_core::{BamlRtError, Result};
 
@@ -44,9 +45,14 @@ pub fn verify_ktool_snapshot(
     else {
         return Err(invalid("a Service snapshot has no .ktool bundle identity"));
     };
+    let expected_descriptors = if v2.descriptors.is_empty() {
+        vec![v2.descriptor.clone()]
+    } else {
+        v2.descriptors.clone()
+    };
     if *bundle_digest != audited.bundle_digest
         || *tool_digest != audited.tool_digest
-        || v2.descriptor != audited.descriptor
+        || expected_descriptors != audited.descriptors
         || *runtime_image != audited.manifest.runtime_image
     {
         return Err(invalid(
@@ -66,8 +72,8 @@ mod tests {
 
     use super::*;
     use crate::external_tools::{
-        CapabilityRequest, DESCRIPTOR_ABI, ErrorClass, OutputTrust, SideEffect,
-        UnifiedToolDescriptor, compute_descriptor_digest,
+        DESCRIPTOR_ABI, ErrorClass, OutputTrust, SideEffect, UnifiedToolDescriptor,
+        compute_descriptor_digest,
     };
 
     fn descriptor() -> UnifiedToolDescriptor {
@@ -82,7 +88,6 @@ mod tests {
             side_effect: SideEffect::Read,
             idempotent: true,
             output_trust: OutputTrust::Untrusted,
-            requested: CapabilityRequest::default(),
         }
     }
 
@@ -103,7 +108,7 @@ mod tests {
             compute_tool_digest_v2(&bytes, audited.manifest.runtime_image.digest)
         );
         assert_eq!(
-            audited.manifest.descriptor_digest,
+            audited.manifest.tools[0].descriptor_digest,
             compute_descriptor_digest(&audited.descriptor)
         );
     }

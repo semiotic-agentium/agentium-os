@@ -5,18 +5,16 @@
 //! `Trusted`-tier transport (external tools v2, P5.1).
 //!
 //! A `Trusted` tool runs **unsandboxed** as a crash-isolated host process, not a
-//! microVM. It speaks the exact P4 wire (`protocol_v2` over `codec`), so it
-//! reuses the [`SupervisorChannel`](super::channel) multiplexer unchanged — only
-//! the transport differs: instead of a provider-owned vsock, the OS creates an
-//! `AF_UNIX` listener and the trusted process dials it (same direction as the
-//! vsock guest). There is **no** `grants.rs` CIDR/secret machinery on this path;
+//! microVM. The host-side supervisor still uses `protocol_v2` over UDS, while
+//! that supervisor speaks MCP stdio to the worker. Only the transport differs
+//! from Sandbox: the OS creates an `AF_UNIX` listener and the trusted process
+//! dials it. There is **no** `grants.rs` CIDR/secret machinery on this path;
 //! authority is the operator-trust record (P5.2 `TrustedHost`).
 //!
 //! P5.1 scope: the `Spawn` launch mode on the local node. The OS spawns
-//! `baml-tool-supervisor --uds <path> --backend direct` and hands the accepted
+//! `baml-tool-supervisor --tier trusted --uds <path>` and hands the accepted
 //! connection to a `SupervisorChannel`. `Attach` (operator-run daemon) and
 //! remote nodes are later phases.
-
 
 use std::{
     collections::{HashMap, HashSet},
@@ -40,7 +38,7 @@ use tokio::{net::UnixListener, process::Command, sync::Mutex as AsyncMutex};
 use super::{audit_approved_bundle, channel::SupervisorChannel, invalid};
 use crate::{
     ToolSessionContext,
-    external_tools::{ExternalToolSnapshot, ToolRuntime},
+    external_tools::{ExternalToolSnapshot, KtoolRuntimeTier, ToolRuntime},
     mcp_snapshot::{Digest, canonical_digest},
 };
 
@@ -149,8 +147,17 @@ impl TrustedHost {
         ctx: &ToolSessionContext,
     ) -> Result<TrustGrant> {
         let audited = audit_approved_bundle(snapshot, bytes, ctx)?;
+        if audited.manifest.runtime_tier != KtoolRuntimeTier::Trusted {
+            return Err(invalid(
+                "trusted host requires a trusted-tier .ktool bundle",
+            ));
+        }
         let agent_id = ctx.agent_id.to_string();
-        if !self.config.policy.is_trusted(&agent_id, &audited.tool_digest) {
+        if !self
+            .config
+            .policy
+            .is_trusted(&agent_id, &audited.tool_digest)
+        {
             return Err(invalid(format!(
                 "agent '{}' is not operator-trusted for tool '{}' ({})",
                 agent_id, audited.descriptor.name, audited.tool_digest
@@ -219,7 +226,14 @@ impl TrustedHost {
             // trusted tool already has full host access.
             entry
                 .channel
-                .invoke(grant.tool_digest, context, input, remaining()?, &[])
+                .invoke(
+                    grant.tool_digest,
+                    ctx.tool_name.to_string(),
+                    context,
+                    input,
+                    remaining()?,
+                    &[],
+                )
                 .await
         }
         .await;
@@ -327,10 +341,10 @@ impl TrustedSupervisor {
 
         let mut command = Command::new(supervisor_bin);
         command
+            .arg("--tier")
+            .arg("trusted")
             .arg("--uds")
             .arg(socket_path)
-            .arg("--backend")
-            .arg("direct")
             .arg("--root")
             .arg(root)
             // The wire is the UDS; stdio is only for diagnostics.
@@ -384,51 +398,61 @@ mod tests {
     use baml_sandbox_protocol::protocol_v2::{CallContext, GuestMessage};
     use serde_json::json;
 
-    use super::super::channel::SupervisorChannel;
-    use super::*;
-    use crate::external_tools::{
-        BundleFile, CapabilityRequest, DESCRIPTOR_ABI, ErrorClass, OutputTrust, SideEffect,
-        UnifiedToolDescriptor, audit_ktool_bundle, build_ktool_bundle,
+    use super::{super::channel::SupervisorChannel, *};
+    use crate::{
+        external_tools::{
+            BundleFile, DESCRIPTOR_ABI, ErrorClass, KtoolRuntimeTier, OutputTrust, SideEffect,
+            UnifiedToolDescriptor, audit_ktool_bundle, build_ktool_bundle_for_tier,
+        },
+        mcp_snapshot::canonical_digest,
     };
-    use crate::mcp_snapshot::canonical_digest;
 
-    // Dependency-free worker harness: exercises the same framed wire the SDK
-    // `serve()` loop speaks, without needing `@karakara/tool` vendored.
+    // Dependency-free MCP worker: exercises the same stdio contract as the
+    // official SDK without needing a package in this test.
     const HARNESS: &str = r#"
 const entry = process.env.KARAKARA_TOOL_ENTRY;
 import(entry).then((m) => m.serve()).catch((e) => { console.error(String(e)); process.exit(2); });
 "#;
 
     const ECHO_TOOL: &str = r#"
-const HEADER = 4;
-let buffer = Buffer.alloc(0);
+let buffer = "";
 const waiters = [];
 function pump() {
-  while (waiters.length > 0 && buffer.length >= HEADER) {
-    const length = buffer.readUInt32BE(0);
-    if (buffer.length < HEADER + length) break;
-    const message = JSON.parse(buffer.subarray(HEADER, HEADER + length).toString("utf8"));
-    buffer = buffer.subarray(HEADER + length);
-    waiters.shift()(message);
+  while (waiters.length && buffer.includes("\n")) {
+    const index = buffer.indexOf("\n");
+    const line = buffer.slice(0, index);
+    buffer = buffer.slice(index + 1);
+    if (line.trim()) waiters.shift()(JSON.parse(line));
   }
 }
-process.stdin.on("data", (chunk) => { buffer = Buffer.concat([buffer, chunk]); pump(); });
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { buffer += chunk; pump(); });
 const recv = () => new Promise((resolve) => { waiters.push(resolve); pump(); });
-function send(message) {
-  const body = Buffer.from(JSON.stringify(message), "utf8");
-  const frame = Buffer.alloc(HEADER + body.length);
-  frame.writeUInt32BE(body.length, 0);
-  body.copy(frame, HEADER);
-  process.stdout.write(frame);
-}
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\n");
+const tool = {
+  name: "support/trusted-echo", description: "trusted echo", inputSchema: { type: "object" },
+  annotations: { readOnlyHint: true, karakara: {
+    descriptorAbi: 1, version: "0.1.0", outputSchema: { type: "object" },
+    errorClasses: ["execution"], sideEffect: "read", idempotent: true, outputTrust: "untrusted"
+  }}
+};
 export async function serve() {
   for (;;) {
     const message = await recv();
     if (!message) return;
-    if (message.t !== "invoke") continue;
-    send({ t: "result", request_id: message.request_id, ok: true,
-           output: { echo: message.input.echo, pid: process.pid },
-           error_class: "execution", truncated: false });
+    if (message.method === "initialize") {
+      send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "trusted-fixture", version: "0.1.0" } } });
+    } else if (message.method === "notifications/initialized") {
+      continue;
+    } else if (message.method === "tools/list") {
+      send({ jsonrpc: "2.0", id: message.id, result: { tools: [tool] } });
+    } else if (message.method === "tools/call") {
+      const input = message.params.arguments || {};
+      send({ jsonrpc: "2.0", id: message.id, result: {
+        structuredContent: { echo: input.echo, pid: process.pid },
+        content: [{ type: "text", text: JSON.stringify({ echo: input.echo, pid: process.pid }) }]
+      }});
+    }
   }
 }
 "#;
@@ -445,7 +469,6 @@ export async function serve() {
             side_effect: SideEffect::Read,
             idempotent: true,
             output_trust: OutputTrust::Untrusted,
-            requested: CapabilityRequest::default(),
         }
     }
 
@@ -463,7 +486,10 @@ export async function serve() {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        std::env::temp_dir().join(format!("karakara-trusted-{tag}-{}-{nanos}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "karakara-trusted-{tag}-{}-{nanos}",
+            std::process::id()
+        ))
     }
 
     /// P5.1 live smoke test: the host `SupervisorChannel` drives a real spawned
@@ -486,10 +512,14 @@ export async function serve() {
             return;
         }
 
-        let bundle = build_ktool_bundle(
+        let bundle = build_ktool_bundle_for_tier(
             &descriptor(),
+            KtoolRuntimeTier::Trusted,
             ECHO_TOOL.as_bytes().to_vec(),
-            vec![BundleFile::new("code/package.json", br#"{"type":"module"}"#.to_vec())],
+            vec![BundleFile::new(
+                "code/package.json",
+                br#"{"type":"module"}"#.to_vec(),
+            )],
             br#"{}"#.to_vec(),
         )
         .expect("build bundle");
@@ -535,6 +565,7 @@ export async function serve() {
         let result = supervisor
             .invoke(
                 audited.tool_digest,
+                "support/trusted-echo".into(),
                 context,
                 json!({"echo": "hello-trusted"}),
                 Duration::from_secs(15),
@@ -548,7 +579,10 @@ export async function serve() {
                 ok: true, output, ..
             } => {
                 let output = output.expect("output present");
-                assert_eq!(output.get("echo").and_then(|v| v.as_str()), Some("hello-trusted"));
+                assert_eq!(
+                    output.get("echo").and_then(|v| v.as_str()),
+                    Some("hello-trusted")
+                );
             }
             other => panic!("expected ok result, got {other:?}"),
         }

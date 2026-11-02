@@ -16,9 +16,10 @@ use crate::{
 pub struct LoadedTool {
     pub digest: String,
     pub dir: PathBuf,
-    pub entrypoint: String,
+    pub command: Vec<String>,
+    pub descriptors: Vec<baml_ktool::ToolDescriptor>,
     pub runtime_tier: KtoolRuntimeTier,
-    /// False when the descriptor declared no `net` destinations.
+    /// False when the toolset manifest declared no `net` destinations.
     pub has_network: bool,
     pub uid: u32,
     pub gid: u32,
@@ -34,9 +35,10 @@ impl LoadedTool {
         Self {
             digest: unpacked.tool_digest.to_string(),
             dir: unpacked.dir,
-            entrypoint: unpacked.manifest.entrypoint,
+            command: unpacked.manifest.command,
+            descriptors: unpacked.descriptors,
             runtime_tier: unpacked.manifest.runtime_tier,
-            has_network: unpacked.descriptor.requested.has_network(),
+            has_network: unpacked.manifest.requested.has_network(),
             uid,
             gid,
         }
@@ -67,6 +69,10 @@ impl LoadedTool {
     }
 
     pub fn entry_path(&self) -> PathBuf {
-        self.dir.join(Path::new(&self.entrypoint))
+        self.command
+            .get(1)
+            .filter(|arg| arg.starts_with("code/"))
+            .map(|arg| self.dir.join(arg))
+            .unwrap_or_else(|| self.dir.join(Path::new("code/tool.js")))
     }
 }

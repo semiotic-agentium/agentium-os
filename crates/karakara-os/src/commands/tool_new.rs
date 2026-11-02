@@ -5,11 +5,9 @@
 
 //! `karak tool new` — scaffold a v2 TypeScript external tool.
 //!
-//! One blessed path (`plans/external-tools-v2.md` §3.1): a typed `defineTool`
-//! function authored against `@karakara/tool`. The scaffold is a four-file
-//! project; the descriptor and manifest are derived at `karak tool build`, so
-//! there is no `tool-manifest.json`, `tool-schema.json`, `tool-server`, or any
-//! `runtime`/`access`/`sandbox` knob (all retired in v2).
+//! The scaffold is a small TypeScript MCP server. `karak tool build` reads its
+//! `tools/list` response and packages the result, so authors do not maintain a
+//! second schema or tool manifest.
 
 use std::{
     fs,
@@ -127,7 +125,7 @@ pub fn run(
     println!("  Path: {}", style(output_dir.display()).cyan());
     println!();
     println!("{}", style("Next steps:").bold());
-    println!("  1. Edit src/tool.ts (one typed defineTool function).");
+    println!("  1. Edit src/tool.ts (an MCP server using the official SDK).");
     println!("  2. {}", style("npm install && karak tool build").cyan());
     println!("  3. {}", style("karak tool test").cyan());
 
@@ -249,6 +247,7 @@ mod tests {
         assert!(!has(&files, "tool-server"));
         assert!(!has(&files, "tool-manifest.json"));
         assert!(!has(&files, "src/main.ts"));
+        assert!(has(&files, "karakara.toml"));
     }
 
     #[test]
@@ -258,13 +257,18 @@ mod tests {
             .iter()
             .find(|f| f.relative_path == "package.json")
             .unwrap();
-        assert!(pkg.content.contains("@karakara/tool"));
+        assert!(pkg.content.contains("@modelcontextprotocol/sdk"));
         let tool = files
             .iter()
             .find(|f| f.relative_path == "src/tool.ts")
             .unwrap();
-        assert!(tool.content.contains("defineTool"));
-        assert!(tool.content.contains("support/weather"));
+        assert!(tool.content.contains("McpServer"));
+        assert!(tool.content.contains("StdioServerTransport"));
+        let config = files
+            .iter()
+            .find(|f| f.relative_path == "karakara.toml")
+            .unwrap();
+        assert!(config.content.contains("name = \"support\""));
     }
 
     #[test]

@@ -1,72 +1,127 @@
-// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
 // SPDX-FileCopyrightText: 2026 Karakara Labs
-//
 // SPDX-License-Identifier: Apache-2.0
 
-//! `karak tool build` — derive the descriptor for a v2 TypeScript tool.
-//!
-//! The tool is a `defineTool(...)` default export (`@karakara/tool`). Build:
-//! 1. compile the project to `dist/tool.js` (`npm run build`);
-//! 2. run the built tool's `.descriptor()` under node to get the descriptor JSON;
-//! 3. parse it into the canonical [`UnifiedToolDescriptor`] — this *validates*
-//!    the SDK output against the host's one true descriptor type (parity, §P1.1);
-//! 4. compute `descriptor_digest` with the platform digest fn and write
-//!    `tool-descriptor.json` + `tool.lock.json`.
-//!
-//! Steps 1-2 need `node` + an installed `@karakara/tool`; step 3-4 are pure and
-//! unit-tested. The derived requests-only manifest is the descriptor's
-//! `requested` block plus name/version — no hand-authored manifest.
+//! `karak tool build` asks an MCP server for `tools/list` and records the
+//! resulting descriptors. Tool code owns MCP. Karakara only packages and audits
+//! the server as a toolset.
 
-use std::{path::Path, process::Command};
+use std::{
+    io::{BufRead, BufReader, Write},
+    path::Path,
+    process::{Command, Stdio},
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use baml_rt_tools::external_tools::{UnifiedToolDescriptor, compute_descriptor_digest};
 use console::style;
+use serde_json::{Value, json};
+
+use crate::project::{ToolsetConfig, load_toolset_config};
+
+pub(crate) struct BuiltToolset {
+    pub config: ToolsetConfig,
+    pub descriptors: Vec<UnifiedToolDescriptor>,
+}
 
 pub fn run(dir: &str) -> Result<()> {
     let dir = Path::new(dir);
-    if !dir.is_dir() {
-        bail!("Error: not a directory: {}", dir.display());
-    }
-    ensure_built(dir)?;
-    let descriptor_json = extract_descriptor_json(dir)?;
-    let (digest, pretty) = finish_build(&descriptor_json)?;
-
-    let desc_path = dir.join("tool-descriptor.json");
-    std::fs::write(&desc_path, &pretty)
-        .with_context(|| format!("writing {}", desc_path.display()))?;
-    let lock = serde_json::json!({ "descriptor_digest": digest.to_string() });
-    let lock_path = dir.join("tool.lock.json");
-    std::fs::write(
-        &lock_path,
-        format!("{}\n", serde_json::to_string_pretty(&lock)?),
-    )
-    .with_context(|| format!("writing {}", lock_path.display()))?;
+    let built = build_toolset(dir, true)?;
+    let pretty = format!("{}\n", serde_json::to_string_pretty(&built.descriptors)?);
+    let tools_path = dir.join("tools.json");
+    std::fs::write(&tools_path, pretty)
+        .with_context(|| format!("writing {}", tools_path.display()))?;
+    write_descriptor_lock(dir, &built)?;
 
     println!(
         "{} built {}",
         style("✓").green(),
         style(dir.display()).cyan()
     );
-    println!("  descriptor: {}", style(desc_path.display()).cyan());
-    println!("  digest:     {}", style(digest.to_string()).cyan());
+    println!("  tools:      {}", style(tools_path.display()).cyan());
+    for descriptor in &built.descriptors {
+        println!(
+            "  {}  {}",
+            descriptor.name,
+            compute_descriptor_digest(descriptor)
+        );
+    }
     Ok(())
 }
 
-/// Pure core: validate the SDK's descriptor JSON against the canonical type and
-/// compute its digest. Returns (digest, pretty-printed canonical JSON).
-pub fn finish_build(
-    descriptor_json: &str,
-) -> Result<(baml_rt_tools::mcp_snapshot::Digest, String)> {
-    let descriptor: UnifiedToolDescriptor = serde_json::from_str(descriptor_json).context(
-        "the SDK descriptor did not match the canonical ToolDescriptor (parity check failed)",
-    )?;
-    let digest = compute_descriptor_digest(&descriptor);
-    let pretty = format!("{}\n", serde_json::to_string_pretty(&descriptor)?);
-    Ok((digest, pretty))
+/// Build the project, start its ordinary MCP stdio server, and normalize its
+/// `tools/list` result into full Karakara descriptor names.
+pub(crate) fn build_toolset(dir: &Path, force_rebuild: bool) -> Result<BuiltToolset> {
+    if !dir.is_dir() {
+        bail!("Error: not a directory: {}", dir.display());
+    }
+    let config = load_toolset_config(dir)?;
+    if force_rebuild {
+        rebuild(dir)?;
+    } else {
+        ensure_built(dir)?;
+    }
+    let listed = extract_tools_json(dir)?;
+    let descriptors = finish_build(&listed, &config.name)?;
+    Ok(BuiltToolset {
+        config,
+        descriptors,
+    })
 }
 
-/// Compile the project if `dist/tool.js` is missing or stale-by-absence.
+fn write_descriptor_lock(dir: &Path, built: &BuiltToolset) -> Result<()> {
+    let lock = json!({
+        "toolset": built.config.name,
+        "version": built.config.version,
+        "tools": built.descriptors.iter().map(|descriptor| json!({
+            "name": descriptor.name,
+            "descriptor_digest": compute_descriptor_digest(descriptor),
+        })).collect::<Vec<_>>(),
+    });
+    let path = dir.join("tool.lock.json");
+    std::fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&lock)?))
+        .with_context(|| format!("writing {}", path.display()))
+}
+
+/// Convert an MCP `tools/list` response to canonical, fully qualified tool
+/// descriptors. The server exposes local names; a bundle owns the prefix.
+pub fn finish_build(tools_json: &str, toolset_name: &str) -> Result<Vec<UnifiedToolDescriptor>> {
+    let listed: Value =
+        serde_json::from_str(tools_json).context("tools/list output was not JSON")?;
+    let tools = listed
+        .get("tools")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("tools/list response did not contain a tools array"))?;
+    if tools.is_empty() {
+        bail!("tools/list returned no tools");
+    }
+
+    let mut descriptors = tools
+        .iter()
+        .map(|tool| {
+            let mut descriptor = UnifiedToolDescriptor::from_mcp(tool)
+                .map_err(|error| anyhow!("invalid MCP tool in tools/list: {error}"))?;
+            if descriptor.name.is_empty() || descriptor.name.contains('/') {
+                bail!(
+                    "MCP tool name '{}' must be a non-empty local name without '/'; the toolset supplies '{} /'",
+                    descriptor.name,
+                    toolset_name
+                );
+            }
+            descriptor.name = format!("{toolset_name}/{}", descriptor.name);
+            Ok(descriptor)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    descriptors.sort_by(|left, right| left.name.cmp(&right.name));
+    if descriptors
+        .windows(2)
+        .any(|pair| pair[0].name == pair[1].name)
+    {
+        bail!("tools/list returned duplicate tool names");
+    }
+    Ok(descriptors)
+}
+
+/// Compile the project if `dist/tool.js` is missing.
 pub(crate) fn ensure_built(dir: &Path) -> Result<()> {
     if dir.join("dist/tool.js").is_file() {
         return Ok(());
@@ -74,12 +129,12 @@ pub(crate) fn ensure_built(dir: &Path) -> Result<()> {
     rebuild(dir)
 }
 
-/// Recompile even when an older `dist/tool.js` exists. Publish uses this so
-/// the bundle always covers the current source tree.
+/// Recompile even when an older `dist/tool.js` exists. Publish and test use
+/// this so their bundle always reflects the source tree.
 pub(crate) fn rebuild(dir: &Path) -> Result<()> {
     if !dir.join("node_modules").is_dir() {
         bail!(
-            "Error: dependencies not installed in {}.\nHint: run `npm install` first (the @karakara/tool SDK must be resolvable).",
+            "Error: dependencies not installed in {}.\nHint: run `npm install` first.",
             dir.display()
         );
     }
@@ -100,73 +155,125 @@ pub(crate) fn rebuild(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Run node to print `defineTool(...).descriptor()` as JSON.
-pub(crate) fn extract_descriptor_json(dir: &Path) -> Result<String> {
-    let entry = dir.join("dist/tool.js").canonicalize()?;
-    let entry_url = format!("file://{}", entry.display());
-    let script = format!(
-        "import(\"{entry_url}\").then((m) => {{ \
-           const t = m.default; \
-           if (!t || typeof t.descriptor !== \"function\") {{ \
-             console.error(\"tool default export is not a defineTool() result\"); process.exit(2); \
-           }} \
-           process.stdout.write(JSON.stringify(t.descriptor())); \
-         }}).catch((e) => {{ console.error(String(e)); process.exit(2); }});"
-    );
-    let out = Command::new("node")
-        .args(["--input-type=module", "-e", &script])
+/// Run the built MCP server long enough to initialize it and request
+/// `tools/list`. This deliberately talks JSON-RPC over MCP stdio instead of
+/// importing a Karakara-specific entrypoint.
+pub(crate) fn extract_tools_json(dir: &Path) -> Result<String> {
+    let entry = dir
+        .join("dist/tool.js")
+        .canonicalize()
+        .context("resolving dist/tool.js")?;
+    let mut child = Command::new("node")
+        .arg(&entry)
         .current_dir(dir)
-        .output()
-        .with_context(|| "running node to extract the descriptor (is node on PATH?)")?;
-    if !out.status.success() {
-        return Err(anyhow!(
-            "descriptor extraction failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| "starting the MCP server with node")?;
+    let result = (|| {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("MCP server stdin unavailable"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("MCP server stdout unavailable"))?;
+        let mut stdout = BufReader::new(stdout);
+
+        write_jsonrpc(
+            &mut stdin,
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18", "capabilities": {},
+                    "clientInfo": {"name": "karak", "version": env!("CARGO_PKG_VERSION")}
+                }
+            }),
+        )?;
+        read_response(&mut stdout, 1)?;
+        write_jsonrpc(
+            &mut stdin,
+            &json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}),
+        )?;
+        write_jsonrpc(
+            &mut stdin,
+            &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+        )?;
+        let response = read_response(&mut stdout, 2)?;
+        serde_json::to_string(
+            response
+                .get("result")
+                .ok_or_else(|| anyhow!("tools/list response had no result"))?,
+        )
+        .context("serializing tools/list result")
+    })();
+    let _ = child.kill();
+    let output = child.wait_with_output().ok();
+    result.map_err(|error| {
+        let stderr = output
+            .as_ref()
+            .map(|output| String::from_utf8_lossy(&output.stderr).trim().to_string())
+            .filter(|stderr| !stderr.is_empty());
+        match stderr {
+            Some(stderr) => anyhow!("{error}\nMCP server stderr: {stderr}"),
+            None => error,
+        }
+    })
+}
+
+fn write_jsonrpc(writer: &mut impl Write, message: &Value) -> Result<()> {
+    serde_json::to_writer(&mut *writer, message)?;
+    writer.write_all(b"\n")?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn read_response(reader: &mut impl BufRead, id: u64) -> Result<Value> {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let count = reader
+            .read_line(&mut line)
+            .context("reading MCP server output")?;
+        if count == 0 {
+            bail!("MCP server closed stdout before replying to request {id}");
+        }
+        if line.len() > baml_sandbox_protocol::MAX_FRAME_BYTES {
+            bail!("MCP server response exceeds the output cap");
+        }
+        let value: Value = serde_json::from_str(line.trim())
+            .context("MCP server wrote non-JSON data to stdout")?;
+        if value.get("id").and_then(Value::as_u64) == Some(id) {
+            if let Some(error) = value.get("error") {
+                bail!("MCP request {id} failed: {error}");
+            }
+            return Ok(value);
+        }
     }
-    String::from_utf8(out.stdout).context("descriptor output was not valid UTF-8")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // A descriptor exactly as the @karakara/tool SDK's `descriptor()` emits it.
-    const SDK_DESCRIPTOR: &str = r#"{
-      "descriptor_abi": 1,
-      "name": "support/weather",
-      "version": "1.0.0",
-      "description": "Current weather.",
-      "input_schema": {"type": "object"},
-      "output_schema": {"type": "object"},
-      "error_classes": ["invalid_argument", "transient", "execution"],
-      "side_effect": "read",
-      "idempotent": true,
-      "output_trust": "untrusted",
-      "requested": {
-        "net": [{"host": "api.open-meteo.com", "port": 443}],
-        "secrets": [{"name": "METEO_KEY", "binding": "egress_bound"}]
-      }
-    }"#;
-
     #[test]
-    fn finish_build_parses_and_digests_sdk_output() {
-        let (digest, pretty) = finish_build(SDK_DESCRIPTOR).expect("valid SDK descriptor");
-        assert!(digest.to_string().starts_with("sha256:"));
-        // Round-trips through the canonical type.
-        assert!(pretty.contains("\"name\": \"support/weather\""));
-        assert!(pretty.contains("\"side_effect\": \"read\""));
+    fn finish_build_qualifies_and_sorts_mcp_tools() {
+        let descriptors = finish_build(
+            r#"{"tools":[
+              {"name":"zebra","description":"z","inputSchema":{},"annotations":{"readOnlyHint":true}},
+              {"name":"alpha","description":"a","inputSchema":{}}
+            ]}"#,
+            "support",
+        )
+        .unwrap();
+        assert_eq!(descriptors[0].name, "support/alpha");
+        assert_eq!(descriptors[1].name, "support/zebra");
     }
 
     #[test]
-    fn finish_build_is_deterministic() {
-        let a = finish_build(SDK_DESCRIPTOR).unwrap().0;
-        let b = finish_build(SDK_DESCRIPTOR).unwrap().0;
-        assert_eq!(a.to_string(), b.to_string());
-    }
-
-    #[test]
-    fn finish_build_rejects_non_descriptor_json() {
-        assert!(finish_build(r#"{"not": "a descriptor"}"#).is_err());
+    fn finish_build_rejects_qualified_mcp_names() {
+        assert!(finish_build(r#"{"tools":[{"name":"support/echo"}]}"#, "support").is_err());
     }
 }

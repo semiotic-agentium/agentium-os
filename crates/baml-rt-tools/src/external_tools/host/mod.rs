@@ -51,7 +51,12 @@ pub(super) fn audit_approved_bundle(
     }
     let audited = audit_ktool_bundle(bytes)?;
     verify_ktool_snapshot(&audited, snapshot)?;
-    if ctx.tool_name.to_string() != audited.descriptor.name {
+    let tool_name = ctx.tool_name.to_string();
+    if !audited
+        .descriptors
+        .iter()
+        .any(|descriptor| descriptor.name == tool_name)
+    {
         return Err(invalid("tool session identity does not match bundle"));
     }
     Ok(audited)
@@ -102,7 +107,7 @@ impl ToolHost {
             .ok_or_else(|| {
                 invalid(format!(
                     "agent '{}' is not authorized for tool '{}' ({})",
-                    ctx.agent_id, audited.descriptor.name, audited.tool_digest
+                    ctx.agent_id, ctx.tool_name, audited.tool_digest
                 ))
             })?;
         tokio::time::timeout(
@@ -111,7 +116,10 @@ impl ToolHost {
                 ctx,
                 audited.tool_digest,
                 audited.manifest.runtime_image.digest,
-                &audited.descriptor.requested,
+                // R1 §R1.1: capabilities are toolset-level, pinned by the exact
+                // bytes the tool_digest covers (the manifest, not the interface
+                // descriptor). Equivalent to the approved snapshot's requested.
+                &audited.manifest.requested,
                 policy,
                 self.resolver.as_ref(),
                 &self.fingerprint_key,
@@ -187,6 +195,7 @@ impl ToolHost {
             vm.channel()
                 .invoke(
                     grant.tool_digest,
+                    ctx.tool_name.to_string(),
                     context,
                     input,
                     remaining()?,

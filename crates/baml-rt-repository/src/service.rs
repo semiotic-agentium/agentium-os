@@ -650,13 +650,14 @@ impl RepositoryService {
     // Blob operations
     // -----------------------------------------------------------------------
 
-    /// Retrieve a tar.gz package by its exact artifact hash and verify it before returning it.
+    /// Retrieve a tar.gz package by its agent artifact identity and verify it before returning it.
     pub async fn get_blob(&self, hash: &ArtifactHash) -> Result<Option<Vec<u8>>> {
         let Some(bytes) = self.blobs.get_artifact(hash).await? else {
             return Ok(None);
         };
-        let computed = ArtifactHash::from_bytes(&bytes);
-        if &computed != hash {
+        let exact = ArtifactHash::from_bytes(&bytes);
+        let computed = crate::artifact_hash_from_tar_gz(&bytes).unwrap_or_else(|_| exact.clone());
+        if &computed != hash && &exact != hash {
             return Err(RepositoryError::ArtifactHashMismatch {
                 expected: hash.clone(),
                 computed,
@@ -665,12 +666,13 @@ impl RepositoryService {
         Ok(Some(bytes))
     }
 
-    /// Store a repository-built tar.gz blob under its exact byte hash.
+    /// Store a repository-built tar.gz blob under its semantic agent artifact identity.
     ///
     /// This is intended for trusted in-process orchestrators (not public HTTP upload).
     pub async fn put_built_blob(&self, hash: &ArtifactHash, data: &[u8]) -> Result<()> {
-        let computed = ArtifactHash::from_bytes(data);
-        if &computed != hash {
+        let exact = ArtifactHash::from_bytes(data);
+        let computed = crate::artifact_hash_from_tar_gz(data).unwrap_or_else(|_| exact.clone());
+        if &computed != hash && &exact != hash {
             return Err(RepositoryError::ArtifactHashMismatch {
                 expected: hash.clone(),
                 computed,

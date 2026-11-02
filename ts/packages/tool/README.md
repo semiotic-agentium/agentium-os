@@ -1,60 +1,45 @@
 # @karakara/tool
 
-The blessed authoring SDK for Karakara external tools (v2). Write **one typed
-async function**; the SDK derives the descriptor from your types and runs the
-wire. No framing, no manifest, no schema file, no Dockerfile.
+`@karakara/tool` is optional TypeScript sugar for the official MCP SDK. It
+creates an `McpServer`, registers one typed tool, and connects it to MCP stdio.
+The process still speaks ordinary MCP. You can skip this package and use
+`@modelcontextprotocol/sdk` directly.
 
 ```ts
-import { defineTool, Type, type Static } from "@karakara/tool";
+import { defineTool, serve, z } from "@karakara/tool";
 
-const Input = Type.Object({ latitude: Type.Number(), longitude: Type.Number() });
-const Output = Type.Object({ temperatureC: Type.Number() });
-
-export default defineTool(
+const server = defineTool(
   {
-    name: "weather/meteo",
+    name: "weather",
     version: "1.0.0",
     description: "Current temperature for a coordinate.",
     sideEffect: "read",
-    input: Input,
-    output: Output,
-    net: ["api.open-meteo.com:443"],
-    secrets: { METEO_KEY: "egress_bound" },
+    inputSchema: {
+      latitude: z.number(),
+      longitude: z.number(),
+    },
+    outputSchema: z.object({ temperatureC: z.number() }),
   },
-  async (input: Static<typeof Input>, ctx): Promise<Static<typeof Output>> => {
-    const res = await ctx.fetch(
-      `https://api.open-meteo.com/v1/forecast?latitude=${input.latitude}` +
-        `&longitude=${input.longitude}&current=temperature_2m`,
-    );
-    if (!res.ok) throw ctx.error("transient", `upstream ${res.status}`);
-    const body = (await res.json()) as any;
-    return { temperatureC: body.current.temperature_2m };
+  async (input) => {
+    const response = await fetch(`https://example.test/weather?lat=${input.latitude}&lon=${input.longitude}`);
+    return { temperatureC: (await response.json()).temperatureC };
   },
 );
+
+await serve(server);
 ```
 
-## What the SDK does for you
+`defineTool` maps `sideEffect` and `idempotent` to MCP annotations. It puts
+Karakara's descriptor fields in the MCP annotation namespace. `karak tool
+build` starts the server, calls `tools/list`, and writes the resulting
+`tools.json`.
 
-- **Descriptor** — `defineTool(...).descriptor()` emits the unified
-  `tool-descriptor.json` (`-p1-spec.md` §P1.1), field-for-field identical to what
-  static (Rust) and MCP tools produce, so parity is structural.
-- **Input/output validation** — bad input is rejected as `invalid_argument`
-  (LLM-correctable) before your handler runs; bad output is caught before it
-  reaches the LLM.
-- **Capability binding** — `ctx.fetch` only reaches the hosts you declared in
-  `net`; `ctx.secrets.X` is a placeholder injected by the host on egress (you
-  never see the plaintext).
-- **Errors** — `ctx.error(class, msg)` maps to the host `ErrorClass` so the
-  disposition (retry / tell-the-LLM / fatal) is right.
-
-## Design
-
-See `plans/external-tools-v2-ts-sdk.md`. Types use **TypeBox** (JSON-Schema
-native, so the schema *is* the descriptor schema — no codegen, no drift).
+Put toolset-wide network and secret requests in the project's
+`karakara.toml`. They apply to the server process, not one MCP tool.
 
 ## Build
 
-```
+```bash
 npm install
 npm run build
 ```

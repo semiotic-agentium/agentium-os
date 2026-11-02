@@ -29,6 +29,12 @@ pub struct ExternalToolRegistryTool {
 pub struct ExternalToolRegistryToolVersion {
     pub tool_name: String,
     pub version: u32,
+    /// R1 identity key. For bundled toolsets this is the executable/runtime
+    /// digest; for Service toolsets it is the endpoint identity digest.
+    #[serde(default)]
+    pub tool_digest: Digest,
+    /// Deprecated v1 projection retained for API readers during migration.
+    #[serde(default)]
     pub snapshot_digest: Digest,
     pub manifest_digest: Digest,
     pub schema_digest: Digest,
@@ -52,6 +58,18 @@ pub struct ExternalToolRegistryToolVersion {
 /// Full snapshot payload addressed by digest.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalToolSnapshotBlob {
+    #[serde(default)]
+    pub tool_digest: Digest,
+    #[serde(default)]
     pub snapshot_digest: Digest,
     pub snapshot_json: String,
+}
+
+/// Approval is a mutable record keyed by tool identity, not snapshot content.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalToolsetApprovalRecord {
+    pub tool_digest: Digest,
+    pub approved_by: String,
+    pub approved_at: String,
+    pub capability_grant_json: serde_json::Value,
 }

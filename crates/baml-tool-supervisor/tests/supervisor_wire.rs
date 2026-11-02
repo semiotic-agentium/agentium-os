@@ -6,18 +6,18 @@
 //! under bwrap (no KVM).
 //!
 //! The SDK is not required: these tests override the worker harness with a
-//! dependency-free `serve()` loop, so the test tool exercises the same framed
-//! wire the SDK speaks (invoke in, event/result out).
+//! dependency-free `serve()` loop, so the test tool exercises the same MCP
+//! stdio contract as a real worker.
 
 use std::{
     path::Path,
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use baml_ktool::{
-    CapabilityRequest, DESCRIPTOR_ABI, SideEffect, ToolDescriptor, audit_ktool_bundle,
-    build_ktool_bundle, compute_descriptor_digest, default_node_runtime_image,
+    DESCRIPTOR_ABI, SideEffect, ToolDescriptor, audit_ktool_bundle, build_ktool_bundle,
+    compute_descriptor_digest, default_node_runtime_image,
 };
 use baml_sandbox_protocol::{
     codec::{FrameReader, FrameWriter},
@@ -37,73 +37,80 @@ import(entry).then((m) => m.serve()).catch((e) => { console.error(String(e)); pr
 const TEST_TOOL: &str = r#"
 import fs from "node:fs";
 
-const HEADER = 4;
-let buffer = Buffer.alloc(0);
+let buffer = "";
 const waiters = [];
-
 function pump() {
-  while (waiters.length > 0 && buffer.length >= HEADER) {
-    const length = buffer.readUInt32BE(0);
-    if (buffer.length < HEADER + length) break;
-    const message = JSON.parse(buffer.subarray(HEADER, HEADER + length).toString("utf8"));
-    buffer = buffer.subarray(HEADER + length);
-    waiters.shift()(message);
+  while (waiters.length && buffer.includes("\n")) {
+    const index = buffer.indexOf("\n");
+    const line = buffer.slice(0, index);
+    buffer = buffer.slice(index + 1);
+    if (line.trim()) waiters.shift()(JSON.parse(line));
   }
 }
-
-process.stdin.on("data", (chunk) => {
-  buffer = Buffer.concat([buffer, chunk]);
-  pump();
-});
-
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { buffer += chunk; pump(); });
 const recv = () => new Promise((resolve) => { waiters.push(resolve); pump(); });
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\n");
+const tool = {
+  name: "test/supervisor",
+  description: "supervisor fixture",
+  inputSchema: { type: "object" },
+  annotations: {
+    readOnlyHint: true,
+    karakara: {
+      descriptorAbi: 1,
+      version: "0.1.0",
+      outputSchema: { type: "object" },
+      errorClasses: ["execution"],
+      sideEffect: "read",
+      idempotent: true,
+      outputTrust: "untrusted",
+    },
+  },
+};
 
-function send(message) {
-  const body = Buffer.from(JSON.stringify(message), "utf8");
-  const frame = Buffer.alloc(HEADER + body.length);
-  frame.writeUInt32BE(body.length, 0);
-  body.copy(frame, HEADER);
-  process.stdout.write(frame);
+async function call(message) {
+  const { id, params = {} } = message;
+  const input = params.arguments || {};
+  if (input.sleep_ms) await new Promise((r) => setTimeout(r, input.sleep_ms));
+  if (input.flood_stderr) process.stderr.write("x".repeat(input.flood_stderr));
+  const output = { pid: process.pid };
+  if (input.echo !== undefined) output.echo = input.echo;
+  if (input.huge) output.huge = "y".repeat(input.huge);
+  if (input.exit_now) process.exit(3);
+  if (input.malformed) { process.stdout.write("not-json\\n"); return; }
+  if (input.exists) output.exists = Object.fromEntries(input.exists.map((path) => [path, fs.existsSync(path)]));
+  if (input.secret) {
+    const table = JSON.parse(process.env.KARAKARA_REVEAL_FDS || "{}");
+    const fd = table[input.secret];
+    let secret = null;
+    if (fd !== undefined) {
+      const buf = Buffer.alloc(256);
+      const read = fs.readSync(fd, buf, 0, buf.length, 0);
+      secret = buf.subarray(0, read).toString("utf8");
+      buf.fill(0);
+    }
+    output.secret = secret;
+    output.env_leak = Object.entries(process.env).some(([name, value]) =>
+      name !== "KARAKARA_REVEAL_FDS" && String(value).includes("s3cret-value"));
+  }
+  send({ jsonrpc: "2.0", id, result: { structuredContent: output, content: [{ type: "text", text: JSON.stringify(output) }] } });
 }
-
-const result = (request_id, output, truncated = false) =>
-  send({ t: "result", request_id, ok: true, output, error_class: "execution", truncated });
 
 export async function serve() {
   for (;;) {
     const message = await recv();
     if (!message) return;
-    if (message.t !== "invoke") continue;
-    const { request_id, input } = message;
-    const output = { pid: process.pid };
-    if (input.echo !== undefined) output.echo = input.echo;
-    if (input.sleep_ms) await new Promise((r) => setTimeout(r, input.sleep_ms));
-    if (input.flood_stderr) process.stderr.write("x".repeat(input.flood_stderr));
-    if (input.huge) output.huge = "y".repeat(input.huge);
-    if (input.exit_now) process.exit(3);
-    if (input.malformed) {
-      process.stdout.write(Buffer.from([0, 0, 0, 3, 7, 7, 7]));
-      continue;
+    if (message.method === "initialize") {
+      send({ jsonrpc: "2.0", id: message.id, result: {
+        protocolVersion: "2025-06-18", capabilities: { tools: {} },
+        serverInfo: { name: "supervisor-fixture", version: "0.1.0" },
+      } });
+    } else if (message.method === "tools/list") {
+      send({ jsonrpc: "2.0", id: message.id, result: { tools: [tool] } });
+    } else if (message.method === "tools/call") {
+      call(message);
     }
-    if (input.exists) {
-      output.exists = Object.fromEntries(input.exists.map((path) => [path, fs.existsSync(path)]));
-    }
-    if (input.secret) {
-      const table = JSON.parse(process.env.KARAKARA_REVEAL_FDS || "{}");
-      const fd = table[input.secret];
-      let secret = null;
-      if (fd !== undefined) {
-        const buf = Buffer.alloc(256);
-        const read = fs.readSync(fd, buf, 0, buf.length, 0);
-        secret = buf.subarray(0, read).toString("utf8");
-        buf.fill(0);
-      }
-      output.secret = secret;
-      output.env_leak = Object.entries(process.env).some(
-        ([name, value]) => name !== "KARAKARA_REVEAL_FDS" && String(value).includes("s3cret-value"),
-      );
-    }
-    result(request_id, output);
   }
 }
 "#;
@@ -245,6 +252,7 @@ impl Harness {
             .send(
                 &serde_json::to_value(HostMessage::Invoke(Box::new(InvokeRequest {
                     request_id,
+                    tool: "test/supervisor".into(),
                     tool_digest: digest.to_string(),
                     call_context: Default::default(),
                     input,
@@ -297,8 +305,12 @@ fn node_available() -> bool {
 }
 
 fn bundle() -> Vec<u8> {
+    bundle_for(&descriptor())
+}
+
+fn bundle_for(tool: &ToolDescriptor) -> Vec<u8> {
     build_ktool_bundle(
-        &descriptor(),
+        tool,
         TEST_TOOL.as_bytes().to_vec(),
         vec![],
         br#"{}"#.to_vec(),
@@ -318,7 +330,6 @@ fn descriptor() -> ToolDescriptor {
         side_effect: SideEffect::Read,
         idempotent: true,
         output_trust: baml_ktool::OutputTrust::Untrusted,
-        requested: CapabilityRequest::default(),
     }
 }
 
@@ -371,6 +382,51 @@ async fn warm_worker_is_reused_across_calls() {
         .invoke_with(&digest, json!({}), Duration::from_secs(10), None)
         .await;
     assert_eq!(output(&second).unwrap()["pid"], pid);
+    harness.supervisor.shutdown().await;
+}
+
+#[tokio::test]
+async fn concurrent_calls_share_one_mcp_worker() {
+    let Some(mut harness) = Harness::start(SupervisorLimits::default()).await else {
+        return;
+    };
+    harness.hello().await;
+    let (_bundle, digest, _) = harness.load().await;
+    let deadline_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+        + 5_000;
+    let started = Instant::now();
+    for request_id in [41_u64, 42_u64] {
+        harness
+            .host
+            .send(
+                &serde_json::to_value(HostMessage::Invoke(Box::new(InvokeRequest {
+                    request_id,
+                    tool: "test/supervisor".into(),
+                    tool_digest: digest.clone(),
+                    call_context: Default::default(),
+                    input: json!({"sleep_ms": 300, "echo": request_id}),
+                    deadline_ms,
+                })))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    let mut results = Vec::new();
+    while results.len() < 2 {
+        if let GuestMessage::Result { request_id, .. } = harness.recv().await {
+            results.push(request_id);
+        }
+    }
+    assert_eq!(results.len(), 2);
+    assert!(
+        started.elapsed() < Duration::from_millis(550),
+        "calls were serialized: {:?}",
+        started.elapsed()
+    );
     harness.supervisor.shutdown().await;
 }
 
@@ -438,6 +494,7 @@ async fn cancel_kills_the_inflight_worker() {
         .send(
             &serde_json::to_value(HostMessage::Invoke(Box::new(InvokeRequest {
                 request_id,
+                tool: "test/supervisor".into(),
                 tool_digest: digest.clone(),
                 call_context: Default::default(),
                 input: json!({"sleep_ms": 30_000}),
@@ -552,6 +609,29 @@ async fn reveal_secret_reaches_the_worker_only_over_an_fd() {
 }
 
 #[tokio::test]
+async fn tools_list_drift_is_rejected_at_load() {
+    let Some(mut harness) = Harness::start(SupervisorLimits::default()).await else {
+        return;
+    };
+    harness.hello().await;
+    let mut tool = descriptor();
+    tool.description = "different interface".into();
+    let bundle = bundle_for(&tool);
+    let audited = audit_ktool_bundle(&bundle).unwrap();
+    let ack = harness
+        .load_raw(
+            &bundle,
+            &audited.tool_digest.to_string(),
+            &audited.manifest.runtime_image.digest.to_string(),
+        )
+        .await;
+    assert_eq!(ack["t"], "load_ack");
+    assert_eq!(ack["ok"], false);
+    assert!(ack["error"].as_str().unwrap().contains("drift"));
+    harness.supervisor.shutdown().await;
+}
+
+#[tokio::test]
 async fn identity_mismatch_is_rejected_without_killing_the_channel() {
     let Some(mut harness) = Harness::start(SupervisorLimits::default()).await else {
         return;
@@ -620,7 +700,7 @@ async fn bundle_identity_helper_is_stable() {
     let bundle = bundle();
     let audited = audit_ktool_bundle(&bundle).unwrap();
     assert_eq!(
-        audited.manifest.descriptor_digest,
+        audited.manifest.tools[0].descriptor_digest,
         compute_descriptor_digest(&descriptor())
     );
     assert_eq!(audited.manifest.runtime_image, default_node_runtime_image());

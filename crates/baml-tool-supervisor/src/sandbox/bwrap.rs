@@ -93,8 +93,8 @@ impl WorkerBackend for BwrapBackend {
             "/tool/code".into(),
         ];
         if let Some(node_modules) = &sandbox.node_modules {
-            // The runtime image ships @karakara/tool at /node_modules; the
-            // DevBackend points at the project's install.
+            // Test harnesses may need a dependency directory outside the
+            // bundle. Published toolsets vendor dependencies in code/node_modules.
             args.push("--ro-bind".into());
             args.push(node_modules.display().to_string());
             args.push("/node_modules".into());

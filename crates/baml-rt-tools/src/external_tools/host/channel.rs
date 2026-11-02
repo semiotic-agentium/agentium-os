@@ -276,6 +276,7 @@ impl SupervisorChannel {
     pub async fn invoke(
         &self,
         digest: Digest,
+        tool: String,
         context: CallContext,
         input: serde_json::Value,
         timeout: Duration,
@@ -311,6 +312,7 @@ impl SupervisorChannel {
                 .send(
                     &serde_json::to_value(HostMessage::Invoke(Box::new(InvokeRequest {
                         request_id: id,
+                        tool,
                         tool_digest: digest.to_string(),
                         deadline_ms: context.deadline_ms,
                         call_context: context,

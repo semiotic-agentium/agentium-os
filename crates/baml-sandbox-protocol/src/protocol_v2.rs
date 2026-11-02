@@ -60,6 +60,9 @@ impl std::fmt::Debug for RevealedSecret {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvokeRequest {
     pub request_id: u64,
+    /// Local MCP tool name within the loaded toolset.
+    #[serde(default)]
+    pub tool: String,
     pub tool_digest: String,
     pub call_context: CallContext,
     pub input: Value,
@@ -146,6 +149,7 @@ mod tests {
     fn host_messages_roundtrip() {
         let invoke = HostMessage::Invoke(Box::new(InvokeRequest {
             request_id: 7,
+            tool: "meteo".into(),
             tool_digest: "sha256:abc".into(),
             call_context: CallContext {
                 agent_id: "a".into(),

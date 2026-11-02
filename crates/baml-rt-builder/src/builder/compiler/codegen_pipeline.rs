@@ -32,9 +32,12 @@ use std::{
 
 use baml_rt_tools::{
     SessionPlanFunctionsMap, UnifiedStepExecutorFunctionsMap, external_tool_cache,
-    external_tools::{EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalToolLockEntry, ExternalToolsLockfile},
-    gather_coordination_fragments,
-    tools::ToolFunctionMetadata,
+    external_tools::{
+        EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalToolInterfaceLockEntry, ExternalToolsLockfile,
+        ExternalToolsetLockEntry, ToolDelivery,
+    },
+    gather_coordination_fragments, split_manifest_tool_entry,
+    tools::{ToolFunctionMetadata, ToolName},
 };
 use baml_runtime::BamlRuntime;
 use internal_baml_core::ir::ir_hasher::IRSignature;
@@ -448,8 +451,7 @@ impl RuntimeFinalized {
             atomic_write(&executors_path, json.as_bytes())?;
         }
 
-        let lockfile =
-            build_external_tools_lockfile(&self.tool_metadata, self.paths.build_dir.as_path())?;
+        let lockfile = build_external_tools_lockfile(&self.tool_metadata, &self.paths)?;
         let lockfile_json =
             serde_json::to_string_pretty(&lockfile).map_err(BamlBuilderError::Json)?;
         let lockfile_path = self.paths.build_dir.join(EXTERNAL_TOOLS_LOCKFILE_NAME);
@@ -582,9 +584,61 @@ fn build_tool_step_executors_map(
     map
 }
 
+/// One toolset's version constraint from the agent manifest (R1 §R1.6).
+#[derive(Debug)]
+struct ToolsetRequirement {
+    req: semver::VersionReq,
+    /// The requirement exactly as authored, recorded into the lockfile.
+    raw: String,
+}
+
+/// Parse per-toolset `@<semver-req>` requirements out of the agent manifest's
+/// `tools` list. All entries that name the same toolset must carry the same
+/// requirement (or none); a conflict is a manifest error. Entries without a
+/// requirement do not constrain the toolset (`*`).
+fn parse_toolset_requirements(
+    baml_src: &Path,
+) -> Result<std::collections::BTreeMap<String, ToolsetRequirement>> {
+    let entries = load_manifest_tools(baml_src)?;
+    let mut out = std::collections::BTreeMap::<String, ToolsetRequirement>::new();
+    for entry in &entries {
+        let (name, requirement) = split_manifest_tool_entry(entry);
+        let Some(raw) = requirement else { continue };
+        let tool_name = ToolName::parse(name).map_err(|err| {
+            BamlBuilderError::InvalidArgument(format!(
+                "invalid manifest tool entry '{entry}': {err}"
+            ))
+        })?;
+        let bundle = tool_name.bundle().as_str().to_string();
+        let req = semver::VersionReq::parse(raw).map_err(|err| {
+            BamlBuilderError::InvalidArgument(format!(
+                "invalid version requirement '{raw}' for tool '{name}': {err}"
+            ))
+        })?;
+        if let Some(existing) = out.get(&bundle) {
+            if existing.raw != raw {
+                return Err(BamlBuilderError::InvalidArgument(format!(
+                    "toolset '{bundle}' is listed with conflicting version requirements \
+                     ('{}' and '{raw}'); all entries for one toolset must agree",
+                    existing.raw
+                )));
+            }
+        } else {
+            out.insert(
+                bundle,
+                ToolsetRequirement {
+                    req,
+                    raw: raw.to_string(),
+                },
+            );
+        }
+    }
+    Ok(out)
+}
+
 fn build_external_tools_lockfile(
     tool_metadata: &[ToolFunctionMetadata],
-    build_dir: &Path,
+    paths: &CodegenPaths,
 ) -> Result<ExternalToolsLockfile> {
     let external_tool_names: HashSet<String> = tool_metadata
         .iter()
@@ -595,46 +649,152 @@ fn build_external_tools_lockfile(
         return Ok(ExternalToolsLockfile::empty());
     }
 
-    let cached_snapshots =
-        external_tool_cache::read_approved_snapshots(build_dir).map_err(BamlBuilderError::from)?;
-    let mut cached_entries: Vec<ExternalToolLockEntry> = cached_snapshots
-        .into_iter()
-        .filter(|snapshot| external_tool_names.contains(&snapshot.tool.name))
-        .map(|snapshot| ExternalToolLockEntry {
-            name: snapshot.tool.name,
-            digest: snapshot.snapshot_digest.to_string(),
-            abi_version: snapshot.tool.tool_abi_version,
-            protocol_version: snapshot.describe.protocol_version,
-            oci_ref: None,
-            platform: None,
-            signer: None,
-            capabilities: Some(snapshot.tool.capabilities),
-        })
-        .collect();
-    if cached_entries.len() == external_tool_names.len() {
-        cached_entries.sort_by(|a, b| a.name.cmp(&b.name));
-        return Ok(ExternalToolsLockfile {
-            version: "1".to_string(),
-            tools: cached_entries,
-        });
+    let requirements = parse_toolset_requirements(&paths.agent_dir.baml_src())?;
+    let cached_snapshots = external_tool_cache::read_approved_snapshots(paths.build_dir.as_path())
+        .map_err(BamlBuilderError::from)?;
+    resolve_lockfile_toolsets(&external_tool_names, &requirements, &cached_snapshots)
+}
+
+/// Pin each used toolset to the newest approved version satisfying its manifest
+/// requirement (R1 §R1.6). Kept separate from manifest/filesystem reading so the
+/// version-selection rules can be tested directly with constructed snapshots.
+fn resolve_lockfile_toolsets(
+    external_tool_names: &HashSet<String>,
+    requirements: &std::collections::BTreeMap<String, ToolsetRequirement>,
+    cached_snapshots: &[baml_rt_tools::external_tools::ExternalToolSnapshot],
+) -> Result<ExternalToolsLockfile> {
+    // Group the approved snapshots a used tool could resolve to, by toolset,
+    // parsing each candidate's version so the requirement can be applied.
+    struct Candidate {
+        local: String,
+        version: semver::Version,
+        descriptor_digest: String,
+        tool_digest: String,
+        tier: &'static str,
+    }
+    let mut by_bundle = std::collections::BTreeMap::<String, Vec<Candidate>>::new();
+
+    for snapshot in cached_snapshots {
+        if !external_tool_names.contains(&snapshot.tool.name) {
+            continue;
+        }
+        let Some(v2) = snapshot.v2.as_ref() else {
+            return Err(BamlBuilderError::InvalidArgument(format!(
+                "manifest uses external tool {}, but its approved snapshot is not v2",
+                snapshot.tool.name
+            )));
+        };
+        let (bundle, local) = v2.descriptor.name.split_once('/').ok_or_else(|| {
+            BamlBuilderError::InvalidArgument(format!(
+                "external tool '{}' is not named bundle/local",
+                v2.descriptor.name
+            ))
+        })?;
+        let version = semver::Version::parse(&v2.descriptor.version).map_err(|err| {
+            BamlBuilderError::InvalidArgument(format!(
+                "approved snapshot for '{}' has an invalid version '{}': {err}",
+                v2.descriptor.name, v2.descriptor.version
+            ))
+        })?;
+        let (tool_digest, tier) = match &v2.delivery {
+            ToolDelivery::Bundled { tool_digest, .. } => (tool_digest.to_string(), "sandbox"),
+            ToolDelivery::Reference { endpoint, .. } => (
+                baml_rt_tools::mcp_snapshot::canonical_digest(endpoint).to_string(),
+                "service",
+            ),
+        };
+        by_bundle
+            .entry(bundle.to_string())
+            .or_default()
+            .push(Candidate {
+                local: local.to_string(),
+                version,
+                descriptor_digest: v2.descriptor_digest.to_string(),
+                tool_digest,
+                tier,
+            });
     }
 
-    let resolved_names: HashSet<String> = cached_entries
-        .iter()
-        .map(|entry| entry.name.clone())
-        .collect();
+    let mut toolsets = Vec::with_capacity(by_bundle.len());
+    // Tracks which used tools a pinned toolset version actually covers, so a tool
+    // that exists only at a non-selected version is reported rather than dropped.
+    let mut covered_names = HashSet::new();
+    for (bundle, candidates) in by_bundle {
+        let (req, raw) = match requirements.get(&bundle) {
+            Some(requirement) => (requirement.req.clone(), requirement.raw.clone()),
+            None => (semver::VersionReq::STAR, "*".to_string()),
+        };
+        // Pin the newest approved version that satisfies the requirement.
+        let Some(target) = candidates
+            .iter()
+            .map(|candidate| &candidate.version)
+            .filter(|version| req.matches(version))
+            .max()
+            .cloned()
+        else {
+            let mut available: Vec<String> =
+                candidates.iter().map(|c| c.version.to_string()).collect();
+            available.sort();
+            available.dedup();
+            return Err(BamlBuilderError::InvalidArgument(format!(
+                "toolset '{bundle}' has no approved version satisfying '{raw}' \
+                 (available: {})",
+                available.join(", ")
+            )));
+        };
+
+        let selected: Vec<&Candidate> = candidates
+            .iter()
+            .filter(|candidate| candidate.version == target)
+            .collect();
+        let tool_digest = selected[0].tool_digest.clone();
+        let tier = selected[0].tier;
+        if selected.iter().any(|c| c.tool_digest != tool_digest) {
+            return Err(BamlBuilderError::InvalidArgument(format!(
+                "external toolset '{bundle}' resolved to more than one tool digest at version {target}"
+            )));
+        }
+        let mut tools: Vec<ExternalToolInterfaceLockEntry> = selected
+            .iter()
+            .map(|candidate| {
+                covered_names.insert(format!("{bundle}/{}", candidate.local));
+                ExternalToolInterfaceLockEntry {
+                    name: candidate.local.clone(),
+                    descriptor_digest: candidate.descriptor_digest.clone(),
+                }
+            })
+            .collect();
+        tools.sort_by(|a, b| a.name.cmp(&b.name));
+        toolsets.push(ExternalToolsetLockEntry {
+            name: bundle,
+            version: target.to_string(),
+            requirement: raw,
+            tier: tier.to_string(),
+            tool_digest,
+            tools,
+        });
+    }
+    toolsets.sort_by(|a, b| a.name.cmp(&b.name));
+
+    // Every used tool must be covered by a pinned toolset version. A tool missing
+    // here either has no approved snapshot at all, or exists only at a version the
+    // toolset's requirement excluded.
     let mut missing: Vec<String> = external_tool_names
-        .difference(&resolved_names)
+        .difference(&covered_names)
         .cloned()
         .collect();
-    missing.sort();
-    Err(BamlBuilderError::InvalidArgument(format!(
-        "manifest uses external tool {}, but no approved registry snapshot was found",
-        missing
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "<unknown>".to_string())
-    )))
+    if !missing.is_empty() {
+        missing.sort();
+        return Err(BamlBuilderError::InvalidArgument(format!(
+            "manifest uses external tool {}, but no approved registry snapshot satisfies it",
+            missing[0]
+        )));
+    }
+
+    Ok(ExternalToolsLockfile {
+        version: "2".to_string(),
+        toolsets,
+    })
 }
 
 fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
@@ -650,4 +810,138 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod external_tools_lockfile_tests {
+    use std::collections::{BTreeMap, HashSet};
+
+    use baml_rt_tools::{
+        external_tools::{CapabilityRequest, ExternalToolSnapshot, default_node_runtime_image},
+        mcp_snapshot::Digest,
+    };
+
+    use super::{ToolsetRequirement, parse_toolset_requirements, resolve_lockfile_toolsets};
+
+    fn v2_snapshot(name: &str, version: &str, seed: u8) -> ExternalToolSnapshot {
+        let mut descriptor = test_support::external_tools_v2::descriptor(name);
+        descriptor.version = version.to_string();
+        ExternalToolSnapshot::from_v2_bundle(
+            descriptor,
+            CapabilityRequest::default(),
+            Digest::from_bytes([seed; 32]),
+            Digest::from_bytes([seed.wrapping_add(1); 32]),
+            default_node_runtime_image(),
+            "operator",
+            "2026-11-02T00:00:00Z",
+        )
+        .unwrap()
+    }
+
+    fn requirement(raw: &str) -> ToolsetRequirement {
+        ToolsetRequirement {
+            req: semver::VersionReq::parse(raw).unwrap(),
+            raw: raw.to_string(),
+        }
+    }
+
+    fn names(entries: &[&str]) -> HashSet<String> {
+        entries.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn pins_newest_version_satisfying_requirement() {
+        let snapshots = vec![
+            v2_snapshot("support/clickup", "1.0.0", 1),
+            v2_snapshot("support/clickup", "1.3.0", 2),
+            v2_snapshot("support/clickup", "2.0.0", 3),
+        ];
+        let mut requirements = BTreeMap::new();
+        requirements.insert("support".to_string(), requirement("^1.2"));
+
+        let lock =
+            resolve_lockfile_toolsets(&names(&["support/clickup"]), &requirements, &snapshots)
+                .unwrap();
+        assert_eq!(lock.toolsets.len(), 1);
+        let set = &lock.toolsets[0];
+        assert_eq!(set.name, "support");
+        assert_eq!(set.version, "1.3.0", "newest satisfying ^1.2, not 2.0.0");
+        assert_eq!(set.requirement, "^1.2");
+        assert_eq!(set.tools.len(), 1);
+        assert_eq!(set.tools[0].name, "clickup");
+    }
+
+    #[test]
+    fn defaults_to_newest_when_no_requirement() {
+        let snapshots = vec![
+            v2_snapshot("support/clickup", "1.0.0", 1),
+            v2_snapshot("support/clickup", "2.0.0", 2),
+        ];
+        let lock =
+            resolve_lockfile_toolsets(&names(&["support/clickup"]), &BTreeMap::new(), &snapshots)
+                .unwrap();
+        assert_eq!(lock.toolsets[0].version, "2.0.0");
+        assert_eq!(lock.toolsets[0].requirement, "*");
+    }
+
+    #[test]
+    fn errors_when_no_version_satisfies_requirement() {
+        let snapshots = vec![
+            v2_snapshot("support/clickup", "1.0.0", 1),
+            v2_snapshot("support/clickup", "2.0.0", 2),
+        ];
+        let mut requirements = BTreeMap::new();
+        requirements.insert("support".to_string(), requirement("^3"));
+
+        let err =
+            resolve_lockfile_toolsets(&names(&["support/clickup"]), &requirements, &snapshots)
+                .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("no approved version satisfying"), "{msg}");
+        assert!(msg.contains("^3"), "{msg}");
+    }
+
+    #[test]
+    fn errors_when_used_tool_has_no_snapshot() {
+        let err = resolve_lockfile_toolsets(&names(&["support/clickup"]), &BTreeMap::new(), &[])
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("no approved registry snapshot"),
+            "{err}"
+        );
+    }
+
+    fn write_manifest(tools: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let baml_src = dir.path().join("baml_src");
+        std::fs::create_dir_all(&baml_src).unwrap();
+        let tools_json = serde_json::to_string(tools).unwrap();
+        std::fs::write(
+            dir.path().join("manifest.json"),
+            format!(r#"{{"version":"1.0.0","name":"a","tools":{tools_json}}}"#),
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn parse_toolset_requirements_reads_ranges_and_ignores_bare() {
+        let dir = write_manifest(&["support/clickup@^1.2", "system/internal_a2a"]);
+        let reqs = parse_toolset_requirements(&dir.path().join("baml_src")).unwrap();
+        assert_eq!(reqs.get("support").unwrap().raw, "^1.2");
+        assert!(
+            reqs.get("system").is_none(),
+            "bare entries do not constrain"
+        );
+    }
+
+    #[test]
+    fn parse_toolset_requirements_rejects_conflicting_requirements() {
+        let dir = write_manifest(&["support/clickup@^1.2", "support/other@^2"]);
+        let err = parse_toolset_requirements(&dir.path().join("baml_src")).unwrap_err();
+        assert!(
+            err.to_string().contains("conflicting version requirements"),
+            "{err}"
+        );
+    }
 }

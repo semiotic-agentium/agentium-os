@@ -49,15 +49,15 @@ pub use invoker::{
 };
 pub use ktool::{
     AuditedKtoolBundle, BundleFile, KTOOL_BUNDLE_SCHEMA_VERSION, KTOOL_DESCRIPTOR_PATH,
-    KTOOL_MANIFEST_PATH, KTOOL_NODE_ENTRYPOINT, KTOOL_SBOM_PATH, KtoolManifest, KtoolRuntimeImage,
-    KtoolRuntimeTier, MAX_KTOOL_BUNDLE_BYTES, MAX_KTOOL_UNPACKED_BYTES, audit_ktool_bundle,
-    build_ktool_bundle, build_ktool_bundle_for_tier, compute_bundle_digest, compute_tool_digest_v2,
-    default_node_runtime_image, host_native_runtime_image, runtime_image_for_tier,
-    verify_ktool_snapshot,
+    KTOOL_MANIFEST_PATH, KTOOL_NODE_ENTRYPOINT, KTOOL_SBOM_PATH, KTOOL_TOOLS_PATH, KtoolManifest,
+    KtoolRuntimeImage, KtoolRuntimeTier, KtoolToolEntry, MAX_KTOOL_BUNDLE_BYTES,
+    MAX_KTOOL_UNPACKED_BYTES, audit_ktool_bundle, build_ktool_bundle, build_ktool_bundle_for_tier,
+    compute_bundle_digest, compute_tool_digest_v2, default_node_runtime_image,
+    host_native_runtime_image, runtime_image_for_tier, verify_ktool_snapshot,
 };
 pub use lockfile::{
-    EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLockfileMode, ExternalToolLockEntry,
-    ExternalToolsLockfile,
+    EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLockfileMode, ExternalToolInterfaceLockEntry,
+    ExternalToolsLockfile, ExternalToolsetLockEntry,
 };
 pub use metadata::{
     CoordinationSpec, ExternalDatasourceManifest, ExternalDatasourceMode, ExternalSecretScope,
@@ -104,10 +104,10 @@ pub use snapshot::{
     DescribeProvenance, EXTERNAL_TOOL_SNAPSHOT_SCHEMA_VERSION, EXTERNAL_TOOL_SOURCE,
     ExternalApprovalState, ExternalToolDescribeSnapshot, ExternalToolSnapshot,
     ExternalToolSnapshotDigests, ExternalToolV2Snapshot, ServiceEndpointRef, ToolDelivery,
-    compute_descriptor_schema_digest, compute_external_schema_digest, compute_manifest_digest,
-    compute_runtime_digest, compute_schema_digest, compute_snapshot_digest,
-    format_unix_rfc3339_utc, now_snapshot_timestamp, validate_describe_schema_support,
-    validate_external_tool_snapshot,
+    ToolsetApproval, ToolsetPublishRecord, ToolsetSnapshot, compute_descriptor_schema_digest,
+    compute_external_schema_digest, compute_manifest_digest, compute_runtime_digest,
+    compute_schema_digest, compute_snapshot_digest, format_unix_rfc3339_utc,
+    now_snapshot_timestamp, validate_describe_schema_support, validate_external_tool_snapshot,
 };
 pub use snapshot_catalog::{ExternalToolRegistryCatalog, ExternalToolSnapshotCatalog};
 pub use stdio::StdioSubprocessInvoker;

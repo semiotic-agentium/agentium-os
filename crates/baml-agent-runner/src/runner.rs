@@ -597,10 +597,15 @@ impl AgentRunner {
         bytes: &[u8],
         repository_version: u32,
     ) -> Result<()> {
-        let computed_artifact_hash = ArtifactHash::from_bytes(bytes);
+        let computed_artifact_hash =
+            baml_rt_repository::artifact_hash_from_tar_gz(bytes).map_err(|e| {
+                BamlRtError::InvalidArgument(format!(
+                    "Artifact integrity failure: invalid agent artifact: {e}"
+                ))
+            })?;
         if &computed_artifact_hash != artifact_hash {
             return Err(BamlRtError::InvalidArgument(format!(
-                "Artifact integrity failure: expected artifact hash {artifact_hash}, computed {computed_artifact_hash}"
+                "Artifact integrity failure: artifact identity expected {artifact_hash}, computed {computed_artifact_hash}"
             )));
         }
         let (_, source) =
@@ -636,10 +641,15 @@ impl AgentRunner {
         repository_version: u32,
         expected_agent_id: Option<&AgentId>,
     ) -> Result<(String, AgentRouteKey, BootedAgent)> {
-        let computed_artifact_hash = ArtifactHash::from_bytes(bytes);
+        let computed_artifact_hash =
+            baml_rt_repository::artifact_hash_from_tar_gz(bytes).map_err(|e| {
+                BamlRtError::InvalidArgument(format!(
+                    "Artifact integrity failure: invalid agent artifact: {e}"
+                ))
+            })?;
         if &computed_artifact_hash != artifact_hash {
             return Err(BamlRtError::InvalidArgument(format!(
-                "Artifact integrity failure: expected artifact hash {artifact_hash}, computed {computed_artifact_hash}"
+                "Artifact integrity failure: artifact identity expected {artifact_hash}, computed {computed_artifact_hash}"
             )));
         }
         let mut package_file = tempfile::Builder::new()

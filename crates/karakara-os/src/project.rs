@@ -8,6 +8,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use baml_rt_tools::external_tools::CapabilityRequest;
+use semver::Version;
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_RUNNER_URL: &str = "http://127.0.0.1:18080";
@@ -18,6 +20,18 @@ pub struct KarakaraConfig {
     pub runner: RunnerConfig,
     #[serde(default)]
     pub project: ProjectConfig,
+    /// Toolset metadata for an MCP server project. It stays next to
+    /// `package.json`, rather than leaking capabilities into individual tools.
+    #[serde(default)]
+    pub toolset: Option<ToolsetConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolsetConfig {
+    pub name: String,
+    pub version: Version,
+    #[serde(default)]
+    pub capabilities: CapabilityRequest,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,12 +102,54 @@ pub fn load_file(path: &Path) -> Result<KarakaraConfig> {
     toml::from_str(&raw).with_context(|| format!("Failed to parse {}", path.display()))
 }
 
+/// Read the mandatory toolset declaration from a tool project's `karakara.toml`.
+pub fn load_toolset_config(dir: &Path) -> Result<ToolsetConfig> {
+    let path = dir.join("karakara.toml");
+    let config = load_file(&path)?;
+    config.toolset.ok_or_else(|| {
+        anyhow::anyhow!(
+            "{} is missing [toolset]. Run `karak tool new` or add toolset name, version, and capabilities.",
+            path.display()
+        )
+    })
+}
+
 pub fn write_file(path: &Path, config: &KarakaraConfig) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let raw = toml::to_string_pretty(config).context("Failed to serialize karakara.toml")?;
     std::fs::write(path, raw).with_context(|| format!("Failed to write {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toolset_capabilities_parse_from_project_toml() {
+        let config: KarakaraConfig = toml::from_str(
+            r#"
+[toolset]
+name = "support"
+version = "1.2.3"
+
+[[toolset.capabilities.net]]
+host = "api.example.test"
+port = 443
+
+[[toolset.capabilities.secrets]]
+name = "API_TOKEN"
+binding = "egress_bound"
+"#,
+        )
+        .unwrap();
+        let toolset = config.toolset.unwrap();
+        assert_eq!(toolset.name, "support");
+        assert_eq!(toolset.version, Version::new(1, 2, 3));
+        assert_eq!(toolset.capabilities.net[0].host, "api.example.test");
+        assert_eq!(toolset.capabilities.secrets[0].name, "API_TOKEN");
+    }
 }
 
 pub fn init_project(dir: &Path, runner_url: &str, agent_name: Option<&str>) -> Result<PathBuf> {

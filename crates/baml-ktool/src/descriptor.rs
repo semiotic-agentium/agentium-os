@@ -71,9 +71,13 @@ pub struct SecretRequest {
     pub binding: SecretBinding,
 }
 
-/// Capabilities a tool *requests* (data for operator approval, never grants).
-/// `Sandbox`-tier tools use only `net` + `secrets`; devices/mounts/GPU mean the
-/// tool belongs in the `Trusted` tier (no granular request type exists, §3.2).
+/// Capabilities a *toolset* requests (data for operator approval, never grants).
+///
+/// R1 (§16.6, §R1.1): network and secrets are properties of the one MCP server
+/// process a `.ktool` ships, not of an individual tool, so this lives on the
+/// [`crate::KtoolManifest`], **not** on [`ToolDescriptor`]. `Sandbox`-tier
+/// toolsets use only `net` + `secrets`; devices/mounts/GPU mean the toolset
+/// belongs in the `Trusted` tier (no granular request type exists, §3.2).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilityRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -103,13 +107,12 @@ pub struct ToolDescriptor {
     pub description: String,
     /// JSON Schema. Equals the MCP `inputSchema`.
     pub input_schema: Value,
-    /// JSON Schema. MCP has no output schema; see [`to_mcp`]/[`from_mcp`].
+    /// JSON Schema. Maps directly to MCP `outputSchema`.
     pub output_schema: Value,
     pub error_classes: Vec<ErrorClass>,
     pub side_effect: SideEffect,
     pub idempotent: bool,
     pub output_trust: OutputTrust,
-    pub requested: CapabilityRequest,
 }
 
 /// Annotation namespace for Karakara fields carried through MCP's free-form
@@ -118,14 +121,15 @@ const NS: &str = "karakara";
 
 impl ToolDescriptor {
     /// Render as an MCP tool definition (`{name, description, inputSchema,
-    /// annotations}`). Everything MCP lacks lives under `annotations.karakara.*`
-    /// so a Karakara tool is a valid MCP tool. The standard MCP `readOnlyHint`
-    /// mirrors `side_effect == Read` for MCP-native consumers.
+    /// annotations`, `outputSchema`). Karakara-only fields live under
+    /// `annotations.karakara.*`, while standard MCP annotations mirror side
+    /// effect and idempotency for MCP-native consumers.
     pub fn to_mcp(&self) -> Value {
         json!({
             "name": self.name,
             "description": self.description,
             "inputSchema": self.input_schema,
+            "outputSchema": self.output_schema,
             "annotations": {
                 "readOnlyHint": self.side_effect == SideEffect::Read,
                 NS: {
@@ -136,16 +140,15 @@ impl ToolDescriptor {
                     "sideEffect": self.side_effect,
                     "idempotent": self.idempotent,
                     "outputTrust": self.output_trust,
-                    "requested": self.requested,
                 },
             },
         })
     }
 
     /// Parse an MCP tool definition into a descriptor. A bare MCP tool (no
-    /// `karakara` annotations) yields safe defaults: empty output schema,
-    /// side-effect from `readOnlyHint` (else `Write`), `[Execution]` error
-    /// class, **Untrusted** output, and no requested capabilities.
+    /// `karakara` annotations) yields safe defaults: its MCP output schema,
+    /// side-effect from standard annotations, `[Execution]` error class, and
+    /// **Untrusted** output.
     pub fn from_mcp(v: &Value) -> Result<Self, McpMappingError> {
         let name = v
             .get("name")
@@ -163,6 +166,11 @@ impl ToolDescriptor {
             .get("readOnlyHint")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let destructive_hint = annotations
+            .get("destructiveHint")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let idempotent_hint = annotations.get("idempotentHint").and_then(Value::as_bool);
         let k = annotations.get(NS).cloned().unwrap_or_else(|| json!({}));
 
         let field = |name: &str| k.get(name).cloned();
@@ -170,19 +178,22 @@ impl ToolDescriptor {
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or(if read_only_hint {
                 SideEffect::Read
+            } else if destructive_hint {
+                SideEffect::Irreversible
             } else {
                 SideEffect::Write
             });
-        let output_schema = field("outputSchema").unwrap_or_else(|| json!({}));
+        let output_schema = v
+            .get("outputSchema")
+            .cloned()
+            .or_else(|| field("outputSchema"))
+            .unwrap_or_else(|| json!({}));
         let error_classes: Vec<ErrorClass> = field("errorClasses")
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_else(|| vec![ErrorClass::Execution]);
         let output_trust: OutputTrust = field("outputTrust")
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or(OutputTrust::Untrusted);
-        let requested: CapabilityRequest = field("requested")
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default();
         let descriptor_abi = field("descriptorAbi")
             .and_then(|v| v.as_u64())
             .map(|n| n as u32)
@@ -192,6 +203,7 @@ impl ToolDescriptor {
             .unwrap_or_default();
         let idempotent = field("idempotent")
             .and_then(|v| v.as_bool())
+            .or(idempotent_hint)
             .unwrap_or(side_effect == SideEffect::Read);
 
         Ok(Self {
@@ -205,7 +217,6 @@ impl ToolDescriptor {
             side_effect,
             idempotent,
             output_trust,
-            requested,
         })
     }
 }
@@ -240,16 +251,6 @@ mod tests {
             side_effect: SideEffect::Read,
             idempotent: true,
             output_trust: OutputTrust::Untrusted,
-            requested: CapabilityRequest {
-                net: vec![HostPort {
-                    host: "api.open-meteo.com".into(),
-                    port: 443,
-                }],
-                secrets: vec![SecretRequest {
-                    name: "METEO_KEY".into(),
-                    binding: SecretBinding::EgressBound,
-                }],
-            },
         }
     }
 
@@ -282,7 +283,20 @@ mod tests {
         assert_eq!(d.output_trust, OutputTrust::Untrusted);
         assert_eq!(d.error_classes, vec![ErrorClass::Execution]);
         assert_eq!(d.side_effect, SideEffect::Write);
-        assert!(d.requested.net.is_empty());
+    }
+
+    #[test]
+    fn plain_mcp_output_schema_and_annotations_are_preserved() {
+        let mcp = json!({
+            "name": "delete_record",
+            "inputSchema": {"type": "object"},
+            "outputSchema": {"type": "object", "properties": {"deleted": {"type": "boolean"}}},
+            "annotations": {"destructiveHint": true, "idempotentHint": true},
+        });
+        let descriptor = ToolDescriptor::from_mcp(&mcp).unwrap();
+        assert_eq!(descriptor.side_effect, SideEffect::Irreversible);
+        assert!(descriptor.idempotent);
+        assert_eq!(descriptor.output_schema, mcp["outputSchema"]);
     }
 
     #[test]

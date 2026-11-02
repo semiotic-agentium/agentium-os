@@ -252,6 +252,12 @@ impl AgentPackage {
         } else {
             Vec::new()
         };
+        if !packaged_snapshots.is_empty() {
+            let lockfile = ExternalToolsLockfile::read_from_path(&lockfile_path)?;
+            for snapshot in &packaged_snapshots {
+                lockfile.verify_snapshot(snapshot)?;
+            }
+        }
         let registry_external_resolver = if has_packaged_external_snapshots {
             match external_tool_cache::read_approved_snapshots(&self.extract_dir) {
                 Ok(snapshots) => {
@@ -414,7 +420,19 @@ impl AgentPackage {
         )?;
         runtime_manager.rebuild_function_tool_manifest();
         runtime_manager
-            .set_tool_allowlist(self.manifest.tools.iter().cloned().collect::<HashSet<_>>())
+            .set_tool_allowlist(
+                self.manifest
+                    .tools
+                    .iter()
+                    // Strip any `@<semver-req>` suffix (R1 §R1.6): the allowlist
+                    // keys on tool identity, which excludes the version.
+                    .map(|entry| {
+                        baml_rt_tools::split_manifest_tool_entry(entry)
+                            .0
+                            .to_string()
+                    })
+                    .collect::<HashSet<_>>(),
+            )
             .await?;
 
         info!(
@@ -995,11 +1013,15 @@ async fn build_allowed_dirs_resolver(
 
     if dirs.is_empty() {
         if let Some(lockfile) = lockfile.as_ref()
-            && !lockfile.tools.is_empty()
+            && !lockfile.toolsets.is_empty()
         {
+            let entry_count = lockfile
+                .toolsets
+                .iter()
+                .map(|set| set.tools.len())
+                .sum::<usize>();
             return Err(BamlRtError::InvalidArgument(format!(
-                "package contains {} external tool lockfile entries at {}, but no external tool directories were configured (set [external_tools].dirs in --runner-config or BAML_EXTERNAL_TOOLS_DIR)",
-                lockfile.tools.len(),
+                "package contains {entry_count} external tool lockfile entries at {}, but no external tool directories were configured (set [external_tools].dirs in --runner-config or BAML_EXTERNAL_TOOLS_DIR)",
                 lockfile_path.display()
             )));
         }
@@ -1136,8 +1158,8 @@ mod tests {
     use std::{fs, os::unix::fs::PermissionsExt, path::Path, sync::OnceLock};
 
     use baml_rt_tools::external_tools::{
-        ExternalToolLockEntry, ExternalToolMetadata, ExternalToolsLockfile,
-        compute_external_schema_digest,
+        ExternalToolInterfaceLockEntry, ExternalToolMetadata, ExternalToolsLockfile,
+        ExternalToolsetLockEntry, compute_external_schema_digest,
     };
     use tempfile::tempdir;
 
@@ -1275,16 +1297,21 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let lockfile_path = temp.path().join(EXTERNAL_TOOLS_LOCKFILE_NAME);
         let lockfile = ExternalToolsLockfile {
-            version: "1".to_string(),
-            tools: vec![ExternalToolLockEntry {
-                name: "support/test".to_string(),
-                digest: "sha256:deadbeef".to_string(),
-                abi_version: "1".to_string(),
-                protocol_version: "1".to_string(),
-                oci_ref: None,
-                platform: None,
-                signer: None,
-                capabilities: None,
+            version: "2".to_string(),
+            toolsets: vec![ExternalToolsetLockEntry {
+                name: "support".to_string(),
+                version: "1.0.0".to_string(),
+                requirement: "*".to_string(),
+                tier: "sandbox".to_string(),
+                tool_digest:
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string(),
+                tools: vec![ExternalToolInterfaceLockEntry {
+                    name: "test".to_string(),
+                    descriptor_digest:
+                        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                            .to_string(),
+                }],
             }],
         };
         lockfile
@@ -1311,7 +1338,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_allowed_dirs_resolver_permissive_continues_on_lockfile_parse_error() {
+    async fn build_allowed_dirs_resolver_rejects_malformed_lockfile() {
         let _guard = env_lock().lock().await;
 
         let temp = tempdir().expect("tempdir");
@@ -1321,16 +1348,15 @@ mod tests {
         let bad_lockfile = temp.path().join(EXTERNAL_TOOLS_LOCKFILE_NAME);
         fs::write(&bad_lockfile, b"{not-json").expect("write malformed lockfile");
 
-        let resolver = build_allowed_dirs_resolver(
+        let result = build_allowed_dirs_resolver(
             None,
             &bad_lockfile,
-            ExternalLockfileMode::Permissive,
+            ExternalLockfileMode::Enforce,
             None,
-            vec![tool_dir.clone()],
+            vec![tool_dir],
         )
-        .await
-        .expect("permissive mode should continue with malformed lockfile");
+        .await;
 
-        assert!(resolver.is_some(), "resolver should still be constructed");
+        assert!(result.is_err(), "malformed lockfiles must fail closed");
     }
 }

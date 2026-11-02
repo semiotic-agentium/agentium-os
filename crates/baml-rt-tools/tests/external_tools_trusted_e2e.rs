@@ -17,7 +17,8 @@ use baml_rt_tools::{
     ToolName, ToolSecrets, ToolSessionContext,
     external_tools::{
         BundleFile, CapabilityRequest, DESCRIPTOR_ABI, ErrorClass, ExternalToolSnapshot,
-        OutputTrust, SideEffect, UnifiedToolDescriptor, audit_ktool_bundle, build_ktool_bundle,
+        KtoolRuntimeTier, OutputTrust, SideEffect, UnifiedToolDescriptor, audit_ktool_bundle,
+        build_ktool_bundle_for_tier,
         host::{TrustedHost, TrustedHostConfig, TrustedPolicy},
     },
     tool_fsm::ToolSessionId,
@@ -33,34 +34,44 @@ import(entry).then((m) => m.serve()).catch((e) => { console.error(String(e)); pr
 "#;
 
 const ECHO_TOOL: &str = r#"
-const HEADER = 4;
-let buffer = Buffer.alloc(0);
+let buffer = "";
 const waiters = [];
 function pump() {
-  while (waiters.length > 0 && buffer.length >= HEADER) {
-    const length = buffer.readUInt32BE(0);
-    if (buffer.length < HEADER + length) break;
-    const message = JSON.parse(buffer.subarray(HEADER, HEADER + length).toString("utf8"));
-    buffer = buffer.subarray(HEADER + length);
-    waiters.shift()(message);
+  while (waiters.length && buffer.includes("\n")) {
+    const index = buffer.indexOf("\n");
+    const line = buffer.slice(0, index);
+    buffer = buffer.slice(index + 1);
+    if (line.trim()) waiters.shift()(JSON.parse(line));
   }
 }
-process.stdin.on("data", (chunk) => { buffer = Buffer.concat([buffer, chunk]); pump(); });
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { buffer += chunk; pump(); });
 const recv = () => new Promise((resolve) => { waiters.push(resolve); pump(); });
-function send(message) {
-  const body = Buffer.from(JSON.stringify(message), "utf8");
-  const frame = Buffer.alloc(HEADER + body.length);
-  frame.writeUInt32BE(body.length, 0);
-  body.copy(frame, HEADER);
-  process.stdout.write(frame);
-}
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\n");
+const tool = {
+  name: "trusted-echo", description: "trusted echo", inputSchema: { type: "object" },
+  annotations: { readOnlyHint: true, karakara: {
+    descriptorAbi: 1, version: "0.1.0", outputSchema: { type: "object" },
+    errorClasses: ["execution"], sideEffect: "read", idempotent: true, outputTrust: "untrusted"
+  }}
+};
 export async function serve() {
   for (;;) {
     const message = await recv();
     if (!message) return;
-    if (message.t !== "invoke") continue;
-    send({ t: "result", request_id: message.request_id, ok: true,
-           output: { echo: message.input.echo }, error_class: "execution", truncated: false });
+    if (message.method === "initialize") {
+      send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "trusted-fixture", version: "0.1.0" } } });
+    } else if (message.method === "notifications/initialized") {
+      continue;
+    } else if (message.method === "tools/list") {
+      send({ jsonrpc: "2.0", id: message.id, result: { tools: [tool] } });
+    } else if (message.method === "tools/call") {
+      const input = message.params.arguments || {};
+      send({ jsonrpc: "2.0", id: message.id, result: {
+        structuredContent: { echo: input.echo },
+        content: [{ type: "text", text: JSON.stringify({ echo: input.echo }) }]
+      }});
+    }
   }
 }
 "#;
@@ -77,15 +88,18 @@ fn descriptor() -> UnifiedToolDescriptor {
         side_effect: SideEffect::Read,
         idempotent: true,
         output_trust: OutputTrust::Untrusted,
-        requested: CapabilityRequest::default(),
     }
 }
 
 fn echo_bundle() -> Vec<u8> {
-    build_ktool_bundle(
+    build_ktool_bundle_for_tier(
         &descriptor(),
+        KtoolRuntimeTier::Trusted,
         ECHO_TOOL.as_bytes().to_vec(),
-        vec![BundleFile::new("code/package.json", br#"{"type":"module"}"#.to_vec())],
+        vec![BundleFile::new(
+            "code/package.json",
+            br#"{"type":"module"}"#.to_vec(),
+        )],
         br#"{}"#.to_vec(),
     )
     .expect("build echo bundle")
@@ -109,6 +123,7 @@ fn snapshot(bundle: &[u8]) -> ExternalToolSnapshot {
     let audited = audit_ktool_bundle(bundle).expect("audit");
     ExternalToolSnapshot::from_v2_bundle(
         descriptor(),
+        CapabilityRequest::default(),
         audited.bundle_digest,
         audited.tool_digest,
         audited.manifest.runtime_image,
@@ -118,7 +133,11 @@ fn snapshot(bundle: &[u8]) -> ExternalToolSnapshot {
     .expect("snapshot")
 }
 
-fn config(policy: TrustedPolicy, supervisor_bin: PathBuf, env: Vec<(String, String)>) -> TrustedHostConfig {
+fn config(
+    policy: TrustedPolicy,
+    supervisor_bin: PathBuf,
+    env: Vec<(String, String)>,
+) -> TrustedHostConfig {
     let root = std::env::temp_dir().join(format!(
         "karakara-trusted-host-{}-{}",
         std::process::id(),
@@ -142,9 +161,12 @@ fn authorize_requires_operator_trust() {
     let ctx = session_ctx();
 
     // No trust recorded → fail closed.
-    let host =
-        TrustedHost::new(config(TrustedPolicy::new(), PathBuf::from("/nonexistent"), vec![]))
-            .unwrap();
+    let host = TrustedHost::new(config(
+        TrustedPolicy::new(),
+        PathBuf::from("/nonexistent"),
+        vec![],
+    ))
+    .unwrap();
     let err = host.authorize(&snap, &bundle, &ctx).unwrap_err();
     assert!(
         err.to_string().contains("not operator-trusted"),
@@ -162,6 +184,33 @@ fn authorize_requires_operator_trust() {
 }
 
 #[test]
+fn authorize_rejects_sandbox_bundle() {
+    let bundle = build_ktool_bundle_for_tier(
+        &descriptor(),
+        KtoolRuntimeTier::Sandbox,
+        ECHO_TOOL.as_bytes().to_vec(),
+        vec![BundleFile::new(
+            "code/package.json",
+            br#"{"type":"module"}"#.to_vec(),
+        )],
+        br#"{}"#.to_vec(),
+    )
+    .unwrap();
+    let audited = audit_ktool_bundle(&bundle).unwrap();
+    let snap = snapshot(&bundle);
+    let ctx = session_ctx();
+    let mut policy = TrustedPolicy::new();
+    policy.trust(ctx.agent_id.to_string(), audited.tool_digest);
+    let host = TrustedHost::new(config(policy, PathBuf::from("/nonexistent"), vec![])).unwrap();
+
+    let err = host.authorize(&snap, &bundle, &ctx).unwrap_err();
+    assert!(
+        err.to_string().contains("trusted-tier .ktool"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn authorize_rejects_unapproved_snapshot() {
     let bundle = echo_bundle();
     let audited = audit_ktool_bundle(&bundle).unwrap();
@@ -172,7 +221,10 @@ fn authorize_rejects_unapproved_snapshot() {
     policy.trust(ctx.agent_id.to_string(), audited.tool_digest);
     let host = TrustedHost::new(config(policy, PathBuf::from("/nonexistent"), vec![])).unwrap();
     let err = host.authorize(&snap, &bundle, &ctx).unwrap_err();
-    assert!(err.to_string().contains("expired"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("expired"),
+        "unexpected error: {err}"
+    );
 }
 
 fn node_available() -> bool {
@@ -230,7 +282,10 @@ async fn trusted_invoke_echo_over_uds() {
             ok: true, output, ..
         } => {
             let output = output.expect("output");
-            assert_eq!(output.get("echo").and_then(|v| v.as_str()), Some("trusted-host"));
+            assert_eq!(
+                output.get("echo").and_then(|v| v.as_str()),
+                Some("trusted-host")
+            );
         }
         other => panic!("expected ok result, got {other:?}"),
     }

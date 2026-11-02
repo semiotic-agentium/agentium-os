@@ -131,6 +131,7 @@ pub use tools::{
     create_multi_send_session_tool_from_async, create_one_shot_tool_from_async,
     create_one_shot_tool_from_async_with_context, normalize_tool_config, parse_tool_name_and_class,
     parse_unified_step_executors_authoring_json, project_archive_action_identity_from_parts,
+    split_manifest_tool_entry,
 };
 pub use webhook_intake::{
     WebhookAuthTier, WebhookIntake, WebhookIntakeBuildContext, WebhookIntakeBuildFuture,

@@ -28,7 +28,7 @@ impl WorkerBackend for DirectBackend {
 
     fn spawn(&self, sandbox: &WorkerSandbox, command: WorkerCommand) -> io::Result<Child> {
         let mut env = command.env.clone();
-        // No /tool mount: point the harness at the host bundle directory.
+        // No /tool mount: rewrite a test harness entry path to the host bundle.
         let entry = sandbox.bundle_dir.join(baml_ktool::KTOOL_NODE_ENTRYPOINT);
         if let Some(slot) = env
             .iter_mut()
@@ -36,9 +36,19 @@ impl WorkerBackend for DirectBackend {
         {
             slot.1 = entry.to_string_lossy().into_owned();
         }
-        let mut std_command = Command::new(&command.program);
+        let program = command
+            .program
+            .strip_prefix("/tool/")
+            .map(|path| sandbox.bundle_dir.join(path).to_string_lossy().into_owned())
+            .unwrap_or_else(|| command.program.clone());
+        let args = command.args.iter().map(|arg| {
+            arg.strip_prefix("/tool/")
+                .map(|path| sandbox.bundle_dir.join(path).to_string_lossy().into_owned())
+                .unwrap_or_else(|| arg.clone())
+        });
+        let mut std_command = Command::new(program);
         std_command
-            .args(&command.args)
+            .args(args)
             .current_dir(&command.cwd)
             .env_clear()
             .envs(env.iter().map(|(k, v)| (k, v)))

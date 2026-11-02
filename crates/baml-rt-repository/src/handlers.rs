@@ -493,6 +493,7 @@ pub async fn publish_external_tool(
     })?;
     let snapshot = baml_rt_tools::external_tools::ExternalToolSnapshot::from_v2_bundle(
         audited.descriptor.clone(),
+        audited.manifest.requested.clone(),
         audited.bundle_digest,
         audited.tool_digest,
         audited.manifest.runtime_image.clone(),
@@ -529,8 +530,9 @@ pub async fn publish_service_tool(
     }
     baml_rt_tools::ToolName::parse(&body.descriptor.name)
         .map_err(|e| bad_request(format!("invalid tool name '{}': {e}", body.descriptor.name)))?;
-    let snapshot = baml_rt_tools::external_tools::ExternalToolSnapshot::from_v2_service(
+    let snapshot = baml_rt_tools::external_tools::ExternalToolSnapshot::from_v2_service_toolset(
         body.descriptor,
+        body.toolset_descriptors,
         body.endpoint,
         body.descriptor_source,
         query.approved_by.trim(),
@@ -542,7 +544,9 @@ pub async fn publish_service_tool(
         .as_ref()
         .expect("from_v2_service always sets v2 identity")
         .descriptor_digest;
-    let snapshot_digest = snapshot.snapshot_digest;
+    let tool_digest = snapshot
+        .tool_digest()
+        .expect("from_v2_service always sets toolset identity");
     let tool_name = snapshot.tool.name.clone();
     let version = svc
         .put_external_tool_snapshot(&snapshot)
@@ -552,7 +556,8 @@ pub async fn publish_service_tool(
         tool_name,
         version: version.version,
         descriptor_digest,
-        snapshot_digest,
+        tool_digest,
+        snapshot_digest: Some(tool_digest),
     }))
 }
 

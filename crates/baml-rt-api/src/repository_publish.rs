@@ -183,7 +183,12 @@ async fn build_reserved_artifact(
         (Arc::from(bytes), artifacts)
     };
 
-    let artifact_hash = ArtifactHash::from_bytes(built.as_ref());
+    let artifact_hash =
+        baml_rt_repository::artifact_hash_from_tar_gz(built.as_ref()).map_err(|e| {
+            HttpApiProblem::new(http_api_problem::StatusCode::INTERNAL_SERVER_ERROR)
+                .title("Artifact identity failed")
+                .detail(format!("stage=artifact-hash: {e}"))
+        })?;
 
     let identity_bytes = Arc::clone(&built);
     let identity_digest = tokio::task::spawn_blocking(move || {

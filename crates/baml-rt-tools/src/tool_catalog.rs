@@ -115,11 +115,13 @@ pub fn all_tool_metadata() -> Vec<ToolFunctionMetadata> {
 pub struct ManifestToolNames(Vec<ToolName>);
 
 impl ManifestToolNames {
-    /// Parse manifest tool name strings into validated tool names.
+    /// Parse manifest tool name strings into validated tool names. Entries may
+    /// carry a `@<semver-req>` suffix (R1 §R1.6); the requirement is stripped
+    /// here because it is not part of tool identity.
     pub fn parse(names: &[String]) -> Result<Self> {
         let mut out = Vec::with_capacity(names.len());
         for s in names {
-            out.push(ToolName::parse(s)?);
+            out.push(ToolName::parse_manifest_entry(s)?);
         }
         Ok(Self(out))
     }
@@ -157,7 +159,10 @@ pub fn resolve_manifest_tools_with_catalog<C: ToolCatalog>(
     let mut resolved = Vec::with_capacity(tool_names.len());
     let mut missing = Vec::new();
     for name in tool_names {
-        let parsed = ToolName::parse(name)?;
+        // Entries may carry a `@<semver-req>` suffix (R1 §R1.6); resolve by the
+        // tool name only. The toolset version requirement is applied by the
+        // builder when it pins the lockfile, not here.
+        let parsed = ToolName::parse_manifest_entry(name)?;
         match map.get(&parsed) {
             Some(metadata) => resolved.push(metadata.clone()),
             None => missing.push(name.clone()),

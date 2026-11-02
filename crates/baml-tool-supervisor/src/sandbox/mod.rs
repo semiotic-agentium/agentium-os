@@ -114,7 +114,6 @@ pub fn worker_env(
     // Inside the sandbox the bundle is always mounted at /tool. The direct
     // (no-isolation) backend rewrites this to the host path.
     let _ = bundle_dir;
-    let entry = format!("/tool/{}", baml_ktool::KTOOL_NODE_ENTRYPOINT);
     let mut env = vec![
         (
             "PATH".to_string(),
@@ -123,7 +122,6 @@ pub fn worker_env(
         ("HOME".to_string(), "/tmp".to_string()),
         ("LANG".to_string(), "C.UTF-8".to_string()),
         ("TMPDIR".to_string(), "/tmp".to_string()),
-        ("KARAKARA_TOOL_ENTRY".to_string(), entry),
     ];
     if !reveals.is_empty() {
         // Names → fd numbers only. This is a routing table, not a secret.
@@ -139,36 +137,72 @@ pub fn worker_env(
     env
 }
 
-/// The worker entry harness. The runtime image ships `@karakara/tool`; the
-/// bundle ships only the tool code.
-pub const WORKER_HARNESS: &str = r#"
-import { serve, revealTransport } from "@karakara/tool";
-const entry = process.env.KARAKARA_TOOL_ENTRY;
-import(entry)
-  .then((m) => serve(m.default, revealTransport()))
-  .catch((e) => { console.error(String(e)); process.exit(2); });
-"#;
-
-pub fn command_for(
+/// Run a test-only worker harness. Production workers always execute the
+/// toolset's declared MCP server command directly.
+pub fn command_for_harness(
     program: &str,
     bundle_dir: &Path,
     node_modules: Option<&Path>,
     reveals: &[RevealFd],
-    harness: Option<&str>,
+    harness: &str,
+    mut extra_env: Vec<(String, String)>,
+) -> WorkerCommand {
+    extra_env.push((
+        "KARAKARA_TOOL_ENTRY".to_string(),
+        format!("/tool/{}", baml_ktool::KTOOL_NODE_ENTRYPOINT),
+    ));
+    command_for_argv(
+        &[
+            program.to_string(),
+            "--input-type=module".into(),
+            "-e".into(),
+            harness.trim().into(),
+        ],
+        bundle_dir,
+        node_modules,
+        reveals,
+        extra_env,
+    )
+}
+
+/// Construct the worker process from the toolset's MCP server argv.
+///
+/// The command is authored relative to the bundle root. The sandbox backends
+/// expose that root at `/tool`; direct development runs rewrite it to the host
+/// path before spawning.
+pub fn command_for_argv(
+    argv: &[String],
+    bundle_dir: &Path,
+    node_modules: Option<&Path>,
+    reveals: &[RevealFd],
     extra_env: Vec<(String, String)>,
 ) -> WorkerCommand {
     let mut env = worker_env(bundle_dir, node_modules, reveals);
     env.extend(extra_env);
+    let program = argv
+        .first()
+        .map(|program| {
+            program
+                .strip_prefix("code/")
+                .map(|path| format!("/tool/code/{path}"))
+                .unwrap_or_else(|| program.clone())
+        })
+        .unwrap_or_default();
+    let args = argv
+        .iter()
+        .skip(1)
+        .map(|arg| {
+            if let Some(path) = arg.strip_prefix("code/") {
+                format!("/tool/code/{path}")
+            } else {
+                arg.clone()
+            }
+        })
+        .collect();
     WorkerCommand {
-        program: program.to_string(),
-        args: vec![
-            "--input-type=module".to_string(),
-            "-e".to_string(),
-            harness.unwrap_or(WORKER_HARNESS).trim().to_string(),
-        ],
+        program,
+        args,
         env,
-        // Node resolves the harness's own bare imports (and the tool's) by
-        // walking up from cwd: /tool/code/node_modules → /node_modules.
         cwd: bundle_dir.join("code"),
         reveal: reveals.to_vec(),
     }

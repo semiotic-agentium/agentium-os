@@ -301,6 +301,12 @@ pub struct PublishServiceToolRequest {
     pub descriptor: UnifiedToolDescriptor,
     pub endpoint: ServiceEndpointRef,
     pub descriptor_source: DescribeProvenance,
+    /// The endpoint's full toolset interface (R1 §R1.g). When present, drift
+    /// verification checks the live `tools/list` against every entry, so a
+    /// sibling tool changing shape fails the approved toolset. Empty means a
+    /// single-tool endpoint and defaults to `[descriptor]`.
+    #[serde(default)]
+    pub toolset_descriptors: Vec<UnifiedToolDescriptor>,
 }
 
 fn default_external_tool_approver() -> String {
@@ -449,5 +455,8 @@ pub struct PublishServiceToolResponse {
     pub tool_name: String,
     pub version: u32,
     pub descriptor_digest: Digest,
-    pub snapshot_digest: Digest,
+    pub tool_digest: Digest,
+    /// Deprecated response alias. New clients use `tool_digest`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_digest: Option<Digest>,
 }
