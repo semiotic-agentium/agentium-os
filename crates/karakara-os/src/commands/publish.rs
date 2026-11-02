@@ -103,11 +103,14 @@ pub fn run_auto(
         return run(project_dir, repository_url, rationale, origin, runner_token);
     }
     if dir.join("package.json").is_file() && dir.join("src/tool.ts").is_file() {
+        // The auto (agent-or-tool) entry publishes tools as the default Sandbox
+        // tier; Trusted publishing goes through `karak tool publish --trusted`.
         return super::tool_publish::run(
             project_dir,
             repository_url,
             approved_by,
             yes,
+            false,
             runner_token,
         );
     }

@@ -127,6 +127,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                 repository_url,
                 approved_by,
                 yes,
+                trusted,
                 runner_token,
             } => {
                 let token = resolve_runner_token(runner_token.as_deref())?;
@@ -135,6 +136,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
                     &repository_url,
                     approved_by.as_deref(),
                     yes,
+                    trusted,
                     token,
                 )
             }

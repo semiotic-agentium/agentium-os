@@ -355,6 +355,10 @@ pub enum ToolCommands {
         /// Approve without prompting.
         #[arg(long)]
         yes: bool,
+        /// Publish as the Trusted tier: an unsandboxed, operator-vouched host
+        /// process (no network/secret grants). For tools that need host access.
+        #[arg(long)]
+        trusted: bool,
         /// Runner token for authenticated operator access (falls back to RUNNER_TOKEN env).
         #[arg(long)]
         runner_token: Option<String>,

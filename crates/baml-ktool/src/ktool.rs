@@ -56,6 +56,26 @@ pub fn default_node_runtime_image() -> KtoolRuntimeImage {
     }
 }
 
+/// Runtime-image sentinel for the `Trusted` tier (external tools v2, P5.3).
+///
+/// A `Trusted` tool runs unsandboxed in the operator's host environment, not a
+/// pinned OCI microVM image, so there is no content hash of a rootfs to bind.
+/// The sentinel keeps the one tool-digest formula
+/// (`sha256(bundle || runtime_image_digest)`) intact while signalling "host
+/// environment, operator-vouched". The host environment is the operator's trust
+/// problem (§3.2), not something the digest can attest.
+pub fn host_native_runtime_image() -> KtoolRuntimeImage {
+    let record = serde_json::json!({
+        "name": "host-native",
+        "registry_version": 1,
+        "trusted": true,
+    });
+    KtoolRuntimeImage {
+        name: "host-native".to_string(),
+        digest: canonical_digest(&record),
+    }
+}
+
 /// The runtime selected from the platform runtime-image registry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KtoolRuntimeImage {
@@ -80,7 +100,10 @@ pub struct KtoolManifest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KtoolRuntimeTier {
+    /// The blessed portable path: runs in a shared microVM (node OCI image).
     Sandbox,
+    /// Operator-vouched, unsandboxed host process (`host_native` image). §3.2.
+    Trusted,
 }
 
 /// Result of auditing a bundle's inert metadata and exact bytes.
@@ -197,15 +220,18 @@ pub fn audit_ktool_bundle(bytes: &[u8]) -> KtoolResult<AuditedKtoolBundle> {
             manifest.bundle_schema_version, KTOOL_BUNDLE_SCHEMA_VERSION
         )));
     }
-    if manifest.runtime_tier != KtoolRuntimeTier::Sandbox {
-        return Err(invalid(
-            "only the sandbox runtime tier is publishable in P2",
-        ));
-    }
-    let registered_runtime = default_node_runtime_image();
+    // Each tier pins exactly one registered runtime image. Trusted uses the
+    // host-native sentinel (unsandboxed); Sandbox uses the node OCI image. A
+    // cross-tier image (e.g. Trusted claiming the node image, or Sandbox
+    // claiming host-native) is rejected here.
+    let registered_runtime = match manifest.runtime_tier {
+        KtoolRuntimeTier::Sandbox => default_node_runtime_image(),
+        KtoolRuntimeTier::Trusted => host_native_runtime_image(),
+    };
     if manifest.runtime_image != registered_runtime {
         return Err(invalid(format!(
-            "runtime image is not registered: expected {}@{}, got {}@{}",
+            "runtime image is not registered for the {:?} tier: expected {}@{}, got {}@{}",
+            manifest.runtime_tier,
             registered_runtime.name,
             registered_runtime.digest,
             manifest.runtime_image.name,
@@ -331,11 +357,38 @@ pub fn build_ktool_bundle(
     extra: Vec<BundleFile>,
     sbom: impl Into<Vec<u8>>,
 ) -> KtoolResult<Vec<u8>> {
+    build_ktool_bundle_for_tier(
+        descriptor,
+        KtoolRuntimeTier::Sandbox,
+        entrypoint,
+        extra,
+        sbom,
+    )
+}
+
+/// The registered runtime image for a tier (the audit pins exactly this).
+pub fn runtime_image_for_tier(tier: KtoolRuntimeTier) -> KtoolRuntimeImage {
+    match tier {
+        KtoolRuntimeTier::Sandbox => default_node_runtime_image(),
+        KtoolRuntimeTier::Trusted => host_native_runtime_image(),
+    }
+}
+
+/// Build a deterministic `.ktool` for a specific runtime tier. Both tiers run
+/// the node entrypoint; they differ in where they run (microVM vs operator host)
+/// and therefore in the registered runtime image.
+pub fn build_ktool_bundle_for_tier(
+    descriptor: &ToolDescriptor,
+    tier: KtoolRuntimeTier,
+    entrypoint: impl Into<Vec<u8>>,
+    extra: Vec<BundleFile>,
+    sbom: impl Into<Vec<u8>>,
+) -> KtoolResult<Vec<u8>> {
     let manifest = KtoolManifest {
         bundle_schema_version: KTOOL_BUNDLE_SCHEMA_VERSION,
         name: descriptor.name.clone(),
-        runtime_tier: KtoolRuntimeTier::Sandbox,
-        runtime_image: default_node_runtime_image(),
+        runtime_tier: tier,
+        runtime_image: runtime_image_for_tier(tier),
         entrypoint: KTOOL_NODE_ENTRYPOINT.to_string(),
         descriptor_digest: compute_descriptor_digest(descriptor),
         requested: descriptor.requested.clone(),
@@ -629,6 +682,94 @@ mod tests {
         assert!(
             !dir.exists(),
             "a rejected unpack must not leave a directory"
+        );
+    }
+
+    #[test]
+    fn audits_trusted_tier_with_host_native_image() {
+        let bytes = build_ktool_bundle_for_tier(
+            &descriptor(),
+            KtoolRuntimeTier::Trusted,
+            b"export default {};".to_vec(),
+            vec![],
+            br#"{}"#.to_vec(),
+        )
+        .unwrap();
+        let audited = audit_ktool_bundle(&bytes).unwrap();
+        assert_eq!(audited.manifest.runtime_tier, KtoolRuntimeTier::Trusted);
+        assert_eq!(audited.manifest.runtime_image, host_native_runtime_image());
+        assert_eq!(
+            audited.tool_digest,
+            compute_tool_digest_v2(&bytes, host_native_runtime_image().digest)
+        );
+    }
+
+    #[test]
+    fn trusted_and_sandbox_identities_differ() {
+        let sandbox = build_ktool_bundle_for_tier(
+            &descriptor(),
+            KtoolRuntimeTier::Sandbox,
+            b"export default {};".to_vec(),
+            vec![],
+            br#"{}"#.to_vec(),
+        )
+        .unwrap();
+        let trusted = build_ktool_bundle_for_tier(
+            &descriptor(),
+            KtoolRuntimeTier::Trusted,
+            b"export default {};".to_vec(),
+            vec![],
+            br#"{}"#.to_vec(),
+        )
+        .unwrap();
+        // The host-native sentinel differs from the node image, so the tier is
+        // folded into the tool digest: the same bytes are two distinct tools.
+        assert_ne!(
+            audit_ktool_bundle(&sandbox).unwrap().tool_digest,
+            audit_ktool_bundle(&trusted).unwrap().tool_digest
+        );
+    }
+
+    #[test]
+    fn rejects_cross_tier_runtime_image() {
+        // Hand-build a bundle that claims the Trusted tier but the node image.
+        let descriptor = descriptor();
+        let manifest = KtoolManifest {
+            bundle_schema_version: KTOOL_BUNDLE_SCHEMA_VERSION,
+            name: descriptor.name.clone(),
+            runtime_tier: KtoolRuntimeTier::Trusted,
+            runtime_image: default_node_runtime_image(),
+            entrypoint: KTOOL_NODE_ENTRYPOINT.to_string(),
+            descriptor_digest: compute_descriptor_digest(&descriptor),
+            requested: descriptor.requested.clone(),
+        };
+        let files = vec![
+            BundleFile::new(KTOOL_DESCRIPTOR_PATH, serde_json::to_vec(&descriptor).unwrap()),
+            BundleFile::new(KTOOL_MANIFEST_PATH, serde_json::to_vec(&manifest).unwrap()),
+            BundleFile::new(KTOOL_SBOM_PATH, b"{}".to_vec()),
+            BundleFile::new(KTOOL_NODE_ENTRYPOINT, b"export default {};".to_vec()),
+        ];
+        let mut out = Vec::new();
+        {
+            let encoder = flate2::GzBuilder::new()
+                .mtime(0)
+                .write(&mut out, flate2::Compression::default());
+            let mut archive = tar::Builder::new(encoder);
+            for file in &files {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(file.bytes.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                archive
+                    .append_data(&mut header, &file.path, file.bytes.as_slice())
+                    .unwrap();
+            }
+            archive.into_inner().unwrap().finish().unwrap();
+        }
+        let err = audit_ktool_bundle(&out).unwrap_err();
+        assert!(
+            err.to_string().contains("not registered for the Trusted tier"),
+            "{err}"
         );
     }
 

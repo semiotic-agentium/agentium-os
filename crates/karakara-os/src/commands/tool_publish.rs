@@ -15,7 +15,7 @@ use baml_rt_repository::http::PublishExternalToolResponse;
 use baml_rt_tools::external_tools::{
     KTOOL_BUNDLE_SCHEMA_VERSION, KTOOL_DESCRIPTOR_PATH, KTOOL_MANIFEST_PATH, KTOOL_NODE_ENTRYPOINT,
     KTOOL_SBOM_PATH, KtoolManifest, KtoolRuntimeTier, MAX_KTOOL_UNPACKED_BYTES,
-    UnifiedToolDescriptor, audit_ktool_bundle, default_node_runtime_image,
+    UnifiedToolDescriptor, audit_ktool_bundle, runtime_image_for_tier,
 };
 use console::style;
 use flate2::{Compression, GzBuilder};
@@ -36,6 +36,7 @@ pub fn run(
     repository_url: &str,
     approved_by: Option<&str>,
     yes: bool,
+    trusted: bool,
     runner_token: Option<RunnerToken>,
 ) -> Result<()> {
     let project_dir = Path::new(dir);
@@ -43,8 +44,20 @@ pub fn run(
         bail!("Tool directory not found: {}", project_dir.display());
     }
 
-    let built = build_bundle(project_dir)?;
+    let tier = if trusted {
+        KtoolRuntimeTier::Trusted
+    } else {
+        KtoolRuntimeTier::Sandbox
+    };
+    let built = build_bundle(project_dir, tier)?;
     print_review(&built.descriptor, &built.bundle_path);
+    if trusted {
+        println!(
+            "  {}",
+            style("tier: TRUSTED — runs UNSANDBOXED with full host access; the OS enforces no network/secret grants")
+                .yellow()
+        );
+    }
     if !yes
         && !Confirm::new("Approve this descriptor and its requested capabilities?")
             .with_default(false)
@@ -105,7 +118,7 @@ struct BuiltBundle {
     bytes: Vec<u8>,
 }
 
-fn build_bundle(project_dir: &Path) -> Result<BuiltBundle> {
+fn build_bundle(project_dir: &Path, tier: KtoolRuntimeTier) -> Result<BuiltBundle> {
     if !project_dir.join("package.json").is_file() {
         bail!("No package.json in {}", project_dir.display());
     }
@@ -132,8 +145,8 @@ fn build_bundle(project_dir: &Path) -> Result<BuiltBundle> {
     let manifest = KtoolManifest {
         bundle_schema_version: KTOOL_BUNDLE_SCHEMA_VERSION,
         name: descriptor.name.clone(),
-        runtime_tier: KtoolRuntimeTier::Sandbox,
-        runtime_image: default_node_runtime_image(),
+        runtime_tier: tier,
+        runtime_image: runtime_image_for_tier(tier),
         entrypoint: KTOOL_NODE_ENTRYPOINT.to_string(),
         descriptor_digest,
         requested: descriptor.requested.clone(),

@@ -25,6 +25,7 @@ pub use ktool::{
     AuditedKtoolBundle, BundleFile, KTOOL_BUNDLE_SCHEMA_VERSION, KTOOL_DESCRIPTOR_PATH,
     KTOOL_MANIFEST_PATH, KTOOL_NODE_ENTRYPOINT, KTOOL_SBOM_PATH, KtoolManifest, KtoolRuntimeImage,
     KtoolRuntimeTier, MAX_KTOOL_BUNDLE_BYTES, MAX_KTOOL_UNPACKED_BYTES, UnpackedKtool,
-    audit_ktool_bundle, build_ktool_bundle, compute_bundle_digest, compute_tool_digest_v2,
-    default_node_runtime_image, error_message, unpack_ktool_bundle,
+    audit_ktool_bundle, build_ktool_bundle, build_ktool_bundle_for_tier, compute_bundle_digest,
+    compute_tool_digest_v2, default_node_runtime_image, error_message, host_native_runtime_image,
+    runtime_image_for_tier, unpack_ktool_bundle,
 };

@@ -19,7 +19,10 @@ use std::{
     thread,
 };
 
-use baml_rt_tools::external_tools::{audit_ktool_bundle, compute_descriptor_digest};
+use baml_rt_tools::external_tools::{
+    KtoolRuntimeTier, audit_ktool_bundle, compute_descriptor_digest, default_node_runtime_image,
+    host_native_runtime_image,
+};
 
 fn have(cmd: &str) -> bool {
     Command::new(cmd)
@@ -123,7 +126,7 @@ fn tool_authoring_e2e() {
 
     // 6. Top-level `karak publish` detects the tool project, emits a `.ktool`,
     // and uploads exact bytes. The mock repository audits the received bundle.
-    let (repository_url, server) = serve_publish_once();
+    let (repository_url, server) = serve_publish_once(KtoolRuntimeTier::Sandbox);
     run(
         Command::new(karak).args([
             "publish",
@@ -148,13 +151,33 @@ fn tool_authoring_e2e() {
         "publish lock must pin executable identity"
     );
 
+    // 7. `karak tool publish --trusted` emits a Trusted-tier bundle: the same
+    // node entrypoint, but the host-native image sentinel and no grants. The
+    // mock repository asserts the received tier server-side.
+    let (trusted_url, trusted_server) = serve_publish_once(KtoolRuntimeTier::Trusted);
+    run(
+        Command::new(karak).args([
+            "tool",
+            "publish",
+            fixture.to_str().unwrap(),
+            "--repository-url",
+            &trusted_url,
+            "--approved-by",
+            "tool-e2e",
+            "--yes",
+            "--trusted",
+        ]),
+        "trusted tool publish",
+    );
+    trusted_server.join().expect("trusted publish server thread");
+
     // Clean generated artifacts (also gitignored).
     let _ = std::fs::remove_file(fixture.join("tool-descriptor.json"));
     let _ = std::fs::remove_file(fixture.join("tool.lock.json"));
     let _ = std::fs::remove_file(fixture.join("dist/ts-echo.ktool"));
 }
 
-fn serve_publish_once() -> (String, thread::JoinHandle<()>) {
+fn serve_publish_once(expected_tier: KtoolRuntimeTier) -> (String, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind publish server");
     let addr = listener.local_addr().unwrap();
     let handle = thread::spawn(move || {
@@ -190,6 +213,18 @@ fn serve_publish_once() -> (String, thread::JoinHandle<()>) {
         let body = &received[header_end..header_end + content_length];
         let audited = audit_ktool_bundle(body).expect("uploaded bundle must pass host audit");
         assert_eq!(audited.descriptor.name, "support/ts-echo");
+        assert_eq!(
+            audited.manifest.runtime_tier, expected_tier,
+            "published bundle tier mismatch"
+        );
+        let expected_image = match expected_tier {
+            KtoolRuntimeTier::Sandbox => default_node_runtime_image(),
+            KtoolRuntimeTier::Trusted => host_native_runtime_image(),
+        };
+        assert_eq!(
+            audited.manifest.runtime_image, expected_image,
+            "published bundle runtime image mismatch"
+        );
 
         let response = serde_json::json!({
             "tool_name": audited.descriptor.name,

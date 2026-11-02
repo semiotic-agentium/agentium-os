@@ -288,6 +288,25 @@ impl AgentPackage {
                                     "packaged external-tool snapshot loaded"
                                 );
                             }
+                            ToolRuntime::Trusted(spec) => debug!(
+                                agent = %self.manifest.name,
+                                source = "package",
+                                tool = %snapshot.tool.name,
+                                snapshot_digest = %snapshot.snapshot_digest,
+                                schema_digest = %snapshot.digests.schema_digest,
+                                runtime_kind = "trusted",
+                                node = spec.node.as_deref().unwrap_or("local"),
+                                "packaged external-tool snapshot loaded"
+                            ),
+                            ToolRuntime::Service(_) => debug!(
+                                agent = %self.manifest.name,
+                                source = "package",
+                                tool = %snapshot.tool.name,
+                                snapshot_digest = %snapshot.snapshot_digest,
+                                schema_digest = %snapshot.digests.schema_digest,
+                                runtime_kind = "service",
+                                "packaged external-tool snapshot loaded"
+                            ),
                         }
                     }
                 }
