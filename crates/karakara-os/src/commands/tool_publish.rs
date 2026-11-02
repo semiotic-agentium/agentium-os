@@ -124,17 +124,10 @@ fn build_bundle(project_dir: &Path) -> Result<BuiltBundle> {
     let descriptor_path = project_dir.join(KTOOL_DESCRIPTOR_PATH);
     fs::write(&descriptor_path, &descriptor_pretty)
         .with_context(|| format!("writing {}", descriptor_path.display()))?;
+    // The lock file is written once, after packaging, with the full digest set
+    // (below). Writing a descriptor-only lock here first would leave a partial
+    // lock on disk if packaging fails.
     let lock_path = project_dir.join("tool.lock.json");
-    fs::write(
-        &lock_path,
-        format!(
-            "{}\n",
-            serde_json::to_string_pretty(&json!({
-                "descriptor_digest": descriptor_digest,
-            }))?
-        ),
-    )
-    .with_context(|| format!("writing {}", lock_path.display()))?;
 
     let manifest = KtoolManifest {
         bundle_schema_version: KTOOL_BUNDLE_SCHEMA_VERSION,

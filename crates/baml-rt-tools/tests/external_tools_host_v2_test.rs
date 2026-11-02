@@ -11,7 +11,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -123,6 +123,7 @@ fn policy(capabilities: CapabilityRequest) -> ToolPolicy {
 struct FakeVms {
     created: AtomicUsize,
     teardowns: AtomicUsize,
+    cancels: Arc<AtomicUsize>,
 }
 
 #[async_trait]
@@ -130,7 +131,7 @@ impl SandboxProvider for FakeVms {
     async fn create_vm(&self, spec: VmSpec) -> Result<(SandboxHandle, TsrpcChannel)> {
         self.created.fetch_add(1, Ordering::SeqCst);
         let (host, guest) = tokio::io::duplex(64 * 1024);
-        tokio::spawn(supervisor(guest));
+        tokio::spawn(supervisor(guest, self.cancels.clone()));
         let (reader, writer) = tokio::io::split(host);
         Ok((
             SandboxHandle::new(spec.name, Duration::from_secs(60)),
@@ -171,10 +172,11 @@ impl SandboxProvider for FakeVms {
 }
 
 /// Replies per request_id, concurrently: proves the host multiplexes one stream.
-async fn supervisor(guest: tokio::io::DuplexStream) {
+async fn supervisor(guest: tokio::io::DuplexStream, cancels: Arc<AtomicUsize>) {
     let (reader, writer) = tokio::io::split(guest);
     let mut reader = FrameReader::new(reader);
     let writer = Arc::new(tokio::sync::Mutex::new(FrameWriter::new(writer)));
+    let mut staged: HashMap<u64, Vec<String>> = HashMap::new();
     loop {
         let Ok(value) = reader.recv().await else {
             break;
@@ -202,6 +204,7 @@ async fn supervisor(guest: tokio::io::DuplexStream) {
             }
             HostMessage::Invoke(request) => {
                 let writer = writer.clone();
+                let reveals = staged.remove(&request.request_id).unwrap_or_default();
                 tokio::spawn(async move {
                     if let Some(delay) = request.input.get("delay").and_then(Value::as_u64) {
                         tokio::time::sleep(Duration::from_millis(delay)).await;
@@ -214,14 +217,27 @@ async fn supervisor(guest: tokio::io::DuplexStream) {
                     } else {
                         json!({
                             "t": "result", "request_id": request.request_id, "ok": true,
-                            "output": {"echo": request.input, "agent": request.call_context.agent_id},
+                            "output": {
+                                "echo": request.input,
+                                "agent": request.call_context.agent_id,
+                                "reveals": reveals,
+                            },
                         })
                     };
                     let _ = writer.lock().await.send(&reply).await;
                 });
                 None
             }
-            HostMessage::Cancel { .. } | HostMessage::Secret { .. } => None,
+            HostMessage::Secret {
+                request_id, name, ..
+            } => {
+                staged.entry(request_id).or_default().push(name);
+                None
+            }
+            HostMessage::Cancel { .. } => {
+                cancels.fetch_add(1, Ordering::SeqCst);
+                None
+            }
         };
         if let Some(reply) = reply
             && writer.lock().await.send(&reply).await.is_err()
@@ -259,6 +275,7 @@ fn build(
     let vm = Arc::new(FakeVms {
         created: AtomicUsize::new(0),
         teardowns: AtomicUsize::new(0),
+        cancels: Arc::new(AtomicUsize::new(0)),
     });
     let pool = VmPool::new(vm.clone(), "test-runner", pool_policy);
     let mut host_policy = HostPolicy {
@@ -512,6 +529,55 @@ async fn concurrent_calls_share_one_stream_without_crossing_requests() {
 }
 
 #[tokio::test]
+async fn timed_out_call_does_not_retire_shared_channel() {
+    let requested = net("api.example.com");
+    let (f, ctx) = fixture(requested.clone(), policy(requested), "s3cret");
+    // Boot and load the shared VM before putting one call on a short deadline.
+    invoke(&f, &ctx, json!({"q": "warm"})).await;
+    let deadline_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+        + 150;
+    let slow = f.host.invoke(
+        &f.snapshot,
+        &f.bytes,
+        &ctx,
+        baml_sandbox_protocol::protocol_v2::CallContext {
+            deadline_ms,
+            ..Default::default()
+        },
+        json!({"q": "slow", "delay": 500}),
+    );
+    let fast = f.host.invoke(
+        &f.snapshot,
+        &f.bytes,
+        &ctx,
+        Default::default(),
+        json!({"q": "fast"}),
+    );
+    let (slow, fast) = tokio::join!(slow, fast);
+    assert!(slow.is_err(), "the slow call must hit its deadline");
+    let fast = fast.unwrap();
+    match fast {
+        GuestMessage::Result {
+            ok: true, output, ..
+        } => assert_eq!(output.unwrap()["echo"]["q"], "fast"),
+        other => panic!("unexpected fast result: {other:?}"),
+    }
+
+    // The fake supervisor still sends the timed-out reply. The reader must
+    // ignore that stale request and keep routing later calls.
+    tokio::time::sleep(Duration::from_millis(550)).await;
+    assert!(f.vm.cancels.load(Ordering::SeqCst) >= 1);
+    assert_eq!(
+        invoke(&f, &ctx, json!({"q": "later"})).await["echo"]["q"],
+        "later"
+    );
+    assert_eq!(f.vm.created.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn oversized_vm_request_is_refused_before_boot() {
     let requested = net("api.example.com");
     let ctx = session_ctx("s3cret");
@@ -565,4 +631,73 @@ async fn shutdown_tears_down_every_vm() {
     invoke(&f, &ctx, json!({})).await;
     f.host.shutdown().await.unwrap();
     assert_eq!(f.vm.teardowns.load(Ordering::SeqCst), 1);
+}
+
+fn reveal_request() -> CapabilityRequest {
+    CapabilityRequest {
+        net: vec![],
+        secrets: vec![SecretRequest {
+            name: SECRET.into(),
+            binding: SecretBinding::Reveal,
+        }],
+    }
+}
+
+fn reveal_policy() -> ToolPolicy {
+    ToolPolicy {
+        trust_domain: TrustDomain::ThirdParty,
+        capabilities: reveal_request(),
+        // Reveal secrets do not need an egress host binding.
+        secret_hosts: BTreeMap::new(),
+    }
+}
+
+/// P4.7: a reveal secret is staged as a control frame before the invoke and
+/// never appears in the invoke payload.
+#[tokio::test]
+async fn reveal_secret_is_delivered_as_a_control_frame() {
+    let (f, ctx) = fixture(reveal_request(), reveal_policy(), "s3cret-value");
+    let output = invoke(&f, &ctx, json!({"query": "x"})).await;
+    assert_eq!(output["reveals"], json!([SECRET]));
+    let serialized = serde_json::to_string(&output).unwrap();
+    assert!(
+        !serialized.contains("s3cret-value"),
+        "the value must not appear in the invoke result: {serialized}"
+    );
+}
+
+#[tokio::test]
+async fn reveal_secret_must_be_approved_by_policy() {
+    let unapproved = ToolPolicy {
+        trust_domain: TrustDomain::ThirdParty,
+        capabilities: CapabilityRequest::default(),
+        secret_hosts: BTreeMap::new(),
+    };
+    let (f, ctx) = fixture(reveal_request(), unapproved, "s3cret-value");
+    let err = f
+        .host
+        .authorize(&f.snapshot, &f.bytes, &ctx)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("outside agent policy"),
+        "unexpected error: {err}"
+    );
+}
+
+/// Rotating a reveal value must change the grant class, so a VM that staged the
+/// old value is never reused.
+#[tokio::test]
+async fn reveal_rotation_changes_the_grant_class() {
+    let (f, ctx) = fixture(reveal_request(), reveal_policy(), "first-value");
+    let first = f.host.authorize(&f.snapshot, &f.bytes, &ctx).await.unwrap();
+    let mut rotated = session_ctx("second-value");
+    rotated.agent_id = ctx.agent_id.clone();
+    let second = f
+        .host
+        .authorize(&f.snapshot, &f.bytes, &rotated)
+        .await
+        .unwrap();
+    assert_ne!(first.key().grant_class, second.key().grant_class);
+    assert_eq!(first.reveal_secrets().len(), 1);
 }

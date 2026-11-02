@@ -21,7 +21,7 @@ use crate::{
     external_tools::{
         ExternalInvoker, ExternalToolSnapshot, InvokeRequest, InvokeResponse, JsonRpcError,
         ProcessToolHandler, ToolDescribe, ToolSchemaResult, audit_ktool_bundle, map_jsonrpc_error,
-        metadata::build_tool_metadata,
+        metadata::build_tool_metadata, verify_ktool_snapshot,
     },
 };
 
@@ -31,7 +31,7 @@ impl ToolHost {
         snapshot: ExternalToolSnapshot,
         bytes: Arc<[u8]>,
     ) -> Result<ProcessToolHandler> {
-        audit_ktool_bundle(&bytes)?.verify_snapshot(&snapshot)?;
+        verify_ktool_snapshot(&audit_ktool_bundle(&bytes)?, &snapshot)?;
         let tool_name = ToolName::parse(&snapshot.tool.name)?;
         let mut metadata = build_tool_metadata(Path::new(""), &snapshot.tool, &tool_name)?;
         metadata.digest = Some(

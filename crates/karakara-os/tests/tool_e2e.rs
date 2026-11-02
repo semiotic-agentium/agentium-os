@@ -77,7 +77,12 @@ fn tool_authoring_e2e() {
         "descriptor: {body}"
     );
 
-    // 4. `karak tool test` → run one invocation through the SDK over stdio.
+    // 4. `karak tool test` → one invocation through the real guest supervisor
+    //    in DevBackend mode (same wire + worker isolation as prod).
+    run(
+        Command::new(env!("CARGO")).args(["build", "-p", "baml-tool-supervisor"]),
+        "supervisor build",
+    );
     let ok = Command::new(karak)
         .args([
             "tool",

@@ -17,11 +17,16 @@ use baml_rt_core::Result;
 use baml_sandbox_protocol::{
     TsrpcChannel,
     codec::FrameWriter,
-    protocol_v2::{CallContext, GuestMessage, HostMessage, InvokeRequest, PROTOCOL_V2_VERSION},
+    protocol_v2::{
+        CallContext, GuestMessage, HostMessage, InvokeRequest, PROTOCOL_V2_VERSION, RevealedSecret,
+    },
 };
-use tokio::sync::{Mutex as AsyncMutex, oneshot};
+use tokio::{
+    sync::{Mutex as AsyncMutex, oneshot},
+    task::AbortHandle,
+};
 
-use super::invalid;
+use super::{grants::RevealSecret, invalid};
 use crate::mcp_snapshot::Digest;
 
 type Reply = oneshot::Sender<std::result::Result<GuestMessage, String>>;
@@ -32,13 +37,69 @@ struct Pending {
     loads: HashMap<String, Reply>,
 }
 
-pub(super) struct SupervisorChannel {
-    writer: AsyncMutex<FrameWriter>,
+#[derive(Clone)]
+struct ChannelControl {
+    writer: Arc<AsyncMutex<FrameWriter>>,
     pending: Arc<Mutex<Pending>>,
+    healthy: Arc<AtomicBool>,
+    reader_abort: AbortHandle,
+}
+
+impl ChannelControl {
+    fn remove_call(&self, request_id: u64) {
+        self.pending.lock().unwrap().calls.remove(&request_id);
+    }
+
+    fn retire(&self) {
+        self.healthy.store(false, Ordering::Release);
+        self.reader_abort.abort();
+        let mut pending = self.pending.lock().unwrap();
+        for (_, reply) in pending.calls.drain() {
+            let _ = reply.send(Err("supervisor connection closed".into()));
+        }
+        for (_, reply) in pending.loads.drain() {
+            let _ = reply.send(Err("supervisor connection closed".into()));
+        }
+    }
+
+    fn cancel_call(&self, request_id: u64) {
+        self.remove_call(request_id);
+        if !self.healthy.load(Ordering::Acquire) {
+            return;
+        }
+        let control = self.clone();
+        let task = async move {
+            if !control.healthy.load(Ordering::Acquire) {
+                return;
+            }
+            let value = serde_json::to_value(HostMessage::Cancel { request_id })
+                .expect("cancel message serializes");
+            let failed = {
+                let mut writer = control.writer.lock().await;
+                if !control.healthy.load(Ordering::Acquire) {
+                    false
+                } else {
+                    writer.send(&value).await.is_err()
+                }
+            };
+            if failed {
+                control.retire();
+            }
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(task);
+            }
+            Err(_) => self.retire(),
+        }
+    }
+}
+
+pub(super) struct SupervisorChannel {
+    control: ChannelControl,
     loaded: AsyncMutex<HashSet<Digest>>,
     next_id: AtomicU64,
-    healthy: Arc<AtomicBool>,
-    reader: tokio::task::JoinHandle<()>,
+    _reader: tokio::task::JoinHandle<()>,
     control_timeout: Duration,
 }
 
@@ -72,6 +133,7 @@ impl SupervisorChannel {
         .await
         .map_err(|_| invalid("supervisor handshake timed out"))??;
         let (mut reader, writer) = channel.into_split();
+        let writer = Arc::new(AsyncMutex::new(writer));
         let pending = Arc::new(Mutex::new(Pending::default()));
         let healthy = Arc::new(AtomicBool::new(true));
         let task_pending = pending.clone();
@@ -85,17 +147,23 @@ impl SupervisorChannel {
                     },
                     Err(_) => break,
                 };
-                let mut pending = task_pending.lock().unwrap();
-                let reply = match &message {
-                    GuestMessage::Result { request_id, .. } => pending.calls.remove(request_id),
-                    GuestMessage::LoadAck { tool_digest, .. } => pending.loads.remove(tool_digest),
-                    GuestMessage::Event { .. } => continue,
-                    GuestMessage::HelloAck { .. } => break,
+                let reply = {
+                    let mut pending = task_pending.lock().unwrap();
+                    match &message {
+                        GuestMessage::Result { request_id, .. } => pending.calls.remove(request_id),
+                        GuestMessage::LoadAck { tool_digest, .. } => {
+                            pending.loads.remove(tool_digest)
+                        }
+                        // Events are best effort. The host currently does not
+                        // expose a per-call event stream, so keep reading.
+                        GuestMessage::Event { .. } => None,
+                        GuestMessage::HelloAck { .. } => break,
+                    }
                 };
+                // A result for a timed-out or cancelled call is expected. It
+                // must not poison the shared connection or other calls.
                 if let Some(reply) = reply {
                     let _ = reply.send(Ok(message));
-                } else {
-                    break;
                 }
             }
             task_healthy.store(false, Ordering::Release);
@@ -107,19 +175,23 @@ impl SupervisorChannel {
                 let _ = reply.send(Err("supervisor connection closed".into()));
             }
         });
-        Ok(Self {
-            writer: AsyncMutex::new(writer),
+        let control = ChannelControl {
+            writer,
             pending,
+            healthy,
+            reader_abort: task.abort_handle(),
+        };
+        Ok(Self {
+            control,
             loaded: AsyncMutex::new(HashSet::new()),
             next_id: AtomicU64::new(1),
-            healthy,
-            reader: task,
+            _reader: task,
             control_timeout: timeout,
         })
     }
 
     pub fn healthy(&self) -> bool {
-        self.healthy.load(Ordering::Acquire)
+        self.control.healthy.load(Ordering::Acquire)
     }
 
     pub async fn load(&self, digest: Digest, image: Digest, bytes: &[u8]) -> Result<()> {
@@ -130,18 +202,19 @@ impl SupervisorChannel {
         if loaded.contains(&digest) {
             return Ok(());
         }
-        let mut operation = OperationGuard {
+        let mut operation = LoadGuard {
             channel: self,
             complete: false,
         };
         let (tx, rx) = oneshot::channel();
-        self.pending
+        self.control
+            .pending
             .lock()
             .unwrap()
             .loads
             .insert(digest.to_string(), tx);
-        let result = tokio::time::timeout(self.control_timeout, async {
-            let mut writer = self.writer.lock().await;
+        let response = tokio::time::timeout(self.control_timeout, async {
+            let mut writer = self.control.writer.lock().await;
             writer
                 .send(
                     &serde_json::to_value(HostMessage::LoadTool {
@@ -160,28 +233,42 @@ impl SupervisorChannel {
                     .map_err(|e| invalid(e.to_string()))?;
             }
             drop(writer);
-            match rx
-                .await
+            rx.await
                 .map_err(|_| invalid("supervisor load disconnected"))?
-                .map_err(invalid)?
-            {
-                GuestMessage::LoadAck { ok: true, .. } => Ok(()),
-                _ => Err(invalid("supervisor rejected tool bundle")),
-            }
+                .map_err(invalid)
         })
-        .await
-        .map_err(|_| invalid("supervisor load timed out"))
-        .and_then(|v| v);
-        self.pending
+        .await;
+        self.control
+            .pending
             .lock()
             .unwrap()
             .loads
             .remove(&digest.to_string());
-        if result.is_err() {
-            self.close();
-        } else {
-            loaded.insert(digest);
-        }
+        let result = match response {
+            Err(_) => {
+                self.close();
+                Err(invalid("supervisor load timed out"))
+            }
+            Ok(Err(error)) => {
+                self.close();
+                Err(error)
+            }
+            Ok(Ok(GuestMessage::LoadAck { ok: true, .. })) => {
+                loaded.insert(digest);
+                Ok(())
+            }
+            Ok(Ok(GuestMessage::LoadAck {
+                ok: false, error, ..
+            })) => {
+                Err(invalid(error.unwrap_or_else(|| {
+                    "supervisor rejected tool bundle".into()
+                })))
+            }
+            Ok(Ok(_)) => {
+                self.close();
+                Err(invalid("unexpected supervisor load response"))
+            }
+        };
         operation.complete = true;
         result
     }
@@ -192,21 +279,35 @@ impl SupervisorChannel {
         context: CallContext,
         input: serde_json::Value,
         timeout: Duration,
+        reveals: &[RevealSecret],
     ) -> Result<GuestMessage> {
         if !self.healthy() {
             return Err(invalid("supervisor connection unavailable"));
         }
-        let mut operation = OperationGuard {
-            channel: self,
-            complete: false,
-        };
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().calls.insert(id, tx);
-        let result = tokio::time::timeout(timeout, async {
-            self.writer
-                .lock()
-                .await
+        self.control.pending.lock().unwrap().calls.insert(id, tx);
+        let mut operation = InvokeGuard::new(self.control.clone(), id);
+        let response = tokio::time::timeout(timeout, async {
+            // Reveal secrets are staged for this exact request id *before* the
+            // invoke that consumes them; the supervisor keys them by request
+            // id and never puts the value in the invoke payload.
+            let mut writer = self.control.writer.lock().await;
+            operation.mark_writing();
+            for reveal in reveals {
+                writer
+                    .send(
+                        &serde_json::to_value(HostMessage::Secret {
+                            request_id: id,
+                            name: reveal.name.clone(),
+                            value: RevealedSecret(reveal.value.as_str().to_string()),
+                        })
+                        .map_err(|e| invalid(e.to_string()))?,
+                    )
+                    .await
+                    .map_err(|e| invalid(e.to_string()))?;
+            }
+            writer
                 .send(
                     &serde_json::to_value(HostMessage::Invoke(Box::new(InvokeRequest {
                         request_id: id,
@@ -219,37 +320,97 @@ impl SupervisorChannel {
                 )
                 .await
                 .map_err(|e| invalid(e.to_string()))?;
+            operation.mark_sent();
+            drop(writer);
             rx.await
                 .map_err(|_| invalid("supervisor invoke disconnected"))?
                 .map_err(invalid)
         })
-        .await
-        .map_err(|_| invalid("tool invocation timed out"))
-        .and_then(|v| v);
-        self.pending.lock().unwrap().calls.remove(&id);
-        if result.is_err() {
-            self.close();
+        .await;
+        let result = match response {
+            Err(_) => Err(invalid("tool invocation timed out")),
+            Ok(result) => result,
+        };
+        if result.is_ok() {
+            self.control.remove_call(id);
+            operation.finish();
+        } else {
+            operation.abort();
         }
-        operation.complete = true;
         result
     }
 
     pub fn close(&self) {
-        self.healthy.store(false, Ordering::Release);
-        self.reader.abort();
-        let mut pending = self.pending.lock().unwrap();
-        pending.calls.clear();
-        pending.loads.clear();
+        self.control.retire();
     }
 }
 
-// Dropping a partly written frame or an unfinished load must retire the connection.
-struct OperationGuard<'a> {
+#[derive(Clone, Copy)]
+enum InvokePhase {
+    Pending,
+    Writing,
+    Sent,
+    Complete,
+}
+
+struct InvokeGuard {
+    control: ChannelControl,
+    request_id: u64,
+    phase: InvokePhase,
+}
+
+impl InvokeGuard {
+    fn new(control: ChannelControl, request_id: u64) -> Self {
+        Self {
+            control,
+            request_id,
+            phase: InvokePhase::Pending,
+        }
+    }
+
+    fn mark_writing(&mut self) {
+        self.phase = InvokePhase::Writing;
+    }
+
+    fn mark_sent(&mut self) {
+        self.phase = InvokePhase::Sent;
+    }
+
+    fn finish(&mut self) {
+        self.phase = InvokePhase::Complete;
+    }
+
+    fn abort(&mut self) {
+        let phase = std::mem::replace(&mut self.phase, InvokePhase::Complete);
+        match phase {
+            InvokePhase::Pending => self.control.remove_call(self.request_id),
+            InvokePhase::Writing => {
+                self.control.remove_call(self.request_id);
+                // A dropped write may have left a partial frame on the stream.
+                self.control.retire();
+            }
+            InvokePhase::Sent => self.control.cancel_call(self.request_id),
+            InvokePhase::Complete => {}
+        }
+    }
+}
+
+impl Drop for InvokeGuard {
+    fn drop(&mut self) {
+        if !matches!(self.phase, InvokePhase::Complete) {
+            self.abort();
+        }
+    }
+}
+
+// Dropping an unfinished load can leave the peer in its raw-bundle state, so
+// the connection must be retired rather than reused.
+struct LoadGuard<'a> {
     channel: &'a SupervisorChannel,
     complete: bool,
 }
 
-impl Drop for OperationGuard<'_> {
+impl Drop for LoadGuard<'_> {
     fn drop(&mut self) {
         if !self.complete {
             self.channel.close();

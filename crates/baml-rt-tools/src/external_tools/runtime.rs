@@ -34,6 +34,12 @@ pub enum ToolRuntime {
     Process(ProcessRuntimeSpec),
     /// Microsandbox-backed microVM path (dispatch added in Workstream B).
     Sandbox(SandboxRuntimeSpec),
+    /// v2 escape hatch (§3.2): an unsandboxed, operator-trusted tool that runs
+    /// as a crash-isolated host process over the P4 wire. No capability grants.
+    Trusted(TrustedRuntimeSpec),
+    /// v2 escape hatch (§3.2): a reference to an endpoint the operator already
+    /// runs (MCP-first). The OS holds a client; it runs nothing.
+    Service(ServiceRuntimeSpec),
 }
 
 impl ToolRuntime {
@@ -42,6 +48,8 @@ impl ToolRuntime {
         match self {
             Self::Process(_) => ToolRuntimeKind::Process,
             Self::Sandbox(_) => ToolRuntimeKind::Sandbox,
+            Self::Trusted(_) => ToolRuntimeKind::Trusted,
+            Self::Service(_) => ToolRuntimeKind::Service,
         }
     }
 }
@@ -57,6 +65,8 @@ impl Default for ToolRuntime {
 pub enum ToolRuntimeKind {
     Process,
     Sandbox,
+    Trusted,
+    Service,
 }
 
 /// Process runtime: spawn a child process; stdio carries the JSON-RPC contract.
@@ -139,6 +149,56 @@ pub struct SandboxRuntimeSpec {
     /// `/etc/karakara/tool-bundle.json` during bind sync.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapter: Option<SandboxAdapterRuntimeSpec>,
+}
+
+/// Trusted runtime (§3.2): unsandboxed host process, operator-trusted. The OS
+/// does not mediate its host access; the only authority is the operator-trust
+/// record. Capability requests in the descriptor are informational here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustedRuntimeSpec {
+    /// How the OS obtains the trusted process on its pinned node.
+    pub launch: TrustedLaunch,
+    /// Node the trusted tool is pinned to; the deploy reachability gate (§5.3)
+    /// fails an agent that pins this tool onto an unreachable node. `None`
+    /// means "the local node", used by `karak tool test` and single-node OSes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+}
+
+/// How a `Trusted` tool's process comes to exist on its node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum TrustedLaunch {
+    /// The OS spawns the process (blessed DX; `karak publish` installs it).
+    Spawn {
+        /// Direct exec — no shell. argv[0] is the program.
+        argv: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<PathBuf>,
+        /// Host env names allowed through to the process (values pass through
+        /// from the operator's environment; never the agent's).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        env_allowlist: Vec<String>,
+    },
+    /// Attach to an operator-run daemon listening on a host-local stream socket.
+    Attach { socket_path: PathBuf },
+}
+
+/// Service runtime (§3.2): a reference to an endpoint the operator already runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceRuntimeSpec {
+    /// The endpoint the OS holds a client to. MCP-first in P5.
+    pub endpoint: ServiceEndpoint,
+}
+
+/// A `Service` endpoint reference. Resolved for reachability at deploy (§5.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ServiceEndpoint {
+    /// An MCP server the operator runs. The OS imports the descriptor and holds
+    /// an MCP client (reuses the existing MCP import path).
+    Mcp { url: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -237,6 +297,55 @@ mod tests {
                 assert_eq!(adapter.schema_version, 1);
             }
             other => panic!("expected sandbox adapter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trusted_runtime_roundtrips_spawn() {
+        let json = r#"{"kind":"trusted","launch":{"mode":"spawn","argv":["node","tool.js"]},"node":"gpu-1"}"#;
+        let rt: ToolRuntime = serde_json::from_str(json).unwrap();
+        assert_eq!(rt.kind(), ToolRuntimeKind::Trusted);
+        match rt {
+            ToolRuntime::Trusted(TrustedRuntimeSpec {
+                launch: TrustedLaunch::Spawn { argv, .. },
+                node,
+            }) => {
+                assert_eq!(argv, vec!["node", "tool.js"]);
+                assert_eq!(node.as_deref(), Some("gpu-1"));
+            }
+            other => panic!("expected trusted spawn, got {other:?}"),
+        }
+        let back = serde_json::to_string(&serde_json::from_str::<ToolRuntime>(json).unwrap()).unwrap();
+        assert!(back.contains(r#""kind":"trusted""#));
+        assert!(back.contains(r#""mode":"spawn""#));
+    }
+
+    #[test]
+    fn trusted_runtime_roundtrips_attach() {
+        let json = r#"{"kind":"trusted","launch":{"mode":"attach","socket_path":"/run/tool.sock"}}"#;
+        let rt: ToolRuntime = serde_json::from_str(json).unwrap();
+        match rt {
+            ToolRuntime::Trusted(TrustedRuntimeSpec {
+                launch: TrustedLaunch::Attach { socket_path },
+                node,
+            }) => {
+                assert_eq!(socket_path, PathBuf::from("/run/tool.sock"));
+                assert!(node.is_none());
+            }
+            other => panic!("expected trusted attach, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn service_runtime_roundtrips_mcp() {
+        let json = r#"{"kind":"service","endpoint":{"kind":"mcp","url":"http://localhost:7000"}}"#;
+        let rt: ToolRuntime = serde_json::from_str(json).unwrap();
+        assert_eq!(rt.kind(), ToolRuntimeKind::Service);
+        match rt {
+            ToolRuntime::Service(ServiceRuntimeSpec {
+                endpoint: ServiceEndpoint::Mcp { url },
+            }) => assert_eq!(url, "http://localhost:7000"),
+            other => panic!("expected service mcp, got {other:?}"),
         }
     }
 

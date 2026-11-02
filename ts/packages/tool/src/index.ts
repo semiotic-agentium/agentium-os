@@ -14,6 +14,7 @@ import { Type, type Static, type TSchema } from "@sinclair/typebox";
 export { Type, type Static, type TSchema };
 export { serve, type Transport } from "./runtime.js";
 export { stdioTransport } from "./stdio.js";
+export { revealTransport } from "./reveal.js";
 
 /** Mirrors the host `ErrorClass` (snake_case on the wire). */
 export type ErrorClass =

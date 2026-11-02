@@ -173,11 +173,11 @@ impl RepositoryService {
             audit_ktool_bundle(bytes).map_err(|e| RepositoryError::InvalidSourceBundle {
                 reason: e.to_string(),
             })?;
-        audited
-            .verify_snapshot(snapshot)
-            .map_err(|e| RepositoryError::InvalidSourceBundle {
+        baml_rt_tools::external_tools::verify_ktool_snapshot(&audited, snapshot).map_err(|e| {
+            RepositoryError::InvalidSourceBundle {
                 reason: e.to_string(),
-            })?;
+            }
+        })?;
 
         let content_hash: ContentHash = audited
             .bundle_digest

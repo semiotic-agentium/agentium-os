@@ -73,7 +73,7 @@ export function stdioTransport(): Transport {
 
   const contextFor = (_request_id: number, deadline_ms: number): ToolContext => {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), deadline_ms);
+    const timer = setTimeout(() => controller.abort(), Math.max(0, deadline_ms - Date.now()));
     if (typeof timer === "object" && timer && "unref" in timer) {
       (timer as { unref: () => void }).unref();
     }

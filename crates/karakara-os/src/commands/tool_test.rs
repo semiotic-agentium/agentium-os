@@ -3,20 +3,33 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! `karak tool test` — run one invocation of a v2 TypeScript tool through the
-//! SDK over a stdio DevBackend (the same `serve()` loop + wire as prod, minus
-//! the microVM). Builds if needed, spawns node running
-//! `serve(tool, stdioTransport())`, sends one `invoke` frame, prints the
-//! `result`. Frames are [u32 BE len][utf-8 JSON], matching the SDK's
-//! `stdioTransport`.
+//! `karak tool test` — run one invocation through the real guest supervisor in
+//! DevBackend mode (P4.10).
+//!
+//! The supervisor binary is spawned with `--dev`: same wire, same bundle
+//! verify/unpack, same worker harness and deadline/output/cancel logic as prod,
+//! with bwrap isolation instead of a microVM. The bundle is built from the
+//! project exactly like `karak publish` (vendored `node_modules` included), so
+//! the tool resolves `@karakara/tool` the same way it will in a VM.
 
 use std::{
-    io::{Read, Write},
-    path::Path,
-    process::{Command, Stdio},
+    collections::HashSet,
+    fs,
+    io::{BufReader, Read, Write},
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
+use baml_rt_tools::external_tools::{
+    BundleFile, UnifiedToolDescriptor, build_ktool_bundle, compute_descriptor_digest,
+    default_node_runtime_image,
+};
+use baml_sandbox_protocol::MAX_FRAME_BYTES;
+use baml_sandbox_protocol::protocol_v2::{
+    GuestMessage, HostMessage, InvokeRequest, PROTOCOL_V2_VERSION,
+};
 use console::style;
 use serde_json::{Value, json};
 
@@ -27,61 +40,230 @@ pub fn run(dir: &str, input: Option<&str>) -> Result<()> {
     if !dir.is_dir() {
         bail!("Error: not a directory: {}", dir.display());
     }
-    tool_build::ensure_built(dir)?;
+    // Rebuild from source so `karak tool test` never exercises a stale
+    // dist/tool.js, matching `karak publish`.
+    tool_build::rebuild(dir)?;
+
+    let descriptor_json = tool_build::extract_descriptor_json(dir)?;
+    let descriptor: UnifiedToolDescriptor = serde_json::from_str(&descriptor_json)
+        .context("the SDK descriptor did not match the canonical ToolDescriptor")?;
+    let bundle = build_dev_bundle(dir, &descriptor)?;
 
     let input_value: Value = match input {
         Some(raw) => serde_json::from_str(raw)
             .with_context(|| format!("--input is not valid JSON: {raw}"))?,
         None => json!({}),
     };
-    let invoke = json!({
-        "t": "invoke",
-        "request_id": 1,
-        "tool_digest": "dev",
-        "input": input_value,
-        "deadline_ms": 10000,
-    });
 
-    let result = run_once(dir, &invoke)?;
+    let result = run_once(&bundle, input_value)?;
     print_result(&result);
     Ok(())
 }
 
-/// Spawn the node DevBackend harness, send one frame, read one result frame.
-fn run_once(dir: &Path, invoke: &Value) -> Result<Value> {
-    let entry = dir.join("dist/tool.js").canonicalize()?;
-    let entry_url = format!("file://{}", entry.display());
-    let harness = format!(
-        "import {{ serve, stdioTransport }} from \"@karakara/tool\"; \
-         import(\"{entry_url}\").then((m) => serve(m.default, stdioTransport())) \
-           .catch((e) => {{ console.error(String(e)); process.exit(2); }});"
-    );
+/// A minimal `.ktool`: the same metadata contract as publish, with the compiled
+/// entrypoint and vendored dependencies so bare imports resolve in the sandbox.
+fn build_dev_bundle(dir: &Path, descriptor: &UnifiedToolDescriptor) -> Result<Vec<u8>> {
+    let entry = fs::read(dir.join("dist/tool.js")).context("reading dist/tool.js")?;
+    let mut extra = vec![BundleFile::new(
+        "code/package.json",
+        br#"{"private":true,"type":"module"}"#.to_vec(),
+    )];
+    collect_node_modules(dir, &mut extra)?;
+    let sbom = serde_json::to_vec(&json!({
+        "descriptor_digest": compute_descriptor_digest(descriptor),
+        "runtime_image": default_node_runtime_image(),
+    }))?;
+    build_ktool_bundle(descriptor, entry, extra, sbom)
+        .map_err(|error| anyhow!("cannot build the dev .ktool bundle: {error}"))
+}
 
-    let mut child = Command::new("node")
-        .args(["--input-type=module", "-e", &harness])
-        .current_dir(dir)
+fn collect_node_modules(project: &Path, files: &mut Vec<BundleFile>) -> Result<()> {
+    let root = project.join("node_modules");
+    if !root.is_dir() {
+        return Ok(());
+    }
+    let mut active = HashSet::new();
+    walk_tree(&root, "code/node_modules", files, &mut active)
+}
+
+fn walk_tree(
+    actual: &Path,
+    logical: &str,
+    files: &mut Vec<BundleFile>,
+    active: &mut HashSet<PathBuf>,
+) -> Result<()> {
+    let metadata = fs::metadata(actual)
+        .with_context(|| format!("reading vendored dependency {}", actual.display()))?;
+    if metadata.is_file() {
+        files.push(BundleFile::new(
+            logical,
+            fs::read(actual).with_context(|| format!("reading {}", actual.display()))?,
+        ));
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        bail!(
+            "unsupported file type in node_modules: {}",
+            actual.display()
+        );
+    }
+    let canonical = actual
+        .canonicalize()
+        .with_context(|| format!("resolving {}", actual.display()))?;
+    if !active.insert(canonical.clone()) {
+        bail!("symlink cycle while vendoring {}", actual.display());
+    }
+    let mut entries = fs::read_dir(actual)
+        .with_context(|| format!("reading {}", actual.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        walk_tree(
+            &entry.path(),
+            &format!("{logical}/{}", entry.file_name().to_string_lossy()),
+            files,
+            active,
+        )?;
+    }
+    active.remove(&canonical);
+    Ok(())
+}
+
+/// Spawn the supervisor, load the bundle over stdio, run one invoke.
+fn run_once(bundle: &[u8], input: Value) -> Result<Value> {
+    let supervisor = supervisor_binary()?;
+    let backend = std::env::var("KARAKARA_SUPERVISOR_BACKEND").unwrap_or_else(|_| "bwrap".into());
+    let mut child = Command::new(&supervisor)
+        .args(["--dev", "--backend", &backend])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
-        .with_context(|| "spawning node for the DevBackend (is node on PATH?)")?;
+        .with_context(|| {
+            format!(
+                "spawning the guest supervisor ({}) for the DevBackend",
+                supervisor.display()
+            )
+        })?;
+    let result = drive(&mut child, bundle, input);
+    // `drive` drops stdin, so the supervisor sees EOF, kills its idle workers,
+    // removes its dev root, and exits. Give it a moment before escalating.
+    for _ in 0..250 {
+        match child.try_wait() {
+            Ok(Some(_)) => return result,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Err(_) => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    result
+}
 
-    {
-        let mut stdin = child.stdin.take().unwrap();
-        stdin.write_all(&encode_frame(invoke)?)?;
-        // Dropping stdin closes it, so the serve() loop returns after the reply.
+fn drive(child: &mut Child, bundle: &[u8], input: Value) -> Result<Value> {
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("no supervisor stdin"))?;
+    let mut stdout = BufReader::new(
+        child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("no supervisor stdout"))?,
+    );
+
+    send_message(
+        &mut stdin,
+        &HostMessage::Hello {
+            proto: PROTOCOL_V2_VERSION,
+            grant_class: "dev".into(),
+        },
+    )?;
+    match recv_message(&mut stdout)? {
+        GuestMessage::HelloAck { proto, .. } if proto == PROTOCOL_V2_VERSION => {}
+        other => bail!("unexpected supervisor handshake: {other:?}"),
     }
 
-    let mut out = Vec::new();
-    child.stdout.take().unwrap().read_to_end(&mut out)?;
-    let status = child.wait()?;
-    if !status.success() {
-        bail!("Error: tool worker exited with {status}");
+    // The audit is deterministic; the supervisor re-verifies these exact bytes.
+    let audited = baml_rt_tools::external_tools::audit_ktool_bundle(bundle)
+        .context("auditing the generated dev bundle")?;
+    send_message(
+        &mut stdin,
+        &HostMessage::LoadTool {
+            tool_digest: audited.tool_digest.to_string(),
+            runtime_image_digest: audited.manifest.runtime_image.digest.to_string(),
+            bundle_len: bundle.len() as u64,
+        },
+    )?;
+    write_frame(&mut stdin, bundle)?;
+    match recv_message(&mut stdout)? {
+        GuestMessage::LoadAck { ok: true, .. } => {}
+        GuestMessage::LoadAck { error, .. } => {
+            bail!(
+                "supervisor rejected the dev bundle: {}",
+                error.unwrap_or_default()
+            )
+        }
+        other => bail!("unexpected supervisor load reply: {other:?}"),
     }
 
-    let frame =
-        decode_first_frame(&out).ok_or_else(|| anyhow!("no result frame returned by the tool"))?;
-    serde_json::from_slice(&frame).context("result frame was not valid JSON")
+    let deadline_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| anyhow!("host clock precedes the Unix epoch"))?
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
+        + 10_000;
+    send_message(
+        &mut stdin,
+        &HostMessage::Invoke(Box::new(InvokeRequest {
+            request_id: 1,
+            tool_digest: audited.tool_digest.to_string(),
+            call_context: Default::default(),
+            input,
+            deadline_ms,
+        })),
+    )?;
+    loop {
+        let message = recv_message(&mut stdout)?;
+        match message {
+            GuestMessage::Event { .. } => continue,
+            GuestMessage::Result { .. } => return Ok(serde_json::to_value(&message)?),
+            other => bail!("unexpected supervisor message: {other:?}"),
+        }
+    }
+}
+
+fn send_message<W: Write>(writer: &mut W, message: &HostMessage) -> Result<()> {
+    let value = serde_json::to_vec(message)?;
+    write_frame(writer, &value)
+}
+
+fn recv_message<R: Read>(reader: &mut R) -> Result<GuestMessage> {
+    let body = read_frame(reader)?;
+    serde_json::from_slice(&body).context("supervisor frame was not a v2 guest message")
+}
+
+fn write_frame<W: Write>(writer: &mut W, body: &[u8]) -> Result<()> {
+    writer.write_all(&(body.len() as u32).to_be_bytes())?;
+    writer.write_all(body)?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn read_frame<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
+    let mut header = [0u8; 4];
+    reader
+        .read_exact(&mut header)
+        .context("reading a supervisor frame header")?;
+    let len = u32::from_be_bytes(header) as usize;
+    if len > MAX_FRAME_BYTES {
+        bail!("supervisor frame of {len} bytes exceeds the {MAX_FRAME_BYTES}-byte cap");
+    }
+    let mut body = vec![0u8; len];
+    reader
+        .read_exact(&mut body)
+        .context("reading a supervisor frame body")?;
+    Ok(body)
 }
 
 fn print_result(result: &Value) {
@@ -102,25 +284,37 @@ fn print_result(result: &Value) {
     }
 }
 
-/// `[u32 BE len][json]`.
-fn encode_frame(value: &Value) -> Result<Vec<u8>> {
-    let body = serde_json::to_vec(value)?;
-    let mut frame = Vec::with_capacity(4 + body.len());
-    frame.extend_from_slice(&(body.len() as u32).to_be_bytes());
-    frame.extend_from_slice(&body);
-    Ok(frame)
-}
-
-/// Extract the first length-prefixed frame's JSON bytes, if present.
-fn decode_first_frame(buf: &[u8]) -> Option<Vec<u8>> {
-    if buf.len() < 4 {
-        return None;
+/// Locate the supervisor binary: explicit override, sibling of `karak`, then
+/// `PATH`.
+fn supervisor_binary() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("KARAKARA_SUPERVISOR_BIN") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Ok(path);
+        }
+        bail!(
+            "KARAKARA_SUPERVISOR_BIN points at {}, which is not a file",
+            path.display()
+        );
     }
-    let len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-    if buf.len() < 4 + len {
-        return None;
+    if let Ok(current) = std::env::current_exe()
+        && let Some(sibling) = current.parent().map(|dir| dir.join("baml-tool-supervisor"))
+        && sibling.is_file()
+    {
+        return Ok(sibling);
     }
-    Some(buf[4..4 + len].to_vec())
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let candidate = dir.join("baml-tool-supervisor");
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+    bail!(
+        "guest supervisor binary not found. Build it with \
+         `cargo build -p baml-tool-supervisor` or set KARAKARA_SUPERVISOR_BIN."
+    )
 }
 
 #[cfg(test)]
@@ -129,19 +323,27 @@ mod tests {
 
     #[test]
     fn frame_roundtrip() {
-        let v = json!({"t": "invoke", "request_id": 1});
-        let framed = encode_frame(&v).unwrap();
-        // 4-byte header + body.
-        let body_len = u32::from_be_bytes([framed[0], framed[1], framed[2], framed[3]]) as usize;
-        assert_eq!(body_len, framed.len() - 4);
-        let decoded = decode_first_frame(&framed).unwrap();
-        let back: Value = serde_json::from_slice(&decoded).unwrap();
-        assert_eq!(back, v);
+        let body = br#"{"t":"invoke"}"#;
+        let mut framed = Vec::new();
+        write_frame(&mut framed, body).unwrap();
+        let mut cursor = std::io::Cursor::new(framed);
+        assert_eq!(read_frame(&mut cursor).unwrap(), body);
     }
 
     #[test]
-    fn decode_handles_partial_and_empty() {
-        assert!(decode_first_frame(&[]).is_none());
-        assert!(decode_first_frame(&[0, 0, 0, 10, 1, 2]).is_none()); // claims 10, has 2
+    fn walk_vendors_symlinked_packages() {
+        let root = std::env::temp_dir().join(format!("karak-tool-test-{}", std::process::id()));
+        let package = root.join("real-pkg");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("index.js"), b"export default 1;").unwrap();
+        let modules = root.join("app/node_modules/@scope");
+        fs::create_dir_all(&modules).unwrap();
+        std::os::unix::fs::symlink(&package, modules.join("pkg")).unwrap();
+
+        let mut files = Vec::new();
+        collect_node_modules(&root.join("app"), &mut files).unwrap();
+        let paths: Vec<_> = files.iter().map(|file| file.path.as_str()).collect();
+        assert!(paths.contains(&"code/node_modules/@scope/pkg/index.js"));
+        let _ = fs::remove_dir_all(root);
     }
 }

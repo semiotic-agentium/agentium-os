@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 baml-agent-runner = { path = "../baml-agent-runner", features = ["http-tools", "memory", "sandbox-provider", "dev-tools"] }
 baml-rt-core = { path = "../baml-rt-core" }
+baml-sandbox-protocol = { path = "../baml-sandbox-protocol" }
 baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
 baml-rt-repository = { path = "../baml-rt-repository" }
 baml-rt-builder = { path = "../baml-rt-builder" }

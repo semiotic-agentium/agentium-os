@@ -1,0 +1,29 @@
+[package]
+name = "baml-tool-supervisor-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+# Standalone fuzz workspace; not a member of the main workspace.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+baml-ktool = { path = "../../baml-ktool" }
+baml-sandbox-protocol = { path = "../../baml-sandbox-protocol" }
+serde_json = "1"
+
+[[bin]]
+name = "bundle_unpack"
+path = "fuzz_targets/bundle_unpack.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "wire_state_machine"
+path = "fuzz_targets/wire_state_machine.rs"
+test = false
+doc = false

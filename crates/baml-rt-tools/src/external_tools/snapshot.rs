@@ -357,6 +357,15 @@ pub fn compute_runtime_digest(runtime: Option<&ToolRuntime>) -> Result<Digest> {
             "entrypoint": spec.entrypoint,
             "adapter": spec.adapter,
         }))),
+        ToolRuntime::Trusted(spec) => Ok(canonical_digest(&json!({
+            "kind": "trusted",
+            "launch": spec.launch,
+            "node": spec.node,
+        }))),
+        ToolRuntime::Service(spec) => Ok(canonical_digest(&json!({
+            "kind": "service",
+            "endpoint": spec.endpoint,
+        }))),
     }
 }
 

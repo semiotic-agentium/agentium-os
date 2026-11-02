@@ -47,10 +47,11 @@ pub use invoker::{
     ExternalInvoker, InvokeRequest, InvokeResponse, ToolDescribe, ToolInvoker, map_jsonrpc_error,
 };
 pub use ktool::{
-    AuditedKtoolBundle, KTOOL_BUNDLE_SCHEMA_VERSION, KTOOL_DESCRIPTOR_PATH, KTOOL_MANIFEST_PATH,
-    KTOOL_NODE_ENTRYPOINT, KTOOL_SBOM_PATH, KtoolManifest, KtoolRuntimeImage, KtoolRuntimeTier,
-    MAX_KTOOL_BUNDLE_BYTES, MAX_KTOOL_UNPACKED_BYTES, audit_ktool_bundle, compute_bundle_digest,
-    compute_tool_digest_v2, default_node_runtime_image,
+    AuditedKtoolBundle, BundleFile, KTOOL_BUNDLE_SCHEMA_VERSION, KTOOL_DESCRIPTOR_PATH,
+    KTOOL_MANIFEST_PATH, KTOOL_NODE_ENTRYPOINT, KTOOL_SBOM_PATH, KtoolManifest, KtoolRuntimeImage,
+    KtoolRuntimeTier, MAX_KTOOL_BUNDLE_BYTES, MAX_KTOOL_UNPACKED_BYTES, audit_ktool_bundle,
+    build_ktool_bundle, compute_bundle_digest, compute_tool_digest_v2, default_node_runtime_image,
+    verify_ktool_snapshot,
 };
 pub use lockfile::{
     EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLockfileMode, ExternalToolLockEntry,
@@ -81,7 +82,8 @@ pub use protocol::{
 pub use registry_resolver::{ExternalRegistryResolver, load_approved_snapshots_from_dirs};
 pub use runtime::{
     DEFAULT_PROCESS_COMMAND, ProcessRuntimeSpec, SandboxAdapterRuntimeSpec, SandboxImageRef,
-    SandboxRuntimeSpec, ToolRuntime, ToolRuntimeKind,
+    SandboxRuntimeSpec, ServiceEndpoint, ServiceRuntimeSpec, ToolRuntime, ToolRuntimeKind,
+    TrustedLaunch, TrustedRuntimeSpec,
 };
 pub use runtime_lock::{RUNTIME_LOCK_FILE_NAME, ToolRuntimeLock, read_runtime_lock};
 pub use sandbox::canonical_bind_digest;

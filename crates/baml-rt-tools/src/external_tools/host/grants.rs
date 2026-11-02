@@ -112,6 +112,15 @@ pub struct EgressSecret {
     pub value: ToolSecretValue,
 }
 
+/// A reveal-tier secret bound to the exact grant. Delivered to one worker over
+/// a guest-internal fd, never on the wire in the invoke payload and never in
+/// env/argv.
+#[derive(Debug)]
+pub struct RevealSecret {
+    pub name: String,
+    pub value: ToolSecretValue,
+}
+
 #[derive(Debug)]
 pub struct ToolGrant {
     pub(super) agent_id: String,
@@ -119,6 +128,7 @@ pub struct ToolGrant {
     pub(super) key: VmKey,
     pub(super) network: Vec<CidrGrant>,
     pub(super) secrets: Vec<EgressSecret>,
+    pub(super) reveal: Vec<RevealSecret>,
 }
 
 impl ToolGrant {
@@ -130,6 +140,9 @@ impl ToolGrant {
     }
     pub fn egress_secrets(&self) -> &[EgressSecret] {
         &self.secrets
+    }
+    pub fn reveal_secrets(&self) -> &[RevealSecret] {
+        &self.reveal
     }
     pub fn tool_digest(&self) -> Digest {
         self.tool_digest
@@ -192,15 +205,28 @@ pub(super) async fn grant(
         }
     }
     let mut secrets = BTreeMap::new();
+    let mut reveal = BTreeMap::new();
     for SecretRequest { name, binding } in &requested.secrets {
-        if *binding == SecretBinding::Reveal {
-            // Delivery requires the hardened supervisor's worker-fd implementation.
-            return Err(invalid(format!(
-                "reveal secret '{name}' is not supported by this supervisor backend"
-            )));
-        }
         if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
             return Err(invalid("invalid secret environment name"));
+        }
+        if *binding == SecretBinding::Reveal {
+            // P4 supervisor delivers the value over a sealed memfd to exactly
+            // one worker. It does not need an egress host binding, but it is
+            // still part of the approved capability set and the grant class.
+            let value = ctx
+                .secrets
+                .resolve(name)
+                .map_err(|e| invalid(e.to_string()))?
+                .ok_or_else(|| invalid(format!("missing agent-scoped secret '{name}'")))?;
+            reveal.insert(
+                name.clone(),
+                RevealSecret {
+                    name: name.clone(),
+                    value,
+                },
+            );
+            continue;
         }
         let mut hosts = policy
             .secret_hosts
@@ -239,8 +265,11 @@ pub(super) async fn grant(
     }
     let network: Vec<_> = network.into_iter().collect();
     let secrets: Vec<_> = secrets.into_values().collect();
+    let reveal: Vec<_> = reveal.into_values().collect();
     // Keyed fingerprints prevent offline guessing and force fresh VMs on rotation.
     // The process-local key deliberately prevents reusing secret-bearing VMs after restart.
+    // Reveal secrets are part of the grant class too: a rotated reveal value
+    // must not reuse a VM that already staged the old one.
     let bindings: Vec<_> = secrets
         .iter()
         .map(|s| {
@@ -253,7 +282,18 @@ pub(super) async fn grant(
             )
         })
         .collect();
-    let grant_class = canonical_digest(&(&network, bindings));
+    let reveal_bindings: Vec<_> = reveal
+        .iter()
+        .map(|s| {
+            (
+                &s.name,
+                blake3::keyed_hash(fingerprint_key, s.value.as_str().as_bytes())
+                    .to_hex()
+                    .to_string(),
+            )
+        })
+        .collect();
+    let grant_class = canonical_digest(&(&network, bindings, reveal_bindings));
     Ok(ToolGrant {
         agent_id: ctx.agent_id.to_string(),
         tool_digest,
@@ -264,6 +304,7 @@ pub(super) async fn grant(
         },
         network,
         secrets,
+        reveal,
     })
 }
 

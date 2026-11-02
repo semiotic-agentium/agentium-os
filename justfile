@@ -103,7 +103,7 @@ build-release:
     set -a
     [ -f .env ] && . ./.env
     set +a
-    cargo build --release -p karakara-os --all-features
+    cargo build --release -p karakara-os -p baml-tool-supervisor --all-features
 
 # Build karakara in release mode (default; matches `karak_bin`).
 # Note: build does not require OTEL env vars; export wiring is runtime-only.
@@ -114,7 +114,7 @@ build:
     set -a
     [ -f .env ] && . ./.env
     set +a
-    cargo build --release -p karakara-os --all-features
+    cargo build --release -p karakara-os -p baml-tool-supervisor --all-features
 
 # Build the runner in debug mode (binary: target/debug/karak).
 build-debug:
@@ -124,7 +124,7 @@ build-debug:
     set -a
     [ -f .env ] && . ./.env
     set +a
-    cargo build -p karakara-os --all-features
+    cargo build -p karakara-os -p baml-tool-supervisor --all-features
 
 # Run bare runner (HTTP + stdio) with OTEL defaults suitable for local docker observability stack.
 # Override by exporting OTEL_* in your shell or .env.
@@ -833,3 +833,21 @@ demo-rehearsal-no-llm:
 demo-rehearsal-assert:
     ./scripts/k8s-pilot-assert-placement-consistency.sh --port-forward --local-port 18181
     ./scripts/k8s-pilot-assert-no-warn-logs.sh
+
+# Build the blessed `node` tool runtime image (P4.9). Push it digest-pinned and
+# register the reference with the runner; the digest is part of every tool digest.
+tool-runtime-image:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    cargo build --release -p baml-tool-supervisor
+    docker build -f docker/tool-runtime/node.Dockerfile -t karakara/tool-runtime:node-22 .
+    echo "Image built. Push digest-pinned, then register:"
+    docker image inspect --format '{{.Id}}' karakara/tool-runtime:node-22
+
+# Deterministic parser smoke (the `cargo fuzz` targets live under
+# crates/baml-tool-supervisor/fuzz). Run the fuzzers with:
+#   cargo +nightly fuzz run bundle_unpack
+#   cargo +nightly fuzz run wire_state_machine
+tool-supervisor-fuzz-smoke:
+    cargo test -p baml-tool-supervisor --test parser_fuzz_smoke

@@ -46,6 +46,7 @@ System-as-is: APIs, contracts, and current behavior.
 | [otel-metrics-instrumentation-guide.md](reference/otel-metrics-instrumentation-guide.md) | OTel metrics patterns and local stack |
 | [task-daemon-event-contract.md](reference/task-daemon-event-contract.md) | Wire envelope `host.source-records.v1` |
 | [slack-tool.md](reference/slack-tool.md) | Slack read-only tool reference |
+| [tool-supervisor.md](reference/tool-supervisor.md) | Guest supervisor: wire, bundle verify, worker isolation, reveal secrets, DevBackend |
 
 ## Plans (`docs/plans/`)
 

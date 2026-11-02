@@ -8,6 +8,7 @@ mod channel;
 mod grants;
 mod handler;
 mod pool;
+mod trusted;
 
 use std::{
     sync::Arc,
@@ -17,12 +18,12 @@ use std::{
 use baml_rt_core::{BamlRtError, Result};
 use baml_sandbox_protocol::protocol_v2::{CallContext, GuestMessage};
 pub use grants::{
-    CapabilityDiff, CidrGrant, DnsResolver, EgressSecret, HostPolicy, HostResolver, ToolGrant,
-    ToolPolicy, TrustDomain, VmKey, public_ip,
+    CapabilityDiff, CidrGrant, DnsResolver, EgressSecret, HostPolicy, HostResolver, RevealSecret,
+    ToolGrant, ToolPolicy, TrustDomain, VmKey, public_ip,
 };
 pub use pool::{PoolPolicy, VmBudget, VmPool, VmSpec};
 
-use super::{ExternalToolSnapshot, audit_ktool_bundle};
+use super::{ExternalToolSnapshot, audit_ktool_bundle, verify_ktool_snapshot};
 use crate::ToolSessionContext;
 
 pub struct ToolHost {
@@ -73,7 +74,7 @@ impl ToolHost {
             }
         }
         let audited = audit_ktool_bundle(bytes)?;
-        audited.verify_snapshot(snapshot)?;
+        verify_ktool_snapshot(&audited, snapshot)?;
         if ctx.tool_name.to_string() != audited.descriptor.name {
             return Err(invalid("tool session identity does not match bundle"));
         }
@@ -159,15 +160,21 @@ impl ToolHost {
                 .load(grant.tool_digest, grant.key.runtime_image_digest, bytes)
                 .await?;
             vm.channel()
-                .invoke(grant.tool_digest, context, input, remaining()?)
+                .invoke(
+                    grant.tool_digest,
+                    context,
+                    input,
+                    remaining()?,
+                    grant.reveal_secrets(),
+                )
                 .await
         }
         .await;
-        if outcome.is_err() {
-            vm.channel().close();
-        }
         drop(vm);
         if outcome.is_err() {
+            // The channel owns per-call cancellation. Keep a healthy shared VM
+            // alive after a deadline or caller cancellation; prune only a
+            // channel that retired itself after an I/O or protocol failure.
             self.pool.prune().await?;
         }
         outcome

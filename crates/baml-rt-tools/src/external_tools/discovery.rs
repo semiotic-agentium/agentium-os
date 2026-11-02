@@ -49,9 +49,12 @@ pub async fn discover_snapshot(
             Some(ToolRuntime::Sandbox(spec)) => {
                 spec.image = SandboxImageRef::Bind { path: rootfs };
             }
-            Some(ToolRuntime::Process(_)) | None => {
+            Some(ToolRuntime::Process(_))
+            | Some(ToolRuntime::Trusted(_))
+            | Some(ToolRuntime::Service(_))
+            | None => {
                 return Err(BamlRtError::InvalidArgument(
-                    "--sandbox-rootfs was provided but tool runtime is process".to_string(),
+                    "--sandbox-rootfs was provided but tool runtime is not a sandbox".to_string(),
                 ));
             }
         }
@@ -106,6 +109,12 @@ pub async fn discover_snapshot(
                 tracing::warn!(error = %err, tool = %tool_name, "failed to tear down discovery sandbox");
             }
             result
+        }
+        ToolRuntime::Trusted(_) | ToolRuntime::Service(_) => {
+            Err(BamlRtError::InvalidArgument(format!(
+                "tool '{}' declares a trusted/service runtime, which is resolved by the v2 host path, not v1 discovery",
+                manifest.name
+            )))
         }
     }
 }

@@ -1,0 +1,35 @@
+[package]
+name = "baml-tool-supervisor"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "Guest supervisor for external tools v2: the only process on the vsock, per-tool worker isolation, deadline/output/cancel enforcement, and reveal-fd delivery."
+
+# Ships into the distroless `node` runtime image as guest init and is also used
+# as the `karak tool test` DevBackend. Hard rule: narrow-dep. No `baml-rt-tools`,
+# no `baml-rt-core`, no host crates.
+
+[dependencies]
+baml-sandbox-protocol = { path = "../baml-sandbox-protocol" }
+baml-ktool = { path = "../baml-ktool" }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+libc = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.30", features = [
+  "fs",
+  "mount",
+  "process",
+  "resource",
+  "sched",
+  "signal",
+  "user",
+] }
+seccompiler = "0.5"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }
+tempfile = { workspace = true }

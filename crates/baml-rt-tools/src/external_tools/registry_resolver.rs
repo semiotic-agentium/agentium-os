@@ -284,6 +284,11 @@ fn load_snapshot(
                 Some(drift_guard),
             )
         }
+        ToolRuntime::Trusted(_) | ToolRuntime::Service(_) => {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "tool '{tool_name}' declares a trusted/service runtime, which the v2 host path serves; it is not a v1 registry handler"
+            )));
+        }
     };
 
     Ok((tool_name, RegistryToolEntry { metadata, handler }))
