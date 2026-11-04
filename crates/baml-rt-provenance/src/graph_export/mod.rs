@@ -790,6 +790,12 @@ fn derive_display_name(label: &str, props: &HashMap<String, serde_json::Value>) 
             let hash = prop_str("artifact_hash").unwrap_or_default();
             format!("📦 Artifact {hash}")
         }
+        Some(GraphNodeLabel::ToolArtifact) => {
+            let digest = prop_str(storage_safe::A2A_TOOL_DIGEST)
+                .or_else(|| prop_str(a2a::TOOL_DIGEST))
+                .unwrap_or_default();
+            format!("🧰 Tool {digest}")
+        }
         Some(GraphNodeLabel::AgentArchive) => {
             let path = prop_str(a2a::ARCHIVE_PATH).unwrap_or_default();
             format!("📦 Archive {path}")

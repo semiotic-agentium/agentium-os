@@ -502,6 +502,31 @@ impl ProvDerivedIdTemplate for AgentArtifactEntityId {
     }
 }
 
+/// Immutable external tool bytes, keyed by `tool_digest`. Shared by every
+/// `ToolCall` that tool digest served, across contexts.
+pub struct ToolArtifactEntityId;
+impl DerivedConstructible for ToolArtifactEntityId {}
+impl ProvIdSemantics for ToolArtifactEntityId {
+    const KIND: ProvKind = ProvKind::Entity;
+}
+impl ProvEntitySemantics for ToolArtifactEntityId {}
+impl ProvDerivedEntitySemantics for ToolArtifactEntityId {}
+impl ProvVocabularyType for ToolArtifactEntityId {
+    const VOCAB_TYPE: &'static str = a2a_types::TOOL_ARTIFACT;
+}
+
+pub struct ToolArtifactEntityInput<'a> {
+    pub tool_digest: &'a str,
+}
+
+impl ProvDerivedIdTemplate for ToolArtifactEntityId {
+    type Input<'a> = ToolArtifactEntityInput<'a>;
+
+    fn build<'a>(input: Self::Input<'a>) -> DerivedId {
+        DerivedId::from_parts("tool_artifact", [input.tool_digest])
+    }
+}
+
 /// Deprecated marker retained only to read pre-cutover graphs.
 pub struct AgentRuntimeInstanceId;
 impl DerivedConstructible for AgentRuntimeInstanceId {}

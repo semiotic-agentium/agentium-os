@@ -52,6 +52,7 @@ node_label_ty!(AgentBoot => AgentBoot);
 node_label_ty!(AgentStop => AgentStop);
 node_label_ty!(AgentArtifact => AgentArtifact);
 node_label_ty!(Agent => Agent);
+node_label_ty!(ToolArtifact => ToolArtifact);
 // Legacy query markers read graphs written before the identity cutover.
 node_label_ty!(AgentArchive => AgentArchive);
 node_label_ty!(AgentRuntimeInstance => AgentRuntimeInstance);

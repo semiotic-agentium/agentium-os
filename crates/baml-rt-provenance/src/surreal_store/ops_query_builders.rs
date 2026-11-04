@@ -395,6 +395,9 @@ fn apply_tool_filters<
     if let Some(ref tool_name) = filters.tool_name {
         q = q.filter(keys::ToolName, FilterOp::Eq, tool_name.clone());
     }
+    if let Some(ref tool_digest) = filters.tool_digest {
+        q = q.filter(keys::ToolDigest, FilterOp::Eq, tool_digest.clone());
+    }
     q
 }
 

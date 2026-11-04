@@ -41,8 +41,8 @@ use crate::{
         PromptRejectedActivityId, PromptRejectedActivityInput, RunnerRuntimeInstanceId,
         SessionStepEntityId, SessionStepEntityInput, TaskEntityId, TaskEntityInput,
         TaskExecutionActivityId, TaskExecutionActivityInput, TaskStateEntityId,
-        TaskStateEntityInput, ToolArgsEntityId, ToolArgsEntityInput, ToolCallActivityId,
-        ToolCallActivityInput,
+        TaskStateEntityInput, ToolArgsEntityId, ToolArgsEntityInput, ToolArtifactEntityId,
+        ToolArtifactEntityInput, ToolCallActivityId, ToolCallActivityInput,
     },
     metamodel::TaskStatusKind,
     task_agent_binding::is_unassigned_executing_agent,
@@ -1124,7 +1124,8 @@ fn normalize_event_with_registry(
             args,
             metadata,
             delegation_target,
-            ..
+            tool_digest,
+            tool_backend,
         } => {
             let scope_key = build_call_scope_key(event, scope, metadata)?;
             let ordinal =
@@ -1165,6 +1166,7 @@ fn normalize_event_with_registry(
             if let Some(gate) = metadata.get("karakara_gate") {
                 attrs.insert("a2a_gate".to_string(), gate.clone());
             }
+            insert_tool_served_by_attrs(&mut attrs, tool_backend, tool_digest);
             let start_time_ms = Some(event.timestamp_ms());
 
             doc.insert_activity(
@@ -1193,6 +1195,7 @@ fn normalize_event_with_registry(
                 args_id,
                 Some(a2a_roles::ARGS.to_string()),
             );
+            attach_tool_artifact(&mut doc, &activity_id, tool_digest);
             if let Some(agent_package) = delegation_target {
                 let delegation_id = delegation_target_entity_id(&scope_key_str, ordinal);
                 let mut delegation_attrs = base_attrs(event);
@@ -1242,7 +1245,8 @@ fn normalize_event_with_registry(
             duration_ms,
             outcome,
             delegation_target,
-            ..
+            tool_digest,
+            tool_backend,
         } => {
             let scope_key = build_call_scope_key(event, scope, metadata)?;
             let ordinal =
@@ -1287,6 +1291,7 @@ fn normalize_event_with_registry(
             if let Some(gate) = metadata.get("karakara_gate") {
                 attrs.insert("a2a_gate".to_string(), gate.clone());
             }
+            insert_tool_served_by_attrs(&mut attrs, tool_backend, tool_digest);
             if let Some(result) = metadata_json_field(metadata, "result") {
                 attrs.insert(a2a::RESULT.to_string(), result);
             }
@@ -1351,6 +1356,7 @@ fn normalize_event_with_registry(
                 args_id,
                 Some(a2a_roles::ARGS.to_string()),
             );
+            attach_tool_artifact(&mut doc, &activity_id, tool_digest);
             if !is_success {
                 let resolution = failure_resolution
                     .as_ref()
@@ -3716,6 +3722,59 @@ fn failure_classification_entity_id(
 
 fn tool_args_entity_id(scope_key: &str, ordinal: u64) -> ProvEntityId {
     ProvEntityId::derived::<ToolArgsEntityId>(ToolArgsEntityInput { scope_key, ordinal })
+}
+
+/// ToolArtifact entity id, keyed by the exact tool bytes (`tool_digest`).
+fn tool_artifact_entity_id(tool_digest: &str) -> ProvEntityId {
+    ProvEntityId::derived::<ToolArtifactEntityId>(ToolArtifactEntityInput { tool_digest })
+}
+
+/// Per-invocation facts on the `ToolCall` activity: which backend and which
+/// exact tool bytes served it.
+fn insert_tool_served_by_attrs(
+    attrs: &mut HashMap<String, Value>,
+    tool_backend: &Option<String>,
+    tool_digest: &Option<String>,
+) {
+    if let Some(backend) = tool_backend {
+        attrs.insert(
+            a2a::TOOL_BACKEND.to_string(),
+            Value::String(backend.clone()),
+        );
+    }
+    if let Some(digest) = tool_digest {
+        attrs.insert(a2a::TOOL_DIGEST.to_string(), Value::String(digest.clone()));
+    }
+}
+
+/// `ToolCall -[WAS_SERVED_BY]-> ToolArtifact{tool_digest}`.
+///
+/// The artifact carries no activity anchor, so it is a reference record shared
+/// by every call the same bytes served (audit + rollback by digest, §16.2).
+fn attach_tool_artifact(
+    doc: &mut ProvDocument,
+    activity_id: &ProvActivityId,
+    tool_digest: &Option<String>,
+) {
+    let Some(digest) = tool_digest else {
+        return;
+    };
+    let artifact_id = tool_artifact_entity_id(digest);
+    let mut attrs = HashMap::new();
+    attrs.insert(a2a::TOOL_DIGEST.to_string(), Value::String(digest.clone()));
+    doc.insert_entity(
+        artifact_id.clone(),
+        Entity {
+            prov_type: Some(prov_type::<ToolArtifactEntityId>()),
+            attributes: attrs,
+        },
+    );
+    insert_used(
+        doc,
+        activity_id.clone(),
+        artifact_id,
+        Some(a2a_roles::TOOL_ARTIFACT.to_string()),
+    );
 }
 
 fn delegation_target_entity_id(scope_key: &str, ordinal: u64) -> ProvEntityId {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNNER_URL="${RUNNER_URL:-http://127.0.0.1:18080}"
 RUNNER_BIND="${RUNNER_BIND:-127.0.0.1:18080}"
 REPOSITORY_URL="${REPOSITORY_URL:-${RUNNER_URL}/repository}"

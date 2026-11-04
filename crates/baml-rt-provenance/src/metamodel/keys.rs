@@ -42,6 +42,8 @@ filter_key!(Direction, value: String, prop: a2a::DIRECTION,
     doc: "On-disk `a2a_direction` property of a `Message` node.");
 filter_key!(ToolName, value: String, prop: a2a::TOOL_NAME,
     doc: "On-disk `a2a_tool_name` property of a `ToolCall` / `SessionStep` node.");
+filter_key!(ToolDigest, value: String, prop: a2a::TOOL_DIGEST,
+    doc: "On-disk `a2a_tool_digest` property of a `ToolCall` node (exact external tool bytes).");
 filter_key!(Model, value: String, prop: a2a::MODEL,
     doc: "On-disk `a2a_model` property of an `LlmCall` node.");
 filter_key!(Client, value: String, prop: a2a::CLIENT,

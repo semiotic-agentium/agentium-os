@@ -86,6 +86,11 @@ pub mod a2a {
     /// InProgress when no end time; Success | Failed when completed, from outcome.
     pub const ACTIVITY_OUTCOME: &str = "a2a:activity_outcome";
     pub const TOOL_NAME: &str = "a2a:tool_name";
+    /// Content digest of the external tool bytes that served a `ToolCall`
+    /// (`ToolCall` prop and `ToolArtifact` key).
+    pub const TOOL_DIGEST: &str = "a2a:tool_digest";
+    /// Execution backend that served a `ToolCall` (e.g. `Static`, `External`).
+    pub const TOOL_BACKEND: &str = "a2a:tool_backend";
     pub const ARGS: &str = "a2a:args";
     pub const ARCHIVE_PATH: &str = "a2a:archive_path";
     pub const ARTIFACT_ID: &str = "a2a:artifact_id";
@@ -192,6 +197,7 @@ pub mod a2a_types {
     pub const MESSAGE: &str = "a2a:Message";
     pub const ARTIFACT: &str = "a2a:Artifact";
     pub const DELEGATION_TARGET: &str = "a2a:DelegationTarget";
+    pub const TOOL_ARTIFACT: &str = "a2a:ToolArtifact";
     pub const DELEGATION: &str = "a2a:Delegation";
     pub const SESSION_STEP: &str = "a2a:SessionStep";
     pub const FAILURE_CLASSIFICATION_ACTIVITY: &str = "a2a:FailureClassificationActivity";
@@ -261,6 +267,8 @@ pub mod semantic_labels {
     pub const WAS_REFINED_BY: &str = "WAS_REFINED_BY";
     pub const WAS_RELATED_TO: &str = "WAS_RELATED_TO";
     pub const WAS_DELEGATED_TO: &str = "WAS_DELEGATED_TO";
+    /// `ToolCall -[WAS_SERVED_BY]-> ToolArtifact`: the exact tool bytes that served the call.
+    pub const WAS_SERVED_BY: &str = "WAS_SERVED_BY";
     /// Detached `system/callback` dispatch task was scheduled from a parent A2A scheduling task.
     pub const WAS_SCHEDULED_FROM: &str = "WAS_SCHEDULED_FROM";
     // The canonical task↔message edge is `a2a_relations::TASK_MESSAGE`
@@ -287,6 +295,7 @@ pub mod a2a_roles {
     pub const REJECTED_OUTPUT: &str = "a2a:rejected_output";
     pub const TASK_STATE: &str = "task_state";
     pub const DELEGATION_TARGET: &str = "a2a:delegation_target";
+    pub const TOOL_ARTIFACT: &str = "a2a:tool_artifact";
     pub const FAILURE_CLASSIFICATION: &str = "a2a:failure_classification";
     pub const FAILURE_EVIDENCE: &str = "a2a:failure_evidence";
 }
@@ -406,6 +415,8 @@ pub mod storage_safe {
     pub const A2A_CITATION_DRIFT: &str = "a2a_citation_drift";
     pub const A2A_ACTIVITY_OUTCOME: &str = "a2a_activity_outcome";
     pub const A2A_TOOL_NAME: &str = "a2a_tool_name";
+    pub const A2A_TOOL_DIGEST: &str = "a2a_tool_digest";
+    pub const A2A_TOOL_BACKEND: &str = "a2a_tool_backend";
     pub const A2A_ARGS: &str = "a2a_args";
     pub const A2A_ARCHIVE_PATH: &str = "a2a_archive_path";
     pub const A2A_ARTIFACT_ID: &str = "a2a_artifact_id";
@@ -442,6 +453,7 @@ pub mod node_labels {
     pub const MESSAGE: &str = "A2AMessage";
     pub const ARTIFACT: &str = "Artifact";
     pub const DELEGATION_TARGET: &str = "DelegationTarget";
+    pub const TOOL_ARTIFACT: &str = "ToolArtifact";
     pub const FAILURE_CLASSIFICATION_ACTIVITY: &str = "FailureClassificationActivity";
     pub const FAILURE_CLASSIFICATION: &str = "FailureClassification";
 }

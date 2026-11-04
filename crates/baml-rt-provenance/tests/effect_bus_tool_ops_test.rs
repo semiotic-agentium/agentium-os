@@ -280,3 +280,121 @@ async fn effect_bus_tool_events_materialize_for_live_task_ids() {
     ));
     assert_effect_bus_tool_rows_for_task_id(store, task_id, context_id).await;
 }
+
+async fn emit_external_tool_call(
+    bus: &Arc<dyn EffectEmitter>,
+    context_id: &ContextId,
+    task_id: &TaskId,
+    agent_id: &AgentId,
+    tool_digest: &str,
+) {
+    let metadata = ToolEffectMetadata {
+        tool_name: "dev/meteo-tool".to_string(),
+        function_name: None,
+        args: json!({ "location_query": "Paris, France" }),
+        metadata: json!({
+            "phase": "read",
+            "message_id": format!("msg-{}", task_id.as_str()),
+            "task_id": task_id.as_str(),
+            "agent_id": agent_id.as_str(),
+        }),
+        delegation_target: None,
+        tool_backend: Some("External".to_string()),
+        tool_digest: Some(tool_digest.to_string()),
+    };
+    let token = bus
+        .start_tool(context_id.clone(), metadata)
+        .await
+        .expect("start tool");
+    token
+        .complete(
+            bus.as_ref(),
+            30,
+            Outcome::Success,
+            Some(json!({ "source": "open-meteo" })),
+        )
+        .await
+        .expect("complete tool");
+}
+
+/// §16.2.5: every invocation records the exact tool bytes that served it, and
+/// the digest is one content-addressed node shared across contexts.
+#[tokio::test]
+async fn external_tool_calls_record_the_serving_tool_digest() {
+    let store = build_isolated_store().await;
+    let bus: Arc<dyn EffectEmitter> = Arc::new(BusWithEffects::new());
+    bus.subscribe_effect_subscriber(Arc::new(ProvenanceEffectSubscriber::new(store.clone())))
+        .await;
+
+    let digest = format!("sha256:{}", "ab".repeat(32));
+    let agent_id = agent();
+    let first_ctx = ContextId::new(1_778_675_700_000, 1);
+    let second_ctx = ContextId::new(1_778_675_700_001, 1);
+    let first_task = TaskId::from_external(ExternalId::new(uuid::Uuid::new_v4().to_string()));
+    let second_task = TaskId::from_external(ExternalId::new(uuid::Uuid::new_v4().to_string()));
+    emit_external_tool_call(&bus, &first_ctx, &first_task, &agent_id, &digest).await;
+    emit_external_tool_call(&bus, &second_ctx, &second_task, &agent_id, &digest).await;
+
+    let artifacts: Vec<serde_json::Value> = store
+        .db()
+        .query("SELECT node_id, props FROM prov_node WHERE label = 'ToolArtifact'")
+        .await
+        .expect("artifact query")
+        .take(0)
+        .expect("artifact rows");
+    assert_eq!(artifacts.len(), 1, "one node per digest; got {artifacts:?}");
+    assert_eq!(artifacts[0]["props"]["a2a_tool_digest"], json!(digest));
+    let artifact_node = artifacts[0]["node_id"]
+        .as_str()
+        .expect("node_id")
+        .to_string();
+
+    let served: Vec<serde_json::Value> = store
+        .db()
+        .query(
+            "SELECT from_id, from_label FROM prov_edge \
+             WHERE rel_type = 'WAS_SERVED_BY' AND to_id = $to",
+        )
+        .bind(("to", artifact_node))
+        .await
+        .expect("served_by query")
+        .take(0)
+        .expect("served_by rows");
+    assert!(
+        served.len() >= 2 && served.iter().all(|e| e["from_label"] == json!("ToolCall")),
+        "both contexts' ToolCalls must point at the artifact; got {served:?}"
+    );
+
+    let rows = store
+        .query_ops(ProvenanceOpsQueryRequest {
+            resource: ProvenanceOpsResource::ToolCalls,
+            filters: ProvenanceOpsFilters {
+                tool_digest: Some(digest.clone()),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .await
+        .expect("query_ops")
+        .rows;
+    assert!(!rows.is_empty(), "ops rows filterable by tool_digest");
+    for row in &rows {
+        let row = serde_json::to_value(row).expect("row json");
+        assert_eq!(row["tool_digest"], json!(digest), "row={row}");
+        assert_eq!(row["tool_backend"], json!("External"), "row={row}");
+    }
+
+    let none = store
+        .query_ops(ProvenanceOpsQueryRequest {
+            resource: ProvenanceOpsResource::ToolCalls,
+            filters: ProvenanceOpsFilters {
+                tool_digest: Some(format!("sha256:{}", "cd".repeat(32))),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .await
+        .expect("query_ops")
+        .rows;
+    assert!(none.is_empty(), "an unrelated digest matches nothing");
+}

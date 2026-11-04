@@ -152,6 +152,7 @@ fn dot_node_attrs(label: &str) -> (&'static str, &'static str) {
             | GraphNodeLabel::TaskState
             | GraphNodeLabel::Artifact
             | GraphNodeLabel::AgentArtifact
+            | GraphNodeLabel::ToolArtifact
             | GraphNodeLabel::AgentArchive
             | GraphNodeLabel::PromptRejected
             | GraphNodeLabel::FailureClassificationActivity

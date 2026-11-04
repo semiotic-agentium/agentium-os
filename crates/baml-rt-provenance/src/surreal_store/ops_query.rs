@@ -245,6 +245,8 @@ fn parse_ops_field(raw: &str) -> Option<&str> {
         | "provider"
         | "model"
         | "tool_name"
+        | "tool_digest"
+        | "tool_backend"
         | "baml_prompt"
         | "role"
         | "activity_outcome"
@@ -802,6 +804,12 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
                 }
                 if let Some(v) = out.get("a2a_tool_name").cloned() {
                     out.insert("tool_name".to_string(), v);
+                }
+                if let Some(v) = out.get("a2a_tool_digest").cloned() {
+                    out.insert("tool_digest".to_string(), v);
+                }
+                if let Some(v) = out.get("a2a_tool_backend").cloned() {
+                    out.insert("tool_backend".to_string(), v);
                 }
                 if let Some(gate) = out.get("a2a_gate").cloned() {
                     out.insert("gate".to_string(), gate);

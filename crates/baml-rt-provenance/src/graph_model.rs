@@ -30,6 +30,8 @@ pub enum GraphNodeLabel {
     AgentArtifact,
     /// Stable packaged-agent source identity, keyed by AgentId.
     Agent,
+    /// Immutable external tool bytes, keyed by `tool_digest`.
+    ToolArtifact,
     /// Legacy label retained only when reading graphs written before T8.
     AgentArchive,
     /// Legacy label retained only when reading graphs written before T8.
@@ -69,6 +71,7 @@ impl GraphNodeLabel {
             Self::AgentStop => "AgentStop",
             Self::AgentArtifact => "AgentArtifact",
             Self::Agent => "Agent",
+            Self::ToolArtifact => "ToolArtifact",
             Self::AgentArchive => "AgentArchive",
             Self::AgentRuntimeInstance => "AgentRuntimeInstance",
             Self::PromptRejected => "PromptRejected",
@@ -101,6 +104,7 @@ impl GraphNodeLabel {
             "AgentStop" => Some(Self::AgentStop),
             "AgentArtifact" => Some(Self::AgentArtifact),
             "Agent" => Some(Self::Agent),
+            "ToolArtifact" => Some(Self::ToolArtifact),
             "AgentArchive" => Some(Self::AgentArchive),
             "AgentRuntimeInstance" => Some(Self::AgentRuntimeInstance),
             "PromptRejected" => Some(Self::PromptRejected),

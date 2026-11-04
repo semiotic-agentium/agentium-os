@@ -106,6 +106,7 @@ impl MessageFilterKey for crate::metamodel::keys::Direction {}
 
 pub trait ToolCallFilterKey: FilterKey + Sealed {}
 impl ToolCallFilterKey for crate::metamodel::keys::ToolName {}
+impl ToolCallFilterKey for crate::metamodel::keys::ToolDigest {}
 impl ToolCallFilterKey for crate::metamodel::keys::ActivityOutcome {}
 
 pub trait LlmCallFilterKey: FilterKey + Sealed {}

@@ -461,6 +461,9 @@ pub struct ProvenanceOpsFilters {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
+    /// Filter `ToolCalls` rows by the exact tool bytes that served them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_digest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baml_prompt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

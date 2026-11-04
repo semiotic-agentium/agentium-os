@@ -11,7 +11,7 @@ use baml_rt_provenance::{
     A2aRelationType, DefaultProvNormalizer, LlmUsage, ProvEvent, ProvNormalizer,
     metamodel::TaskStatusKind,
     normalize_event,
-    vocabulary::{a2a_roles, a2a_types, semantic_labels},
+    vocabulary::{a2a, a2a_roles, a2a_types, semantic_labels},
 };
 
 #[test]
@@ -520,5 +520,94 @@ fn normalize_agent_stopped_produces_stop_node() {
         normalized.document.was_associated_with().count(),
         1,
         "AgentStop must have a WAS_ASSOCIATED_WITH edge to AgentRuntimeInstance"
+    );
+}
+
+fn external_tool_completed(task: &str, digest: Option<&str>) -> ProvEvent {
+    ProvEvent::tool_call_completed_task(
+        ContextId::new(31, 1),
+        TaskId::from_external(ExternalId::new(task)),
+        "dev/meteo-tool".to_string(),
+        None,
+        serde_json::json!({"location_query": "Paris, France"}),
+        serde_json::json!({
+            "phase": "read",
+            "agent_id": "00000000-0000-0000-0000-000000000001",
+            "task_id": task,
+            "result": {"source": "open-meteo"}
+        }),
+        42,
+        Outcome::Success,
+        None,
+    )
+    .with_tool_backend_digest(Some("External".to_string()), digest.map(str::to_string))
+}
+
+#[test]
+fn normalize_external_tool_call_records_the_serving_tool_digest() {
+    let digest = "sha256:5eac77631d0d8afe7f6eadc8b8b040dd93bbb9fa91a0c7cdbeb12e8e8763d18a";
+    let normalized = normalize_event(&external_tool_completed("task-digest-1", Some(digest)))
+        .expect("normalize");
+
+    let (activity_id, activity) = normalized
+        .document
+        .activities()
+        .find(|(_, a)| a.prov_type.as_deref() == Some(a2a_types::TOOL_CALL))
+        .expect("ToolCall activity");
+    assert_eq!(
+        activity.attributes.get(a2a::TOOL_DIGEST),
+        Some(&serde_json::json!(digest))
+    );
+    assert_eq!(
+        activity.attributes.get(a2a::TOOL_BACKEND),
+        Some(&serde_json::json!("External"))
+    );
+
+    let (artifact_id, artifact) = normalized
+        .document
+        .entities()
+        .find(|(_, e)| e.prov_type.as_deref() == Some(a2a_types::TOOL_ARTIFACT))
+        .expect("ToolArtifact entity");
+    assert_eq!(
+        artifact.attributes.get(a2a::TOOL_DIGEST),
+        Some(&serde_json::json!(digest))
+    );
+    assert!(
+        !artifact.attributes.contains_key(a2a::ACTIVITY_ANCHOR),
+        "ToolArtifact must be a reference record shared across calls"
+    );
+    assert!(normalized.document.used().any(|(_, rel)| {
+        rel.role.as_deref() == Some(a2a_roles::TOOL_ARTIFACT)
+            && rel.activity.as_str() == activity_id.as_str()
+            && rel.entity.as_str() == artifact_id.as_str()
+    }));
+
+    // Content-addressed: another call served by the same bytes names the same node.
+    let again = normalize_event(&external_tool_completed("task-digest-2", Some(digest)))
+        .expect("normalize");
+    let again_id = again
+        .document
+        .entities()
+        .find(|(_, e)| e.prov_type.as_deref() == Some(a2a_types::TOOL_ARTIFACT))
+        .map(|(id, _)| id.as_str().to_string())
+        .expect("ToolArtifact entity");
+    assert_eq!(again_id, artifact_id.as_str());
+}
+
+#[test]
+fn normalize_tool_call_without_digest_has_no_tool_artifact() {
+    let normalized =
+        normalize_event(&external_tool_completed("task-digest-none", None)).expect("normalize");
+    assert!(
+        !normalized
+            .document
+            .entities()
+            .any(|(_, e)| e.prov_type.as_deref() == Some(a2a_types::TOOL_ARTIFACT))
+    );
+    assert!(
+        !normalized
+            .document
+            .used()
+            .any(|(_, rel)| rel.role.as_deref() == Some(a2a_roles::TOOL_ARTIFACT))
     );
 }
