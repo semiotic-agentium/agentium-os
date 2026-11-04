@@ -200,6 +200,16 @@ otel-summary window='30m':
       curl -sG "$PROM_URL/api/v1/query" --data-urlencode "query=$expr"
     }
 
+    # Growth of counter/histogram series over the window. increase() misses
+    # series born inside the window (each runner process starts fresh ones),
+    # so a short run whose first export already holds its final value reads
+    # as 0. Instead: end value minus the value a window ago, and the full end
+    # value for series that did not exist then. One series is one process, so
+    # there are no counter resets to correct for.
+    inc() {
+      echo "((last_over_time($1[$W]) - ($1 offset $W)) or last_over_time($1[$W]))"
+    }
+
     fmt_ms() {
       local v="${1:-0}"
       awk -v v="$v" 'BEGIN {
@@ -224,8 +234,8 @@ otel-summary window='30m':
     echo
 
     echo "-- Total time split --"
-    llm_total=$(q "sum(increase(baml_rt_llm_call_duration_ms_sum[$W]))" | jq -r '.data.result[0].value[1] // "0"')
-    tool_total=$(q "sum(increase(baml_rt_tool_invocation_duration_ms_sum[$W]))" | jq -r '.data.result[0].value[1] // "0"')
+    llm_total=$(q "sum($(inc baml_rt_llm_call_duration_ms_sum))" | jq -r '.data.result[0].value[1] // "0"')
+    tool_total=$(q "sum($(inc baml_rt_tool_invocation_duration_ms_sum))" | jq -r '.data.result[0].value[1] // "0"')
     echo "LLM total:  $(fmt_ms "$llm_total")"
     echo "Tool total: $(fmt_ms "$tool_total")"
     echo
@@ -261,7 +271,7 @@ otel-summary window='30m':
       [[ -z "${fn:-}" ]] && continue
       printf "%-45s %10s\n" "$fn" "$(fmt_ms "$v")"
     done < <(
-      q "sort_desc(sum by (function) (increase(baml_rt_llm_call_duration_ms_sum[$W])))" \
+      q "sort_desc(sum by (function) ($(inc baml_rt_llm_call_duration_ms_sum)))" \
         | jq -r '.data.result[]? | "\(.metric.function // "unknown")\t\(.value[1])"'
     )
     echo
@@ -271,7 +281,7 @@ otel-summary window='30m':
       [[ -z "${fn:-}" ]] && continue
       printf "%-45s %10s\n" "$fn" "$(fmt_ms "$v")"
     done < <(
-      q "(sum by (function) (increase(baml_rt_llm_call_duration_ms_sum[$W])) / sum by (function) (increase(baml_rt_llm_call_duration_ms_count[$W]))) and on (function) (sum by (function) (increase(baml_rt_llm_call_duration_ms_count[$W])) > 0)" \
+      q "(sum by (function) ($(inc baml_rt_llm_call_duration_ms_sum)) / sum by (function) ($(inc baml_rt_llm_call_duration_ms_count))) and on (function) (sum by (function) ($(inc baml_rt_llm_call_duration_ms_count)) > 0)" \
         | jq -r '.data.result[]? | "\(.metric.function // "unknown")\t\(.value[1])"'
     )
     echo
@@ -281,7 +291,7 @@ otel-summary window='30m':
       [[ -z "${tool:-}" ]] && continue
       printf "%-45s %10s\n" "$tool" "$(fmt_ms "$v")"
     done < <(
-      q "sort_desc(sum by (tool) (increase(baml_rt_tool_invocation_duration_ms_sum[$W])))" \
+      q "sort_desc(sum by (tool) ($(inc baml_rt_tool_invocation_duration_ms_sum)))" \
         | jq -r '.data.result[]? | "\(.metric.tool // "unknown")\t\(.value[1])"'
     )
     echo
@@ -291,9 +301,38 @@ otel-summary window='30m':
       [[ -z "${tool:-}" ]] && continue
       printf "%-45s %10s\n" "$tool" "$(fmt_n "$v")"
     done < <(
-      q "sum by (tool) (increase(baml_rt_tool_invocation_total[$W]))" \
+      q "sum by (tool) ($(inc baml_rt_tool_invocation_total))" \
         | jq -r '.data.result[]? | "\(.metric.tool // "unknown")\t\(.value[1])"'
     )
+    echo
+
+    # v2 Sandbox tier (baml_rt_tools meter). Gauges are summed over the
+    # processes still exporting; events and denials grow over the window.
+    # rows <prefix> <comma-separated labels> <expr>: one line per result,
+    # named by its label values; "(none)" when the query is empty.
+    rows() {
+      local prefix="$1" labels="$2" expr="$3" any=0
+      while IFS=$'\t' read -r name v; do
+        [[ -z "${name:-}" ]] && continue
+        any=1
+        printf "%-45s %10s\n" "$prefix$name" "$(fmt_n "$v")"
+      done < <(q "$expr" | jq -r --arg l "$labels" '.data.result[]? | "\(.metric | to_entries | map(select(.key | IN($l | split(",")[]))) | map(.value) | join("/"))\t\(.value[1])"')
+      [[ $any == 1 ]] || echo "  (none)"
+    }
+    echo "-- Tool VMs --"
+    rows "active " trust_domain "sum by (trust_domain) (baml_rt_tools_tool_vm_active)"
+    inflight=$(q "sum(baml_rt_tools_tool_vm_calls_inflight)" | jq -r '.data.result[0].value[1] // "0"')
+    printf "%-45s %10s\n" "calls in flight" "$(fmt_n "$inflight")"
+    rows "" event,reason "sum by (event, reason) ($(inc baml_rt_tools_tool_vm_lifecycle_total)) > 0"
+    boot=$(q "sum($(inc baml_rt_tools_tool_vm_boot_duration_ms_sum)) / sum($(inc baml_rt_tools_tool_vm_boot_duration_ms_count))" | jq -r '.data.result[0].value[1] // "NaN"')
+    printf "%-45s %10s\n" "mean boot" "$(fmt_ms "$boot")"
+    cpu=$(q "sum($(inc baml_rt_tools_tool_call_cpu_ms_sum)) / sum($(inc baml_rt_tools_tool_call_cpu_ms_count))" | jq -r '.data.result[0].value[1] // "NaN"')
+    printf "%-45s %10s\n" "mean guest cpu per call" "$(fmt_ms "$cpu")"
+    rss=$(q "sum($(inc baml_rt_tools_tool_call_peak_rss_kib_sum)) / sum($(inc baml_rt_tools_tool_call_peak_rss_kib_count))" | jq -r '.data.result[0].value[1] // "NaN"')
+    printf "%-45s %10s\n" "mean guest peak rss (KiB)" "$(fmt_n "$rss")"
+    echo
+    echo "-- Tool grant denials by reason --"
+    rows "" reason "sum by (reason) ($(inc baml_rt_tools_tool_grant_denied_total)) > 0"
 
 # Rebuilds clickup-agent and runs it via a2a stdio. Deploys through the embedded repository (publish + POST /deploy).
 # Requires: just build-release, curl
