@@ -158,6 +158,20 @@ Registry lifecycle and session FSM timings. **Tool run completion** totals use `
 | `baml_rt_tools.tool.session.open.total` | Counter | Session opens (`tool`). |
 | `baml_rt_tools.tool.session.operation.duration_ms` | Histogram | FSM ops by `operation` (`open`, `send`, `read`, `finish`, `abort`), owning `tool`, and `result`. |
 
+### v2 Sandbox tool VMs
+
+Runner-wide tool VM pool ([`host/pool.rs`](../crates/baml-rt-tools/src/external_tools/host/pool.rs)), grant authority ([`host/grants.rs`](../crates/baml-rt-tools/src/external_tools/host/grants.rs)), and guest-reported usage ([`host/channel.rs`](../crates/baml-rt-tools/src/external_tools/host/channel.rs)). All label values are bounded; no agent, tool, or digest labels.
+
+| Metric name | Type | Purpose |
+|-------------|------|---------|
+| `baml_rt_tools.tool_vm.active` | UpDownCounter | VMs currently in the pool, by `trust_domain` (`first-party`, `third-party`). Per-trust-domain usage. |
+| `baml_rt_tools.tool_vm.calls_inflight` | UpDownCounter | Calls currently holding a pooled VM. Host-side proxy for busy guest workers: the supervisor does not report its worker count. |
+| `baml_rt_tools.tool_vm.lifecycle.total` | Counter | VM lifecycle by `event` / `reason`: `created`/`cold_boot`, `create_failed`/`boot`, `evicted`/(`idle`, `max_lifetime`, `unhealthy`, `budget`, `shutdown`), `teardown_failed`/(same reasons), `swept`/`previous_run` (leftovers of this runner's previous run removed at start). |
+| `baml_rt_tools.tool_vm.boot.duration_ms` | Histogram | VM create + supervisor handshake, by `result` (`ok`, `error`). |
+| `baml_rt_tools.tool_grant.denied.total` | Counter | Refused tool grants by `reason`: `audit`, `unauthorized_agent`, `capability_outside_policy`, `network`, `secret`, `timeout`. |
+| `baml_rt_tools.tool_call.cpu_ms` | Histogram | Per-call worker CPU time from the supervisor `usage` event. |
+| `baml_rt_tools.tool_call.peak_rss_kib` | Histogram | Per-call worker peak RSS (KiB) from the supervisor `usage` event. |
+
 ---
 
 ## Runner identity labels
@@ -215,4 +229,5 @@ Prior gap items below are **wired** in tree; extend only when new surfaces ship 
 ## Changelog
 
 - Keep this file in sync when adding or removing instruments in any `metrics.rs` or `effect_metrics.rs`.
+- 2026-11-04: v2 tool VM pool, grant denial, and guest usage instruments (`baml_rt_tools.tool_vm.*`, `tool_grant.*`, `tool_call.*`).
 - Event poll, event dispatch, cluster forward, task-daemon run-once, provenance `query_ops` reads, config/static/repository HTTP routes, and graph export/list are inventoried above.

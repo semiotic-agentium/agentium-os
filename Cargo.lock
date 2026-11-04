@@ -2207,6 +2207,7 @@ dependencies = [
  "inventory",
  "microsandbox",
  "opentelemetry 0.26.0",
+ "opentelemetry_sdk",
  "regex",
  "serde",
  "serde_jcs",

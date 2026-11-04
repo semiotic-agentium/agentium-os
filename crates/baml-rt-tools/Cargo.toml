@@ -68,3 +68,4 @@ baml-tools-github = { path = "../tools/github" }
 baml-tools-slack = { path = "../tools/slack" }
 baml-tools-system = { path = "../tools/system" }
 tempfile = { workspace = true }
+opentelemetry_sdk = { workspace = true }

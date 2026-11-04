@@ -155,8 +155,21 @@ impl SupervisorChannel {
                             pending.loads.remove(tool_digest)
                         }
                         // Events are best effort. The host currently does not
-                        // expose a per-call event stream, so keep reading.
-                        GuestMessage::Event { .. } => None,
+                        // expose a per-call event stream; it keeps the
+                        // supervisor's per-call resource accounting as metrics.
+                        GuestMessage::Event { kind, payload, .. } => {
+                            if kind == "usage" {
+                                let field = |name: &str| {
+                                    payload.get(name).and_then(serde_json::Value::as_u64)
+                                };
+                                if let (Some(cpu_ms), Some(peak_rss_kb)) =
+                                    (field("cpu_ms"), field("peak_rss_kb"))
+                                {
+                                    crate::metrics::record_tool_call_usage(cpu_ms, peak_rss_kb);
+                                }
+                            }
+                            None
+                        }
                         GuestMessage::HelloAck { .. } => break,
                     }
                 };

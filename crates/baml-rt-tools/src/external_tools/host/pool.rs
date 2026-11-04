@@ -14,9 +14,12 @@ use baml_rt_core::Result;
 use tokio::sync::Mutex as AsyncMutex;
 
 use super::{ToolGrant, TrustDomain, VmKey, channel::SupervisorChannel, invalid};
-use crate::external_tools::{
-    KtoolRuntimeImage,
-    sandbox::{SandboxHandle, SandboxProvider},
+use crate::{
+    external_tools::{
+        KtoolRuntimeImage,
+        sandbox::{SandboxHandle, SandboxProvider},
+    },
+    metrics::{self, VmEvictReason},
 };
 
 /// Provider input contains only host-issued authority and a pinned runtime image.
@@ -74,6 +77,11 @@ struct Entry {
 pub(super) struct VmLease(Arc<Entry>);
 
 impl VmLease {
+    fn new(entry: Arc<Entry>) -> Self {
+        metrics::record_tool_vm_call_inflight(1);
+        Self(entry)
+    }
+
     pub fn channel(&self) -> &SupervisorChannel {
         &self.0.channel
     }
@@ -82,6 +90,7 @@ impl VmLease {
 impl Drop for VmLease {
     fn drop(&mut self) {
         *self.0.last_used.lock().unwrap() = Instant::now();
+        metrics::record_tool_vm_call_inflight(-1);
     }
 }
 
@@ -111,6 +120,7 @@ impl VmPool {
         match provider.sweep_vms(&runner_id).await {
             Ok(0) => {}
             Ok(removed) => {
+                metrics::record_tool_vms_swept(removed);
                 tracing::info!(
                     runner_id,
                     removed,
@@ -189,7 +199,7 @@ impl VmPool {
         self.prune_locked(&mut state).await?;
         if let Some(entry) = state.entries.get(&key) {
             if entry.channel.healthy() && entry.created.elapsed() < self.policy.max_lifetime {
-                return Ok(VmLease(entry.clone()));
+                return Ok(VmLease::new(entry.clone()));
             }
             return Err(invalid("expired tool VM still has active calls"));
         }
@@ -222,7 +232,8 @@ impl VmPool {
                 .min_by_key(|(_, e)| *e.last_used.lock().unwrap())
                 .map(|(k, _)| k.clone())
                 .ok_or_else(|| invalid("tool VM budget exhausted; all eligible VMs are busy"))?;
-            self.evict(&mut state, &victim).await?;
+            self.evict(&mut state, &victim, VmEvictReason::Budget)
+                .await?;
         }
         let name = format!(
             "tool-{}",
@@ -238,15 +249,24 @@ impl VmPool {
             memory_mib,
             control_timeout,
         };
-        let (handle, channel) = self.provider.create_vm(spec).await?;
+        let boot = Instant::now();
+        let (handle, channel) = match self.provider.create_vm(spec).await {
+            Ok(created) => created,
+            Err(error) => {
+                metrics::record_tool_vm_create_failed(boot.elapsed());
+                return Err(error);
+            }
+        };
         let channel =
             match SupervisorChannel::connect(channel, key.grant_class, control_timeout).await {
                 Ok(channel) => channel,
                 Err(error) => {
+                    metrics::record_tool_vm_create_failed(boot.elapsed());
                     self.provider.teardown(&handle).await?;
                     return Err(error);
                 }
             };
+        metrics::record_tool_vm_created(key.trust_domain.as_str(), boot.elapsed());
         let entry = Arc::new(Entry {
             handle,
             channel,
@@ -255,33 +275,46 @@ impl VmPool {
             last_used: Mutex::new(Instant::now()),
         });
         state.entries.insert(key, entry.clone());
-        Ok(VmLease(entry))
+        Ok(VmLease::new(entry))
     }
 
-    async fn evict(&self, state: &mut State, key: &VmKey) -> Result<()> {
+    async fn evict(&self, state: &mut State, key: &VmKey, reason: VmEvictReason) -> Result<()> {
         if let Some(entry) = state.entries.get(key) {
             entry.channel.close();
             // Keep failed teardowns charged against the budget.
-            self.provider.teardown(&entry.handle).await?;
+            if let Err(error) = self.provider.teardown(&entry.handle).await {
+                metrics::record_tool_vm_teardown_failed(reason);
+                return Err(error);
+            }
         }
-        state.entries.remove(key);
+        if state.entries.remove(key).is_some() {
+            metrics::record_tool_vm_evicted(key.trust_domain.as_str(), reason);
+        }
         Ok(())
+    }
+
+    /// Why an unreferenced entry should leave the pool now, if at all.
+    fn expiry(&self, entry: &Entry) -> Option<VmEvictReason> {
+        if !entry.channel.healthy() {
+            Some(VmEvictReason::Unhealthy)
+        } else if entry.created.elapsed() >= self.policy.max_lifetime {
+            Some(VmEvictReason::MaxLifetime)
+        } else if entry.last_used.lock().unwrap().elapsed() >= self.policy.idle_timeout {
+            Some(VmEvictReason::Idle)
+        } else {
+            None
+        }
     }
 
     async fn prune_locked(&self, state: &mut State) -> Result<()> {
         let expired: Vec<_> = state
             .entries
             .iter()
-            .filter(|(_, e)| {
-                Arc::strong_count(e) == 1
-                    && (!e.channel.healthy()
-                        || e.created.elapsed() >= self.policy.max_lifetime
-                        || e.last_used.lock().unwrap().elapsed() >= self.policy.idle_timeout)
-            })
-            .map(|(k, _)| k.clone())
+            .filter(|(_, e)| Arc::strong_count(e) == 1)
+            .filter_map(|(k, e)| self.expiry(e).map(|reason| (k.clone(), reason)))
             .collect();
-        for key in expired {
-            self.evict(state, &key).await?;
+        for (key, reason) in expired {
+            self.evict(state, &key, reason).await?;
         }
         Ok(())
     }
@@ -300,7 +333,7 @@ impl VmPool {
         let keys: Vec<_> = state.entries.keys().cloned().collect();
         let mut failure = None;
         for key in keys {
-            if let Err(error) = self.evict(&mut state, &key).await {
+            if let Err(error) = self.evict(&mut state, &key, VmEvictReason::Shutdown).await {
                 failure = Some(error);
             }
         }

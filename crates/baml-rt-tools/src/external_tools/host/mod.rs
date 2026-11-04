@@ -27,7 +27,10 @@ pub use service::{ServiceClient, ServiceHost};
 pub use trusted::{TrustGrant, TrustedHost, TrustedHostConfig, TrustedPolicy};
 
 use super::{AuditedKtoolBundle, ExternalToolSnapshot, audit_ktool_bundle, verify_ktool_snapshot};
-use crate::ToolSessionContext;
+use crate::{
+    ToolSessionContext,
+    metrics::{self, GrantDenial},
+};
 
 /// How long the host keeps waiting past `deadline_ms` for the guest's own
 /// deadline result (vsock round trip + worker kill/reap).
@@ -103,12 +106,14 @@ impl ToolHost {
         bytes: &[u8],
         ctx: &ToolSessionContext,
     ) -> Result<ToolGrant> {
-        let audited = audit_approved_bundle(snapshot, bytes, ctx)?;
+        let audited = audit_approved_bundle(snapshot, bytes, ctx)
+            .inspect_err(|_| metrics::record_tool_grant_denied(GrantDenial::Audit))?;
         let policy = self
             .policy
             .tools
             .get(&(ctx.agent_id.to_string(), audited.tool_digest))
             .ok_or_else(|| {
+                metrics::record_tool_grant_denied(GrantDenial::UnauthorizedAgent);
                 invalid(format!(
                     "agent '{}' is not authorized for tool '{}' ({})",
                     ctx.agent_id, ctx.tool_name, audited.tool_digest
@@ -130,7 +135,10 @@ impl ToolHost {
             ),
         )
         .await
-        .map_err(|_| invalid("tool grant resolution timed out"))?
+        .map_err(|_| {
+            metrics::record_tool_grant_denied(GrantDenial::Timeout);
+            invalid("tool grant resolution timed out")
+        })?
     }
 
     /// Invoke only after a fresh approval and policy check. Identity comes from the session.

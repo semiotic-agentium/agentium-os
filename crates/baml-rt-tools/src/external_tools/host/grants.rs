@@ -19,6 +19,7 @@ use crate::{
     ToolSecretValue, ToolSessionContext,
     external_tools::{CapabilityRequest, HostPort, SecretBinding, SecretRequest},
     mcp_snapshot::{Digest, canonical_digest},
+    metrics::{self, GrantDenial},
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
@@ -27,6 +28,15 @@ pub enum TrustDomain {
     FirstParty,
     #[default]
     ThirdParty,
+}
+
+impl TrustDomain {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FirstParty => "first-party",
+            Self::ThirdParty => "third-party",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
@@ -172,22 +182,17 @@ impl HostResolver for DnsResolver {
     }
 }
 
-pub(super) async fn grant(
-    ctx: &ToolSessionContext,
-    tool_digest: Digest,
-    image_digest: Digest,
+type GrantedNetwork = (BTreeSet<CidrGrant>, BTreeMap<String, BTreeSet<IpAddr>>);
+type GrantedSecrets = (
+    BTreeMap<String, EgressSecret>,
+    BTreeMap<String, RevealSecret>,
+);
+
+/// Resolve every requested destination to exact public addresses.
+async fn grant_network(
     requested: &CapabilityRequest,
-    policy: &ToolPolicy,
     resolver: &dyn HostResolver,
-    fingerprint_key: &[u8; 32],
-) -> Result<ToolGrant> {
-    let diff = CapabilityDiff::between(&policy.capabilities, requested);
-    if diff.widens() {
-        return Err(invalid(format!(
-            "tool {tool_digest} requests capabilities outside agent policy: {:?}",
-            diff.added
-        )));
-    }
+) -> Result<GrantedNetwork> {
     let mut network = BTreeSet::new();
     let mut hosts: BTreeMap<String, BTreeSet<IpAddr>> = BTreeMap::new();
     for HostPort { host, port } in &requested.net {
@@ -214,6 +219,15 @@ pub(super) async fn grant(
             }
         }
     }
+    Ok((network, hosts))
+}
+
+/// Bind every requested secret: egress-bound to approved HTTPS hosts, or reveal.
+fn grant_secrets(
+    ctx: &ToolSessionContext,
+    requested: &CapabilityRequest,
+    policy: &ToolPolicy,
+) -> Result<GrantedSecrets> {
     let mut secrets = BTreeMap::new();
     let mut reveal = BTreeMap::new();
     for SecretRequest { name, binding } in &requested.secrets {
@@ -273,6 +287,32 @@ pub(super) async fn grant(
             },
         );
     }
+    Ok((secrets, reveal))
+}
+
+pub(super) async fn grant(
+    ctx: &ToolSessionContext,
+    tool_digest: Digest,
+    image_digest: Digest,
+    requested: &CapabilityRequest,
+    policy: &ToolPolicy,
+    resolver: &dyn HostResolver,
+    fingerprint_key: &[u8; 32],
+) -> Result<ToolGrant> {
+    let diff = CapabilityDiff::between(&policy.capabilities, requested);
+    if diff.widens() {
+        metrics::record_tool_grant_denied(GrantDenial::CapabilityOutsidePolicy);
+        return Err(invalid(format!(
+            "tool {tool_digest} requests capabilities outside agent policy: {:?}",
+            diff.added
+        )));
+    }
+    // Each stage maps its refusal to one bounded denial reason.
+    let (network, hosts) = grant_network(requested, resolver)
+        .await
+        .inspect_err(|_| metrics::record_tool_grant_denied(GrantDenial::Network))?;
+    let (secrets, reveal) = grant_secrets(ctx, requested, policy)
+        .inspect_err(|_| metrics::record_tool_grant_denied(GrantDenial::Secret))?;
     let network: Vec<_> = network.into_iter().collect();
     let secrets: Vec<_> = secrets.into_values().collect();
     let reveal: Vec<_> = reveal.into_values().collect();
