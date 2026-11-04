@@ -43,27 +43,81 @@ const TOOL: &str = "test/kvm-supervisor";
 
 const TOOL_JS: &str = r#"
 import fs from "node:fs";
-import { defineTool, Type } from "@karakara/tool";
 
-export default defineTool(
-  {
-    name: "test/kvm-supervisor",
-    version: "0.1.0",
-    description: "KVM supervisor probe",
-    sideEffect: "read",
-    input: Type.Any(),
-    output: Type.Any(),
-  },
-  async (input) => {
+// MCP stdio transport: newline-delimited JSON-RPC (no Content-Length headers).
+let buffer = "";
+let next = Promise.resolve();
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + "\n");
+}
+
+async function handle(message) {
+  if (message.id === undefined) return;
+  if (message.method === "initialize") {
+    send({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {
+        protocolVersion: "2025-06-18",
+        capabilities: { tools: {} },
+        serverInfo: { name: "kvm-supervisor", version: "0.1.0" },
+      },
+    });
+    return;
+  }
+  if (message.method === "tools/list") {
+    send({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {
+        tools: [{
+          name: "kvm-supervisor",
+          description: "KVM supervisor probe",
+          inputSchema: { type: "object" },
+          outputSchema: { type: "object" },
+          annotations: { readOnlyHint: true, idempotentHint: true },
+        }],
+      },
+    });
+    return;
+  }
+  if (message.method === "tools/call") {
+    const input = message.params?.arguments ?? {};
     const out = { pid: process.pid };
     if (input.echo !== undefined) out.echo = input.echo;
-    if (input.sleep_ms) await new Promise((r) => setTimeout(r, input.sleep_ms));
+    if (input.sleep_ms) await new Promise((resolve) => setTimeout(resolve, input.sleep_ms));
     if (input.exists) {
       out.exists = Object.fromEntries(input.exists.map((p) => [p, fs.existsSync(p)]));
     }
-    return out;
-  },
-);
+    if (input.readable) {
+      out.readable = Object.fromEntries(input.readable.map((p) => {
+        try { fs.readFileSync(p); return [p, true]; } catch { return [p, false]; }
+      }));
+    }
+    send({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {
+        content: [{ type: "text", text: JSON.stringify(out) }],
+        structuredContent: out,
+      },
+    });
+  }
+}
+
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let newline;
+  while ((newline = buffer.indexOf("\n")) >= 0) {
+    const line = buffer.slice(0, newline).trim();
+    buffer = buffer.slice(newline + 1);
+    if (!line) continue;
+    const message = JSON.parse(line);
+    next = next.then(() => handle(message));
+  }
+});
 "#;
 
 struct StaticResolver;
@@ -89,9 +143,12 @@ fn descriptor() -> ToolDescriptor {
         name: TOOL.into(),
         version: "0.1.0".into(),
         description: "KVM supervisor probe".into(),
-        input_schema: json!({}),
-        output_schema: json!({}),
-        error_classes: vec![],
+        // Must match what TOOL_JS advertises in tools/list: the supervisor
+        // re-verifies the live descriptor against the audited one at load.
+        input_schema: json!({"type": "object"}),
+        output_schema: json!({"type": "object"}),
+        // An MCP tool without `errorClasses` annotations maps to [Execution].
+        error_classes: vec![baml_sandbox_protocol::ErrorClass::Execution],
         side_effect: SideEffect::Read,
         idempotent: true,
         output_trust: OutputTrust::Untrusted,
@@ -180,12 +237,15 @@ async fn real_vm_supervisor_runs_the_isolation_matrix() {
         &snapshot,
         &bytes,
         &ctx,
-        json!({"exists": [canary_path, "/etc/shadow"]}),
+        json!({"exists": [canary_path], "readable": ["/etc/shadow"]}),
         10_000,
     )
     .await;
     assert_eq!(probe["exists"][&canary_path], false);
-    assert_eq!(probe["exists"]["/etc/shadow"], false);
+    // The root backend keeps the runtime image's rootfs (only /tool and /tmp
+    // are remounted), so the image's own /etc/shadow exists; the per-tool
+    // unprivileged uid must not be able to read it.
+    assert_eq!(probe["readable"]["/etc/shadow"], false);
     let _ = std::fs::remove_file(&canary);
 
     // 3. Deadline is enforced inside the VM and the channel survives.

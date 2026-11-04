@@ -24,9 +24,10 @@ use baml_rt_core::ids::{AgentId, ContextId, UuidId};
 use baml_rt_tools::{
     ToolName, ToolSecrets, ToolSessionContext,
     external_tools::{
-        BundleFile, CapabilityRequest, DESCRIPTOR_ABI, ErrorClass, ExternalToolSnapshot,
-        KtoolRuntimeTier, OutputTrust, SideEffect, ToolRuntime, TrustedLaunch, TrustedRuntimeSpec,
-        UnifiedToolDescriptor, audit_ktool_bundle, build_ktool_bundle_for_tier,
+        BundleFile, CapabilityRequest, DESCRIPTOR_ABI, ErrorClass, ExternalLifecycleEvent,
+        ExternalToolSnapshot, KtoolRuntimeTier, OutputTrust, SideEffect, ToolRuntime,
+        TrustedLaunch, TrustedRuntimeSpec, UnifiedToolDescriptor, audit_ktool_bundle,
+        build_ktool_bundle_for_tier,
         host::{TrustedHost, TrustedHostConfig, TrustedPolicy},
     },
     tool_fsm::ToolSessionId,
@@ -209,6 +210,60 @@ fn authorize_requires_operator_trust() {
 }
 
 #[test]
+fn trusted_lifecycle_records_grant_and_revoke() {
+    let bundle = echo_bundle();
+    let audited = audit_ktool_bundle(&bundle).unwrap();
+    let snapshot = snapshot(&bundle);
+    let ctx = session_ctx();
+    let mut policy = TrustedPolicy::new();
+    policy.trust(ctx.agent_id.to_string(), audited.tool_digest);
+
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let recorder: baml_rt_tools::external_tools::ExternalLifecycleRecorder =
+        std::sync::Arc::new(move |event| sink.lock().unwrap().push(event));
+    let host = TrustedHost::new(config(policy, PathBuf::from("/nonexistent"), vec![]))
+        .unwrap()
+        .with_lifecycle_recorder(recorder);
+
+    host.authorize(&snapshot, &bundle, &ctx).unwrap();
+    assert!(host.revoke_trust(&ctx.agent_id.to_string(), audited.tool_digest, TOOL, None,));
+    let denied = host.authorize(&snapshot, &bundle, &ctx).unwrap_err();
+    assert!(denied.to_string().contains("not operator-trusted"));
+
+    let events = events.lock().unwrap();
+    assert!(matches!(
+        events.first(),
+        Some(ExternalLifecycleEvent::TrustGranted {
+            tool_name,
+            agent_id,
+            tool_digest,
+            node,
+        }) if tool_name == TOOL
+            && agent_id == &ctx.agent_id.to_string()
+            && tool_digest == &audited.tool_digest.to_string()
+            && node == "local"
+    ));
+    assert!(matches!(
+        events.get(1),
+        Some(ExternalLifecycleEvent::TrustRevoked {
+            tool_name,
+            agent_id,
+            tool_digest,
+            node,
+        }) if tool_name == TOOL
+            && agent_id == &ctx.agent_id.to_string()
+            && tool_digest == &audited.tool_digest.to_string()
+            && node == "local"
+    ));
+    assert_eq!(
+        events.len(),
+        2,
+        "denied authorization must not emit a grant"
+    );
+}
+
+#[test]
 fn authorize_rejects_sandbox_bundle() {
     let bundle = build_ktool_bundle_for_tier(
         &descriptor(),
@@ -354,22 +409,33 @@ async fn trusted_invoke_attaches_to_operator_daemon() {
     let mut policy = TrustedPolicy::new();
     policy.trust(ctx.agent_id.to_string(), audited.tool_digest);
     // The supervisor binary must stay unused on the attach path.
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let recorder: baml_rt_tools::external_tools::ExternalLifecycleRecorder =
+        std::sync::Arc::new(move |event| sink.lock().unwrap().push(event));
     let host = TrustedHost::new(config(
         policy,
         PathBuf::from("/nonexistent/supervisor"),
         vec![],
     ))
-    .expect("trusted host");
+    .expect("trusted host")
+    .with_lifecycle_recorder(recorder);
 
     let grant = host.authorize(&snap, &bundle, &ctx).expect("authorize");
     assert_eq!(grant.attached_socket(), Some(socket.as_path()));
 
+    let first_call = CallContext {
+        artifact_hash: "sha256:agent-artifact".into(),
+        invocation_id: "invoke-1".into(),
+        trace_id: "trace-1".into(),
+        ..Default::default()
+    };
     let result = host
         .invoke(
             &snap,
             &bundle,
             &ctx,
-            CallContext::default(),
+            first_call,
             json!({"echo": "attached"}),
         )
         .await
@@ -394,12 +460,53 @@ async fn trusted_invoke_attaches_to_operator_daemon() {
             &snap,
             &bundle,
             &ctx,
-            CallContext::default(),
+            CallContext {
+                invocation_id: "invoke-2".into(),
+                trace_id: "trace-2".into(),
+                ..Default::default()
+            },
             json!({"echo": "again"}),
         )
         .await
         .expect("second attached invoke");
     assert!(matches!(again, GuestMessage::Result { ok: true, .. }));
+
+    let events = events.lock().unwrap();
+    let invokes = events
+        .iter()
+        .filter_map(|event| match event {
+            ExternalLifecycleEvent::TrustedInvoke {
+                agent_id,
+                tool_digest,
+                node,
+                context_id,
+                invocation_id,
+                trace_id,
+                ..
+            } => Some((
+                agent_id,
+                tool_digest,
+                node,
+                context_id,
+                invocation_id,
+                trace_id,
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        invokes.len(),
+        2,
+        "each attached invocation must be recorded"
+    );
+    assert_eq!(invokes[0].0, &ctx.agent_id.to_string());
+    assert_eq!(invokes[0].1, &audited.tool_digest.to_string());
+    assert_eq!(invokes[0].2, "local");
+    assert_eq!(invokes[0].3, &ctx.context_id.to_string());
+    assert_eq!(invokes[0].4, "invoke-1");
+    assert_eq!(invokes[0].5, "trace-1");
+    assert_eq!(invokes[1].4, "invoke-2");
+    assert_eq!(invokes[1].5, "trace-2");
 
     // Shutting the host down must leave the operator's daemon socket alone.
     host.shutdown().await;

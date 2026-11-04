@@ -199,7 +199,7 @@ fn add_directory_to_tar(
     collect_all_files(dir, &mut files)?;
 
     for file_path in files {
-        let content = fs::read_to_string(&file_path)?;
+        let content = fs::read(&file_path)?;
         let relative_path = file_path.strip_prefix(dir).map_err(|_| {
             BamlBuilderError::InvalidArgument(format!(
                 "File {} is not under directory {}",
@@ -216,7 +216,7 @@ fn add_directory_to_tar(
         header.set_size(content.len() as u64);
         header.set_mode(0o644);
         header.set_cksum();
-        tar.append(&header, content.as_bytes())?;
+        tar.append(&header, content.as_slice())?;
     }
 
     Ok(())

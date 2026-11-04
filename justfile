@@ -841,9 +841,10 @@ tool-runtime-image:
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
     cargo build --release -p baml-tool-supervisor
-    docker build -f docker/tool-runtime/node.Dockerfile -t karakara/tool-runtime:node-22 .
+    docker build --provenance=false -f docker/tool-runtime/node.Dockerfile -t karakara/tool-runtime:node-22 .
     echo "Image built. Push digest-pinned, then register:"
-    docker image inspect --format '{{.Id}}' karakara/tool-runtime:node-22
+    docker image inspect karakara/tool-runtime:node-22 \
+        | awk -F'"' '/"Id":/ { print $4; exit }'
 
 # Deterministic parser smoke (the `cargo fuzz` targets live under
 # crates/baml-tool-supervisor/fuzz). Run the fuzzers with:

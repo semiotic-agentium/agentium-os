@@ -10,7 +10,8 @@
 //! - a distinct uid/gid per tool digest, so `RLIMIT_NPROC` is genuinely
 //!   per-tool and one tool cannot signal/read another's processes;
 //! - a read-only bundle mount at `/tool`, sized private tmpfs at `/tmp`;
-//! - rlimits and a pinned seccomp allowlist.
+//! - rlimits and a pinned seccomp allowlist. Cgroup namespaces are used when
+//!   the guest kernel provides them, with the VM and rlimits as the fallback.
 //!
 //! `unshare(CLONE_NEWPID)` only moves *future children* into the new PID
 //! namespace, so the child forks once more: the spawned process is a small shim
@@ -50,9 +51,11 @@ impl WorkerBackend for RootCloneBackend {
     fn spawn(&self, sandbox: &WorkerSandbox, command: WorkerCommand) -> io::Result<Child> {
         let plan = RootPlan::new(sandbox, &command)?;
         let mut std_command = Command::new(&command.program);
+        // RootPlan mounts the bundle and chdirs into /tool/code in pre_exec.
+        // Do not ask Command to chdir there first: that path only exists after
+        // the worker's mount namespace is built.
         std_command
             .args(&command.args)
-            .current_dir(&command.cwd)
             .env_clear()
             .envs(command.env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::piped())
@@ -128,7 +131,7 @@ struct RootPlan {
     limits: super::Rlimits,
     reveals: Vec<RevealFd>,
     #[cfg(target_os = "linux")]
-    seccomp: Option<seccompiler::BpfProgram>,
+    seccomp: Option<super::seccomp::Profile>,
 }
 
 impl RootPlan {
@@ -190,7 +193,24 @@ impl RootPlan {
         // SAFETY: raw syscalls with values owned by `self`.
         unsafe {
             if libc::unshare(self.unshare_flags) != 0 {
-                return Err(io::Error::last_os_error());
+                let error = io::Error::last_os_error();
+                // Some microsandbox guest kernels omit CONFIG_CGROUP_NS. The
+                // per-tool VM, uid, PID namespace, and rlimits still apply;
+                // retry only this optional namespace on EINVAL.
+                if error.raw_os_error() == Some(libc::EINVAL)
+                    && self.unshare_flags & libc::CLONE_NEWCGROUP != 0
+                {
+                    if libc::unshare(self.unshare_flags & !libc::CLONE_NEWCGROUP) != 0 {
+                        return Err(io::Error::other(format!(
+                            "unshare worker namespaces without cgroup namespace: {}",
+                            io::Error::last_os_error()
+                        )));
+                    }
+                } else {
+                    return Err(io::Error::other(format!(
+                        "unshare worker namespaces: {error}"
+                    )));
+                }
             }
 
             // Move the exec'd process into the new PID namespace: the first
@@ -203,6 +223,17 @@ impl RootPlan {
                 // Shim: reap the worker and mirror its exit status. This keeps
                 // the supervisor's Child handle pointing at a live process and
                 // makes the whole tree share the signaled process group.
+                //
+                // The shim never execs, so it must drop every inherited fd
+                // first. In particular it holds std's CLOEXEC exec-status
+                // channel: `Command::spawn()` in the supervisor blocks until
+                // every copy of that channel closes, so a shim keeping it open
+                // would block spawn for the worker's whole lifetime (the worker
+                // is never handed its MCP `initialize`). The worker child keeps
+                // its own copy, so exec success and pre-exec errors are still
+                // reported. Dropping 0-2 also lets the supervisor see stdout
+                // EOF as soon as the worker itself exits.
+                close_all_fds();
                 let mut status: libc::c_int = 0;
                 loop {
                     let reaped = libc::waitpid(pid, &mut status, 0);
@@ -218,38 +249,60 @@ impl RootPlan {
             }
 
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0 {
-                return Err(io::Error::last_os_error());
+                return Err(io::Error::other(format!(
+                    "set worker parent-death signal: {}",
+                    io::Error::last_os_error()
+                )));
             }
 
             // Make the mount tree private, then build the worker's view.
-            mount(
+            if libc::mount(
                 std::ptr::null(),
                 self.root.as_ptr(),
                 std::ptr::null(),
                 libc::MS_REC | libc::MS_PRIVATE,
                 std::ptr::null(),
-            )?;
-            mount(
+            ) != 0
+            {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::EINVAL) {
+                    return Err(io::Error::other(format!(
+                        "make mount tree private: {error}"
+                    )));
+                }
+            }
+            if let Err(error) = mount(
                 self.tmpfs_source.as_ptr(),
                 self.tmpfs_target.as_ptr(),
                 self.tmpfs_source.as_ptr(),
                 libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
                 self.tmpfs_options.as_ptr(),
-            )?;
+            ) {
+                // Some guest kernels reject a nested tmpfs mount even though
+                // the worker mount namespace is available. The VM already
+                // isolates tools, and /tmp's sticky permissions plus the
+                // worker rlimits remain in force, so keep the image /tmp in
+                // that case. Other mount failures are still fatal.
+                if !matches!(error.raw_os_error(), Some(libc::EINVAL | libc::EPERM)) {
+                    return Err(io::Error::other(format!("mount worker tmpfs: {error}")));
+                }
+            }
             mount(
                 self.bundle.as_ptr(),
                 self.tool.as_ptr(),
                 std::ptr::null(),
                 libc::MS_BIND | libc::MS_REC,
                 std::ptr::null(),
-            )?;
+            )
+            .map_err(|error| io::Error::other(format!("bind bundle at /tool: {error}")))?;
             mount(
                 self.bundle.as_ptr(),
                 self.tool.as_ptr(),
                 std::ptr::null(),
                 libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NOSUID,
                 std::ptr::null(),
-            )?;
+            )
+            .map_err(|error| io::Error::other(format!("remount /tool read-only: {error}")))?;
             if let Some(source) = &self.node_modules_source {
                 // The image owns /node_modules; bind the SDK over it for the
                 // DevBackend/test path.
@@ -275,25 +328,43 @@ impl RootPlan {
                 self.proc_source.as_ptr(),
                 libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
                 std::ptr::null(),
-            )?;
+            )
+            .map_err(|error| io::Error::other(format!("mount /proc: {error}")))?;
 
             // Distinct uid/gid per tool digest, after clearing supplementary
             // groups so the worker holds nothing from the supervisor.
             if libc::setgroups(0, std::ptr::null()) != 0 {
-                return Err(io::Error::last_os_error());
+                return Err(io::Error::other(format!(
+                    "clear supplementary groups: {}",
+                    io::Error::last_os_error()
+                )));
             }
-            if libc::setgid(self.gid) != 0 || libc::setuid(self.uid) != 0 {
-                return Err(io::Error::last_os_error());
+            if libc::setgid(self.gid) != 0 {
+                return Err(io::Error::other(format!(
+                    "set worker gid: {}",
+                    io::Error::last_os_error()
+                )));
+            }
+            if libc::setuid(self.uid) != 0 {
+                return Err(io::Error::other(format!(
+                    "set worker uid: {}",
+                    io::Error::last_os_error()
+                )));
             }
             // setgid/setuid call commit_creds(), which clears the parent-death
             // signal. Restore it after dropping privileges so killing the shim
             // also kills the PID-namespace worker.
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0 {
-                return Err(io::Error::last_os_error());
+                return Err(io::Error::other(format!(
+                    "restore worker parent-death signal: {}",
+                    io::Error::last_os_error()
+                )));
             }
 
-            super::bwrap::apply_rlimits(&self.limits, true)?;
-            super::bwrap::inherit_reveal_fds(&self.reveals)?;
+            super::bwrap::apply_rlimits(&self.limits, true)
+                .map_err(|error| io::Error::other(format!("apply worker rlimits: {error}")))?;
+            super::bwrap::inherit_reveal_fds(&self.reveals)
+                .map_err(|error| io::Error::other(format!("inherit reveal fds: {error}")))?;
 
             #[cfg(target_os = "linux")]
             if let Some(program) = &self.seccomp {
@@ -301,7 +372,10 @@ impl RootPlan {
             }
 
             if libc::chdir(self.workdir.as_ptr()) != 0 {
-                return Err(io::Error::last_os_error());
+                return Err(io::Error::other(format!(
+                    "chdir to /tool/code: {}",
+                    io::Error::last_os_error()
+                )));
             }
         }
         Ok(())
@@ -321,6 +395,23 @@ unsafe fn mount(
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// Close every fd of the calling (forked, not yet exec'd) process.
+/// Async-signal-safe: raw syscalls only.
+fn close_all_fds() {
+    // SAFETY: close_range/close have no memory-safety preconditions.
+    unsafe {
+        if libc::syscall(libc::SYS_close_range, 0u32, u32::MAX, 0u32) == 0 {
+            return;
+        }
+        // Kernels before 5.9 lack close_range.
+        let max = libc::sysconf(libc::_SC_OPEN_MAX);
+        let max = if max <= 0 { 1024 } else { max.min(1 << 20) } as libc::c_int;
+        for fd in 0..max {
+            libc::close(fd);
+        }
+    }
 }
 
 fn exit_code(status: libc::c_int) -> libc::c_int {

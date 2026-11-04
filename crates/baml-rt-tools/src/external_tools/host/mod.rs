@@ -29,6 +29,10 @@ pub use trusted::{TrustGrant, TrustedHost, TrustedHostConfig, TrustedPolicy};
 use super::{AuditedKtoolBundle, ExternalToolSnapshot, audit_ktool_bundle, verify_ktool_snapshot};
 use crate::ToolSessionContext;
 
+/// How long the host keeps waiting past `deadline_ms` for the guest's own
+/// deadline result (vsock round trip + worker kill/reap).
+const GUEST_DEADLINE_GRACE: Duration = Duration::from_secs(2);
+
 /// Shared authorization prelude for every v2 tier that runs approved `.ktool`
 /// bytes (Sandbox and Trusted). It fails closed and pins the *exact* approved
 /// bytes; the tier-specific authority (capability grants vs operator trust) is
@@ -198,7 +202,11 @@ impl ToolHost {
                     ctx.tool_name.to_string(),
                     context,
                     input,
-                    remaining()?,
+                    // The supervisor enforces `deadline_ms` in the guest and
+                    // answers with a classified (Transient) result. Wait a
+                    // short grace past the deadline for that verdict instead
+                    // of racing it with an unclassified host-side timeout.
+                    remaining()? + GUEST_DEADLINE_GRACE,
                     grant.reveal_secrets(),
                 )
                 .await

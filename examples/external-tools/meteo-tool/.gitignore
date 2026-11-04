@@ -1,5 +1,4 @@
-__pycache__/
-*.pyc
-.venv/
-.tmp/
-tool-manifest.lock.json
+node_modules/
+dist/
+tools.json
+tool.lock.json

@@ -21,8 +21,7 @@ use baml_rt::{
     interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor},
 };
 use baml_rt_core::{
-    InvocationContextRequirements,
-    context,
+    InvocationContextRequirements, context,
     ids::{AgentId, UuidId},
 };
 use serde_json::{Value, json};
@@ -176,9 +175,8 @@ async fn entrypoint_stream_start_does_not_project() {
         return;
     };
     let manager = Arc::new(RwLock::new(manager));
-    let agent_id = AgentId::from_uuid(
-        UuidId::parse_str("00000000-0000-0000-0000-0000000000c6").unwrap(),
-    );
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-0000000000c6").unwrap());
     let bridge = Arc::new(tokio::sync::Mutex::new(
         baml_rt::quickjs_bridge::QuickJSBridge::new(manager, agent_id)
             .await

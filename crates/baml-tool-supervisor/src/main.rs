@@ -64,6 +64,16 @@ fn main() -> ExitCode {
 }
 
 async fn serve(options: Options) -> Result<(), String> {
+    if !options.dev && options.uds.is_none() {
+        // In the VM only: pin granted egress hosts to their allowed addresses
+        // (the guest has no DNS egress; guest init rewrites /etc/hosts at boot).
+        let pinned =
+            baml_tool_supervisor::pinned_hosts::apply_from_env(std::path::Path::new("/etc/hosts"))
+                .map_err(|error| format!("cannot pin tool hosts: {error}"))?;
+        if pinned > 0 {
+            eprintln!("baml-tool-supervisor: pinned {pinned} tool host address(es)");
+        }
+    }
     let mut limits = SupervisorLimits::from_env();
     if options.vsock_port != baml_tool_supervisor::limits::DEFAULT_VSOCK_PORT {
         limits.vsock_port = options.vsock_port;

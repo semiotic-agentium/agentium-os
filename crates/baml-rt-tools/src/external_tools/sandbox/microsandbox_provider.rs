@@ -378,6 +378,10 @@ impl SandboxProvider for MicrosandboxProvider {
             // "Already gone" is fine per SandboxProvider contract.
             return Ok(());
         };
+        // Mirror the in-VM supervisor console to host tracing before the VM is
+        // stopped, so in-guest failures survive teardown and show up in the
+        // runner log instead of only microsandbox's on-disk exec.log.
+        v2::dump_vm_console(&handle.name, "teardown");
 
         match tokio::time::timeout(STOP_TIMEOUT, sandbox.stop_and_wait()).await {
             Ok(Ok(_status)) => {

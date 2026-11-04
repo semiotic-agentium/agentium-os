@@ -416,7 +416,9 @@ impl Worker {
                 "clientInfo": {"name": "baml-tool-supervisor", "version": env!("CARGO_PKG_VERSION")}
             }
         });
-        self.connection.request(init_id, init, timeout).await?;
+        if let Err(error) = self.connection.request(init_id, init, timeout).await {
+            return Err(format!("{error}; {}", self.diagnostic()));
+        }
         self.connection
             .notify("notifications/initialized", json!({}))
             .await;
@@ -428,7 +430,8 @@ impl Worker {
                 json!({"jsonrpc": "2.0", "id": list_id, "method": "tools/list", "params": {}}),
                 timeout,
             )
-            .await?;
+            .await
+            .map_err(|error| format!("{error}; {}", self.diagnostic()))?;
         let tools = result
             .get("tools")
             .and_then(Value::as_array)
@@ -455,6 +458,11 @@ impl Worker {
                 .ok_or_else(|| format!("tools/list is missing {}", descriptor.name))?;
             let mut live = baml_ktool::ToolDescriptor::from_mcp(live)
                 .map_err(|e| format!("invalid MCP descriptor for {}: {e}", descriptor.name))?;
+            // The MCP worker reports only its local tool name; the bundle owns
+            // the `toolset/` prefix. Normalize the name before the interface
+            // digest comparison. Version needs no normalization: it is excluded
+            // from `compute_descriptor_digest` (plan §16.1), so the live
+            // descriptor's empty version cannot drift against the stamped one.
             live.name = descriptor.name.clone();
             if baml_ktool::compute_descriptor_digest(&live)
                 != baml_ktool::compute_descriptor_digest(descriptor)
@@ -537,6 +545,8 @@ impl Worker {
                     );
                 }
                 let dead = !self.is_alive();
+                let diagnostic = self.diagnostic();
+                let error = format!("{error}; {diagnostic}");
                 let retired = dead || self.connection.closed.load(Ordering::Acquire);
                 let class = if error.starts_with("invalid argument:") {
                     ErrorClass::InvalidArgument
@@ -672,6 +682,24 @@ impl Worker {
             usage,
             retire,
             logs: logs.text,
+        }
+    }
+
+    fn diagnostic(&self) -> String {
+        let status = self
+            .process
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|child| child.try_wait().ok())
+            .flatten()
+            .map(|status| format!("worker exited with {status}"))
+            .unwrap_or_else(|| "worker status unavailable".to_string());
+        let logs = self.take_logs();
+        if logs.text.is_empty() {
+            status
+        } else {
+            format!("{status}; worker stderr: {}", logs.text.trim())
         }
     }
 

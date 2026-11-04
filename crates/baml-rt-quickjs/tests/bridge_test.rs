@@ -741,7 +741,10 @@ async fn test_message_data_part_reaches_on_chat_message() {
     {
         let mut guard = bridge.lock().await;
         guard.set_effect_liveness(effect_bus as Arc<dyn EffectLiveness>);
-        guard.register_baml_functions().await.expect("register helpers");
+        guard
+            .register_baml_functions()
+            .await
+            .expect("register helpers");
         guard
             .eval_sync(
                 r#"

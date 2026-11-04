@@ -127,6 +127,9 @@ pub struct ToolGrant {
     pub(super) tool_digest: Digest,
     pub(super) key: VmKey,
     pub(super) network: Vec<CidrGrant>,
+    /// Declared hostname -> the exact addresses `network` allows for it. The
+    /// VM serves these from `/etc/hosts`; guest DNS egress stays closed.
+    pub(super) hosts: BTreeMap<String, BTreeSet<IpAddr>>,
     pub(super) secrets: Vec<EgressSecret>,
     pub(super) reveal: Vec<RevealSecret>,
 }
@@ -137,6 +140,9 @@ impl ToolGrant {
     }
     pub fn network(&self) -> &[CidrGrant] {
         &self.network
+    }
+    pub fn hosts(&self) -> &BTreeMap<String, BTreeSet<IpAddr>> {
+        &self.hosts
     }
     pub fn egress_secrets(&self) -> &[EgressSecret] {
         &self.secrets
@@ -183,6 +189,7 @@ pub(super) async fn grant(
         )));
     }
     let mut network = BTreeSet::new();
+    let mut hosts: BTreeMap<String, BTreeSet<IpAddr>> = BTreeMap::new();
     for HostPort { host, port } in &requested.net {
         validate_host(host)?;
         if *port == 0 {
@@ -202,6 +209,9 @@ pub(super) async fn grant(
                 cidr: format!("{ip}/{}", if ip.is_ipv4() { 32 } else { 128 }),
                 port: *port,
             });
+            if host.parse::<IpAddr>().is_err() {
+                hosts.entry(host.clone()).or_default().insert(ip);
+            }
         }
     }
     let mut secrets = BTreeMap::new();
@@ -293,7 +303,8 @@ pub(super) async fn grant(
             )
         })
         .collect();
-    let grant_class = canonical_digest(&(&network, bindings, reveal_bindings));
+    // The hosts map is VM state (`/etc/hosts`), so it is part of VM identity.
+    let grant_class = canonical_digest(&(&network, &hosts, bindings, reveal_bindings));
     Ok(ToolGrant {
         agent_id: ctx.agent_id.to_string(),
         tool_digest,
@@ -303,6 +314,7 @@ pub(super) async fn grant(
             grant_class,
         },
         network,
+        hosts,
         secrets,
         reveal,
     })

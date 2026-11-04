@@ -20,7 +20,7 @@ use baml_rt_core::{
     AgentPackageName, ArtifactHash, BamlRtError, DeploymentContentHash, ReachabilityError, Result,
     bus::BusStream,
     context::{InvocationScope, generate_context_id},
-    ids::AgentId,
+    ids::{AgentId, ContextId},
 };
 use baml_rt_hash::AgentIdentityDigest;
 use baml_rt_mcp::{
@@ -38,7 +38,9 @@ use baml_rt_tools::{
     external_tools::{
         EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLifecycleEvent, ExternalLifecycleRecorder,
         ExternalLockfileMode, ExternalRegistryResolver, ExternalToolsLockfile, ServiceHost,
-        ToolDelivery, host_native_runtime_image,
+        ToolDelivery,
+        host::{DnsResolver, HostPolicy, PoolPolicy, ToolHost, ToolPolicy, TrustDomain, VmPool},
+        host_native_runtime_image,
         resolver::SandboxRuntimeWiring,
         runtime::{SandboxImageRef, ToolRuntime, TrustedLaunch},
     },
@@ -159,6 +161,7 @@ impl AgentPackage {
     )]
     async fn register_tools_phase(
         &self,
+        agent_id: &AgentId,
         loaded: SchemaLoaded,
         policy: &ToolAccessPolicy,
         agent_list_catalogue: Arc<dyn AgentLister>,
@@ -264,6 +267,28 @@ impl AgentPackage {
                 lifecycle_recorder.clone(),
             )
             .await?;
+        }
+        let mut bundled_v2_resolver = None;
+        if has_packaged_external_snapshots {
+            let mut bundles = Vec::new();
+            for snapshot in &packaged_snapshots {
+                if !matches!(
+                    snapshot.v2.as_ref().map(|v2| &v2.delivery),
+                    Some(ToolDelivery::Bundled { .. })
+                ) {
+                    continue;
+                }
+                let bytes = external_tool_cache::read_approved_bundle(
+                    &self.extract_dir,
+                    &snapshot.tool.name,
+                )?;
+                bundles.push((snapshot.clone(), Arc::<[u8]>::from(bytes)));
+            }
+            if !bundles.is_empty() {
+                let host = build_v2_tool_host(agent_id, &bundles)?;
+                bundled_v2_resolver =
+                    Some(ExternalRegistryResolver::from_v2_bundles(host, bundles)?);
+            }
         }
         let registry_external_resolver = if has_packaged_external_snapshots {
             match external_tool_cache::read_approved_snapshots(&self.extract_dir) {
@@ -380,18 +405,7 @@ impl AgentPackage {
                     } => (endpoint.clone(), descriptor_source),
                     ToolDelivery::Bundled { .. } => continue,
                 };
-                let local_name = v2
-                    .descriptor
-                    .name
-                    .rsplit_once('/')
-                    .map(|(_, local)| local.to_string())
-                    .ok_or_else(|| {
-                        BamlRtError::InvalidArgument(format!(
-                            "Service descriptor '{}' has no local tool name",
-                            v2.descriptor.name
-                        ))
-                    })?;
-                let client = Arc::new(McpServiceClient::from_http(endpoint, local_name, source)?);
+                let client = Arc::new(McpServiceClient::from_http(endpoint, source)?);
                 let host = Arc::new(
                     ServiceHost::new(
                         client,
@@ -403,6 +417,9 @@ impl AgentPackage {
                 let resolver = ExternalRegistryResolver::from_v2_services(host, vec![snapshot])?;
                 composite.push(Box::new(resolver) as Box<dyn ExternalToolResolver>);
             }
+        }
+        if let Some(registry) = bundled_v2_resolver {
+            composite.push(Box::new(registry) as Box<dyn ExternalToolResolver>);
         }
         if let Some(registry) = registry_external_resolver {
             composite.push(Box::new(registry) as Box<dyn ExternalToolResolver>);
@@ -641,6 +658,7 @@ impl AgentPackage {
                 .await?;
             let registered = self
                 .register_tools_phase(
+                    &args.agent_id,
                     loaded,
                     args.policy,
                     Arc::clone(&args.agent_list_catalogue),
@@ -847,102 +865,262 @@ fn build_external_lifecycle_recorder(
     writer: Arc<dyn ProvenanceWriter>,
 ) -> ExternalLifecycleRecorder {
     Arc::new(move |event| {
+        // Allocate the event anchor before spawning the write. This preserves
+        // emission order even when independent writes complete out of order.
+        let event = external_lifecycle_provenance_event(event);
         let writer = writer.clone();
         tokio::spawn(async move {
-            let (tool_name, phase, result, details) = match event {
-                ExternalLifecycleEvent::Describe {
-                    tool_name,
-                    identity,
-                    protocol_version,
-                    latency_ms,
-                    result,
-                    details,
-                } => (
-                    tool_name,
-                    "describe".to_string(),
-                    result,
-                    serde_json::json!({
-                        "identity": identity,
-                        "protocol_version": protocol_version,
-                        "latency_ms": latency_ms,
-                        "details": details,
-                    }),
-                ),
-                ExternalLifecycleEvent::Artifact {
-                    tool_name,
-                    artifact_ref,
-                    digest,
-                    signer,
-                    verification_result,
-                    pull_latency_ms,
-                    details,
-                } => (
-                    tool_name,
-                    "artifact".to_string(),
-                    verification_result,
-                    serde_json::json!({
-                        "artifact_ref": artifact_ref,
-                        "digest": digest,
-                        "signer": signer,
-                        "pull_latency_ms": pull_latency_ms,
-                        "details": details,
-                    }),
-                ),
-                ExternalLifecycleEvent::Quarantine {
-                    tool_name,
-                    reason,
-                    consecutive_failures,
-                    started_at_ms,
-                } => (
-                    tool_name,
-                    "quarantine".to_string(),
-                    "started".to_string(),
-                    serde_json::json!({
-                        "reason": reason,
-                        "consecutive_failures": consecutive_failures,
-                        "started_at_ms": started_at_ms,
-                    }),
-                ),
-                ExternalLifecycleEvent::QuarantineLifted {
-                    tool_name,
-                    lifted_by,
-                    lifted_at_ms,
-                } => (
-                    tool_name,
-                    "quarantine".to_string(),
-                    "lifted".to_string(),
-                    serde_json::json!({
-                        "lifted_by": lifted_by,
-                        "lifted_at_ms": lifted_at_ms,
-                    }),
-                ),
-                ExternalLifecycleEvent::SchemaDrift {
-                    tool_name,
-                    expected_schema_digest,
-                    observed_schema_digest,
-                } => (
-                    tool_name,
-                    "schema_drift".to_string(),
-                    "drifted".to_string(),
-                    serde_json::json!({
-                        "expected_schema_digest": expected_schema_digest,
-                        "observed_schema_digest": observed_schema_digest,
-                    }),
-                ),
-            };
-
-            let event = ProvEvent::external_tool_lifecycle(
-                generate_context_id(),
-                tool_name,
-                phase,
-                result,
-                details,
-            );
             if let Err(e) = writer.add_event(event).await {
                 tracing::warn!(error = ?e, "failed to record external tool lifecycle provenance event");
             }
         });
     })
+}
+
+fn external_lifecycle_provenance_event(event: ExternalLifecycleEvent) -> ProvEvent {
+    let (tool_name, phase, result, details, context_id) = match event {
+        ExternalLifecycleEvent::Describe {
+            tool_name,
+            identity,
+            protocol_version,
+            latency_ms,
+            result,
+            details,
+        } => (
+            tool_name,
+            "describe".to_string(),
+            result,
+            serde_json::json!({
+                "identity": identity,
+                "protocol_version": protocol_version,
+                "latency_ms": latency_ms,
+                "details": details,
+            }),
+            None,
+        ),
+        ExternalLifecycleEvent::Artifact {
+            tool_name,
+            artifact_ref,
+            digest,
+            signer,
+            verification_result,
+            pull_latency_ms,
+            details,
+        } => (
+            tool_name,
+            "artifact".to_string(),
+            verification_result,
+            serde_json::json!({
+                "artifact_ref": artifact_ref,
+                "digest": digest,
+                "signer": signer,
+                "pull_latency_ms": pull_latency_ms,
+                "details": details,
+            }),
+            None,
+        ),
+        ExternalLifecycleEvent::Quarantine {
+            tool_name,
+            reason,
+            consecutive_failures,
+            started_at_ms,
+        } => (
+            tool_name,
+            "quarantine".to_string(),
+            "started".to_string(),
+            serde_json::json!({
+                "reason": reason,
+                "consecutive_failures": consecutive_failures,
+                "started_at_ms": started_at_ms,
+            }),
+            None,
+        ),
+        ExternalLifecycleEvent::QuarantineLifted {
+            tool_name,
+            lifted_by,
+            lifted_at_ms,
+        } => (
+            tool_name,
+            "quarantine".to_string(),
+            "lifted".to_string(),
+            serde_json::json!({
+                "lifted_by": lifted_by,
+                "lifted_at_ms": lifted_at_ms,
+            }),
+            None,
+        ),
+        ExternalLifecycleEvent::SchemaDrift {
+            tool_name,
+            expected_schema_digest,
+            observed_schema_digest,
+        } => (
+            tool_name,
+            "schema_drift".to_string(),
+            "drifted".to_string(),
+            serde_json::json!({
+                "expected_schema_digest": expected_schema_digest,
+                "observed_schema_digest": observed_schema_digest,
+            }),
+            None,
+        ),
+        ExternalLifecycleEvent::TrustGranted {
+            tool_name,
+            agent_id,
+            tool_digest,
+            node,
+        } => (
+            tool_name,
+            "trust".to_string(),
+            "granted".to_string(),
+            serde_json::json!({
+                "agent_id": agent_id,
+                "tool_digest": tool_digest,
+                "node": node,
+            }),
+            None,
+        ),
+        ExternalLifecycleEvent::TrustRevoked {
+            tool_name,
+            agent_id,
+            tool_digest,
+            node,
+        } => (
+            tool_name,
+            "trust".to_string(),
+            "revoked".to_string(),
+            serde_json::json!({
+                "agent_id": agent_id,
+                "tool_digest": tool_digest,
+                "node": node,
+            }),
+            None,
+        ),
+        ExternalLifecycleEvent::TrustedInvoke {
+            tool_name,
+            agent_id,
+            tool_digest,
+            node,
+            artifact_hash,
+            context_id,
+            task_id,
+            invocation_id,
+            trace_id,
+        } => {
+            let event_context =
+                (!context_id.is_empty()).then(|| ContextId::from(context_id.as_str()));
+            (
+                tool_name,
+                "trusted_invoke".to_string(),
+                "operator_trusted".to_string(),
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "tool_digest": tool_digest,
+                    "node": node,
+                    "artifact_hash": artifact_hash,
+                    "context_id": context_id,
+                    "task_id": task_id,
+                    "invocation_id": invocation_id,
+                    "trace_id": trace_id,
+                }),
+                event_context,
+            )
+        }
+        ExternalLifecycleEvent::ServiceBound {
+            tool_name,
+            endpoint,
+        } => (
+            tool_name,
+            "service".to_string(),
+            "bound".to_string(),
+            serde_json::json!({
+                "endpoint": endpoint,
+            }),
+            None,
+        ),
+    };
+
+    ProvEvent::external_tool_lifecycle(
+        context_id.unwrap_or_else(generate_context_id),
+        tool_name,
+        phase,
+        result,
+        details,
+    )
+}
+
+fn build_v2_tool_host(
+    agent_id: &AgentId,
+    bundles: &[(
+        baml_rt_tools::external_tools::ExternalToolSnapshot,
+        Arc<[u8]>,
+    )],
+) -> Result<Arc<ToolHost>> {
+    let mut policy = HostPolicy::default();
+    for (snapshot, _) in bundles {
+        let Some(v2) = snapshot.v2.as_ref() else {
+            continue;
+        };
+        let ToolDelivery::Bundled { tool_digest, .. } = &v2.delivery else {
+            continue;
+        };
+        // Repository approval is the operator decision for the toolset's exact
+        // requested capabilities. The policy key still includes the agent and
+        // exact digest, so a different agent or bundle cannot reuse this grant.
+        policy.tools.insert(
+            (agent_id.to_string(), *tool_digest),
+            ToolPolicy {
+                trust_domain: TrustDomain::ThirdParty,
+                capabilities: v2.requested.clone(),
+                secret_hosts: std::collections::BTreeMap::new(),
+            },
+        );
+    }
+
+    #[cfg(feature = "sandbox-provider")]
+    {
+        use baml_rt_tools::external_tools::sandbox::{
+            MicrosandboxProvider, SandboxProvider, fresh_runner_id,
+        };
+        let runtime_image = baml_rt_tools::external_tools::runtime_image_for_tier(
+            baml_rt_tools::external_tools::KtoolRuntimeTier::Sandbox,
+        );
+        let image_ref = std::env::var("KARAKARA_KVM_IMAGE").map_err(|_| {
+            BamlRtError::InvalidArgument(
+                "bundled v2 tools require KARAKARA_KVM_IMAGE set to a digest-pinned OCI image"
+                    .into(),
+            )
+        })?;
+        let provider = MicrosandboxProvider::new()?.with_runtime_image(runtime_image, image_ref)?;
+        let provider: Arc<dyn SandboxProvider> = Arc::new(provider);
+        let pool = VmPool::new(provider, fresh_runner_id(), PoolPolicy::default());
+        return Ok(Arc::new(ToolHost::new(
+            pool,
+            policy,
+            Arc::new(DnsResolver),
+        )?));
+    }
+
+    #[cfg(all(not(feature = "sandbox-provider"), test))]
+    {
+        use baml_rt_tools::external_tools::sandbox::{
+            MockSandboxProvider, SandboxProvider, fresh_runner_id,
+        };
+        let provider: Arc<dyn SandboxProvider> = Arc::new(MockSandboxProvider::echo());
+        let pool = VmPool::new(provider, fresh_runner_id(), PoolPolicy::default());
+        return Ok(Arc::new(ToolHost::new(
+            pool,
+            policy,
+            Arc::new(DnsResolver),
+        )?));
+    }
+
+    #[cfg(all(not(feature = "sandbox-provider"), not(test)))]
+    {
+        let _ = (agent_id, bundles, policy);
+        Err(BamlRtError::InvalidArgument(
+            "bundled v2 tools require the sandbox-provider feature".into(),
+        ))
+    }
 }
 
 pub(crate) fn build_sandbox_wiring(
@@ -1135,20 +1313,8 @@ async fn verify_service_reachability(
         baml_rt_tools::external_tools::ServiceEndpoint::Mcp { url } => url.clone(),
         _ => format!("{endpoint:?}"),
     };
-    let local_name = v2
-        .descriptor
-        .name
-        .rsplit_once('/')
-        .map(|(_, local)| local.to_string())
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| {
-            BamlRtError::InvalidArgument(format!(
-                "Service descriptor '{}' has no local tool name",
-                v2.descriptor.name
-            ))
-        })?;
     let result = async {
-        let client = Arc::new(McpServiceClient::from_http(endpoint, local_name, source)?);
+        let client = Arc::new(McpServiceClient::from_http(endpoint, source)?);
         let host = ServiceHost::new(
             client,
             std::time::Duration::from_secs(30),
@@ -1352,11 +1518,11 @@ mod tests {
 
     use baml_rt_tools::{
         external_tools::{
-            CapabilityRequest, DescribeProvenance, ErrorClass, ExternalToolInterfaceLockEntry,
-            ExternalToolMetadata, ExternalToolSnapshot, ExternalToolsLockfile,
-            ExternalToolsetLockEntry, KtoolRuntimeTier, OutputTrust, ServiceEndpoint, SideEffect,
-            ToolRuntime, TrustedLaunch, TrustedRuntimeSpec, UnifiedToolDescriptor,
-            compute_external_schema_digest, runtime_image_for_tier,
+            CapabilityRequest, DescribeProvenance, ErrorClass, ExternalLifecycleEvent,
+            ExternalToolInterfaceLockEntry, ExternalToolMetadata, ExternalToolSnapshot,
+            ExternalToolsLockfile, ExternalToolsetLockEntry, KtoolRuntimeTier, OutputTrust,
+            ServiceEndpoint, SideEffect, ToolRuntime, TrustedLaunch, TrustedRuntimeSpec,
+            UnifiedToolDescriptor, compute_external_schema_digest, runtime_image_for_tier,
         },
         mcp_snapshot::canonical_digest,
     };
@@ -1366,7 +1532,7 @@ mod tests {
     use super::{
         AgentPackage, EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLifecycleRecorder,
         ExternalLockfileMode, ManifestToolNames, build_allowed_dirs_resolver,
-        verify_deploy_reachability,
+        external_lifecycle_provenance_event, verify_deploy_reachability,
     };
 
     fn packaged_identity_fixture(root: &Path, source: &str) -> AgentPackage {
@@ -1410,6 +1576,43 @@ mod tests {
             first.derived_agent_id().expect("derive first ID"),
             changed.derived_agent_id().expect("derive changed ID"),
         );
+    }
+
+    #[test]
+    fn trusted_invoke_provenance_keeps_explicit_call_identity() {
+        let event = external_lifecycle_provenance_event(ExternalLifecycleEvent::TrustedInvoke {
+            tool_name: "support/gpu".into(),
+            agent_id: "agent-1".into(),
+            tool_digest: "sha256:tool".into(),
+            node: "gpu-1".into(),
+            artifact_hash: "sha256:artifact".into(),
+            context_id: "ctx-audit".into(),
+            task_id: "task-1".into(),
+            invocation_id: "invoke-1".into(),
+            trace_id: "trace-1".into(),
+        });
+
+        assert_eq!(event.context_id().as_str(), "ctx-audit");
+        let baml_rt_provenance::ProvEventData::ExternalToolLifecycle {
+            tool_name,
+            phase,
+            result,
+            details,
+        } = event.data()
+        else {
+            panic!("expected external tool lifecycle provenance");
+        };
+        assert_eq!(tool_name, "support/gpu");
+        assert_eq!(phase, "trusted_invoke");
+        assert_eq!(result, "operator_trusted");
+        assert_eq!(details["agent_id"], "agent-1");
+        assert_eq!(details["tool_digest"], "sha256:tool");
+        assert_eq!(details["node"], "gpu-1");
+        assert_eq!(details["artifact_hash"], "sha256:artifact");
+        assert_eq!(details["context_id"], "ctx-audit");
+        assert_eq!(details["task_id"], "task-1");
+        assert_eq!(details["invocation_id"], "invoke-1");
+        assert_eq!(details["trace_id"], "trace-1");
     }
 
     fn trusted_snapshot(launch: TrustedLaunch, node: Option<&str>) -> ExternalToolSnapshot {

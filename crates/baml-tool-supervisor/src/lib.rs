@@ -17,6 +17,7 @@
 
 pub mod error;
 pub mod limits;
+pub mod pinned_hosts;
 pub mod sandbox;
 pub mod secrets;
 pub mod supervisor;

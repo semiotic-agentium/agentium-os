@@ -157,6 +157,28 @@ part of `tool_digest`. Deploy then checks the declared node and socket, and
 fails with `tool '<name>' (<digest>) requires reachable node|endpoint '<target>',
 which is not reachable` instead of building or moving the agent.
 
+### Approval and audit records
+
+A Trusted bundle needs two approvals. The snapshot must be approved, and the
+operator policy must trust the exact `(agent_id, tool_digest)` pair. Requested
+network or secret capabilities remain informational on this path. Trusted
+execution gives the process host access, so the policy does not turn those
+requests into a partial grant.
+
+The runner sends these lifecycle records to provenance:
+
+- `TrustGranted` when an approved Trusted bundle passes the operator-trust
+  check. The record includes the exact `tool_digest` and node.
+- `TrustedInvoke` for each invocation that runs under that trust record. It
+  carries the agent artifact, context, task, invocation, and trace IDs supplied
+  by the host.
+- `TrustRevoked` when the operator removes the exact agent and bundle pairing.
+  The record includes the revoked `tool_digest`.
+- `ServiceBound` after a Service endpoint passes its deploy-time schema check.
+
+A failed node, socket, or Service endpoint check stops deployment. The runner
+does not build a missing tool or silently choose another endpoint.
+
 ### Identity: two digests
 
 Each tool carries two independent digests:

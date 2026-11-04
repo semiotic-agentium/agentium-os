@@ -423,11 +423,14 @@ impl Supervisor {
                             }
                         }
                     }
-                    Err(error) => self.state.send(GuestMessage::LoadAck {
-                        tool_digest,
-                        ok: false,
-                        error: Some(format!("cannot start MCP worker: {error}")),
-                    }),
+                    Err(error) => {
+                        eprintln!("baml-tool-supervisor: cannot start MCP worker: {error:?}");
+                        self.state.send(GuestMessage::LoadAck {
+                            tool_digest,
+                            ok: false,
+                            error: Some(format!("cannot start MCP worker: {error}")),
+                        })
+                    }
                 }
             }
             Ok(Err(error)) => {

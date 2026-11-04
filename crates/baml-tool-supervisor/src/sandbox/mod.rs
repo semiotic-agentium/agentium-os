@@ -106,6 +106,9 @@ pub trait WorkerBackend: Send + Sync {
 }
 
 /// Shared env construction. No secret value ever appears here.
+/// Debian-family system trust bundle (the runtime image is node:22-bookworm).
+const SYSTEM_CA_BUNDLE: &str = "/etc/ssl/certs/ca-certificates.crt";
+
 pub fn worker_env(
     bundle_dir: &Path,
     _node_modules: Option<&Path>,
@@ -123,6 +126,15 @@ pub fn worker_env(
         ("LANG".to_string(), "C.UTF-8".to_string()),
         ("TMPDIR".to_string(), "/tmp".to_string()),
     ];
+    // Node ships its own CA list and ignores the system store. When the VM
+    // intercepts TLS (egress secret injection) it installs its CA into the
+    // system bundle; trust that bundle in addition to node's own roots.
+    if Path::new(SYSTEM_CA_BUNDLE).is_file() {
+        env.push((
+            "NODE_EXTRA_CA_CERTS".to_string(),
+            SYSTEM_CA_BUNDLE.to_string(),
+        ));
+    }
     if !reveals.is_empty() {
         // Names → fd numbers only. This is a routing table, not a secret.
         let table: std::collections::BTreeMap<&str, RawFd> = reveals

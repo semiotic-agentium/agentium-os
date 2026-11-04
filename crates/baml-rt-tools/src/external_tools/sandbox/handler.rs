@@ -127,6 +127,7 @@ impl ToolHandler for SandboxToolHandler {
             capabilities: self.capabilities.clone(),
             pending_input: None,
             drift_guard: self.drift_guard.clone(),
+            input_schema: Arc::new(self.metadata.input_schema.clone()),
             _agent_id: ctx.agent_id,
         }))
     }
@@ -145,13 +146,20 @@ pub struct SandboxToolSession {
     /// Shared with the parent handler so the live-schema check runs once per
     /// handler lifetime, not once per session.
     drift_guard: Option<Arc<DriftGuard>>,
+    /// Tool input schema; `send` drops `null`s it cannot accept for optional fields.
+    input_schema: Arc<Value>,
     _agent_id: AgentId,
 }
 
 #[async_trait]
 impl ToolSession for SandboxToolSession {
     async fn send(&mut self, input: Value) -> std::result::Result<(), ToolSessionError> {
-        self.pending_input = Some(input);
+        self.pending_input = Some(
+            crate::external_tools::input_nulls::omit_null_optional_fields(
+                &self.input_schema,
+                input,
+            ),
+        );
         Ok(())
     }
 

@@ -126,6 +126,14 @@ impl ServiceHost {
                 )));
             }
         }
+        if let Some(recorder) = &self.recorder {
+            recorder(
+                crate::external_tools::ExternalLifecycleEvent::ServiceBound {
+                    tool_name: snapshot.tool.name.clone(),
+                    endpoint: service_endpoint_label(endpoint),
+                },
+            );
+        }
         Ok(())
     }
 
@@ -252,6 +260,12 @@ impl ExternalInvoker for ServiceInvoker {
     }
 }
 
+fn service_endpoint_label(endpoint: &ServiceEndpointRef) -> String {
+    match endpoint {
+        crate::external_tools::ServiceEndpoint::Mcp { url } => url.clone(),
+    }
+}
+
 fn service_tool_name(descriptor: &UnifiedToolDescriptor) -> Result<String> {
     descriptor
         .name
@@ -277,8 +291,9 @@ mod drift_tests {
     use super::{ServiceClient, ServiceHost};
     use crate::{
         external_tools::{
-            DESCRIPTOR_ABI, DescribeProvenance, ErrorClass, ExternalToolSnapshot, InvokeResponse,
-            OutputTrust, ServiceEndpoint, SideEffect, ToolSchemaResult, UnifiedToolDescriptor,
+            DESCRIPTOR_ABI, DescribeProvenance, ErrorClass, ExternalLifecycleEvent,
+            ExternalToolSnapshot, InvokeResponse, OutputTrust, ServiceEndpoint, SideEffect,
+            ToolSchemaResult, UnifiedToolDescriptor,
         },
         mcp_snapshot::canonical_digest,
     };
@@ -388,6 +403,44 @@ mod drift_tests {
     }
 
     #[tokio::test]
+    async fn verify_records_service_binding() {
+        let (a, a_input, b, b_input) = two_tool_snapshot();
+        let snapshot = ExternalToolSnapshot::from_v2_service_toolset(
+            a.clone(),
+            vec![a.clone(), b.clone()],
+            endpoint(),
+            source(),
+            "ops",
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+
+        let mut schemas = HashMap::new();
+        schemas.insert("a".to_string(), (a_input, json!({"type": "object"})));
+        schemas.insert("b".to_string(), (b_input, json!({"type": "object"})));
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let recorder: crate::external_tools::ExternalLifecycleRecorder =
+            Arc::new(move |event| sink.lock().unwrap().push(event));
+        let host = ServiceHost::new(
+            Arc::new(MockClient { schemas }),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .unwrap()
+        .with_lifecycle_recorder(recorder);
+
+        host.verify(&snapshot).await.unwrap();
+
+        let events = events.lock().unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ExternalLifecycleEvent::ServiceBound { tool_name, endpoint }]
+                if tool_name == "support/a" && endpoint == "https://mcp.example.test/mcp"
+        ));
+    }
+
+    #[tokio::test]
     async fn verify_fails_when_a_sibling_tool_drifts() {
         let (a, a_input, b, _b_input) = two_tool_snapshot();
         // The snapshot registers tool `a`, but the endpoint toolset includes `b`.
@@ -411,17 +464,26 @@ mod drift_tests {
                 json!({"type": "object"}),
             ),
         );
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = events.clone();
+        let recorder: crate::external_tools::ExternalLifecycleRecorder =
+            Arc::new(move |event| sink.lock().unwrap().push(event));
         let host = ServiceHost::new(
             Arc::new(MockClient { schemas }),
             Duration::from_secs(1),
             Duration::from_secs(1),
         )
-        .unwrap();
+        .unwrap()
+        .with_lifecycle_recorder(recorder);
 
         let err = host.verify(&snapshot).await.unwrap_err();
         assert!(
             err.to_string().contains("schema drift on tool 'support/b'"),
             "unexpected error: {err}"
+        );
+        assert!(
+            events.lock().unwrap().is_empty(),
+            "a drifted endpoint must not be recorded as bound"
         );
     }
 }

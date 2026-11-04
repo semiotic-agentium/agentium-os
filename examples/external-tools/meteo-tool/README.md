@@ -1,91 +1,117 @@
-# dev/meteo-tool external tool
+# dev/meteo-tool
 
-This scaffold implements the Agent Platform external tool protocol (JSON-RPC over stdio).
+MCP stdio toolset for weather forecasts from Open-Meteo. The toolset is version
+2.0.0 and keeps the existing `dev/meteo-tool` name and input/output contract.
 
-## Wire contract
+For the complete local build, cleanup, publish, deploy, and chat flow, run
+`./run-meteo-agent.sh` from the repository root. It reuses an existing ready
+runner and does not manage the local Docker registry.
 
-- Read one JSON-RPC request from stdin.
-- Write one JSON-RPC response to stdout.
-- Write logs/diagnostics to stderr only.
-- Exit after one request.
+## Develop
 
-Supported methods in the scaffold:
-
-- `tool/describe`
-- `tool/schema`
-- `tool/invoke`
-
-## Local setup
+Run these commands from the repository root:
 
 ```bash
-python3 ./main.py </dev/null || true
+cd ~/Documents/Projects/agentium-os
+cd examples/external-tools/meteo-tool
+npm install
+cd ../../..
+
+cargo run -q -p karakara-os -- tool build examples/external-tools/meteo-tool
+cargo run -q -p karakara-os -- tool test \
+  examples/external-tools/meteo-tool \
+  --input '{"location_query":"Athens, Greece","hourly_limit":2}'
 ```
 
-## Local probe (developer convenience)
+The tool asks Open-Meteo's geocoding API for a location and then requests the
+current conditions and one day of hourly data. Network access is declared in
+`karakara.toml`, not in the handler.
 
-For sandbox runtime tools, the runner invokes `/tool-adapter` inside the sandbox.
-This local source probe only checks the underlying tool logic; it bypasses sandbox framing/rootfs/image checks.
+## Publish and deploy
+
+The Sandbox runner needs a digest-pinned runtime image that the microsandbox
+image loader can pull. For local Linux/KVM validation, use a local registry.
+Run this once from the repository root:
 
 ```bash
-printf '{"jsonrpc":"2.0","id":1,"method":"tool/describe","params":{"tool_name":"dev/meteo-tool"}}\n' | python3 ./main.py
-printf '{"jsonrpc":"2.0","id":2,"method":"tool/invoke","params":{"invocation_id":"demo","tool_name":"dev/meteo-tool","input":{"location_query":"Athens, Greece"}}}\n' | python3 ./main.py
+cd "$(git rev-parse --show-toplevel)"
+
+# Build the supervisor-compatible Node runtime image.
+just tool-runtime-image
+
+# Expose the image to microsandbox through a local OCI registry.
+docker rm -f karakara-tool-registry 2>/dev/null || true
+docker run -d --restart=unless-stopped \
+  --name karakara-tool-registry \
+  -p 5001:5000 \
+  registry:2
+
+docker tag karakara/tool-runtime:node-22 \
+  localhost:5001/karakara/tool-runtime:node-22
+docker push localhost:5001/karakara/tool-runtime:node-22
+
+RUNTIME_DIGEST="$(docker image inspect \
+  localhost:5001/karakara/tool-runtime:node-22 \
+  --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+  | awk -F@ '$1 == "localhost:5001/karakara/tool-runtime" { print $2; exit }')"
+export KARAKARA_KVM_IMAGE="localhost:5001/karakara/tool-runtime@$RUNTIME_DIGEST"
+printf 'Using runtime image: %s\n' "$KARAKARA_KVM_IMAGE"
 ```
 
-
-## Using with runner dev mode
-
-Set `BAML_EXTERNAL_TOOLS_DIR` to this tool directory (or a colon-separated list), then run your runner:
+If you already have a registry-published runtime image, skip the local registry
+steps and export its digest-pinned reference instead:
 
 ```bash
-export BAML_EXTERNAL_TOOLS_DIR="$(pwd)"
+export KARAKARA_KVM_IMAGE='registry.example.com/karakara/tool-runtime@sha256:...'
 ```
 
-Then reference this tool in an agent manifest as:
-
-```json
-{ "name": "dev/meteo-tool", "backend": "external" }
-```
-
-## Bind sandbox runtime notes
-
-These notes apply to both bind modes:
-
-- metadata uses a portable tool-relative bind path,
-- local absolute bind paths live in gitignored `tool-manifest.lock.json`,
-- `check-external-tool` should pass before running the runner,
-- sandbox adapters should support TSRPC-framed JSON-RPC for parity with sandbox execution.
-
-## Bind setup (Docker-assisted)
-
-A helper script is scaffolded at `./setup_bind_sandbox.sh`.
+Start the runner in one terminal. This keeps provenance in `provenance.db`:
 
 ```bash
-./setup_bind_sandbox.sh --force
+cd "$(git rev-parse --show-toplevel)"
+KARAKARA_KVM_IMAGE="$KARAKARA_KVM_IMAGE" just runner-provenance
 ```
 
-This script wraps `sandbox-bind-sync` to build `adapter/Dockerfile`, export bind
-rootfs, write the local lock file, materialize adapter sidecar bundle (`/etc/karakara/tool-bundle.json`),
-run `check-external-tool`, and run a framed
-`tool/describe` smoke-test against rootfs `/tool-adapter`.
-
-> Bind rootfs mode copies filesystem contents only. Docker image config
-> (like `ENV TOOL_CMD=...`) is not guaranteed at runtime. The generated
-> adapter resolves a default tool command without requiring env vars.
-
-You can also call the command directly:
+In a second terminal, publish the tool:
 
 ```bash
-cargo run -q -p karakara-os -- sandbox-bind-sync \
-  --tool-dir . \
-  --rootfs ./.tmp/bind-rootfs \
-  --dockerfile adapter/Dockerfile \
-  --image local-sandbox:latest \
-  --force \
-  --check
+cd "$(git rev-parse --show-toplevel)"
+cargo run -q -p karakara-os -- tool publish \
+  examples/external-tools/meteo-tool \
+  --repository-url http://127.0.0.1:18080/repository \
+  --approved-by local-dev \
+  --yes
 ```
 
-Pass `--no-smoke-test` to skip the framed `tool/describe` probe (e.g. when the
-adapter binary can't run directly on the host).
+Then deploy the agent:
 
-`adapter/tool-adapter` is a generated transport shim (TSRPC <-> raw stdio).
-You usually only edit the scaffolded language source (`main.py`, `src/main.rs`, etc.).
+```bash
+cargo run -q -p karakara-os -- install agent \
+  --path examples/agents/meteo-agent \
+  --repository-url http://127.0.0.1:18080/repository \
+  --url http://127.0.0.1:18080 \
+  --rationale "meteo v2 validation"
+```
+
+Publishing builds the MCP server, records the descriptor returned by
+`tools/list`, creates the `.ktool` bundle, and stores it in the repository.
+
+## Chat and inspect provenance
+
+After deployment, connect to the agent:
+
+```bash
+cargo run -q -p karakara-os -- chat \
+  --agent meteo-agent \
+  --url http://127.0.0.1:18080
+```
+
+The runner exposes provenance queries over HTTP:
+
+```bash
+curl 'http://127.0.0.1:18080/provenance/tool-calls?agent_package=meteo-agent&page_size=100'
+curl 'http://127.0.0.1:18080/provenance/lifecycle-events?agent_package=meteo-agent&page_size=100'
+```
+
+The local provenance store is `provenance.db`. OpenTelemetry connection
+warnings are expected when no collector is running.

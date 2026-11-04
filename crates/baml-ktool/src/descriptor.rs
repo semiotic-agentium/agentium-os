@@ -228,11 +228,25 @@ pub enum McpMappingError {
     MissingName,
 }
 
-/// The one digest for every tool kind (JCS + SHA-256 over the full descriptor).
-/// Static, external, and MCP descriptors all go through this so parity is
-/// enforced by construction.
+/// The one digest for every tool kind (JCS + SHA-256 over the descriptor
+/// *interface*). Static, external, and MCP descriptors all go through this so
+/// parity is enforced by construction.
+///
+/// `version` is deliberately excluded (plan §16.1/§16.7): the descriptor digest
+/// covers the interface the agent codegens against, while the toolset version is
+/// snapshot/lockfile identity pinned separately. A pure version bump with an
+/// unchanged interface must therefore leave this digest unchanged (§16.2: that
+/// path is operator-approval only, never an agent rebuild). We normalize the
+/// version to empty before hashing so the digest is independent of its value
+/// while every other field stays intact; a descriptor whose version is already
+/// empty (static tools, bare MCP imports) hashes identically to before.
 pub fn compute_descriptor_digest(descriptor: &ToolDescriptor) -> Digest {
-    canonical_digest(descriptor)
+    if descriptor.version.is_empty() {
+        return canonical_digest(descriptor);
+    }
+    let mut interface = descriptor.clone();
+    interface.version = String::new();
+    canonical_digest(&interface)
 }
 
 #[cfg(test)]
@@ -313,6 +327,30 @@ mod tests {
             a,
             compute_descriptor_digest(&changed),
             "a contract change must change the digest"
+        );
+    }
+
+    #[test]
+    fn digest_ignores_version() {
+        // Plan §16.1/§16.2/§16.7: version is snapshot/lockfile identity, not part
+        // of the interface. A pure version bump must not change descriptor_digest
+        // (else it would force an unnecessary agent rebuild and drift the live
+        // `tools/list` check, which cannot report a version).
+        let mut a = sample();
+        a.version = "2.0.0".into();
+        let mut b = a.clone();
+        b.version = "9.9.9".into();
+        assert_eq!(
+            compute_descriptor_digest(&a),
+            compute_descriptor_digest(&b),
+            "version must not influence the interface digest"
+        );
+        let mut empty = a.clone();
+        empty.version = String::new();
+        assert_eq!(
+            compute_descriptor_digest(&a),
+            compute_descriptor_digest(&empty),
+            "a stamped version must hash identically to the empty-version baseline"
         );
     }
 }

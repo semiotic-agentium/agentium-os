@@ -14,8 +14,8 @@ use std::{
 };
 
 use baml_ktool::{
-    DESCRIPTOR_ABI, SideEffect, ToolDescriptor, audit_ktool_bundle,
-    build_ktool_bundle, unpack_ktool_bundle,
+    DESCRIPTOR_ABI, SideEffect, ToolDescriptor, audit_ktool_bundle, build_ktool_bundle,
+    unpack_ktool_bundle,
 };
 use baml_sandbox_protocol::{
     codec::{FrameReader, FrameWriter},

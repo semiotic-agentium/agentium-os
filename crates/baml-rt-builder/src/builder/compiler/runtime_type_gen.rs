@@ -235,6 +235,34 @@ async fn prepare_external_tool_snapshots(
             );
             baml_rt_tools::external_tool_cache::write_approved_snapshot(root, &snapshot)
                 .map_err(BamlBuilderError::Io)?;
+            if let Some(v2) = snapshot.v2.as_ref()
+                && let baml_rt_tools::external_tools::ToolDelivery::Bundled {
+                    bundle_digest, ..
+                } = &v2.delivery
+            {
+                let bytes = service
+                    .get_external_tool_bundle(bundle_digest.clone())
+                    .await
+                    .map_err(|err| BamlBuilderError::InvalidArgumentWithSource {
+                        message: format!(
+                            "failed to fetch bundle for external tool '{}'",
+                            snapshot.tool.name
+                        ),
+                        source: Box::new(err),
+                    })?
+                    .ok_or_else(|| {
+                        BamlBuilderError::InvalidArgument(format!(
+                            "approved bundle for external tool '{}' was not found",
+                            snapshot.tool.name
+                        ))
+                    })?;
+                baml_rt_tools::external_tool_cache::write_approved_bundle(
+                    root,
+                    &snapshot.tool.name,
+                    &bytes,
+                )
+                .map_err(BamlBuilderError::Io)?;
+            }
         }
         ensure_external_snapshots_resolved(&required_external_tools, &resolved)?;
         return Ok(());
@@ -259,6 +287,24 @@ async fn prepare_external_tool_snapshots(
             );
             baml_rt_tools::external_tool_cache::write_approved_snapshot(root, &snapshot)
                 .map_err(BamlBuilderError::Io)?;
+            if snapshot.v2.as_ref().is_some_and(|v2| {
+                matches!(
+                    &v2.delivery,
+                    baml_rt_tools::external_tools::ToolDelivery::Bundled { .. }
+                )
+            }) {
+                let bytes = baml_rt_tools::external_tool_cache::read_approved_bundle(
+                    &cache_root,
+                    &snapshot.tool.name,
+                )
+                .map_err(BamlBuilderError::from)?;
+                baml_rt_tools::external_tool_cache::write_approved_bundle(
+                    root,
+                    &snapshot.tool.name,
+                    &bytes,
+                )
+                .map_err(BamlBuilderError::Io)?;
+            }
         }
         ensure_external_snapshots_resolved(&required_external_tools, &resolved)?;
         return Ok(());

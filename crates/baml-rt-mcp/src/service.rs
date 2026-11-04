@@ -27,16 +27,11 @@ use crate::runtime::{HttpLaunchConfig, LaunchKind, McpConnection, ServerLaunch};
 /// for the live descriptor, and the shared DriftGuard compares its schemas.
 pub struct McpServiceClient {
     endpoint: ServiceEndpointRef,
-    tool_name: String,
     connection: Arc<McpConnection>,
 }
 
 impl McpServiceClient {
-    pub fn from_http(
-        endpoint: ServiceEndpointRef,
-        tool_name: impl Into<String>,
-        source: &DescribeProvenance,
-    ) -> Result<Self> {
+    pub fn from_http(endpoint: ServiceEndpointRef, source: &DescribeProvenance) -> Result<Self> {
         let url = match &endpoint {
             ServiceEndpointRef::Mcp { url } => url,
             _ => {
@@ -80,27 +75,21 @@ impl McpServiceClient {
         };
         Ok(Self {
             endpoint,
-            tool_name: tool_name.into(),
             connection: Arc::new(McpConnection::new(launch)),
         })
     }
 
-    pub fn new(
-        endpoint: ServiceEndpointRef,
-        tool_name: impl Into<String>,
-        connection: Arc<McpConnection>,
-    ) -> Self {
+    pub fn new(endpoint: ServiceEndpointRef, connection: Arc<McpConnection>) -> Self {
         Self {
             endpoint,
-            tool_name: tool_name.into(),
             connection,
         }
     }
 
-    fn check_target(&self, endpoint: &ServiceEndpointRef, tool_name: &str) -> Result<()> {
-        if endpoint != &self.endpoint || tool_name != self.tool_name {
+    fn check_target(&self, endpoint: &ServiceEndpointRef) -> Result<()> {
+        if endpoint != &self.endpoint {
             return Err(BamlRtError::InvalidArgument(
-                "MCP ServiceClient received an unexpected endpoint or tool name".to_string(),
+                "MCP ServiceClient received an unexpected endpoint".to_string(),
             ));
         }
         Ok(())
@@ -113,13 +102,16 @@ impl ServiceClient for McpServiceClient {
         &self,
         endpoint: &ServiceEndpointRef,
         tool_name: &str,
-        _timeout: Duration,
+        timeout: Duration,
     ) -> Result<ToolSchemaResult> {
-        self.check_target(endpoint, tool_name)?;
-        let descriptor = self
-            .connection
-            .describe_tool(tool_name)
+        self.check_target(endpoint)?;
+        let descriptor = tokio::time::timeout(timeout, self.connection.describe_tool(tool_name))
             .await
+            .map_err(|_| {
+                BamlRtError::InvalidArgument(format!(
+                    "MCP Service describe timed out after {timeout:?}"
+                ))
+            })?
             .map_err(|err| BamlRtError::InvalidArgument(err.to_string()))?;
         let digest = compute_descriptor_schema_digest(&descriptor).to_string();
         Ok(ToolSchemaResult {
@@ -138,13 +130,16 @@ impl ServiceClient for McpServiceClient {
         endpoint: &ServiceEndpointRef,
         tool_name: &str,
         input: Value,
-        _timeout: Duration,
+        timeout: Duration,
     ) -> Result<InvokeResponse> {
-        self.check_target(endpoint, tool_name)?;
-        let result = self
-            .connection
-            .call_tool(tool_name, input)
+        self.check_target(endpoint)?;
+        let result = tokio::time::timeout(timeout, self.connection.call_tool(tool_name, input))
             .await
+            .map_err(|_| {
+                BamlRtError::InvalidArgument(format!(
+                    "MCP Service invoke timed out after {timeout:?}"
+                ))
+            })?
             .map_err(|err| BamlRtError::InvalidArgument(err.to_string()))?;
         let output = serde_json::to_value(result).map_err(|err| {
             BamlRtError::InvalidArgument(format!("MCP result serialization failed: {err}"))

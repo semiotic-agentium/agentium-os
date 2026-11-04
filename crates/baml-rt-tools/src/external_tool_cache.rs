@@ -24,6 +24,7 @@ const EXTERNAL_TOOLS_DIR: &str = "external-tools";
 const TOOLS_DIR: &str = "tools";
 const PENDING_DIR: &str = "pending";
 const SNAPSHOT_FILE: &str = "tool-snapshot.json";
+const BUNDLE_FILE: &str = "tool.ktool";
 
 pub fn external_tools_dir(root: &Path) -> PathBuf {
     root.join(EXTERNAL_TOOLS_DIR)
@@ -63,6 +64,11 @@ pub fn approved_snapshot_path(root: &Path, tool_name: &str) -> Result<PathBuf> {
     Ok(approved_tool_dir(root, tool_name)?.join(SNAPSHOT_FILE))
 }
 
+/// Path to the executable `.ktool` bytes paired with an approved v2 snapshot.
+pub fn approved_bundle_path(root: &Path, tool_name: &str) -> Result<PathBuf> {
+    Ok(approved_tool_dir(root, tool_name)?.join(BUNDLE_FILE))
+}
+
 pub fn pending_tool_dir(root: &Path, tool_name: &str) -> Result<PathBuf> {
     Ok(external_tools_dir(root)
         .join(PENDING_DIR)
@@ -77,6 +83,18 @@ pub fn pending_snapshot_path(root: &Path, snapshot: &ExternalToolSnapshot) -> Re
 pub fn write_approved_snapshot(root: &Path, snapshot: &ExternalToolSnapshot) -> io::Result<()> {
     let path = approved_snapshot_path(root, &snapshot.tool.name).map_err(invalid_data)?;
     write_json_atomic(&path, snapshot)
+}
+
+/// Store executable v2 bundle bytes next to their approved snapshot.
+pub fn write_approved_bundle(root: &Path, tool_name: &str, bytes: &[u8]) -> io::Result<()> {
+    let path = approved_bundle_path(root, tool_name).map_err(invalid_data)?;
+    write_bytes_atomic(&path, bytes)
+}
+
+/// Read executable v2 bundle bytes paired with an approved snapshot.
+pub fn read_approved_bundle(root: &Path, tool_name: &str) -> Result<Vec<u8>> {
+    let path = approved_bundle_path(root, tool_name).map_err(invalid_data)?;
+    fs::read(&path).map_err(|err| io_err(&path, err))
 }
 
 pub fn write_pending_snapshot(root: &Path, snapshot: &ExternalToolSnapshot) -> io::Result<()> {
@@ -146,12 +164,16 @@ pub fn read_snapshot(path: &Path) -> Result<ExternalToolSnapshot> {
 }
 
 fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> io::Result<()> {
+    let mut bytes = serde_json::to_vec_pretty(value)?;
+    bytes.push(b'\n');
+    write_bytes_atomic(path, &bytes)
+}
+
+fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let tmp = path.with_extension("tmp");
-    let mut bytes = serde_json::to_vec_pretty(value)?;
-    bytes.push(b'\n');
     fs::write(&tmp, bytes)?;
     fs::rename(tmp, path)
 }

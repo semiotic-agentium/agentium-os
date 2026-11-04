@@ -124,12 +124,15 @@ struct FakeVms {
     created: AtomicUsize,
     teardowns: AtomicUsize,
     cancels: Arc<AtomicUsize>,
+    /// `grant.hosts()` of every VM spec, i.e. what lands in the VM's /etc/hosts.
+    hosts: std::sync::Mutex<Vec<BTreeMap<String, std::collections::BTreeSet<IpAddr>>>>,
 }
 
 #[async_trait]
 impl SandboxProvider for FakeVms {
     async fn create_vm(&self, spec: VmSpec) -> Result<(SandboxHandle, TsrpcChannel)> {
         self.created.fetch_add(1, Ordering::SeqCst);
+        self.hosts.lock().unwrap().push(spec.grant.hosts().clone());
         let (host, guest) = tokio::io::duplex(64 * 1024);
         tokio::spawn(supervisor(guest, self.cancels.clone()));
         let (reader, writer) = tokio::io::split(host);
@@ -278,6 +281,7 @@ fn build(
         created: AtomicUsize::new(0),
         teardowns: AtomicUsize::new(0),
         cancels: Arc::new(AtomicUsize::new(0)),
+        hosts: std::sync::Mutex::new(Vec::new()),
     });
     let pool = VmPool::new(vm.clone(), "test-runner", pool_policy);
     let mut host_policy = HostPolicy {
@@ -532,6 +536,23 @@ async fn concurrent_calls_share_one_stream_without_crossing_requests() {
     assert_eq!(f.vm.created.load(Ordering::SeqCst), 1);
 }
 
+/// The VM resolves declared hosts from a pinned `/etc/hosts` (no guest DNS),
+/// so the grant must carry exactly the addresses the CIDR policy allows.
+#[tokio::test]
+async fn grant_pins_declared_hosts_to_their_allowed_addresses() {
+    let requested = net("api.example.com");
+    let (f, ctx) = fixture(requested.clone(), policy(requested), "s3cret");
+    invoke(&f, &ctx, json!({"q": "hosts"})).await;
+    let hosts = f.vm.hosts.lock().unwrap();
+    assert_eq!(hosts.len(), 1);
+    let ips: Vec<String> = hosts[0]["api.example.com"]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(ips, ["1.1.1.1"]);
+    assert_eq!(hosts[0].len(), 1, "only declared hosts are pinned");
+}
+
 #[tokio::test]
 async fn timed_out_call_does_not_retire_shared_channel() {
     let requested = net("api.example.com");
@@ -551,7 +572,9 @@ async fn timed_out_call_does_not_retire_shared_channel() {
             deadline_ms,
             ..Default::default()
         },
-        json!({"q": "slow", "delay": 500}),
+        // The fake supervisor does not enforce deadlines, so outlast the
+        // host's guest-deadline grace (2s) to exercise the host backstop.
+        json!({"q": "slow", "delay": 2400}),
     );
     let fast = f.host.invoke(
         &f.snapshot,

@@ -20,6 +20,7 @@ baml-rt-builder = { path = "../baml-rt-builder" }
 baml-rt-api = { path = "../baml-rt-api" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
 baml-rt-llm-config = { path = "../baml-rt-llm-config" }
+sysinfo = { workspace = true }
 clap = { workspace = true }
 toml = "0.8"
 toml_edit = "0.22"

@@ -61,7 +61,12 @@ pub(crate) fn build_toolset(dir: &Path, force_rebuild: bool) -> Result<BuiltTool
         ensure_built(dir)?;
     }
     let listed = extract_tools_json(dir)?;
-    let descriptors = finish_build(&listed, &config.name)?;
+    let mut descriptors = finish_build(&listed, &config.name)?;
+    // MCP tools/list has no toolset version field. The project declaration is
+    // the version carried by the platform descriptor and snapshot identity.
+    for descriptor in &mut descriptors {
+        descriptor.version = config.version.to_string();
+    }
     Ok(BuiltToolset {
         config,
         descriptors,

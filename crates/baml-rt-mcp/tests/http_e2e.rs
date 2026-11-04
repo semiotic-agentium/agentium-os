@@ -17,14 +17,23 @@ use std::{
     time::{Duration, Instant},
 };
 
-use baml_rt_mcp::runtime::{ConnectionError, McpCancelSlot, McpConnection};
+use baml_rt_mcp::{
+    runtime::{ConnectionError, McpCancelSlot, McpConnection},
+    service::McpServiceClient,
+};
 use baml_rt_tools::{
     ExternalToolResolver,
+    external_tools::{
+        DescribeProvenance, ExternalToolSnapshot, ServiceEndpoint, ServiceHost,
+        UnifiedToolDescriptor,
+    },
     mcp_cache::read_server,
     mcp_config::HttpHeader,
-    mcp_snapshot::{Digest, McpApprovalState},
+    mcp_snapshot::{
+        Digest, McpApprovalState, compute_server_identity_digest, compute_tools_digest,
+    },
     tool_fsm::ToolStep,
-    tools::ToolName,
+    tools::{ToolHandler, ToolName},
 };
 use serde_json::json;
 
@@ -33,6 +42,74 @@ mod support;
 use support::http_mcp::*;
 
 // -- plain-HTTP tests through the resolver/snapshot path -------------------
+
+#[tokio::test]
+async fn service_host_verifies_and_invokes_mcp_endpoint() {
+    let state = make_state(call_result_ok(), false);
+    let url = spawn_http(state.clone()).await;
+    let endpoint = ServiceEndpoint::Mcp { url: url.clone() };
+    let descriptor = UnifiedToolDescriptor::from_mcp(&json!({
+        "name": "support/echo",
+        "description": "echo description",
+        "inputSchema": schema(),
+    }))
+    .expect("fixture MCP tool maps to a descriptor");
+    let source = DescribeProvenance::McpToolsList {
+        protocol_version: PROTOCOL_VERSION.into(),
+        server_identity_digest: compute_server_identity_digest(
+            &json!({ "tools": { "listChanged": true } }),
+            &json!({ "name": SERVER_NAME }),
+        ),
+        tools_digest: compute_tools_digest(&[approved_tool(schema())]),
+        tool_name: TOOL_NAME.into(),
+    };
+    let snapshot = ExternalToolSnapshot::from_v2_service(
+        descriptor,
+        endpoint.clone(),
+        source,
+        "ops",
+        "2026-01-01T00:00:00Z",
+    )
+    .expect("service snapshot");
+    let client = Arc::new(McpServiceClient::new(
+        endpoint.clone(),
+        Arc::new(McpConnection::new(http_launch_direct(&url))),
+    ));
+    let host = Arc::new(
+        ServiceHost::new(client, Duration::from_secs(5), Duration::from_secs(5))
+            .expect("service host"),
+    );
+
+    host.verify(&snapshot).await.expect("service must verify");
+    let tool_name = ToolName::parse("support/echo").expect("tool name");
+    let handler = host.handler(snapshot).expect("service handler");
+    let mut session = handler
+        .open_session(session_context(&tool_name), json!({}))
+        .await
+        .expect("open service session");
+    session
+        .send(json!({ "q": "cpu" }))
+        .await
+        .expect("send service call");
+    let step = session.read(json!({})).await.expect("read service call");
+    match step {
+        ToolStep::Done {
+            output: Some(envelope),
+        } => assert_eq!(envelope["content"][0]["text"], "echoed: cpu"),
+        other => panic!("expected service result, got {other:?}"),
+    }
+
+    let guard = state.lock().await;
+    let methods: Vec<&str> = guard
+        .observed
+        .iter()
+        .map(|(method, _, _)| method.as_str())
+        .filter(|method| !method.is_empty())
+        .collect();
+    assert!(methods.contains(&"initialize"));
+    assert!(methods.contains(&"tools/list"));
+    assert!(methods.contains(&"tools/call"));
+}
 
 #[tokio::test]
 async fn http_happy_path_init_list_call() {

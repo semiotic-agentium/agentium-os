@@ -168,6 +168,7 @@ impl ToolHandler for ExternalSessionToolHandler {
             abort_timeout: self.abort_timeout,
             secrets: self.secrets.clone(),
             secret_scope: self.secret_scope,
+            input_schema: Arc::new(self.metadata.input_schema.clone()),
         }))
     }
 }
@@ -195,6 +196,8 @@ pub struct ExternalSessionToolSession {
     abort_timeout: Duration,
     secrets: serde_json::Map<String, Value>,
     secret_scope: ExternalSecretScope,
+    /// Tool input schema; `send` drops `null`s it cannot accept for optional fields.
+    input_schema: Arc<Value>,
 }
 
 #[async_trait]
@@ -203,7 +206,7 @@ impl ToolSession for ExternalSessionToolSession {
         let resume_token = self.pending_resume_token.take();
         let req = SessionSendRequest {
             session_id: self.session_id.clone(),
-            input,
+            input: super::input_nulls::omit_null_optional_fields(&self.input_schema, input),
             resume_token,
             secrets: match self.secret_scope {
                 ExternalSecretScope::Send => self.secrets.clone(),

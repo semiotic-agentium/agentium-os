@@ -126,14 +126,37 @@ impl MicrosandboxProvider {
                 .await
                 .map_err(|e| to_rt_err("restore tool VM template", e))?
         } else {
-            let mut builder = Sandbox::builder(&spec.name)
-                .image(oci_ref.as_str())
-                .cpus(1)
+            let intercept_tls = !spec.grant.egress_secrets().is_empty();
+            let mut builder = Sandbox::builder(&spec.name).image(oci_ref.as_str()).cpus(1);
+            if oci_ref.split_once('/').is_some_and(|(registry, _)| {
+                registry.starts_with("localhost:") || registry.starts_with("127.0.0.1:")
+            }) {
+                // Local development registries are commonly plain HTTP. Never
+                // enable this for a normal production registry reference.
+                builder = builder.registry(|registry| registry.insecure());
+            }
+            let mut builder = builder
                 .memory(spec.memory_mib)
+                // Name resolution for declared hosts is pinned to the exact
+                // addresses the network policy allows; the guest gets no DNS
+                // egress (plan §8: grants compile to CIDR, not Domain rules).
+                // The supervisor writes these into /etc/hosts after boot:
+                // microsandbox's guest init rewrites that file, so a rootfs
+                // patch would not survive.
+                .env(PINNED_HOSTS_ENV, encode_pinned_hosts(spec.grant.hosts()))
                 .vsock(&socket.0, SUPERVISOR_PORT)
+                // `create()` boots the VM but does not launch the image
+                // workload unless a launch intent is set. The supervisor is
+                // that workload; without this the VM stays healthy forever
+                // without dialing the vsock listener.
+                .background_command(["--vsock-port".to_string(), SUPERVISOR_PORT.to_string()])
+                // TLS interception exists to inject egress secrets on the wire. With no
+                // secret to inject, keep TLS end to end between the tool and its host.
+                // When enabled, the VM installs its CA into the guest system bundle and
+                // the supervisor points node at it (NODE_EXTRA_CA_CERTS).
                 .network(|n| {
                     n.policy(policy)
-                        .tls(|tls| tls.enabled(true).verify_upstream(true))
+                        .tls(|tls| tls.enabled(intercept_tls).verify_upstream(true))
                 })
                 .replace();
             for secret in spec.grant.egress_secrets() {
@@ -162,6 +185,8 @@ impl MicrosandboxProvider {
             Ok(Ok((stream, _))) => stream,
             _ => {
                 // No fallback to exec stdin. A missing supervisor is a deployment error.
+                tracing::warn!(vm = %spec.name, "supervisor vsock did not connect; tearing down VM");
+                dump_vm_console(&spec.name, "vsock connect failure");
                 crate::external_tools::sandbox::SandboxProvider::teardown(self, &handle).await?;
                 return Err(to_rt_err(
                     "supervisor vsock",
@@ -169,13 +194,28 @@ impl MicrosandboxProvider {
                 ));
             }
         };
-        // Capture before Hello or LoadTool. Runtime supervisors must reconnect after restore.
+        tracing::info!(vm = %spec.name, "supervisor vsock connected");
+        // Warm-template capture is OPT-IN (`KARAKARA_VM_SNAPSHOT=1`).
+        //
+        // microsandbox's full checkpoint treats virtio-vsock as a `Reconnect`
+        // resource (microsandbox-runtime checkpoint/coordinator.rs): quiescing
+        // the device resets every live vsock connection on the *source* VM.
+        // Capturing here therefore kills the stream we just accepted, and the
+        // first Hello write fails with EPIPE. The supervisor dials exactly once
+        // and never redials, and `listener` is dropped when this function
+        // returns, so neither the source VM nor a VM restored from the template
+        // can re-establish the control channel. Enable this only once the
+        // supervisor redials after a transport reset and the host re-accepts
+        // after capture/restore.
         // Secret-bearing VMs stay warm in the pool but are never persisted as templates.
-        let capture = spec.grant.egress_secrets().is_empty() && {
+        let snapshot_enabled = std::env::var("KARAKARA_VM_SNAPSHOT")
+            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+        let capture = snapshot_enabled && spec.grant.egress_secrets().is_empty() && {
             let templates = self.v2.templates.lock().unwrap();
             templates.len() < MAX_TEMPLATES && !templates.contains_key(spec.grant.key())
         };
         if capture {
+            tracing::info!(vm = %spec.name, "capturing warm snapshot template from live VM");
             let name = format!("karak-template-{}", uuid::Uuid::new_v4());
             match microsandbox::Snapshot::builder(&name)
                 .from_sandbox(&spec.name)
@@ -194,9 +234,64 @@ impl MicrosandboxProvider {
                 ),
             }
         }
+        tracing::info!(vm = %spec.name, "supervisor channel ready");
         let (reader, writer) = stream.into_split();
         Ok((handle, TsrpcChannel::new(reader, writer)))
     }
+}
+
+/// Emit the VM's captured console (`exec.log`) to host tracing.
+///
+/// The in-VM supervisor's stdout/stderr lands only in microsandbox's on-disk
+/// `exec.log`, which is lost on teardown and easy to miss. Mirroring it into
+/// the runner's tracing makes in-guest failures (panics, worker-sandbox mount
+/// errors) visible in the normal log stream without digging in `~/.microsandbox`.
+pub(super) fn dump_vm_console(name: &str, context: &str) {
+    let path = microsandbox::logs::log_dir_for(name).join("exec.log");
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        tracing::debug!(vm = %name, ?path, "no VM console log to dump ({context})");
+        return;
+    };
+    let mut console = String::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line)
+            && matches!(
+                entry.get("s").and_then(|s| s.as_str()),
+                Some("stderr" | "stdout" | "system")
+            )
+            && let Some(data) = entry.get("d").and_then(|d| d.as_str())
+        {
+            console.push_str(data);
+        }
+    }
+    let console = console.trim();
+    if console.is_empty() {
+        tracing::debug!(vm = %name, "VM console empty ({context})");
+    } else {
+        tracing::warn!(vm = %name, context, "VM console:\n{console}");
+    }
+}
+
+/// Must match `baml_tool_supervisor::pinned_hosts::PINNED_HOSTS_ENV`.
+const PINNED_HOSTS_ENV: &str = "KARAKARA_PINNED_HOSTS";
+
+/// `ip host;ip host` for the supervisor's `/etc/hosts` block (IPv4 first, so
+/// clients without IPv6 egress connect on the first try).
+pub(super) fn encode_pinned_hosts(
+    hosts: &std::collections::BTreeMap<String, std::collections::BTreeSet<std::net::IpAddr>>,
+) -> String {
+    let mut entries = Vec::new();
+    for (name, ips) in hosts {
+        let (v4, v6): (Vec<&std::net::IpAddr>, Vec<_>) = ips.iter().partition(|ip| ip.is_ipv4());
+        for ip in v4.into_iter().chain(v6) {
+            entries.push(format!("{ip} {name}"));
+        }
+    }
+    entries.join(";")
 }
 
 /// Hard denies precede exact TCP CIDRs; no domain rules or implicit public egress.
@@ -222,5 +317,25 @@ struct SocketPath(PathBuf);
 impl Drop for SocketPath {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn pinned_hosts_encode_each_granted_name_ipv4_first() {
+        let hosts = BTreeMap::from([(
+            "api.open-meteo.com".to_string(),
+            BTreeSet::from([
+                "2001:db8::1".parse().unwrap(),
+                "203.0.113.7".parse().unwrap(),
+            ]),
+        )]);
+        assert_eq!(
+            super::encode_pinned_hosts(&hosts),
+            "203.0.113.7 api.open-meteo.com;2001:db8::1 api.open-meteo.com"
+        );
     }
 }

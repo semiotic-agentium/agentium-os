@@ -19,28 +19,79 @@ use std::collections::BTreeMap;
 #[cfg(target_os = "linux")]
 use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, SeccompRule, TargetArch};
 
-/// Compile the pinned profile. The returned program can be installed with
-/// [`apply`] in a forked worker child.
+/// The pinned profile: two stacked filters, installed together by [`apply`]
+/// in a forked worker child.
+///
+/// A seccomp filter has a single match action, so "fail softly" syscalls need
+/// their own filter. The kernel evaluates every installed filter and takes the
+/// most severe verdict (KILL > ERRNO > ALLOW), so a syscall answered with
+/// `ENOSYS` by `soft_deny` must still be *allowed* by `allowlist`, otherwise
+/// the allowlist's kill wins.
 #[cfg(target_os = "linux")]
-pub fn program() -> Result<BpfProgram, String> {
-    let rules: BTreeMap<i64, Vec<SeccompRule>> = allowed_syscalls()
+pub struct Profile {
+    soft_deny: BpfProgram,
+    allowlist: BpfProgram,
+}
+
+/// Compile the pinned profile.
+#[cfg(target_os = "linux")]
+pub fn program() -> Result<Profile, String> {
+    let mut rules: BTreeMap<i64, Vec<SeccompRule>> = allowed_syscalls()
         .into_iter()
         .map(|number| (number, Vec::new()))
         .collect();
-    let filter = SeccompFilter::new(
+    rules.insert(libc::SYS_ioctl, ioctl_rules()?);
+    let allowlist = SeccompFilter::new(
         rules,
         SeccompAction::KillProcess,
         SeccompAction::Allow,
         target_arch()?,
     )
     .map_err(|error| error.to_string())?;
-    BpfProgram::try_from(filter).map_err(|error| error.to_string())
+    let soft_deny = SeccompFilter::new(
+        soft_denied_syscalls()
+            .into_iter()
+            .map(|number| (number, Vec::new()))
+            .collect(),
+        SeccompAction::Allow,
+        SeccompAction::Errno(libc::ENOSYS as u32),
+        target_arch()?,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(Profile {
+        soft_deny: BpfProgram::try_from(soft_deny).map_err(|error| error.to_string())?,
+        allowlist: BpfProgram::try_from(allowlist).map_err(|error| error.to_string())?,
+    })
 }
 
+/// Install both filters. Async-signal-safe: no allocation, raw syscalls only.
 #[cfg(target_os = "linux")]
-pub fn apply(program: &BpfProgram) -> std::io::Result<()> {
-    seccompiler::apply_filter(program)
-        .map_err(|error| std::io::Error::other(format!("install seccomp filter: {error}")))
+pub fn apply(profile: &Profile) -> std::io::Result<()> {
+    // The soft-deny filter goes first so installing it never depends on the
+    // allowlist permitting `seccomp(2)`.
+    for program in [&profile.soft_deny, &profile.allowlist] {
+        seccompiler::apply_filter(program)
+            .map_err(|error| std::io::Error::other(format!("install seccomp filter: {error}")))?;
+    }
+    Ok(())
+}
+
+/// Syscalls the runtime probes but must not get: they fail with `ENOSYS` so
+/// the runtime takes its fallback path instead of being killed.
+///
+/// `io_uring`: submissions run in kernel context and are NOT checked against
+/// seccomp, so a usable ring would bypass this whole allowlist (openat,
+/// connect, …). It also hangs node in the microVM: libuv sets up its
+/// epoll-ctl ring and the event loop blocks forever in `io_cqring_wait`, so the
+/// worker never reads the MCP `initialize`. On `ENOSYS` libuv falls back to
+/// plain epoll, the same path it takes under Docker's default profile.
+#[cfg(target_os = "linux")]
+fn soft_denied_syscalls() -> Vec<i64> {
+    vec![
+        libc::SYS_io_uring_setup,
+        libc::SYS_io_uring_enter,
+        libc::SYS_io_uring_register,
+    ]
 }
 
 #[cfg(target_os = "linux")]
@@ -65,6 +116,41 @@ fn target_arch() -> Result<TargetArch, String> {
     {
         Err("unsupported seccomp target architecture".to_string())
     }
+}
+
+/// `ioctl` is allowed only for the fd-flag and tty-query requests libuv
+/// issues on stdio pipes and sockets: `isatty` (`TCGETS`), terminal size
+/// probes, `uv__nonblock` (`FIONBIO`), `uv__cloexec` (`FIOCLEX`/`FIONCLEX`)
+/// and readable-byte counts (`FIONREAD`). Without `ioctl` at all, node is
+/// killed with SIGSYS on its first stdio probe (worker exit status 159).
+/// Device and terminal-mutating requests stay default-deny.
+#[cfg(target_os = "linux")]
+// `c_ulong` is u64 on x86_64/aarch64 but not on every Linux target.
+#[allow(clippy::useless_conversion)]
+fn ioctl_rules() -> Result<Vec<SeccompRule>, String> {
+    use seccompiler::{SeccompCmpArgLen, SeccompCmpOp, SeccompCondition};
+    [
+        libc::TCGETS,
+        libc::TIOCGWINSZ,
+        libc::TIOCGPGRP,
+        libc::FIONBIO,
+        libc::FIOCLEX,
+        libc::FIONCLEX,
+        libc::FIONREAD,
+    ]
+    .into_iter()
+    .map(|request| {
+        // The kernel compares the request as a 32-bit command.
+        let condition = SeccompCondition::new(
+            1,
+            SeccompCmpArgLen::Dword,
+            SeccompCmpOp::Eq,
+            u64::from(request),
+        )
+        .map_err(|error| error.to_string())?;
+        SeccompRule::new(vec![condition]).map_err(|error| error.to_string())
+    })
+    .collect()
 }
 
 #[cfg(target_os = "linux")]
@@ -342,6 +428,8 @@ fn allowed_syscalls() -> Vec<i64> {
         libc::SYS_io_getevents,
         libc::SYS_io_submit,
         libc::SYS_io_cancel,
+        // Allowed here only so the stacked `soft_deny` filter's ENOSYS wins
+        // over a kill; see `soft_denied_syscalls`.
         libc::SYS_io_uring_setup,
         libc::SYS_io_uring_enter,
         libc::SYS_io_uring_register,
@@ -379,7 +467,77 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn pinned_profile_compiles() {
+        let profile = super::program().expect("seccomp profile compiles");
+        assert!(!profile.allowlist.is_empty());
+        assert!(!profile.soft_deny.is_empty());
+    }
+
+    /// io_uring must fail softly with ENOSYS (libuv falls back to epoll), not
+    /// kill the worker and not hand it a ring that bypasses seccomp.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn io_uring_setup_fails_with_enosys() {
+        let profile = super::program().expect("seccomp profile compiles");
+        // SAFETY: the child only issues raw syscalls and `_exit`s.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            unsafe {
+                if super::apply(&profile).is_err() {
+                    libc::_exit(2);
+                }
+                let mut params = [0u8; 120]; // struct io_uring_params
+                let ret = libc::syscall(libc::SYS_io_uring_setup, 8u32, params.as_mut_ptr());
+                let errno = *libc::__errno_location();
+                libc::_exit(if ret == -1 && errno == libc::ENOSYS {
+                    0
+                } else {
+                    4
+                });
+            }
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(
+            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+            "io_uring_setup was not answered with ENOSYS: status {status:#x}"
+        );
+    }
+
+    /// libuv's stdio probes (`isatty`, non-blocking pipes) must survive the
+    /// filter; a missing `ioctl` rule killed node with SIGSYS in the VM.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn libuv_stdio_ioctls_are_allowed() {
         let program = super::program().expect("seccomp profile compiles");
-        assert!(!program.is_empty());
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        // SAFETY: the child only issues raw syscalls and `_exit`s.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            unsafe {
+                if super::apply(&program).is_err() {
+                    libc::_exit(2);
+                }
+                let mut termios = std::mem::zeroed::<libc::termios>();
+                libc::ioctl(fds[0], libc::TCGETS, &mut termios);
+                let mut on: libc::c_int = 1;
+                if libc::ioctl(fds[0], libc::FIONBIO, &mut on) != 0 {
+                    libc::_exit(3);
+                }
+                libc::_exit(0);
+            }
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+        assert!(
+            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+            "child killed or failed under the filter: status {status:#x}"
+        );
     }
 }

@@ -70,6 +70,21 @@ karak chat --agent support-bot --instance default
 karak eval run --min-pass-rate 0.9
 ```
 
+For a Trusted or Service tool, publish and approve the toolset before an agent
+pins it. Deployment checks the pinned node or endpoint and fails if it cannot
+reach the declared target.
+
+```bash
+karak tool build ./tools/gpu
+karak tool publish ./tools/gpu --trusted --approved-by ops --yes
+karak publish --path ./tools/support-service --approved-by ops --yes
+karak install agent --path ./support-bot
+```
+
+Trusted invocations are recorded as `TrustGranted` and `TrustedInvoke`
+provenance events. Service deployment records `ServiceBound` after the live
+endpoint and every approved tool schema pass verification.
+
 | Command | Purpose |
 |---------|---------|
 | `install agent` | `POST /repository/publish` (server build) + `POST /deploy` |

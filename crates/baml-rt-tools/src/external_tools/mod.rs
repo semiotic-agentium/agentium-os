@@ -15,6 +15,7 @@ pub mod discovery;
 pub mod drift;
 pub mod handler;
 pub mod host;
+pub mod input_nulls;
 pub mod invoker;
 pub mod ktool;
 pub mod lockfile;
@@ -151,6 +152,36 @@ pub enum ExternalLifecycleEvent {
         expected_schema_digest: String,
         observed_schema_digest: String,
     },
+    /// An operator granted a specific agent access to an exact Trusted bundle.
+    TrustGranted {
+        tool_name: String,
+        agent_id: String,
+        tool_digest: String,
+        node: String,
+    },
+    /// An operator revoked access to an exact Trusted bundle.
+    TrustRevoked {
+        tool_name: String,
+        agent_id: String,
+        tool_digest: String,
+        node: String,
+    },
+    /// A Trusted invocation ran under the operator-trust authority. The call
+    /// identity is carried as facts so audit consumers never infer lineage from
+    /// tool names or ID prefixes.
+    TrustedInvoke {
+        tool_name: String,
+        agent_id: String,
+        tool_digest: String,
+        node: String,
+        artifact_hash: String,
+        context_id: String,
+        task_id: String,
+        invocation_id: String,
+        trace_id: String,
+    },
+    /// A Service toolset passed its live endpoint verification at deploy.
+    ServiceBound { tool_name: String, endpoint: String },
 }
 
 pub type ExternalLifecycleRecorder = Arc<dyn Fn(ExternalLifecycleEvent) + Send + Sync>;

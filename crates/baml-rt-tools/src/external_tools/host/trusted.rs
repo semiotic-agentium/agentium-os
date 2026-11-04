@@ -25,7 +25,7 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
-        Arc,
+        Arc, RwLock,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -47,7 +47,8 @@ use super::{audit_approved_bundle, channel::SupervisorChannel, invalid};
 use crate::{
     ToolSessionContext,
     external_tools::{
-        ExternalToolSnapshot, KtoolRuntimeTier, ToolRuntime, TrustedLaunch as DeclaredLaunch,
+        ExternalLifecycleEvent, ExternalLifecycleRecorder, ExternalToolSnapshot, KtoolRuntimeTier,
+        ToolRuntime, TrustedLaunch as DeclaredLaunch,
     },
     mcp_snapshot::{Digest, canonical_digest},
 };
@@ -74,6 +75,10 @@ impl TrustedPolicy {
 
     pub fn is_trusted(&self, agent_id: &str, tool_digest: &Digest) -> bool {
         self.trusted.contains(&(agent_id.to_string(), *tool_digest))
+    }
+
+    pub fn revoke(&mut self, agent_id: &str, tool_digest: Digest) -> bool {
+        self.trusted.remove(&(agent_id.to_string(), tool_digest))
     }
 }
 
@@ -149,7 +154,9 @@ struct TrustedEntry {
 /// operator-trust policy, and the exact approved bytes are still pinned.
 pub struct TrustedHost {
     config: TrustedHostConfig,
+    policy: RwLock<TrustedPolicy>,
     processes: AsyncMutex<HashMap<TrustedKey, Arc<TrustedEntry>>>,
+    recorder: Option<ExternalLifecycleRecorder>,
 }
 
 impl TrustedHost {
@@ -159,10 +166,51 @@ impl TrustedHost {
         }
         std::fs::create_dir_all(&config.root_dir)
             .map_err(|error| invalid(format!("cannot create trusted root: {error}")))?;
+        let policy = config.policy.clone();
         Ok(Self {
             config,
+            policy: RwLock::new(policy),
             processes: AsyncMutex::new(HashMap::new()),
+            recorder: None,
         })
+    }
+
+    /// Attach the runner's provenance recorder to trusted authorization and
+    /// invocation events.
+    pub fn with_lifecycle_recorder(mut self, recorder: ExternalLifecycleRecorder) -> Self {
+        self.recorder = Some(recorder);
+        self
+    }
+
+    /// Revoke trust for one agent and exact bundle. Revocation is fail-closed
+    /// for later calls; an already-running process is not granted new access.
+    pub fn revoke_trust(
+        &self,
+        agent_id: &str,
+        tool_digest: Digest,
+        tool_name: impl Into<String>,
+        node: Option<String>,
+    ) -> bool {
+        let removed = self
+            .policy
+            .write()
+            .map(|mut policy| policy.revoke(agent_id, tool_digest))
+            .unwrap_or(false);
+        if removed {
+            self.record(ExternalLifecycleEvent::TrustRevoked {
+                tool_name: tool_name.into(),
+                agent_id: agent_id.to_string(),
+                tool_digest: tool_digest.to_string(),
+                node: trusted_node_label(node.as_deref()),
+            });
+        }
+        removed
+    }
+
+    fn record(&self, event: ExternalLifecycleEvent) {
+        if let Some(recorder) = &self.recorder {
+            recorder(event);
+        }
     }
 
     /// Fail-closed operator-trust check. Shares the approval/expiry/audit/
@@ -181,24 +229,33 @@ impl TrustedHost {
             ));
         }
         let agent_id = ctx.agent_id.to_string();
-        if !self
-            .config
+        let trusted = self
             .policy
-            .is_trusted(&agent_id, &audited.tool_digest)
-        {
+            .read()
+            .map(|policy| policy.is_trusted(&agent_id, &audited.tool_digest))
+            .unwrap_or(false);
+        if !trusted {
             return Err(invalid(format!(
                 "agent '{}' is not operator-trusted for tool '{}' ({})",
                 agent_id, audited.descriptor.name, audited.tool_digest
             )));
         }
-        Ok(TrustGrant {
+        let node = trusted_node(snapshot);
+        let grant = TrustGrant {
             agent_id,
             tool_digest: audited.tool_digest,
             runtime_image_digest: audited.manifest.runtime_image.digest,
-            node: trusted_node(snapshot),
+            node,
             descriptor_name: audited.descriptor.name.clone(),
             target: trusted_target(snapshot),
-        })
+        };
+        self.record(ExternalLifecycleEvent::TrustGranted {
+            tool_name: grant.descriptor_name.clone(),
+            agent_id: grant.agent_id.clone(),
+            tool_digest: grant.tool_digest.to_string(),
+            node: trusted_node_label(grant.node.as_deref()),
+        });
+        Ok(grant)
     }
 
     /// Authorize, then run one invocation on the trusted process for this tool
@@ -251,6 +308,18 @@ impl TrustedHost {
                 .channel
                 .load(grant.tool_digest, grant.runtime_image_digest, bytes)
                 .await?;
+            let invoke_timeout = remaining()?;
+            self.record(ExternalLifecycleEvent::TrustedInvoke {
+                tool_name: grant.descriptor_name.clone(),
+                agent_id: grant.agent_id.clone(),
+                tool_digest: grant.tool_digest.to_string(),
+                node: trusted_node_label(grant.node.as_deref()),
+                artifact_hash: context.artifact_hash.clone(),
+                context_id: context.context_id.clone(),
+                task_id: context.task_id.clone(),
+                invocation_id: context.invocation_id.clone(),
+                trace_id: context.trace_id.clone(),
+            });
             // Reveal secrets are off by default for the trusted tier (§P5.6); a
             // trusted tool already has full host access.
             entry
@@ -260,7 +329,7 @@ impl TrustedHost {
                     ctx.tool_name.to_string(),
                     context,
                     input,
-                    remaining()?,
+                    invoke_timeout,
                     &[],
                 )
                 .await
@@ -348,6 +417,10 @@ fn trusted_node(snapshot: &ExternalToolSnapshot) -> Option<String> {
         Some(ToolRuntime::Trusted(spec)) => spec.node.clone(),
         _ => None,
     }
+}
+
+fn trusted_node_label(node: Option<&str>) -> String {
+    node.unwrap_or("local").to_string()
 }
 
 /// The launch mode a trusted tool declares. A bundle published before the
