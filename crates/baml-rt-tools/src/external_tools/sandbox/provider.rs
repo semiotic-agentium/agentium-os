@@ -49,6 +49,16 @@ pub trait SandboxProvider: Send + Sync {
         Ok(())
     }
 
+    /// Stop and remove every v2 VM labelled as owned by `owner` that this
+    /// process does not hold. Run once at pool start: a supervisor dials its
+    /// vsock exactly once, so a VM left by an earlier run of the same runner
+    /// (crash, SIGKILL, missed shutdown) can never be reattached and only
+    /// holds disk. Returns how many VMs were removed. Never touches VMs of
+    /// another owner.
+    async fn sweep_vms(&self, _owner: &str) -> Result<usize> {
+        Ok(0)
+    }
+
     /// Create a new sandbox. Returns a handle the runtime caches and passes
     /// to the other methods.
     async fn create(&self, spec: SandboxSpec) -> Result<SandboxHandle>;

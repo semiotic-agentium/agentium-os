@@ -846,6 +846,30 @@ tool-runtime-image:
     docker image inspect karakara/tool-runtime:node-22 \
         | awk -F'"' '/"Id":/ { print $4; exit }'
 
+# Real-VM lane for the v2 Sandbox tier: supervisor isolation matrix + tool VM
+# lifecycle (owner label, teardown removes, restart sweep). Needs /dev/kvm,
+# docker, and the local registry at localhost:5001. Never part of `just test`.
+# Builds and pushes the runtime image first (it bakes in the current supervisor
+# source); set KARAKARA_KVM_IMAGE to a digest-pinned ref to reuse an image.
+test-kvm:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "$(git rev-parse --show-toplevel)"
+    [[ -e /dev/kvm ]] || { echo "test-kvm: /dev/kvm is not available" >&2; exit 1; }
+    if [[ -z "${KARAKARA_KVM_IMAGE:-}" ]]; then
+        ref=localhost:5001/karakara/tool-runtime:node-22
+        docker build --provenance=false -f docker/tool-runtime/node.Dockerfile -t "$ref" .
+        docker push "$ref" >/dev/null
+        KARAKARA_KVM_IMAGE="$(docker image inspect "$ref" \
+            --format '{{{{range .RepoDigests}}{{{{println .}}{{{{end}}' \
+            | grep '^localhost:5001/karakara/tool-runtime@sha256:' | head -1)"
+        export KARAKARA_KVM_IMAGE
+    fi
+    [[ "$KARAKARA_KVM_IMAGE" == *@sha256:* ]] || { echo "test-kvm: KARAKARA_KVM_IMAGE must be digest-pinned" >&2; exit 1; }
+    echo "test-kvm: image $KARAKARA_KVM_IMAGE"
+    cargo nextest run -p baml-rt-tools --features sandbox-e2e-kvm \
+        --test external_tools_supervisor_kvm --no-fail-fast
+
 # Deterministic parser smoke (the `cargo fuzz` targets live under
 # crates/baml-tool-supervisor/fuzz). Run the fuzzers with:
 #   cargo +nightly fuzz run bundle_unpack

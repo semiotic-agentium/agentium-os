@@ -40,6 +40,8 @@ pub use digest::{canonical_bind_digest, file_sha256};
 pub use handler::{SandboxToolHandler, SandboxToolSession};
 pub use invoker::{SandboxCache, SandboxCacheKey, SandboxInvoker, SandboxSpecBuilder};
 pub use microsandbox_provider::MicrosandboxProvider;
+#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
+pub use microsandbox_provider::TOOL_VM_OWNER_LABEL;
 pub use mock::{MockSandboxProvider, ScriptedAdapter, test_durations};
 pub use provider::SandboxProvider;
 pub use session_invoker::{SandboxSessionInvoker, SandboxSessionInvokerConfig};
@@ -54,6 +56,6 @@ pub use spec::{
 };
 pub use wiring::{
     DEFAULT_IDLE_TIMEOUT_SECS, DEFAULT_MAX_DURATION_SECS, default_spec_factory,
-    default_spec_factory_with_bind_roots, fresh_runner_id, stock_wiring,
+    default_spec_factory_with_bind_roots, fresh_runner_id, load_or_create_runner_id, stock_wiring,
     stock_wiring_with_bind_roots,
 };

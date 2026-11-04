@@ -24,6 +24,9 @@ use crate::{
 
 const SUPERVISOR_PORT: u32 = 5000;
 const MAX_TEMPLATES: usize = 8;
+/// Label naming the runner that owns a v2 tool VM ([`VmSpec::owner`]).
+pub const OWNER_LABEL: &str = "karakara.tool-vm.owner";
+const SWEEP_PAGE: u32 = 100;
 
 pub(super) struct VmBackend {
     images: HashMap<Digest, (KtoolRuntimeImage, String)>,
@@ -84,6 +87,55 @@ impl MicrosandboxProvider {
         Ok(())
     }
 
+    /// [`SandboxProvider::sweep_vms`] for microsandbox: list VMs carrying
+    /// `OWNER_LABEL=owner`, kill any still running, and remove them. VMs this
+    /// process holds live are skipped. Per-VM failures are logged and skipped
+    /// so one stuck VM does not block reclaiming the rest.
+    ///
+    /// [`SandboxProvider::sweep_vms`]: crate::external_tools::sandbox::SandboxProvider::sweep_vms
+    pub(super) async fn sweep_owned_vms(&self, owner: &str) -> Result<usize> {
+        let mut owned = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = Sandbox::list_with(|query| {
+                let query = query.limit(SWEEP_PAGE).label(OWNER_LABEL, owner);
+                match cursor.take() {
+                    Some(cursor) => query.cursor(cursor),
+                    None => query,
+                }
+            })
+            .await
+            .map_err(|e| to_rt_err("list tool VMs", e))?;
+            owned.extend(page.sandboxes);
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let mut removed = 0;
+        for vm in owned {
+            let name = vm.name().to_string();
+            if self.live.contains_key(&name) {
+                continue;
+            }
+            use microsandbox::sandbox::SandboxStatus;
+            let stopped = matches!(
+                vm.status_snapshot(),
+                SandboxStatus::Stopped | SandboxStatus::Crashed | SandboxStatus::Created
+            );
+            // An orphan's host listener is gone, so nothing can use it: kill, don't drain.
+            if !stopped && let Err(error) = vm.kill().await {
+                tracing::warn!(vm = %name, %error, "cannot stop leftover tool VM");
+                continue;
+            }
+            match Sandbox::remove(&name).await {
+                Ok(()) => removed += 1,
+                Err(error) => tracing::warn!(vm = %name, %error, "cannot remove leftover tool VM"),
+            }
+        }
+        Ok(removed)
+    }
+
     pub(super) async fn create_supervisor_vm(
         &self,
         spec: VmSpec,
@@ -127,7 +179,10 @@ impl MicrosandboxProvider {
                 .map_err(|e| to_rt_err("restore tool VM template", e))?
         } else {
             let intercept_tls = !spec.grant.egress_secrets().is_empty();
-            let mut builder = Sandbox::builder(&spec.name).image(oci_ref.as_str()).cpus(1);
+            let mut builder = Sandbox::builder(&spec.name)
+                .image(oci_ref.as_str())
+                .cpus(1)
+                .label(OWNER_LABEL, spec.owner.as_str());
             if oci_ref.split_once('/').is_some_and(|(registry, _)| {
                 registry.starts_with("localhost:") || registry.starts_with("127.0.0.1:")
             }) {

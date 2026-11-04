@@ -187,7 +187,9 @@ async fn real_vm_supervisor_runs_the_isolation_matrix() {
         .expect("provider")
         .with_runtime_image(default_node_runtime_image(), image)
         .expect("register runtime image");
-    let pool = VmPool::new(Arc::new(provider), "kvm-test", PoolPolicy::default());
+    // Unique per run so the owner-label assertions see only this test's VMs.
+    let owner = format!("kvm-test-{}", uuid::Uuid::new_v4());
+    let pool = VmPool::new(Arc::new(provider), owner.clone(), PoolPolicy::default());
     let ctx = session_ctx();
     let bytes = bundle();
     let audited = baml_rt_tools::external_tools::audit_ktool_bundle(&bytes).expect("audit");
@@ -227,6 +229,11 @@ async fn real_vm_supervisor_runs_the_isolation_matrix() {
     )
     .await;
     assert_eq!(echo["echo"], "kvm");
+    assert_eq!(
+        owned_vms(&owner).await.len(),
+        1,
+        "the VM carries its owner label"
+    );
 
     // 2. Host filesystem is not reachable.
     let canary = std::env::temp_dir().join(format!("karakara-kvm-canary-{}", std::process::id()));
@@ -288,6 +295,111 @@ async fn real_vm_supervisor_runs_the_isolation_matrix() {
     assert_eq!(alive["echo"], "alive");
 
     host.shutdown().await.expect("shutdown");
+    // Teardown removes the VM, not just stops it: nothing is left holding disk.
+    assert!(
+        owned_vms(&owner).await.is_empty(),
+        "shutdown must remove the VM"
+    );
+}
+
+/// A runner that dies without shutdown leaks its VM; the next start under the
+/// same identity removes it, and never touches another owner's VM.
+#[tokio::test]
+async fn restarted_runner_sweeps_vms_its_previous_run_leaked() {
+    let Ok(image) = std::env::var("KARAKARA_KVM_IMAGE") else {
+        eprintln!("skipping: set KARAKARA_KVM_IMAGE to a digest-pinned node runtime image");
+        return;
+    };
+    if !Path::new("/dev/kvm").exists() {
+        eprintln!("skipping: /dev/kvm is not available");
+        return;
+    }
+    let provider = || {
+        Arc::new(
+            MicrosandboxProvider::new()
+                .expect("provider")
+                .with_runtime_image(default_node_runtime_image(), image.clone())
+                .expect("register runtime image"),
+        )
+    };
+    let owner = format!("kvm-sweep-{}", uuid::Uuid::new_v4());
+    let bystander = format!("kvm-bystander-{}", uuid::Uuid::new_v4());
+
+    let leaked = boot_one_vm(provider(), &owner).await;
+    let other = boot_one_vm(provider(), &bystander).await;
+    assert_eq!(owned_vms(&owner).await.len(), 1);
+    // "Crash": drop the first runner's host without shutdown.
+    drop(leaked);
+
+    let restarted = VmPool::start(provider(), owner.clone(), PoolPolicy::default()).await;
+    assert!(
+        owned_vms(&owner).await.is_empty(),
+        "restart must reclaim the leak"
+    );
+    assert_eq!(
+        owned_vms(&bystander).await.len(),
+        1,
+        "another owner's VM is never swept"
+    );
+    restarted.shutdown().await.expect("shutdown");
+    other.shutdown().await.expect("shutdown bystander");
+    assert!(owned_vms(&bystander).await.is_empty());
+}
+
+/// Start a pool under `owner` and run one invoke so it holds one live VM.
+async fn boot_one_vm(provider: Arc<MicrosandboxProvider>, owner: &str) -> Arc<ToolHost> {
+    let pool = VmPool::new(provider, owner, PoolPolicy::default());
+    let ctx = session_ctx();
+    let bytes = bundle();
+    let audited = baml_rt_tools::external_tools::audit_ktool_bundle(&bytes).expect("audit");
+    let mut host_policy = HostPolicy::default();
+    host_policy.tools.insert(
+        (ctx.agent_id.to_string(), audited.tool_digest),
+        ToolPolicy {
+            trust_domain: TrustDomain::ThirdParty,
+            capabilities: CapabilityRequest::default(),
+            secret_hosts: BTreeMap::new(),
+        },
+    );
+    let host =
+        Arc::new(ToolHost::new(pool, host_policy, Arc::new(StaticResolver)).expect("tool host"));
+    let snapshot = ExternalToolSnapshot::from_v2_bundle(
+        descriptor(),
+        CapabilityRequest::default(),
+        audited.bundle_digest,
+        audited.tool_digest,
+        audited.manifest.runtime_image,
+        "kvm",
+        "2026-01-01T00:00:00Z",
+    )
+    .expect("snapshot");
+    let echo = invoke(
+        &host,
+        &snapshot,
+        &bytes,
+        &ctx,
+        json!({"echo": owner}),
+        10_000,
+    )
+    .await;
+    assert_eq!(echo["echo"], owner);
+    host
+}
+
+/// Names of VMs carrying `owner` in the tool-VM owner label.
+async fn owned_vms(owner: &str) -> Vec<String> {
+    let page = microsandbox::Sandbox::list_with(|query| {
+        query.limit(100).label(
+            baml_rt_tools::external_tools::sandbox::TOOL_VM_OWNER_LABEL,
+            owner,
+        )
+    })
+    .await
+    .expect("list VMs");
+    page.sandboxes
+        .iter()
+        .map(|vm| vm.name().to_string())
+        .collect()
 }
 
 async fn invoke(

@@ -285,7 +285,7 @@ impl AgentPackage {
                 bundles.push((snapshot.clone(), Arc::<[u8]>::from(bytes)));
             }
             if !bundles.is_empty() {
-                let host = build_v2_tool_host(agent_id, &bundles)?;
+                let host = build_v2_tool_host(agent_id, &bundles).await?;
                 bundled_v2_resolver =
                     Some(ExternalRegistryResolver::from_v2_bundles(host, bundles)?);
             }
@@ -1048,7 +1048,65 @@ fn external_lifecycle_provenance_event(event: ExternalLifecycleEvent) -> ProvEve
     )
 }
 
-fn build_v2_tool_host(
+/// Runner identity owning this process's tool VMs. `karak serve` installs the
+/// identity persisted under `--state-dir`; library hosts that never install
+/// one get a fresh per-process id (no leftover reclaim across restarts).
+static TOOL_RUNNER_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// One VM pool for the whole runner: every agent's `ToolHost` shares the VM
+/// budget, and VMs outlive individual agent loads (idle eviction reclaims them).
+#[cfg(feature = "sandbox-provider")]
+static TOOL_VM_POOL: tokio::sync::OnceCell<Arc<VmPool>> = tokio::sync::OnceCell::const_new();
+
+/// Install the runner identity that owns tool VMs. First call wins.
+pub(crate) fn install_tool_runner_id(runner_id: String) {
+    if TOOL_RUNNER_ID.set(runner_id).is_err() {
+        warn!("tool runner id already installed; keeping the first");
+    }
+}
+
+#[cfg(feature = "sandbox-provider")]
+fn tool_runner_id() -> String {
+    TOOL_RUNNER_ID
+        .get_or_init(baml_rt_tools::external_tools::sandbox::fresh_runner_id)
+        .clone()
+}
+
+/// Tear down every tool VM this process started. Called on runner exit.
+pub(crate) async fn shutdown_tool_vms() {
+    #[cfg(feature = "sandbox-provider")]
+    if let Some(pool) = TOOL_VM_POOL.get() {
+        match pool.shutdown().await {
+            Ok(()) => info!(runner_id = pool.runner_id(), "tool VMs torn down"),
+            Err(error) => warn!(%error, "tool VM teardown failed"),
+        }
+    }
+}
+
+#[cfg(feature = "sandbox-provider")]
+async fn runner_tool_vm_pool() -> Result<Arc<VmPool>> {
+    use baml_rt_tools::external_tools::sandbox::{MicrosandboxProvider, SandboxProvider};
+    TOOL_VM_POOL
+        .get_or_try_init(|| async {
+            let runtime_image = baml_rt_tools::external_tools::runtime_image_for_tier(
+                baml_rt_tools::external_tools::KtoolRuntimeTier::Sandbox,
+            );
+            let image_ref = std::env::var("KARAKARA_KVM_IMAGE").map_err(|_| {
+                BamlRtError::InvalidArgument(
+                    "bundled v2 tools require KARAKARA_KVM_IMAGE set to a digest-pinned OCI image"
+                        .into(),
+                )
+            })?;
+            let provider =
+                MicrosandboxProvider::new()?.with_runtime_image(runtime_image, image_ref)?;
+            let provider: Arc<dyn SandboxProvider> = Arc::new(provider);
+            Ok(VmPool::start(provider, tool_runner_id(), PoolPolicy::default()).await)
+        })
+        .await
+        .cloned()
+}
+
+async fn build_v2_tool_host(
     agent_id: &AgentId,
     bundles: &[(
         baml_rt_tools::external_tools::ExternalToolSnapshot,
@@ -1078,21 +1136,7 @@ fn build_v2_tool_host(
 
     #[cfg(feature = "sandbox-provider")]
     {
-        use baml_rt_tools::external_tools::sandbox::{
-            MicrosandboxProvider, SandboxProvider, fresh_runner_id,
-        };
-        let runtime_image = baml_rt_tools::external_tools::runtime_image_for_tier(
-            baml_rt_tools::external_tools::KtoolRuntimeTier::Sandbox,
-        );
-        let image_ref = std::env::var("KARAKARA_KVM_IMAGE").map_err(|_| {
-            BamlRtError::InvalidArgument(
-                "bundled v2 tools require KARAKARA_KVM_IMAGE set to a digest-pinned OCI image"
-                    .into(),
-            )
-        })?;
-        let provider = MicrosandboxProvider::new()?.with_runtime_image(runtime_image, image_ref)?;
-        let provider: Arc<dyn SandboxProvider> = Arc::new(provider);
-        let pool = VmPool::new(provider, fresh_runner_id(), PoolPolicy::default());
+        let pool = runner_tool_vm_pool().await?;
         return Ok(Arc::new(ToolHost::new(
             pool,
             policy,
@@ -1106,6 +1150,7 @@ fn build_v2_tool_host(
             MockSandboxProvider, SandboxProvider, fresh_runner_id,
         };
         let provider: Arc<dyn SandboxProvider> = Arc::new(MockSandboxProvider::echo());
+        // Tests keep a pool per host so parallel tests never share a VM budget.
         let pool = VmPool::new(provider, fresh_runner_id(), PoolPolicy::default());
         return Ok(Arc::new(ToolHost::new(
             pool,

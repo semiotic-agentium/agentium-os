@@ -23,6 +23,9 @@ use crate::external_tools::{
 #[derive(Debug, Clone)]
 pub struct VmSpec {
     pub name: String,
+    /// Stable runner identity that owns this VM. Providers label the VM with
+    /// it so [`SandboxProvider::sweep_vms`] can reclaim leftovers after a restart.
+    pub owner: String,
     pub image: KtoolRuntimeImage,
     pub grant: Arc<ToolGrant>,
     pub memory_mib: u32,
@@ -96,6 +99,34 @@ pub struct VmPool {
 }
 
 impl VmPool {
+    /// Reclaim VMs an earlier run of `runner_id` left behind, then start the
+    /// pool. Use a `runner_id` that is stable across restarts (see
+    /// `load_or_create_runner_id`); a fresh id never matches leftovers.
+    pub async fn start(
+        provider: Arc<dyn SandboxProvider>,
+        runner_id: impl Into<String>,
+        policy: PoolPolicy,
+    ) -> Arc<Self> {
+        let runner_id = runner_id.into();
+        match provider.sweep_vms(&runner_id).await {
+            Ok(0) => {}
+            Ok(removed) => {
+                tracing::info!(
+                    runner_id,
+                    removed,
+                    "removed tool VMs left by a previous run"
+                );
+            }
+            // Best effort: a failed sweep leaks disk, it does not affect new VMs.
+            Err(error) => tracing::warn!(runner_id, %error, "tool VM sweep failed"),
+        }
+        Self::new(provider, runner_id, policy)
+    }
+
+    pub fn runner_id(&self) -> &str {
+        &self.runner_id
+    }
+
     pub fn new(
         provider: Arc<dyn SandboxProvider>,
         runner_id: impl Into<String>,
@@ -201,6 +232,7 @@ impl VmPool {
         );
         let spec = VmSpec {
             name,
+            owner: self.runner_id.clone(),
             image,
             grant,
             memory_mib,

@@ -228,6 +228,12 @@ async fn run_inner(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow:
             config.state_dir.display()
         )
     })?;
+    // Tool VMs are named and labelled by this identity, so a restart reclaims
+    // what the previous run of this runner left behind (and nothing else).
+    agent_package::install_tool_runner_id(
+        baml_rt_tools::external_tools::sandbox::load_or_create_runner_id(&config.state_dir)
+            .context("Failed to load the runner tool-VM identity")?,
+    );
     let state_db_path = config.state_dir.join("state.db");
     let deployment_state = Arc::new(
         deployment_state::DeploymentStateStore::open(&state_db_path)
@@ -773,78 +779,122 @@ async fn run_inner(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow:
     readyz.store(true, Ordering::Release);
     tracing::info!("readyz probe: ready (event producers loaded)");
 
-    match (config.a2a_stdio, http_handle) {
-        (true, Some(mut handle)) => {
-            let stdio_fut = ready.run_a2a_stdio();
-            tokio::pin!(stdio_fut);
-            let mut http_exited = false;
-            loop {
-                tokio::select! {
-                    stdio_result = &mut stdio_fut => {
-                        if !http_exited && !handle.is_finished() {
-                            info!("A2A stdio loop ended; stopping HTTP API server task");
-                            handle.abort();
+    let mut dispatcher_handle = dispatcher_handle;
+    let serve = async {
+        match (config.a2a_stdio, http_handle) {
+            (true, Some(mut handle)) => {
+                let stdio_fut = ready.run_a2a_stdio();
+                tokio::pin!(stdio_fut);
+                let mut http_exited = false;
+                loop {
+                    tokio::select! {
+                        stdio_result = &mut stdio_fut => {
+                            if !http_exited && !handle.is_finished() {
+                                info!("A2A stdio loop ended; stopping HTTP API server task");
+                                handle.abort();
+                            }
+                            stdio_result?;
+                            break;
                         }
-                        stdio_result?;
-                        break;
-                    }
-                    http_result = &mut handle, if !http_exited => {
-                        match http_result {
-                            Ok(Ok(())) => warn!("HTTP API server exited; continuing A2A stdio loop"),
-                            Ok(Err(err)) => warn!(error = %err, "HTTP API server exited with error; continuing A2A stdio loop"),
-                            Err(join_err) if join_err.is_cancelled() => info!("HTTP API server task was cancelled; continuing A2A stdio loop"),
-                            Err(join_err) => warn!("HTTP API server task join error: {join_err}; continuing A2A stdio loop"),
+                        http_result = &mut handle, if !http_exited => {
+                            match http_result {
+                                Ok(Ok(())) => warn!("HTTP API server exited; continuing A2A stdio loop"),
+                                Ok(Err(err)) => warn!(error = %err, "HTTP API server exited with error; continuing A2A stdio loop"),
+                                Err(join_err) if join_err.is_cancelled() => info!("HTTP API server task was cancelled; continuing A2A stdio loop"),
+                                Err(join_err) => warn!("HTTP API server task join error: {join_err}; continuing A2A stdio loop"),
+                            }
+                            http_exited = true;
                         }
-                        http_exited = true;
                     }
                 }
             }
-        }
-        (true, None) => {
-            ready.run_a2a_stdio().await?;
-        }
-        (false, Some(handle)) => {
-            // K8s-pilot mode: no stdio, only the HTTP listener. Nothing in this
-            // process requests a listener shutdown, so any return — clean or
-            // erroring — means the listener task died. Propagate as a non-zero
-            // exit so the kubelet restarts the pod (issue #341 T4).
-            match handle.await {
-                Ok(Ok(())) => {
-                    error!(
-                        "HTTP API listener task returned Ok(()) without a shutdown request; \
-                         in --serve-http mode this means the listener died silently. \
-                         Exiting non-zero so the kubelet restarts the pod"
-                    );
-                    anyhow::bail!("HTTP API listener task exited without a shutdown request");
-                }
-                Ok(Err(err)) => {
-                    error!(error = %err, "HTTP API listener task failed");
-                    return Err(err);
-                }
-                Err(join_err) => {
-                    error!(error = %join_err, "HTTP API listener task join error");
-                    return Err(anyhow::anyhow!(
-                        "HTTP API listener task join error: {join_err}"
-                    ));
+            (true, None) => {
+                ready.run_a2a_stdio().await?;
+            }
+            (false, Some(handle)) => {
+                // K8s-pilot mode: no stdio, only the HTTP listener. Nothing in this
+                // process requests a listener shutdown, so any return — clean or
+                // erroring — means the listener task died. Propagate as a non-zero
+                // exit so the kubelet restarts the pod (issue #341 T4).
+                match handle.await {
+                    Ok(Ok(())) => {
+                        error!(
+                            "HTTP API listener task returned Ok(()) without a shutdown request; \
+                             in --serve-http mode this means the listener died silently. \
+                             Exiting non-zero so the kubelet restarts the pod"
+                        );
+                        anyhow::bail!("HTTP API listener task exited without a shutdown request");
+                    }
+                    Ok(Err(err)) => {
+                        error!(error = %err, "HTTP API listener task failed");
+                        return Err(err);
+                    }
+                    Err(join_err) => {
+                        error!(error = %join_err, "HTTP API listener task join error");
+                        return Err(anyhow::anyhow!(
+                            "HTTP API listener task join error: {join_err}"
+                        ));
+                    }
                 }
             }
-        }
-        (false, None) => {
-            if let Some(handle) = dispatcher_handle {
-                if let Err(err) = handle.await {
+            (false, None) => {
+                if let Some(handle) = dispatcher_handle.as_mut()
+                    && let Err(err) = handle.await
+                {
                     error!(error = %err, "event producer poll loop terminated unexpectedly");
                 }
-                return Ok(());
             }
         }
-    }
-
+        Ok::<(), anyhow::Error>(())
+    };
+    let result = tokio::select! {
+        result = serve => result,
+        signal = shutdown_signal() => {
+            info!(signal, "shutdown signal received; stopping runner");
+            Ok(())
+        }
+    };
+    // Every exit path, clean or not: stop this runner's tool VMs so they do
+    // not outlive it. A crash or SIGKILL skips this; the next start's sweep
+    // reclaims those.
+    agent_package::shutdown_tool_vms().await;
     if let Some(handle) = dispatcher_handle {
         handle.abort();
     }
+    result?;
 
     info!("Agent Runner completed successfully");
     Ok(())
+}
+
+/// Resolve on SIGINT or SIGTERM (Ctrl-C elsewhere) and name the signal. If a
+/// handler cannot be installed, never resolve: a missing handler must not
+/// read as a shutdown request.
+async fn shutdown_signal() -> &'static str {
+    async fn ctrl_c() {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut terminate) => tokio::select! {
+                () = ctrl_c() => "SIGINT",
+                _ = terminate.recv() => "SIGTERM",
+            },
+            Err(_) => {
+                ctrl_c().await;
+                "SIGINT"
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        ctrl_c().await;
+        "ctrl-c"
+    }
 }
 
 /// Tunables for the initial remote SurrealDB connection retry. Sized so the

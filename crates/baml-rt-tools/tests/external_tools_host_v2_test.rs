@@ -126,6 +126,10 @@ struct FakeVms {
     cancels: Arc<AtomicUsize>,
     /// `grant.hosts()` of every VM spec, i.e. what lands in the VM's /etc/hosts.
     hosts: std::sync::Mutex<Vec<BTreeMap<String, std::collections::BTreeSet<IpAddr>>>>,
+    /// `spec.owner` of every created VM.
+    owners: std::sync::Mutex<Vec<String>>,
+    /// Owner of every `sweep_vms` call.
+    sweeps: std::sync::Mutex<Vec<String>>,
 }
 
 #[async_trait]
@@ -133,6 +137,7 @@ impl SandboxProvider for FakeVms {
     async fn create_vm(&self, spec: VmSpec) -> Result<(SandboxHandle, TsrpcChannel)> {
         self.created.fetch_add(1, Ordering::SeqCst);
         self.hosts.lock().unwrap().push(spec.grant.hosts().clone());
+        self.owners.lock().unwrap().push(spec.owner.clone());
         let (host, guest) = tokio::io::duplex(64 * 1024);
         tokio::spawn(supervisor(guest, self.cancels.clone()));
         let (reader, writer) = tokio::io::split(host);
@@ -157,6 +162,11 @@ impl SandboxProvider for FakeVms {
     async fn teardown(&self, _: &SandboxHandle) -> Result<()> {
         self.teardowns.fetch_add(1, Ordering::SeqCst);
         Ok(())
+    }
+
+    async fn sweep_vms(&self, owner: &str) -> Result<usize> {
+        self.sweeps.lock().unwrap().push(owner.to_string());
+        Ok(2)
     }
 
     fn events(&self, _: &SandboxHandle) -> BoxStream<'_, SandboxEvent> {
@@ -282,6 +292,8 @@ fn build(
         teardowns: AtomicUsize::new(0),
         cancels: Arc::new(AtomicUsize::new(0)),
         hosts: std::sync::Mutex::new(Vec::new()),
+        owners: std::sync::Mutex::new(Vec::new()),
+        sweeps: std::sync::Mutex::new(Vec::new()),
     });
     let pool = VmPool::new(vm.clone(), "test-runner", pool_policy);
     let mut host_policy = HostPolicy {
@@ -728,4 +740,31 @@ async fn reveal_rotation_changes_the_grant_class() {
         .unwrap();
     assert_ne!(first.key().grant_class, second.key().grant_class);
     assert_eq!(first.reveal_secrets().len(), 1);
+}
+
+/// A restarted runner reclaims only what its own identity left behind, and
+/// every VM it creates carries that identity for the next restart's sweep.
+#[tokio::test]
+async fn pool_start_sweeps_its_own_leftovers_and_owns_new_vms() {
+    let fake = Arc::new(FakeVms {
+        created: AtomicUsize::new(0),
+        teardowns: AtomicUsize::new(0),
+        cancels: Arc::new(AtomicUsize::new(0)),
+        hosts: std::sync::Mutex::new(Vec::new()),
+        owners: std::sync::Mutex::new(Vec::new()),
+        sweeps: std::sync::Mutex::new(Vec::new()),
+    });
+    let pool = VmPool::start(fake.clone(), "runner-a", PoolPolicy::default()).await;
+    assert_eq!(pool.runner_id(), "runner-a");
+    assert_eq!(*fake.sweeps.lock().unwrap(), vec!["runner-a".to_string()]);
+    // `new` (tests, library hosts) never sweeps.
+    let _other = VmPool::new(fake.clone(), "runner-b", PoolPolicy::default());
+    assert_eq!(fake.sweeps.lock().unwrap().len(), 1);
+
+    let (f, ctx) = fixture(full_request(), policy(full_request()), "s3cret");
+    invoke(&f, &ctx, json!({"q": 1})).await;
+    assert_eq!(
+        *f.vm.owners.lock().unwrap(),
+        vec!["test-runner".to_string()]
+    );
 }

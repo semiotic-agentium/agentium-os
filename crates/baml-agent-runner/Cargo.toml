@@ -48,7 +48,7 @@ tar = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 surrealdb = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["signal"] }
 tracing = { workspace = true }
 clap = { workspace = true }
 dotenvy = { workspace = true }

@@ -59,6 +59,8 @@ use tracing::{debug, info, warn};
 #[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 #[path = "microsandbox_v2.rs"]
 mod v2;
+#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
+pub use v2::OWNER_LABEL as TOOL_VM_OWNER_LABEL;
 
 use super::{
     channel::TsrpcChannel,
@@ -163,6 +165,10 @@ impl SandboxProvider for MicrosandboxProvider {
 
     async fn clear_vm_templates(&self) -> Result<()> {
         self.clear_supervisor_templates().await
+    }
+
+    async fn sweep_vms(&self, owner: &str) -> Result<usize> {
+        self.sweep_owned_vms(owner).await
     }
 
     async fn create(&self, spec: SandboxSpec) -> Result<SandboxHandle> {
@@ -387,6 +393,7 @@ impl SandboxProvider for MicrosandboxProvider {
             Ok(Ok(_status)) => {
                 debug!(sandbox = %handle.name, "sandbox stopped cleanly");
                 self.live.remove(&handle.name);
+                remove_stopped(&handle.name).await;
                 Ok(())
             }
             Ok(Err(err)) => {
@@ -396,6 +403,7 @@ impl SandboxProvider for MicrosandboxProvider {
                     .await
                     .map_err(|e| to_rt_err("kill tool VM", e))?;
                 self.live.remove(&handle.name);
+                remove_stopped(&handle.name).await;
                 Ok(())
             }
             Err(_timeout) => {
@@ -409,6 +417,7 @@ impl SandboxProvider for MicrosandboxProvider {
                     .await
                     .map_err(|e| to_rt_err("kill tool VM after timeout", e))?;
                 self.live.remove(&handle.name);
+                remove_stopped(&handle.name).await;
                 Ok(())
             }
         }
@@ -510,6 +519,16 @@ impl SandboxProvider for MicrosandboxProvider {
 /// Run `env` / `printenv` inside the guest to recover the stashed reattach
 /// metadata (§9.4). Failure is treated as "no metadata available" so the
 /// caller can fall back to cold-create semantics.
+/// Delete a stopped VM's persisted state (rootfs, config). Teardown means
+/// gone: a stopped-but-present VM only holds disk and its name. Best effort,
+/// per the `teardown` contract.
+#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
+async fn remove_stopped(name: &str) {
+    if let Err(error) = microsandbox::Sandbox::remove(name).await {
+        warn!(sandbox = %name, %error, "cannot remove stopped sandbox");
+    }
+}
+
 #[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 async fn recover_reattach_metadata(
     sandbox: &microsandbox::Sandbox,
