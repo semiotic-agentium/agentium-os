@@ -205,8 +205,8 @@ jobs:
           # is the rmeta diff, not a second cold workspace build.
           # Feature set must stay aligned with the nextest step's --features
           # list; `--all-features` is explicitly forbidden (see comment there)
-          # because `sandbox-e2e-kvm` must only compile in the dedicated KVM
-          # workflow. Catches workspace-clippy regressions like #419 on every
+          # because `sandbox-e2e-kvm` needs /dev/kvm and runs locally via
+          # `just test-kvm`. Catches workspace-clippy regressions like #419 on every
           # PR — the bar `CLAUDE.md` and the pre-commit hook prescribe.
           cargo clippy --workspace --all-targets --locked \
             --features "${{ env.CI_FEATURES_TRUSTED }}" \
@@ -221,8 +221,7 @@ jobs:
           # Tests gated by #[cfg(feature = "llm-tests")] compile when llm-tests is enabled,
           # producing one artifact graph that contains every test.
           # IMPORTANT: keep explicit feature list here (do NOT switch to --all-features).
-          # `sandbox-e2e-kvm` must only compile in .github/workflows/sandbox-e2e-kvm.yml
-          # on KVM-capable runners.
+          # `sandbox-e2e-kvm` needs /dev/kvm; it runs locally via `just test-kvm`.
           echo ">>> nextest workspace: full parallelism (nproc=$(nproc))"
           # `baml-agent-runner/cluster-tests` deferred from CI: the k3d cluster
           # setup over-commits the 2-vCPU GitHub runner, starving the rest of

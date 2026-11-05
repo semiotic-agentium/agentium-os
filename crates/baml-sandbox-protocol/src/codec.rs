@@ -2,16 +2,17 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Length-prefixed JSON frame codec for the sandbox workload transport (§5.2).
+//! Length-prefixed JSON frame codec for the runner ↔ supervisor transport.
 //!
 //! Each frame: `[u32 big-endian length][JSON payload of exactly that many
-//! bytes]`. No newline delimiter. Binary-safe — chosen over NDJSON because
-//! `exec_stream` chunks may arrive in arbitrary sizes and a buggy adapter
-//! could pollute stdout (`tool_sandbox.md` §5.2).
+//! bytes]`. No newline delimiter. Binary-safe — stream reads may arrive in
+//! arbitrary chunk sizes, and framing keeps stray guest output from being
+//! parsed as a message.
 //!
 //! The codec is transport-agnostic: [`TsrpcChannel`] wraps any `AsyncRead +
-//! AsyncWrite`, so the same type works for real microsandbox exec handles and
-//! for in-memory duplex streams used in tests.
+//! AsyncWrite`, so the same type carries the vsock stream to a VM supervisor,
+//! the UDS to a `Trusted` host supervisor, and in-memory duplex streams in
+//! tests.
 //!
 //! Errors are reported via [`CodecError`]. This crate deliberately avoids
 //! depending on host-side error types (e.g. `baml-rt-core`'s `BamlRtError`)

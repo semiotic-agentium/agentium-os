@@ -64,7 +64,7 @@ GitHub Actions workflows, runner architecture, required secrets/variables, and z
 | Doc | Purpose |
 |-----|---------|
 | [README.md](workflows/README.md) | Master inventory of all 9 GitHub Actions workflows, triggers, status, and CLI commands |
-| [runners-and-zero-cost-alternatives.md](workflows/runners-and-zero-cost-alternatives.md) | Runner map (`ubuntu-latest` vs self-hosted `arc-runner-set` / `kvm-enabled`) and `$0` migration paths |
+| [runners-and-zero-cost-alternatives.md](workflows/runners-and-zero-cost-alternatives.md) | Runner map (`ubuntu-latest` vs self-hosted `arc-runner-set`) and `$0` migration paths |
 | [secrets-variables-and-external-ties.md](workflows/secrets-variables-and-external-ties.md) | Matrix of `secrets.*`, `vars.*`, `fnox.toml`, `.env.example`, GHCR, BAML fork, and Git LFS |
 
 ## Runbooks (`docs/runbooks/`)

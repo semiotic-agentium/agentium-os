@@ -3,7 +3,7 @@
 The unified **`karak`** binary is the only user-facing entrypoint for Karakara OS:
 
 - **`karak serve`** — run the platform (HTTP A2A, repository, provenance, config)
-- **SDK subcommands** — scaffold, install, chat, eval, registry, sandbox tooling
+- **SDK subcommands** — scaffold, install, chat, eval, registry, external tool build/publish
 
 For HTTP API details (deploy, A2A, auth tiers), see [`agent-runner.md`](agent-runner.md).
 
@@ -127,7 +127,7 @@ Manifest syntax: `crates/karakara/eval/cases.toml.example`. Turn modes:
 
 Flags: `--url`, `--model`, `--deploy` (publish+deploy agent path before eval), `--path`, `--runner-token`.
 
-## Registry, sandbox, and diagnostics
+## Registry and diagnostics
 
 Unchanged in role from the former SDK:
 

@@ -74,8 +74,9 @@ pub struct ExternalToolMetadata {
     /// Bundle key for config store lookup (optional).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_bundle: Option<String>,
-    /// Optional execution-runtime declaration. Missing => process mode with
-    /// the wrapper default (§4.2 of `tool_sandbox.md`).
+    /// Optional execution-runtime declaration. Missing => the v1 `Process`
+    /// default, which is what v2 snapshot digests hash; see
+    /// [`super::runtime`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<ToolRuntime>,
     /// Optional session-coordination BAML declaration. When set, the builder

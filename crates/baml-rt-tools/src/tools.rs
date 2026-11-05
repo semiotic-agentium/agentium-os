@@ -1608,22 +1608,22 @@ pub enum ToolOrigin {
 /// Execution backend for a tool. Orthogonal to [`ToolOrigin`] (ownership).
 ///
 /// - `Static`: compiled into the runner at build time and linked via inventory.
-/// - `External`: resolved at deploy time from a local external-tool artifact/package.
+/// - `External`: an approved external-tool snapshot served by `ToolHost`
+///   (`Sandbox` microVM, `Trusted` host process, or `Service` endpoint).
 /// - `Mcp`: resolved from an approved MCP snapshot and invoked via MCP transport.
-/// - `Sandbox`: runs inside a microsandbox-backed microVM; dispatch lands in Workstream B.
-/// - `Wasm`: loaded per invocation into a Wasm sandbox (future).
+/// - `Sandbox`, `Wasm`: reserved; nothing produces them today.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolBackend {
     /// Compiled into the runner via inventory (current default).
     #[default]
     Static,
-    /// Runs as a standalone process speaking the platform external-tool protocol over stdio/UDS.
+    /// Served by `ToolHost` from an approved external-tool snapshot.
     External,
     /// Runs through the Model Context Protocol using an approved snapshot/cache entry.
     Mcp,
-    /// Runs inside a microsandbox-backed microVM (Workstream B).
+    /// Reserved; unused.
     Sandbox,
-    /// Runs inside a Wasm sandbox (future).
+    /// Reserved; unused.
     Wasm,
 }
 

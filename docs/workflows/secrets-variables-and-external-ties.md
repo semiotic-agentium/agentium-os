@@ -58,7 +58,6 @@ Configured under **Settings → Secrets and variables → Actions → Variables*
 ### 2. Container Registry Placeholders (`ghcr.io/KarakaraLabs/*`)
 - **Location:**
   - [`deploy/values/dev/images.yaml`](../../deploy/values/dev/images.yaml) & [`scripts/release/set-deploy-ref.sh`](../../scripts/release/set-deploy-ref.sh) (`ghcr.io/KarakaraLabs/karakara-runner`)
-  - [`crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/tool-manifest.json`](../../crates/baml-rt-tools/tests/fixtures/external-tools/sandbox_echo/tool-manifest.json) (`ghcr.io/KarakaraLabs/sandbox-echo`)
 - **Guidance:** Local Kubernetes testing (`just up`, `just sync`, `just verify-k8s-pilot-package`) pushes images to a local `k3d` registry and does not require GHCR. When remote cluster deployments are needed, GHCR hosting is free for public packages under `KarakaraLabs` using `GITHUB_TOKEN` (`packages: write`).
 
 ### 3. Git LFS Quota (`models/fastembed/`)

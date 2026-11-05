@@ -9,7 +9,7 @@ the **checked-out commit** is attacker-controlled).
 
 | Trigger | Trust | Runners | Secrets | Full test lanes |
 |---------|-------|---------|---------|-----------------|
-| Push to `main` | Trusted | Self-hosted (`arc-runner-set`, `kvm-enabled`) | Yes | Yes |
+| Push to `main` | Trusted | Self-hosted (`arc-runner-set`) | Yes | Yes |
 | `workflow_dispatch` | Trusted | Self-hosted | Yes | Yes |
 | PR from a branch **in this repo** | Trusted | Self-hosted | Yes | Yes |
 | PR from a **fork** | Untrusted | GitHub-hosted (`ubuntu-latest`) only | No | Reduced (no `llm-tests`, no k8s pilot) |
@@ -33,10 +33,9 @@ Always safe on fork PRs (already on `ubuntu-latest`, no secrets):
 Never fork-triggered:
 
 - `claude-md-sync.yml` (`workflow_dispatch` / push to `main`; uses `OPENROUTER_API_KEY` + `contents: write`)
-- `sandbox-e2e-kvm.yml` (`workflow_dispatch` / weekly cron; `kvm-enabled` runners)
 - `release-publish.yml` (tag push / `workflow_dispatch`)
 
-For the full inventory of all 9 workflows, runner costs, and required secrets/variables, see [`docs/workflows/README.md`](../workflows/README.md).
+For the full inventory of all 8 workflows, runner costs, and required secrets/variables, see [`docs/workflows/README.md`](../workflows/README.md).
 
 ## Required GitHub settings
 
@@ -82,7 +81,7 @@ validation or ask a maintainer to run `workflow_dispatch` on a trusted branch.
 
 **Actions → Runners**
 
-- Restrict runner groups (`arc-runner-set`, `kvm-enabled`) to **this repository
+- Restrict runner groups (`arc-runner-set`) to **this repository
   only** (not org-wide shared with untrusted repos).
 - Prefer **ephemeral** runners or regular image rebuilds.
 - Runners must not mount production credentials, kubeconfigs, or long-lived

@@ -5,24 +5,20 @@
 //! Runtime declarations for external tools (`runtime` block in
 //! `tool-manifest.json`).
 //!
-//! Workstream A of `tool_sandbox.md`: introduce the typed model with no
-//! behavior change. Dispatch by `ToolRuntime` kind lands in Workstream B when
-//! [`SandboxInvoker`](super::invoker) is added alongside the process path.
-//!
-//! Compatibility rules (from `tool_sandbox.md` §4.2):
-//! 1. `runtime` is optional on [`super::metadata::ExternalToolMetadata`].
-//! 2. Missing `runtime` => process mode with wrapper default
-//!    (`./tool-server`).
-//! 3. Relative paths resolve against the metadata directory (handled by the
-//!    resolver, not this module).
+//! `Trusted` and `Service` are live v2 tiers. `Process` and `Sandbox` are the
+//! v1 shapes: no execution path exists for them any more, but they stay as a
+//! data format because stored snapshot digests hash `runtime` through
+//! [`compute_runtime_digest`](super::snapshot::compute_runtime_digest) and a missing `runtime` defaults
+//! to `Process`. v2 `Sandbox`-tier tools are delivered as `.ktool` bundles and
+//! do not use [`SandboxRuntimeSpec`].
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer, Serialize};
 use tracing::warn;
 
-/// Default command used when a `process` runtime omits `command`. Matches the
-/// wrapper shipped by the CLI scaffolder (§4.2 "wrapper kept as default").
+/// Default command for a `process` runtime that omits `command`. Kept only so
+/// the serde default (and therefore stored digests) stays stable.
 pub const DEFAULT_PROCESS_COMMAND: &str = "./tool-server";
 
 /// Tagged runtime declaration. Serialized as `{ "kind": "process", ... }` /
@@ -30,9 +26,10 @@ pub const DEFAULT_PROCESS_COMMAND: &str = "./tool-server";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToolRuntime {
-    /// Current process + stdio JSON-RPC path.
+    /// v1 stdio child process. Data format only; the default when `runtime`
+    /// is absent, so it is what v2 snapshots hash.
     Process(ProcessRuntimeSpec),
-    /// Microsandbox-backed microVM path (dispatch added in Workstream B).
+    /// v1 exec-per-call microVM rootfs. Data format only; nothing dispatches it.
     Sandbox(SandboxRuntimeSpec),
     /// v2 escape hatch (§3.2): an unsandboxed, operator-trusted tool that runs
     /// as a crash-isolated host process over the P4 wire. No capability grants.
@@ -69,7 +66,7 @@ pub enum ToolRuntimeKind {
     Service,
 }
 
-/// Process runtime: spawn a child process; stdio carries the JSON-RPC contract.
+/// v1 process runtime (data format only; see the module docs).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessRuntimeSpec {
     /// argv for the child process. Direct exec — no shell expansion. For shell
@@ -77,8 +74,7 @@ pub struct ProcessRuntimeSpec {
     #[serde(default = "default_process_command")]
     pub command: Vec<String>,
 
-    /// Optional deploy-time setup commands (idempotent). Sandbox kind ignores
-    /// this field entirely (§4.2 "setup hooks apply to process kind only").
+    /// v1 deploy-time setup commands.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub setup: Vec<String>,
 }
@@ -107,16 +103,16 @@ pub enum SandboxImageRef {
     Bind { path: PathBuf },
 }
 
-/// Adapter-side runtime dispatch declaration for sandbox tools.
+/// v1 in-guest adapter dispatch declaration (data format only).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxAdapterRuntimeSpec {
-    /// Sidecar schema version written under `tool-bundle.json.runtime`.
+    /// Adapter schema version.
     #[serde(default = "default_adapter_schema_version")]
     pub schema_version: u32,
-    /// Child-protocol spoken by the tool process behind `/tool-adapter`.
+    /// Child protocol spoken by the tool process.
     #[serde(default = "default_adapter_protocol")]
     pub protocol: String,
-    /// Child process argv invoked by the adapter for `tool/invoke`.
+    /// Child process argv.
     pub command: Vec<String>,
     /// Optional working directory for the tool child process.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -131,7 +127,8 @@ fn default_adapter_protocol() -> String {
     "jsonrpc-stdio".to_string()
 }
 
-/// Sandbox runtime: OCI or bind rootfs executed inside a microVM.
+/// v1 sandbox runtime: OCI or bind rootfs (data format only; see the module
+/// docs).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxRuntimeSpec {
     /// Rootfs source. Back-compat accepts the legacy string form and maps it
@@ -139,14 +136,11 @@ pub struct SandboxRuntimeSpec {
     #[serde(deserialize_with = "deserialize_sandbox_image_ref")]
     pub image: SandboxImageRef,
 
-    /// Guest-side entrypoint argv. Empty => use the image's default
-    /// entrypoint. The runner launches the `tool-adapter` via
-    /// `microsandbox::Sandbox::exec_stream` with this argv (§5.2).
+    /// Guest-side entrypoint argv. Empty => the image's default entrypoint.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entrypoint: Vec<String>,
 
-    /// Adapter dispatch config authored in metadata and materialized under
-    /// `/etc/karakara/tool-bundle.json` during bind sync.
+    /// v1 adapter dispatch config.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapter: Option<SandboxAdapterRuntimeSpec>,
 }
@@ -171,7 +165,7 @@ pub struct TrustedRuntimeSpec {
 pub enum TrustedLaunch {
     /// The OS spawns the process (blessed DX; `karak publish` installs it).
     Spawn {
-        /// Direct exec — no shell. argv[0] is the program.
+        /// Direct exec — no shell. `argv[0]` is the program.
         argv: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<PathBuf>,

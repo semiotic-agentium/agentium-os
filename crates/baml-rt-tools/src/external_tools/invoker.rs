@@ -88,16 +88,9 @@ pub trait ExternalInvoker: Send + Sync {
     async fn invoke(&self, req: InvokeRequest) -> Result<InvokeResponse>;
 }
 
-/// Backend-agnostic invoker surface (Workstream A of `tool_sandbox.md` §7.2).
-///
-/// Introduced so future [`SandboxInvoker`](super) and [`WasmInvoker`](super)
-/// implementations share one trait. The blanket impl below means every
-/// existing [`ExternalInvoker`] is already a `ToolInvoker`, so adding the
-/// abstraction is a zero-behavior-change refactor.
-///
-/// Future workstreams may rename `ExternalInvoker` to `ProcessInvoker` and
-/// collapse the two traits into one; keeping them split in Workstream A
-/// avoids cascading refactors across call sites.
+/// Backend-agnostic invoker surface. Every [`ExternalInvoker`] is a
+/// `ToolInvoker` through the blanket impl below; callers inside this crate use
+/// [`ExternalInvoker`] directly.
 #[async_trait]
 pub trait ToolInvoker: Send + Sync {
     async fn describe(&self, tool: &ToolName, timeout: Duration) -> Result<ToolDescribe>;
