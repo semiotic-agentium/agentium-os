@@ -318,10 +318,13 @@ pub enum Commands {
 /// `karak tool <new|build|publish|test>` authors MCP toolsets.
 #[derive(Subcommand)]
 pub enum ToolCommands {
-    /// Scaffold a TypeScript MCP server with optional `defineTool` sugar.
+    /// Scaffold a TypeScript tool with TypeBox schemas and `defineTool`.
     New {
         /// Tool name in lowercase (e.g. weather, clickup-sync). Omit for interactive mode.
         name: Option<String>,
+        /// Authoring language. TypeScript is the first supported SDK.
+        #[arg(long, default_value = "ts", value_parser = ["ts", "typescript"])]
+        lang: String,
         /// Bundle namespace (free-form, no `/`). Defaults to `support`.
         #[arg(long)]
         bundle: Option<String>,

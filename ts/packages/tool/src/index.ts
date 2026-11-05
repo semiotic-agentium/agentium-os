@@ -1,107 +1,396 @@
 // SPDX-License-Identifier: Apache-2.0
 
-/**
- * Small conveniences over the official MCP TypeScript SDK.
- *
- * `defineTool` creates an `McpServer` and registers one tool. It does not add a
- * Karakara transport or a second worker protocol. The resulting server speaks
- * ordinary MCP stdio and can run anywhere an MCP server can run.
- */
-
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { readFileSync } from "node:fs";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import {
+  CallToolRequestSchema,
+  ErrorCode,
+  ListToolsRequestSchema,
+  McpError,
+} from "@modelcontextprotocol/sdk/types.js";
+import { Type, type Static, type TSchema } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
 
-export { McpServer, StdioServerTransport, z };
+export { Type };
+export type { Static, TSchema };
 
 export type SideEffect = "read" | "write" | "irreversible";
+export type ToolErrorClass =
+  | "invalid_argument"
+  | "transient"
+  | "permission"
+  | "configuration"
+  | "execution";
+export type SecretBinding = "egress-bound" | "reveal";
+export type SecretSpec = Readonly<Record<string, SecretBinding>>;
 
-type InputShape = z.ZodRawShape;
-type OutputSchema = z.ZodTypeAny;
+const ALL_ERROR_CLASSES: readonly ToolErrorClass[] = [
+  "invalid_argument",
+  "transient",
+  "permission",
+  "configuration",
+  "execution",
+];
 
-export interface ToolSpec<I extends InputShape, O extends OutputSchema> {
-  /** MCP-local tool name. `karak tool build` prefixes it with the toolset name. */
+export interface ToolSpec<
+  I extends TSchema,
+  O extends TSchema,
+  S extends SecretSpec = Record<never, never>,
+> {
+  /** Fully qualified `toolset/tool` name. */
   name: string;
-  /** Included in Karakara's MCP annotation and descriptor digest. */
-  version: string;
-  description: string;
-  inputSchema: I;
-  outputSchema: O;
+  /** Toolset version. Defaults to `0.1.0`. */
+  version?: string;
+  description?: string;
+  input: I;
+  output: O;
   sideEffect?: SideEffect;
   idempotent?: boolean;
+  /** Outbound destinations requested by this toolset, written as `host:port`. */
+  net?: readonly string[];
+  /** Named secret requests. Secret values never belong in source code. */
+  secrets?: S;
+  errors?: readonly ToolErrorClass[];
 }
 
-export type ToolHandler<I extends InputShape, O extends OutputSchema> = (
-  input: z.infer<z.ZodObject<I>>,
-) => Promise<z.infer<O>> | z.infer<O>;
+export interface ToolContext<S extends SecretSpec = Record<never, never>> {
+  /** Fetch with a local preflight check against `spec.net`. The host enforces the same list. */
+  fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>;
+  /** Create a classified error for `throw ctx.error(...)`. */
+  error(errorClass: ToolErrorClass, message: string): ToolExecutionError;
+  /** Emit an MCP logging notification. */
+  log(
+    level: "debug" | "info" | "notice" | "warning" | "error",
+    message: string,
+  ): Promise<void>;
+  /** Invocation deadline duration supplied by the host, when present. */
+  readonly deadlineMs: number | undefined;
+  /** Aborts on MCP cancellation or when the invocation deadline expires. */
+  readonly signal: AbortSignal;
+  /** Egress placeholders or reveal values provided by the supervisor. */
+  readonly secrets: Readonly<{ [K in keyof S]: string }>;
+}
+
+export type ToolHandler<
+  I extends TSchema,
+  O extends TSchema,
+  S extends SecretSpec,
+> = (input: Static<I>, ctx: ToolContext<S>) => Promise<Static<O>> | Static<O>;
+
+export interface DefinedTool<
+  I extends TSchema,
+  O extends TSchema,
+  S extends SecretSpec,
+> {
+  readonly spec: ToolSpec<I, O, S>;
+  readonly server: Server;
+  readonly ready: Promise<void>;
+}
+
+export class ToolExecutionError extends Error {
+  readonly errorClass: ToolErrorClass;
+
+  constructor(errorClass: ToolErrorClass, message: string) {
+    super(message);
+    this.name = "ToolExecutionError";
+    this.errorClass = errorClass;
+  }
+}
+
+interface ParsedTarget {
+  host: string;
+  port: number;
+}
 
 /**
- * Register one typed tool on a fresh official MCP server.
+ * Define and start one TypeBox-backed MCP stdio tool.
  *
- * The standard annotations carry the MCP-native read-only, destructive, and
- * idempotent hints. Karakara-specific descriptor fields live in the permitted
- * annotations namespace, so an ordinary MCP client can ignore them.
+ * The TypeBox schemas are returned by `tools/list`, so `karak tool build` can
+ * derive the descriptor and toolset manifest without a second schema file.
  */
-export function defineTool<I extends InputShape, O extends OutputSchema>(
-  spec: ToolSpec<I, O>,
-  handler: ToolHandler<I, O>,
-): McpServer {
+export function defineTool<
+  I extends TSchema,
+  O extends TSchema,
+  S extends SecretSpec = Record<never, never>,
+>(
+  spec: ToolSpec<I, O, S>,
+  handler: ToolHandler<I, O, S>,
+): DefinedTool<I, O, S> {
+  const { toolsetName, localName } = parseToolName(spec.name);
+  const version = spec.version ?? "0.1.0";
+  const description = spec.description ?? localName;
   const sideEffect = spec.sideEffect ?? "write";
   const idempotent = spec.idempotent ?? sideEffect === "read";
-  const server = new McpServer({ name: spec.name, version: spec.version });
-
-  const callback = async (input: unknown) => {
-    try {
-      const output = await handler(input as z.infer<z.ZodObject<I>>);
-      return {
-        content: [{ type: "text", text: JSON.stringify(output) }],
-        structuredContent: output as Record<string, unknown>,
-      };
-    } catch (error) {
-      return {
-        content: [{ type: "text", text: errorMessage(error) }],
-        isError: true,
-      };
-    }
+  const targets = (spec.net ?? []).map(parseTarget);
+  const requested = {
+    net: targets.map(({ host, port }) => ({ host, port })),
+    secrets: Object.entries(spec.secrets ?? {}).map(([name, binding]) => ({
+      name,
+      binding: binding === "egress-bound" ? "egress_bound" : binding,
+    })),
   };
-
-  server.registerTool(
-    spec.name,
-    {
-      description: spec.description,
-      inputSchema: spec.inputSchema,
-      outputSchema: spec.outputSchema,
-      annotations: {
-        readOnlyHint: sideEffect === "read",
-        destructiveHint: sideEffect === "irreversible",
-        idempotentHint: idempotent,
-        karakara: {
-          descriptorAbi: 1,
-          version: spec.version,
-          outputSchema: zodSchema(spec.outputSchema),
-          errorClasses: ["execution"],
-          sideEffect,
-          idempotent,
-          outputTrust: "untrusted",
-        },
-      } as never,
-    },
-    callback as never,
+  const errorClasses = [...(spec.errors ?? ALL_ERROR_CLASSES)];
+  const server = new Server(
+    { name: localName, version },
+    { capabilities: { logging: {}, tools: {} } },
   );
 
-  return server;
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      {
+        name: localName,
+        description,
+        inputSchema: spec.input as Record<string, unknown>,
+        outputSchema: spec.output as Record<string, unknown>,
+        annotations: {
+          readOnlyHint: sideEffect === "read",
+          destructiveHint: sideEffect === "irreversible",
+          idempotentHint: idempotent,
+          karakara: {
+            descriptorAbi: 1,
+            version,
+            outputSchema: spec.output,
+            errorClasses,
+            sideEffect,
+            idempotent,
+            outputTrust: "untrusted",
+          },
+        },
+        _meta: {
+          "karakara/toolset": {
+            name: toolsetName,
+            version,
+            capabilities: requested,
+          },
+        },
+      },
+    ],
+  }));
+
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    if (request.params.name !== localName) {
+      throw new McpError(
+        ErrorCode.MethodNotFound,
+        `unknown tool '${request.params.name}'`,
+      );
+    }
+    const input = request.params.arguments ?? {};
+    if (!Value.Check(spec.input, input)) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `input failed schema validation: ${validationMessage(spec.input, input)}`,
+      );
+    }
+
+    const invocation = invocationContext(request.params._meta, extra.signal);
+    const ctx = createContext(server, targets, spec.secrets, invocation);
+    try {
+      const output = await handler(input as Static<I>, ctx);
+      if (!Value.Check(spec.output, output)) {
+        throw new ToolExecutionError(
+          "execution",
+          `handler output failed schema validation: ${validationMessage(spec.output, output)}`,
+        );
+      }
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(output) }],
+        ...(isRecord(output) ? { structuredContent: output } : {}),
+      };
+    } catch (error) {
+      const classified = classifyError(error);
+      return {
+        content: [{ type: "text" as const, text: classified.message }],
+        isError: true,
+        _meta: { "karakara/errorClass": classified.errorClass },
+      };
+    } finally {
+      invocation.dispose();
+    }
+  });
+
+  const ready = server.connect(new StdioServerTransport());
+  ready.catch((error: unknown) => {
+    console.error(`@karakara/tool failed to start: ${errorMessage(error)}`);
+    process.exitCode = 1;
+  });
+  return { spec, server, ready };
 }
 
-/** Connect an MCP server to the official stdio transport. */
-export async function serve(server: McpServer): Promise<void> {
-  await server.connect(new StdioServerTransport());
+/** Wait for the stdio server started by `defineTool`. */
+export async function serve(
+  tool: DefinedTool<TSchema, TSchema, SecretSpec>,
+): Promise<void> {
+  await tool.ready;
+}
+
+function createContext<S extends SecretSpec>(
+  server: Server,
+  targets: readonly ParsedTarget[],
+  secrets: S | undefined,
+  invocation: InvocationContext,
+): ToolContext<S> {
+  const allowed = new Set(targets.map(({ host, port }) => `${host}:${port}`));
+  const revealFds = revealFdTable();
+  const secretValues = Object.fromEntries(
+    Object.keys(secrets ?? {}).map((name) => {
+      const fd = revealFds[name];
+      const value =
+        fd === undefined
+          ? (process.env[name] ?? `{{${name}}}`)
+          : readFileSync(`/proc/self/fd/${fd}`, "utf8");
+      return [name, value];
+    }),
+  ) as { [K in keyof S]: string };
+
+  return {
+    deadlineMs: invocation.deadlineMs,
+    signal: invocation.signal,
+    secrets: secretValues,
+    error: (errorClass, message) => new ToolExecutionError(errorClass, message),
+    log: async (level, message) => {
+      await server.sendLoggingMessage({ level, data: message });
+    },
+    fetch: async (input, init = {}) => {
+      const url = requestUrl(input);
+      const port = url.port
+        ? Number(url.port)
+        : url.protocol === "https:"
+          ? 443
+          : 80;
+      const destination = `${url.hostname.toLowerCase()}:${port}`;
+      if (!allowed.has(destination)) {
+        throw new ToolExecutionError(
+          "permission",
+          `network destination '${destination}' is not declared in this tool's net list`,
+        );
+      }
+      const signal = combineSignals(invocation.signal, init.signal);
+      return globalThis.fetch(input, { ...init, signal });
+    },
+  };
+}
+
+interface InvocationContext {
+  deadlineMs: number | undefined;
+  signal: AbortSignal;
+  dispose(): void;
+}
+
+function invocationContext(
+  meta: Record<string, unknown> | undefined,
+  signal: AbortSignal,
+): InvocationContext {
+  const callContext = meta?.["karakara/call_context"];
+  const rawDeadline = isRecord(callContext)
+    ? callContext.deadline_ms
+    : undefined;
+  const deadlineMs =
+    typeof rawDeadline === "number" && rawDeadline > 0
+      ? rawDeadline
+      : undefined;
+  if (deadlineMs === undefined) {
+    return { deadlineMs, signal, dispose: () => undefined };
+  }
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal.reason);
+  signal.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(
+    () => controller.abort(new Error("tool deadline exceeded")),
+    deadlineMs,
+  );
+  timer.unref();
+  return {
+    deadlineMs,
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+    },
+  };
+}
+
+function combineSignals(
+  primary: AbortSignal,
+  secondary: AbortSignal | null | undefined,
+): AbortSignal {
+  if (!secondary) return primary;
+  if (primary.aborted) return primary;
+  if (secondary.aborted) return secondary;
+  return AbortSignal.any([primary, secondary]);
+}
+
+function parseToolName(name: string): {
+  toolsetName: string;
+  localName: string;
+} {
+  const parts = name.split("/");
+  if (parts.length !== 2 || parts.some((part) => part.length === 0)) {
+    throw new TypeError(`tool name '${name}' must use the form 'toolset/tool'`);
+  }
+  return { toolsetName: parts[0]!, localName: parts[1]! };
+}
+
+function parseTarget(value: string): ParsedTarget {
+  const separator = value.lastIndexOf(":");
+  const host = value.slice(0, separator).trim().toLowerCase();
+  const port = Number(value.slice(separator + 1));
+  if (
+    separator <= 0 ||
+    !host ||
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65535
+  ) {
+    throw new TypeError(
+      `network destination '${value}' must use the form 'host:port'`,
+    );
+  }
+  return { host, port };
+}
+
+function revealFdTable(): Record<string, number> {
+  const raw = process.env.KARAKARA_REVEAL_FDS;
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        (entry): entry is [string, number] =>
+          Number.isInteger(entry[1]) && (entry[1] as number) >= 0,
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function requestUrl(input: string | URL | Request): URL {
+  if (input instanceof URL) return input;
+  if (typeof input === "string") return new URL(input);
+  return new URL(input.url);
+}
+
+function validationMessage(schema: TSchema, value: unknown): string {
+  return [...Value.Errors(schema, value)]
+    .slice(0, 3)
+    .map((error) => `${error.path || "/"} ${error.message}`)
+    .join("; ");
+}
+
+function classifyError(error: unknown): ToolExecutionError {
+  if (error instanceof ToolExecutionError) return error;
+  if (error instanceof Error && error.name === "AbortError") {
+    return new ToolExecutionError("transient", error.message);
+  }
+  return new ToolExecutionError("execution", errorMessage(error));
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function zodSchema(schema: z.ZodTypeAny): unknown {
-  return zodToJsonSchema(schema);
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

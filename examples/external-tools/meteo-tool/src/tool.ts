@@ -1,81 +1,79 @@
-import { request } from "node:https";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
+import {
+  defineTool,
+  Type,
+  type Static,
+  type ToolContext,
+} from "@karakara/tool";
 
-const TOOL_NAME = "meteo-tool";
 const USER_AGENT = "karakara-meteo-tool/2.0.0";
 const GEOCODING_ENDPOINT = "https://geocoding-api.open-meteo.com/v1/search";
 const FORECAST_ENDPOINT = "https://api.open-meteo.com/v1/forecast";
+const NullableString = Type.Union([Type.String(), Type.Null()]);
+const NullableNumber = Type.Union([Type.Number(), Type.Null()]);
 
-const inputSchema = {
-  location_query: z
-    .string()
-    .describe(
+const Input = Type.Object({
+  location_query: Type.String({
+    description:
       "Free-form place query (city, country, region), e.g. 'Buenos Aires' or 'Athens, Greece'.",
-    ),
-  city: z
-    .string()
-    .optional()
-    .describe("Optional city hint. Used when location_query is omitted."),
-  country: z.string().optional().describe("Optional country hint, e.g. 'Panama'."),
-  timezone: z
-    .string()
-    .default("auto")
-    .describe("IANA timezone like Europe/Berlin, or auto."),
-  hourly_limit: z
-    .number()
-    .int()
-    .min(1)
-    .max(48)
-    .default(12)
-    .describe("Maximum number of hourly datapoints to return (1..48)."),
-};
-
-const outputSchema = z.object({
-  source: z.string(),
-  fetched_at: z.string(),
-  location: z.object({
-    query: z.string(),
-    name: z.string().nullable(),
-    admin1: z.string().nullable(),
-    country: z.string().nullable(),
-    country_code: z.string().nullable(),
-    latitude: z.number(),
-    longitude: z.number(),
-    timezone: z.string(),
   }),
-  current: z.object({
-    time: z.string().nullable(),
-    temperature_2m: z.number().nullable(),
-    wind_speed_10m: z.number().nullable(),
-  }),
-  hourly: z.array(
-    z.object({
-      time: z.string(),
-      temperature_2m: z.number(),
-      relative_humidity_2m: z.number(),
-      wind_speed_10m: z.number(),
+  city: Type.Optional(
+    Type.String({
+      description: "Optional city hint. Used when location_query is omitted.",
     }),
   ),
-  location_candidates: z.array(
-    z.object({
-      name: z.string().nullable(),
-      admin1: z.string().nullable(),
-      country: z.string().nullable(),
-      latitude: z.number().nullable(),
-      longitude: z.number().nullable(),
+  country: Type.Optional(
+    Type.String({ description: "Optional country hint, e.g. 'Panama'." }),
+  ),
+  timezone: Type.Optional(
+    Type.String({ description: "IANA timezone like Europe/Berlin, or auto." }),
+  ),
+  hourly_limit: Type.Optional(
+    Type.Integer({
+      minimum: 1,
+      maximum: 48,
+      description: "Maximum number of hourly datapoints to return (1..48).",
     }),
   ),
 });
 
-type Input = {
-  location_query: string;
-  city?: string;
-  country?: string;
-  timezone?: string;
-  hourly_limit?: number;
-};
+const Output = Type.Object({
+  source: Type.String(),
+  fetched_at: Type.String(),
+  location: Type.Object({
+    query: Type.String(),
+    name: NullableString,
+    admin1: NullableString,
+    country: NullableString,
+    country_code: NullableString,
+    latitude: Type.Number(),
+    longitude: Type.Number(),
+    timezone: Type.String(),
+  }),
+  current: Type.Object({
+    time: NullableString,
+    temperature_2m: NullableNumber,
+    wind_speed_10m: NullableNumber,
+  }),
+  hourly: Type.Array(
+    Type.Object({
+      time: Type.String(),
+      temperature_2m: Type.Number(),
+      relative_humidity_2m: Type.Number(),
+      wind_speed_10m: Type.Number(),
+    }),
+  ),
+  location_candidates: Type.Array(
+    Type.Object({
+      name: NullableString,
+      admin1: NullableString,
+      country: NullableString,
+      latitude: NullableNumber,
+      longitude: NullableNumber,
+    }),
+  ),
+});
+
+type InputValue = Static<typeof Input>;
 
 type GeocodingResult = {
   name?: string;
@@ -111,44 +109,26 @@ function errorMessage(error: unknown): string {
   return "unknown network error";
 }
 
-function requestJson<T>(url: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const requestHandle = request(
-      url,
-      { headers: { Accept: "application/json", "User-Agent": USER_AGENT } },
-      (response) => {
-        let body = "";
-        response.setEncoding("utf8");
-        response.on("data", (chunk: string) => {
-          body += chunk;
-        });
-        response.on("end", () => {
-          const status = response.statusCode ?? 0;
-          if (status < 200 || status >= 300) {
-            reject(new Error(`Open-Meteo request failed with HTTP ${status}`));
-            return;
-          }
-          try {
-            resolve(JSON.parse(body) as T);
-          } catch (error) {
-            reject(new Error(`Open-Meteo returned invalid JSON: ${errorMessage(error)}`));
-          }
-        });
-      },
-    );
-    requestHandle.setTimeout(15_000, () => {
-      requestHandle.destroy(new Error("Open-Meteo request timed out"));
-    });
-    requestHandle.on("error", (error) => reject(new Error(errorMessage(error))));
-    requestHandle.end();
+async function requestJson<T>(url: string, ctx: ToolContext): Promise<T> {
+  const response = await ctx.fetch(url, {
+    headers: { Accept: "application/json", "User-Agent": USER_AGENT },
+    signal: AbortSignal.timeout(15_000),
   });
+  if (!response.ok) {
+    throw new Error(`Open-Meteo request failed with HTTP ${response.status}`);
+  }
+  try {
+    return (await response.json()) as T;
+  } catch (error) {
+    throw new Error(`Open-Meteo returned invalid JSON: ${errorMessage(error)}`);
+  }
 }
 
-async function getJson<T>(url: string): Promise<T> {
+async function getJson<T>(url: string, ctx: ToolContext): Promise<T> {
   let lastError = "unknown network error";
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      return await requestJson<T>(url);
+      return await requestJson<T>(url, ctx);
     } catch (error) {
       lastError = errorMessage(error);
       if (attempt < 3) {
@@ -156,14 +136,17 @@ async function getJson<T>(url: string): Promise<T> {
       }
     }
   }
-  throw new Error(`Open-Meteo request failed after 3 attempts: ${lastError}`);
+  throw ctx.error(
+    "transient",
+    `Open-Meteo request failed after 3 attempts: ${lastError}`,
+  );
 }
 
 function clean(value: string | undefined): string {
   return value?.trim() ?? "";
 }
 
-function normalizeInput(input: Input) {
+function normalizeInput(input: InputValue, ctx: ToolContext) {
   let locationQuery = clean(input.location_query);
   const city = clean(input.city);
   const country = clean(input.country);
@@ -174,21 +157,32 @@ function normalizeInput(input: Input) {
     else if (country) locationQuery = country;
   }
   if (!locationQuery) {
-    throw new Error("provide location_query, or city/country");
+    throw ctx.error(
+      "invalid_argument",
+      "provide location_query, or city/country",
+    );
   }
 
   const timezone = clean(input.timezone) || "auto";
   const hourlyLimit = input.hourly_limit ?? 12;
-  if (!Number.isInteger(hourlyLimit) || hourlyLimit < 1 || hourlyLimit > 48) {
-    throw new Error("hourly_limit must be between 1 and 48");
-  }
-
-  return { locationQuery, country: country || undefined, timezone, hourlyLimit };
+  return {
+    locationQuery,
+    country: country || undefined,
+    timezone,
+    hourlyLimit,
+  };
 }
 
-async function resolveLocation(locationQuery: string, countryHint?: string) {
+async function resolveLocation(
+  locationQuery: string,
+  countryHint: string | undefined,
+  ctx: ToolContext,
+) {
   let queryText = locationQuery;
-  if (countryHint && !locationQuery.toLowerCase().includes(countryHint.toLowerCase())) {
+  if (
+    countryHint &&
+    !locationQuery.toLowerCase().includes(countryHint.toLowerCase())
+  ) {
     queryText = `${locationQuery}, ${countryHint}`;
   }
 
@@ -198,10 +192,16 @@ async function resolveLocation(locationQuery: string, countryHint?: string) {
     language: "en",
     format: "json",
   });
-  const payload = await getJson<GeocodingResponse>(`${GEOCODING_ENDPOINT}?${params}`);
+  const payload = await getJson<GeocodingResponse>(
+    `${GEOCODING_ENDPOINT}?${params}`,
+    ctx,
+  );
   const results = payload.results ?? [];
   if (results.length === 0) {
-    throw new Error(`no location found for '${locationQuery}'`);
+    throw ctx.error(
+      "invalid_argument",
+      `no location found for '${locationQuery}'`,
+    );
   }
 
   const candidates = results.slice(0, 3).map((row) => ({
@@ -215,19 +215,25 @@ async function resolveLocation(locationQuery: string, countryHint?: string) {
 }
 
 function candidateLabel(candidate: GeocodingResult): string {
-  return [candidate.name, candidate.admin1, candidate.country].filter(Boolean).join(", ");
+  return [candidate.name, candidate.admin1, candidate.country]
+    .filter(Boolean)
+    .join(", ");
 }
 
 function queryIsSpecific(locationQuery: string): boolean {
-  return locationQuery.includes(",") || locationQuery.trim().split(/\s+/).length >= 3;
+  return (
+    locationQuery.includes(",") || locationQuery.trim().split(/\s+/).length >= 3
+  );
 }
 
 function rejectAmbiguous(
   locationQuery: string,
   countryHint: string | undefined,
   candidates: GeocodingResult[],
+  ctx: ToolContext,
 ): void {
-  if (countryHint || candidates.length < 2 || queryIsSpecific(locationQuery)) return;
+  if (countryHint || candidates.length < 2 || queryIsSpecific(locationQuery))
+    return;
   const first = candidates[0];
   const second = candidates[1];
   const countryDiffers = (first.country ?? "") !== (second.country ?? "");
@@ -238,7 +244,8 @@ function rejectAmbiguous(
     .slice(0, 3)
     .map((candidate, index) => `${index + 1}) ${candidateLabel(candidate)}`)
     .join("; ");
-  throw new Error(
+  throw ctx.error(
+    "invalid_argument",
     `ambiguous location '${locationQuery}'. Please clarify by city and country. Options: ${options}`,
   );
 }
@@ -247,6 +254,7 @@ async function fetchForecast(
   latitude: number,
   longitude: number,
   timezone: string,
+  ctx: ToolContext,
 ): Promise<ForecastResponse> {
   const params = new URLSearchParams({
     latitude: String(latitude),
@@ -256,15 +264,24 @@ async function fetchForecast(
     timezone,
     forecast_days: "1",
   });
-  return getJson<ForecastResponse>(`${FORECAST_ENDPOINT}?${params}`);
+  return getJson<ForecastResponse>(`${FORECAST_ENDPOINT}?${params}`, ctx);
 }
 
-function hourlyRows(hourly: NonNullable<ForecastResponse["hourly"]>, limit: number) {
+function hourlyRows(
+  hourly: NonNullable<ForecastResponse["hourly"]>,
+  limit: number,
+) {
   const times = hourly.time ?? [];
   const temperatures = hourly.temperature_2m ?? [];
   const humidity = hourly.relative_humidity_2m ?? [];
   const wind = hourly.wind_speed_10m ?? [];
-  const count = Math.min(times.length, temperatures.length, humidity.length, wind.length, limit);
+  const count = Math.min(
+    times.length,
+    temperatures.length,
+    humidity.length,
+    wind.length,
+    limit,
+  );
 
   return Array.from({ length: count }, (_, index) => ({
     time: times[index],
@@ -274,34 +291,44 @@ function hourlyRows(hourly: NonNullable<ForecastResponse["hourly"]>, limit: numb
   }));
 }
 
-async function getMeteo(input: Input) {
-  const normalized = normalizeInput(input);
+async function getMeteo(input: InputValue, ctx: ToolContext) {
+  const normalized = normalizeInput(input, ctx);
   const { best, candidates, rawCandidates } = await resolveLocation(
     normalized.locationQuery,
     normalized.country,
+    ctx,
   );
-  rejectAmbiguous(normalized.locationQuery, normalized.country, rawCandidates);
+  rejectAmbiguous(
+    normalized.locationQuery,
+    normalized.country,
+    rawCandidates,
+    ctx,
+  );
 
   if (best.latitude === undefined || best.longitude === undefined) {
-    throw new Error("resolved location is missing coordinates");
+    throw ctx.error("execution", "resolved location is missing coordinates");
   }
 
-  const forecast = await fetchForecast(best.latitude, best.longitude, normalized.timezone);
+  const forecast = await fetchForecast(
+    best.latitude,
+    best.longitude,
+    normalized.timezone,
+    ctx,
+  );
   const current = forecast.current ?? {};
-  const location = {
-    query: normalized.locationQuery,
-    name: best.name ?? null,
-    admin1: best.admin1 ?? null,
-    country: best.country ?? null,
-    country_code: best.country_code ?? null,
-    latitude: forecast.latitude ?? best.latitude,
-    longitude: forecast.longitude ?? best.longitude,
-    timezone: forecast.timezone ?? normalized.timezone,
-  };
-  const output = {
+  return {
     source: "open-meteo",
     fetched_at: new Date().toISOString(),
-    location,
+    location: {
+      query: normalized.locationQuery,
+      name: best.name ?? null,
+      admin1: best.admin1 ?? null,
+      country: best.country ?? null,
+      country_code: best.country_code ?? null,
+      latitude: forecast.latitude ?? best.latitude,
+      longitude: forecast.longitude ?? best.longitude,
+      timezone: forecast.timezone ?? normalized.timezone,
+    },
     current: {
       time: current.time ?? null,
       temperature_2m: current.temperature_2m ?? null,
@@ -310,25 +337,17 @@ async function getMeteo(input: Input) {
     hourly: hourlyRows(forecast.hourly ?? {}, normalized.hourlyLimit),
     location_candidates: candidates,
   };
-  return outputSchema.parse(output);
 }
 
-const server = new McpServer({ name: TOOL_NAME, version: "2.0.0" });
-server.registerTool(
-  TOOL_NAME,
+export default defineTool(
   {
-    description: "Accurate Weather Forecasts for Any Location",
-    inputSchema,
-    outputSchema,
-    annotations: { readOnlyHint: true, idempotentHint: true },
+    name: "dev/meteo-tool",
+    version: "2.0.0",
+    description: "Accurate weather forecasts for any location.",
+    sideEffect: "read",
+    input: Input,
+    output: Output,
+    net: ["geocoding-api.open-meteo.com:443", "api.open-meteo.com:443"],
   },
-  async (input) => {
-    const output = await getMeteo(input);
-    return {
-      content: [{ type: "text", text: JSON.stringify(output) }],
-      structuredContent: output,
-    };
-  },
+  getMeteo,
 );
-
-await server.connect(new StdioServerTransport());

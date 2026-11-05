@@ -96,8 +96,8 @@ endpoint and every approved tool schema pass verification.
 
 ```bash
 karak new-agent my-agent --template simple --tags support,demo
-karak tool new weather --bundle support    # v2 TypeScript tool (@karakara/tool)
-karak tool build ./weather                 # derive descriptor + digest
+karak tool new --lang ts weather --bundle support  # TypeBox defineTool project
+karak tool build ./weather                 # derive descriptor, manifest, and digest
 karak tool test ./weather --input '{"message":"hi"}'
 karak publish --path ./weather --yes       # vendor JS and ingest the .ktool
 karak new-static-tool github   # platform-internal (monorepo contributors only)

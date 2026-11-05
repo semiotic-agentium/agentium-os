@@ -5,9 +5,9 @@
 
 //! `karak tool new` — scaffold a v2 TypeScript external tool.
 //!
-//! The scaffold is a small TypeScript MCP server. `karak tool build` reads its
-//! `tools/list` response and packages the result, so authors do not maintain a
-//! second schema or tool manifest.
+//! The scaffold uses TypeBox and `@karakara/tool`. `karak tool build` reads its
+//! `tools/list` response and generates the descriptor and manifest, so authors
+//! maintain neither by hand.
 
 use std::{
     fs,
@@ -125,7 +125,7 @@ pub fn run(
     println!("  Path: {}", style(output_dir.display()).cyan());
     println!();
     println!("{}", style("Next steps:").bold());
-    println!("  1. Edit src/tool.ts (an MCP server using the official SDK).");
+    println!("  1. Edit src/tool.ts (TypeBox schemas plus one defineTool handler).");
     println!("  2. {}", style("npm install && karak tool build").cyan());
     println!("  3. {}", style("karak tool test").cyan());
 
@@ -135,6 +135,7 @@ pub fn run(
 /// CLI-facing entry: resolve interactive prompts then scaffold.
 pub struct ToolNewCli {
     pub name: Option<String>,
+    pub lang: String,
     pub bundle: Option<String>,
     pub description: Option<String>,
     pub output: Option<String>,
@@ -144,6 +145,12 @@ pub struct ToolNewCli {
 pub fn run_cli(cmd: ToolNewCli) -> Result<()> {
     use crate::{interactive, templates::external_tool::DEFAULT_BUNDLE};
 
+    if !matches!(cmd.lang.as_str(), "ts" | "typescript") {
+        bail!(
+            "Error: unsupported tool language '{}'. Use --lang ts.",
+            cmd.lang
+        );
+    }
     let interactive_mode = cmd.name.is_none();
     let name = match cmd.name {
         Some(n) => n,
@@ -243,11 +250,10 @@ mod tests {
         assert!(has(&files, "tsconfig.json"));
         assert!(has(&files, "src/tool.ts"));
         assert!(has(&files, "README.md"));
-        // No v1 artifacts.
         assert!(!has(&files, "tool-server"));
         assert!(!has(&files, "tool-manifest.json"));
         assert!(!has(&files, "src/main.ts"));
-        assert!(has(&files, "karakara.toml"));
+        assert!(!has(&files, "karakara.toml"));
     }
 
     #[test]
@@ -257,18 +263,14 @@ mod tests {
             .iter()
             .find(|f| f.relative_path == "package.json")
             .unwrap();
-        assert!(pkg.content.contains("@modelcontextprotocol/sdk"));
+        assert!(pkg.content.contains("@karakara/tool"));
         let tool = files
             .iter()
             .find(|f| f.relative_path == "src/tool.ts")
             .unwrap();
-        assert!(tool.content.contains("McpServer"));
-        assert!(tool.content.contains("StdioServerTransport"));
-        let config = files
-            .iter()
-            .find(|f| f.relative_path == "karakara.toml")
-            .unwrap();
-        assert!(config.content.contains("name = \"support\""));
+        assert!(tool.content.contains("defineTool"));
+        assert!(tool.content.contains("Type.Object"));
+        assert!(tool.content.contains("name: \"support/weather\""));
     }
 
     #[test]

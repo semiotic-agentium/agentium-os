@@ -17,13 +17,13 @@ ToolHost / VmPool  ── vsock ──▶     supervisor (pid 1, root)
   channel.rs        protocol v2       ├─ verify + unpack .ktool to tmpfs
                                       └─ worker per tool digest (uid, ns,
                                          rlimits, seccomp)
-                                            node → @karakara/tool serve()
+                                            node → MCP stdio server
 ```
 
-The worker speaks the same framed wire as the host. The supervisor is the
-worker's host: it writes `Invoke` frames to the worker's stdin and reads
-`Event`/`Result` frames from its stdout. `ts/packages/tool/src/runtime.ts`
-drives that loop in both prod and dev.
+The supervisor is an MCP client of the worker. It maps `protocol_v2` invokes to
+MCP `tools/call`, checks the live `tools/list` result against the bundled
+descriptors, and maps MCP results and notifications back to host frames.
+`@karakara/tool` is the TypeScript authoring SDK; plain MCP servers work too.
 
 ## Wire
 

@@ -611,18 +611,25 @@ impl Worker {
                 true,
             );
         }
-        // The MCP TS SDK reports schema failures as an isError call result
-        // whose text preserves JSON-RPC's -32602 code. Treat it the same as a
-        // direct -32602 response so agents can correct their arguments.
-        let error_class = if is_error
-            && output
-                .as_str()
-                .is_some_and(|text| text.starts_with("MCP error -32602:"))
-        {
-            ErrorClass::InvalidArgument
-        } else {
-            ErrorClass::Execution
-        };
+        // SDK tools may classify an MCP call error in result metadata. Keep the
+        // older -32602 text fallback for official MCP SDK schema failures.
+        let error_class = result
+            .get("_meta")
+            .and_then(|meta| meta.get("karakara/errorClass"))
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .filter(|_| is_error)
+            .unwrap_or_else(|| {
+                if is_error
+                    && output
+                        .as_str()
+                        .is_some_and(|text| text.starts_with("MCP error -32602:"))
+                {
+                    ErrorClass::InvalidArgument
+                } else {
+                    ErrorClass::Execution
+                }
+            });
         CallOutcome {
             result: GuestMessage::Result {
                 request_id: request.request_id,

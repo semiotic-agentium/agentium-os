@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! End-to-end for the TypeScript MCP authoring loop: build, test, package, and
-//! publish a toolset that uses the official MCP SDK. A one-request HTTP server
+//! End-to-end for the TypeScript authoring loop: TypeBox descriptor generation,
+//! DevBackend invocation, packaging, and publish. A one-request HTTP server
 //! audits the uploaded `.ktool`, so the test covers
 //! top-level `karak publish` auto-detection without starting the full runner.
 //!
@@ -47,7 +47,7 @@ fn tool_authoring_e2e() {
     let fixture = crate_dir.join("tests/fixtures/ts-echo");
     let karak = env!("CARGO_BIN_EXE_karak");
 
-    // 1. Install the official MCP SDK fixture.
+    // 1. Install the local @karakara/tool SDK fixture.
     run(
         Command::new("npm")
             .args(["install", "--no-audit", "--no-fund"])
@@ -67,6 +67,10 @@ fn tool_authoring_e2e() {
         body.contains("\"name\": \"support/ts-echo\""),
         "tools: {body}"
     );
+    assert!(body.contains("\"echoed\""), "TypeBox output schema: {body}");
+    let manifest = std::fs::read_to_string(fixture.join("tool-manifest.json")).unwrap();
+    assert!(manifest.contains("\"name\": \"support\""));
+    assert!(manifest.contains("\"requested\": {}"));
 
     // 3. `karak tool test` → one invocation through the real guest supervisor
     //    in DevBackend mode (same wire + worker isolation as prod).
@@ -112,7 +116,24 @@ fn tool_authoring_e2e() {
         "expected invalid_argument, got: {bad_out}"
     );
 
-    // 5. Top-level `karak publish` detects the tool project, emits a `.ktool`,
+    // 5. ctx.error metadata keeps its class across MCP and the supervisor.
+    let denied = Command::new(karak)
+        .args([
+            "tool",
+            "test",
+            fixture.to_str().unwrap(),
+            "--input",
+            r#"{"message":"forbidden"}"#,
+        ])
+        .output()
+        .expect("tool test classified error");
+    let denied_out = String::from_utf8_lossy(&denied.stdout);
+    assert!(
+        denied_out.contains("permission") && denied_out.contains("fixture denied"),
+        "expected permission, got: {denied_out}"
+    );
+
+    // 6. Top-level `karak publish` detects the tool project, emits a `.ktool`,
     // and uploads exact bytes. The mock repository audits the received bundle.
     let (repository_url, server) = serve_publish_once(KtoolRuntimeTier::Sandbox);
     run(
@@ -139,7 +160,7 @@ fn tool_authoring_e2e() {
         "publish lock must pin executable identity"
     );
 
-    // 6. `karak tool publish --trusted` emits a Trusted-tier bundle: the same
+    // 7. `karak tool publish --trusted` emits a Trusted-tier bundle: the same
     // node entrypoint, but the host-native image sentinel and no grants. The
     // mock repository asserts the received tier server-side.
     let (trusted_url, trusted_server) = serve_publish_once(KtoolRuntimeTier::Trusted);
@@ -163,6 +184,7 @@ fn tool_authoring_e2e() {
 
     // Clean generated artifacts (also gitignored).
     let _ = std::fs::remove_file(fixture.join("tools.json"));
+    let _ = std::fs::remove_file(fixture.join("tool-manifest.json"));
     let _ = std::fs::remove_file(fixture.join("tool.lock.json"));
     let _ = std::fs::remove_file(fixture.join("dist/support.ktool"));
 }

@@ -102,37 +102,48 @@ supervisor runs. The three protocol layers are: runner ↔ supervisor
 
 ### Authoring (TypeScript)
 
-`@karakara/tool` is thin sugar over the official `@modelcontextprotocol/sdk`; a
-plain MCP server with no Karakara import is equally valid. Toolset-level
-capabilities live in `karakara.toml` next to `package.json` (they are a property
-of the one process the `.ktool` ships, not of an individual tool):
+`@karakara/tool` uses TypeBox schemas for both TypeScript inference and the JSON
+Schema returned by MCP `tools/list`:
 
-```toml
-[toolset]
-name = "support"
-version = "1.2.0"
+```ts
+import { defineTool, Type } from "@karakara/tool";
 
-[[toolset.capabilities.net]]
-host = "api.example.com"
-port = 443
+const Input = Type.Object({ query: Type.String() });
+const Output = Type.Object({ answer: Type.String() });
 
-[[toolset.capabilities.secrets]]
-name = "EXAMPLE_API_KEY"
-binding = "egress_bound"   # or "reveal"; required (see Secrets below)
+export default defineTool(
+  {
+    name: "support/search",
+    version: "1.2.0",
+    description: "Search the support index.",
+    sideEffect: "read",
+    input: Input,
+    output: Output,
+    net: ["api.example.com:443"],
+  },
+  async (input, ctx) => {
+    const response = await ctx.fetch(`https://api.example.com/search?q=${input.query}`);
+    return { answer: await response.text() };
+  },
+);
 ```
 
-Workflow:
+The SDK returns an ordinary MCP stdio server. A plain server built with the
+official MCP SDK is still valid, but it must declare toolset metadata and
+capabilities in `karakara.toml`.
 
 ```bash
-karak tool new --lang ts ./tools/support   # scaffold an MCP-server toolset
-karak tool build ./tools/support           # runs the server, reads tools/list, assembles the .ktool
-karak tool publish ./tools/support          # host audits the bundle, records the approval
+karak tool new --lang ts weather --bundle support
+karak tool build ./weather
+karak tool test ./weather --input '{"query":"refunds"}'
+karak tool publish ./weather
 ```
 
-`karak tool build` asks the built MCP server for `tools/list` and records each
-tool's canonical descriptor into `tools.json`; MCP annotations map to Karakara
-semantics (`readOnlyHint` ⇒ Read, `destructiveHint` ⇒ Irreversible, else Write;
-`idempotentHint`). Other languages follow with their runtime images.
+`karak tool build` asks the server for `tools/list`. For SDK tools it derives
+`tools.json` and `tool-manifest.json` from the TypeBox schemas and `defineTool`
+spec. Standard MCP annotations still map to Karakara semantics for plain MCP
+servers: `readOnlyHint` means Read, `destructiveHint` means Irreversible, and
+`idempotentHint` controls retry safety.
 
 ### Secrets: how a key reaches your tool code
 
@@ -143,42 +154,34 @@ that only the host controls.
 
 Example: an external ClickUp toolset that needs an API token.
 
-**1. The author declares the request** (`karakara.toml`). This grants nothing;
-the operator decides.
-
-```toml
-[toolset]
-name = "support"
-version = "0.1.0"
-
-[[toolset.capabilities.net]]
-host = "api.clickup.com"
-port = 443
-
-[[toolset.capabilities.secrets]]
-name = "CLICKUP_API_KEY"
-binding = "egress_bound"   # ClickUp sends the token as a header
-```
-
-**2. The author writes ordinary code** with the official MCP SDK. There is no
-Karakara secret API:
+**1. The author declares the request.** SDK tools put `net` and `secrets` in
+the `defineTool` spec. Plain MCP servers use `karakara.toml`. A declaration
+never grants access; the operator decides.
 
 ```ts
-server.registerTool("create_task", { inputSchema: { list_id: z.string(), name: z.string() } },
-  async ({ list_id, name }) => {
-    const res = await fetch(`https://api.clickup.com/api/v2/list/${list_id}/task`, {
-      method: "POST",
-      headers: {
-        // Inside the VM this is a placeholder ("$MSB_CLICKUP_API_KEY"),
-        // never the real token.
-        Authorization: process.env.CLICKUP_API_KEY!,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ name }),
-    });
-    const task = await res.json();
-    return { structuredContent: task, content: [{ type: "text", text: JSON.stringify(task) }] };
+{
+  name: "support/create_task",
+  net: ["api.clickup.com:443"],
+  secrets: { CLICKUP_API_KEY: "egress-bound" },
+  // input and output schemas omitted here
+}
+```
+
+**2. The author sends the placeholder** through `ctx.fetch`. The SDK exposes the
+placeholder at `ctx.secrets.CLICKUP_API_KEY`:
+
+```ts
+async ({ list_id, name }, ctx) => {
+  const res = await ctx.fetch(`https://api.clickup.com/api/v2/list/${list_id}/task`, {
+    method: "POST",
+    headers: {
+      Authorization: ctx.secrets.CLICKUP_API_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ name }),
   });
+  return await res.json();
+}
 ```
 
 **3. The operator** puts the real token in fnox / the secret store and binds it

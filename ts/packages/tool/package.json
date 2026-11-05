@@ -1,7 +1,7 @@
 {
   "name": "@karakara/tool",
-  "version": "0.1.0",
-  "description": "Small authoring helpers for MCP tools running on Karakara.",
+  "version": "0.2.0",
+  "description": "TypeBox authoring SDK for Karakara tools.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "dist/index.js",
@@ -12,15 +12,17 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepare": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "zod": "^3.25.0",
-    "zod-to-json-schema": "^3.25.0"
+    "@sinclair/typebox": "^0.34.52"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

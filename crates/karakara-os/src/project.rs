@@ -26,7 +26,7 @@ pub struct KarakaraConfig {
     pub toolset: Option<ToolsetConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolsetConfig {
     pub name: String,
     pub version: Version,
@@ -131,7 +131,7 @@ pub fn load_file(path: &Path) -> Result<KarakaraConfig> {
     toml::from_str(&raw).with_context(|| format!("Failed to parse {}", path.display()))
 }
 
-/// Read the mandatory toolset declaration from a tool project's `karakara.toml`.
+/// Read toolset metadata for a plain MCP project. SDK projects generate it from `defineTool`.
 pub fn load_toolset_config(dir: &Path) -> Result<ToolsetConfig> {
     let path = dir.join("karakara.toml");
     let config = load_file(&path)?;

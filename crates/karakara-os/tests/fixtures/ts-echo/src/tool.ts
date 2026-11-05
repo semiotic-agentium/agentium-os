@@ -1,23 +1,27 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
+import { defineTool, Type } from "@karakara/tool";
 
-const server = new McpServer({ name: "ts-echo", version: "0.1.0" });
-server.registerTool(
-  "ts-echo",
+const Input = Type.Object({
+  message: Type.String(),
+});
+
+const Output = Type.Object({
+  echoed: Type.String(),
+});
+
+export default defineTool(
   {
+    name: "support/ts-echo",
+    version: "0.1.0",
     description: "Echo the input message (e2e fixture).",
-    inputSchema: { message: z.string() },
-    outputSchema: z.object({ echoed: z.string() }),
-    annotations: { readOnlyHint: true, idempotentHint: true },
+    sideEffect: "read",
+    input: Input,
+    output: Output,
+    net: [],
   },
-  async (input) => {
-    const output = { echoed: input.message };
-    return {
-      content: [{ type: "text", text: JSON.stringify(output) }],
-      structuredContent: output,
-    };
+  async (input, ctx) => {
+    if (input.message === "forbidden") {
+      throw ctx.error("permission", "fixture denied the message");
+    }
+    return { echoed: input.message };
   },
 );
-
-await server.connect(new StdioServerTransport());

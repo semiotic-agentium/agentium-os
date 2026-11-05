@@ -1,10 +1,10 @@
 # dev/meteo-tool
 
-MCP stdio toolset for weather forecasts from Open-Meteo. The toolset is version
-2.0.0 and keeps the existing `dev/meteo-tool` name and input/output contract.
+TypeScript weather tool built with `@karakara/tool` and TypeBox. It runs as an
+MCP stdio worker and keeps the `dev/meteo-tool` name and version 2.0.0 contract.
 
 For the complete local build, cleanup, publish, deploy, and chat flow, run
-`./run-meteo-agent.sh` from the repository root. It reuses an existing ready
+`./scripts/run-meteo-agent.sh` from the repository root. It reuses an existing ready
 runner and does not manage the local Docker registry.
 
 ## Develop
@@ -24,8 +24,8 @@ cargo run -q -p karakara-os -- tool test \
 ```
 
 The tool asks Open-Meteo's geocoding API for a location and then requests the
-current conditions and one day of hourly data. Network access is declared in
-`karakara.toml`, not in the handler.
+current conditions and one day of hourly data. Its `defineTool` spec declares
+both outbound hosts. `karak tool build` derives the manifest from that spec.
 
 ## Publish and deploy
 
@@ -93,8 +93,9 @@ cargo run -q -p karakara-os -- install agent \
   --rationale "meteo v2 validation"
 ```
 
-Publishing builds the MCP server, records the descriptor returned by
-`tools/list`, creates the `.ktool` bundle, and stores it in the repository.
+Publishing builds the TypeScript server, records the TypeBox-derived descriptor
+returned by `tools/list`, creates the `.ktool` bundle, and stores it in the
+repository.
 
 ## Chat and inspect provenance
 

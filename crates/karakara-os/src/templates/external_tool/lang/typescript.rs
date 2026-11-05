@@ -1,14 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Karakara Labs
 // SPDX-License-Identifier: Apache-2.0
 
-//! TypeScript MCP scaffold. The generated server uses the official MCP SDK;
-//! `@karakara/tool` only removes repeated registration boilerplate.
+//! TypeScript scaffold for the TypeBox-backed `@karakara/tool` SDK.
 
 use super::super::{GeneratedFile, tool_id as make_tool_id};
 
-const MCP_SDK_VERSION: &str = "^1.32.2";
+const TOOL_SDK_VERSION: &str = "^0.2.0";
 const TYPESCRIPT_VERSION: &str = "^6.0.0";
-const ZOD_VERSION: &str = "^3.25.0";
+const NODE_TYPES_VERSION: &str = "^22.0.0";
 
 pub fn generate(name: &str, bundle: &str, description: &str) -> Vec<GeneratedFile> {
     let tool_id = make_tool_id(bundle, name);
@@ -23,17 +22,17 @@ pub fn generate(name: &str, bundle: &str, description: &str) -> Vec<GeneratedFil
     "build": "tsc -p tsconfig.json"
   }},
   "dependencies": {{
-    "@modelcontextprotocol/sdk": "{mcp_sdk_version}",
-    "zod": "{zod_version}"
+    "@karakara/tool": "{tool_sdk_version}"
   }},
   "devDependencies": {{
+    "@types/node": "{node_types_version}",
     "typescript": "{typescript_version}"
   }}
 }}
 "#,
-        mcp_sdk_version = MCP_SDK_VERSION,
+        tool_sdk_version = TOOL_SDK_VERSION,
+        node_types_version = NODE_TYPES_VERSION,
         typescript_version = TYPESCRIPT_VERSION,
-        zod_version = ZOD_VERSION,
     );
 
     let tsconfig_json = r#"{
@@ -41,10 +40,13 @@ pub fn generate(name: &str, bundle: &str, description: &str) -> Vec<GeneratedFil
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": ["ES2022"],
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
@@ -53,51 +55,38 @@ pub fn generate(name: &str, bundle: &str, description: &str) -> Vec<GeneratedFil
 "#;
 
     let tool_ts = format!(
-        r#"import {{ McpServer }} from "@modelcontextprotocol/sdk/server/mcp.js";
-import {{ StdioServerTransport }} from "@modelcontextprotocol/sdk/server/stdio.js";
-import {{ z }} from "zod";
+        r#"import {{ defineTool, Type }} from "@karakara/tool";
 
-const server = new McpServer({{ name: "{name}", version: "0.1.0" }});
-server.registerTool(
-  "{name}",
+const Input = Type.Object({{
+  message: Type.String({{ description: "Text to echo back." }}),
+}});
+
+const Output = Type.Object({{
+  echoed: Type.String(),
+}});
+
+export default defineTool(
   {{
+    name: "{tool_id}",
+    version: "0.1.0",
     description: {description:?},
-    inputSchema: {{ message: z.string().describe("Text to echo back.") }},
-    outputSchema: z.object({{ echoed: z.string() }}),
-    annotations: {{ readOnlyHint: true, idempotentHint: true }},
+    sideEffect: "read",
+    input: Input,
+    output: Output,
+    net: [],
   }},
-  async (input) => {{
-    const output = {{ echoed: input.message }};
-    return {{
-      content: [{{ type: "text", text: JSON.stringify(output) }}],
-      structuredContent: output,
-    }};
-  }},
+  async (input) => ({{ echoed: input.message }}),
 );
-
-await server.connect(new StdioServerTransport());
 "#,
-        name = name,
         description = description,
-    );
-
-    let karakara_toml = format!(
-        r#"[toolset]
-name = "{bundle}"
-version = "0.1.0"
-
-# Requests apply to the whole MCP server process, not individual tools.
-[toolset.capabilities]
-net = []
-secrets = []
-"#,
     );
 
     let readme_md = format!(
         r#"# {tool_id}
 
-This project is an MCP stdio server. `@karakara/tool` is optional sugar over
-`@modelcontextprotocol/sdk`; a plain MCP server works too.
+This tool uses TypeBox schemas as its TypeScript types and JSON Schema contract.
+`karak tool build` reads the SDK metadata over MCP and generates `tools.json`
+and `tool-manifest.json`.
 
 ## Develop
 
@@ -109,22 +98,21 @@ karak tool test
 ## Ship
 
 ```bash
-karak tool build   # asks the server for tools/list and writes tools.json
+karak tool build
 karak publish
 ```
 
-Keep toolset-wide network and secret requests in `karakara.toml`. The host
-reviews those requests separately from each tool's MCP interface.
+Declare outbound hosts in `net` and named secrets in `secrets` inside
+`defineTool`. The host reviews and enforces those requests.
 "#,
     );
 
-    let gitignore = "node_modules/\ndist/\ntools.json\ntool.lock.json\n";
+    let gitignore = "node_modules/\ndist/\ntools.json\ntool-manifest.json\ntool.lock.json\n";
 
     vec![
         GeneratedFile::new("package.json", package_json),
         GeneratedFile::new("tsconfig.json", tsconfig_json),
         GeneratedFile::new("src/tool.ts", tool_ts),
-        GeneratedFile::new("karakara.toml", karakara_toml),
         GeneratedFile::new("README.md", readme_md),
         GeneratedFile::new(".gitignore", gitignore),
     ]

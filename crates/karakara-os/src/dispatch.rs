@@ -110,12 +110,14 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Tool { command } => match command {
             ToolCommands::New {
                 name,
+                lang,
                 bundle,
                 description,
                 output,
                 dry_run,
             } => commands::tool_new::run_cli(ToolNewCli {
                 name,
+                lang,
                 bundle,
                 description,
                 output,

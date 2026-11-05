@@ -7,10 +7,10 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.2",
-    "zod": "^3.25.0"
+    "@karakara/tool": "file:../../../../../ts/packages/tool"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "typescript": "^6.0.0"
   }
 }
