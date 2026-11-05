@@ -15,15 +15,14 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use baml_rt_core::{BamlRtError, ClassifiedToolError, ErrorDisposition, Result, clock_events};
+use baml_rt_core::{BamlRtError, ClassifiedToolError, ErrorDisposition, Result};
 use serde_json::Value;
 use uuid::Uuid;
 
 use super::{
-    ExternalLifecycleEvent, ExternalLifecycleRecorder,
     drift::DriftGuard,
     invoker::{ExternalInvoker, InvokeRequest},
-    policy::{InvocationPolicy, PolicyError, QuarantineState, ToolQuota},
+    policy::{InvocationPolicy, PolicyError, ToolQuota},
 };
 use crate::{
     ToolName,
@@ -39,7 +38,6 @@ pub struct ProcessToolHandler {
     metadata: ToolFunctionMetadata,
     invoker: SessionInvokerFactory,
     pub(crate) policy: Arc<InvocationPolicy>,
-    lifecycle_recorder: Option<ExternalLifecycleRecorder>,
     /// Secrets resolved by the runner at registration time. Passed per-invocation.
     /// V1 resolves once at load; later phases may resolve per-call.
     secrets: serde_json::Map<String, Value>,
@@ -75,7 +73,6 @@ impl ProcessToolHandler {
             policy: Arc::new(InvocationPolicy::new(metadata.name.clone(), quota)),
             metadata,
             invoker,
-            lifecycle_recorder: None,
             secrets: serde_json::Map::new(),
             capabilities: Value::Null,
             drift_guard: None,
@@ -97,28 +94,12 @@ impl ProcessToolHandler {
         self
     }
 
-    pub fn with_lifecycle_recorder(mut self, recorder: ExternalLifecycleRecorder) -> Self {
-        self.lifecycle_recorder = Some(recorder);
-        self
-    }
-
     /// Attach a [`DriftGuard`] so the first invoke verifies the live tool schema
     /// against the approved snapshot digest. Used by the snapshot/registry
     /// resolver; dev-mode tools omit it (they validate describe at load).
     pub fn with_drift_guard(mut self, guard: Arc<DriftGuard>) -> Self {
         self.drift_guard = Some(guard);
         self
-    }
-
-    pub async fn lift_quarantine(&self, lifted_by: &str) {
-        self.policy.lift_quarantine().await;
-        if let Some(recorder) = &self.lifecycle_recorder {
-            recorder(ExternalLifecycleEvent::QuarantineLifted {
-                tool_name: self.metadata.name.to_string(),
-                lifted_by: lifted_by.to_string(),
-                lifted_at_ms: baml_rt_core::now_unix_ms(clock_events::EXTERNAL_QUARANTINE_LIFT),
-            });
-        }
     }
 }
 
@@ -137,7 +118,6 @@ impl ToolHandler for ProcessToolHandler {
             tool_name: self.metadata.name.clone(),
             invoker: (self.invoker)(ctx),
             policy: self.policy.clone(),
-            lifecycle_recorder: self.lifecycle_recorder.clone(),
             secrets: self.secrets.clone(),
             capabilities: self.capabilities.clone(),
             pending_input: None,
@@ -153,7 +133,6 @@ pub struct ProcessToolSession {
     tool_name: ToolName,
     invoker: Arc<dyn ExternalInvoker>,
     policy: Arc<InvocationPolicy>,
-    lifecycle_recorder: Option<ExternalLifecycleRecorder>,
     secrets: serde_json::Map<String, Value>,
     capabilities: Value,
     /// Input buffered by `send`, consumed by the next `read`.
@@ -220,26 +199,7 @@ impl ToolSession for ProcessToolSession {
                 })
             }
             Err(err) => {
-                let was_quarantined = matches!(
-                    self.policy.current_state().await,
-                    QuarantineState::Quarantined { .. }
-                );
-                let backoff = self.policy.record_failure(err.to_string()).await;
-                if !was_quarantined
-                    && let QuarantineState::Quarantined {
-                        consecutive_failures,
-                        reason,
-                        ..
-                    } = self.policy.current_state().await
-                    && let Some(recorder) = &self.lifecycle_recorder
-                {
-                    recorder(ExternalLifecycleEvent::Quarantine {
-                        tool_name: self.tool_name.to_string(),
-                        reason,
-                        consecutive_failures,
-                        started_at_ms: baml_rt_core::now_unix_ms(clock_events::EXTERNAL_QUARANTINE),
-                    });
-                }
+                let backoff = self.policy.record_failure().await;
                 Err(with_backoff_retry_after(err, backoff).into())
             }
         }
@@ -260,13 +220,6 @@ impl ToolSession for ProcessToolSession {
 
 fn map_policy_error(tool: &ToolName, err: PolicyError) -> BamlRtError {
     match err {
-        PolicyError::Quarantined { reason, .. } => BamlRtError::ToolClassified(ClassifiedToolError {
-            code: format!("external_{}_quarantined", tool),
-            disposition: ErrorDisposition::Fatal,
-            message: format!("tool '{tool}' is quarantined: {reason}"),
-            hint: Some("Tool is temporarily disabled after repeated failures; lift quarantine to resume invocations".to_string()),
-            retry_after_ms: None,
-        }),
         PolicyError::ConcurrencyExhausted { .. } => {
             BamlRtError::ToolClassified(ClassifiedToolError {
                 code: format!("external_{}_concurrency_exhausted", tool),
@@ -502,116 +455,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quarantine_trips_and_lift_restores_invocation() {
-        let tool_name = ToolName::parse("support/quarantine").unwrap();
+    async fn failures_return_backoff_without_disabling_tool() {
+        let tool_name = ToolName::parse("support/failure_backoff").unwrap();
         let metadata = sample_metadata(tool_name);
         let invoker = Arc::new(FlakyMockInvoker::new(2));
-
-        let quota = ToolQuota {
-            quarantine_threshold: 2,
-            ..ToolQuota::default()
-        };
-
-        let handler = ProcessToolHandler::new(metadata, invoker.clone(), Duration::from_secs(30))
-            .with_policy_quota(quota);
+        let handler = ProcessToolHandler::new(metadata, invoker.clone(), Duration::from_secs(30));
 
         let mut session = handler
-            .open_session(sample_session_ctx("support/quarantine"), Value::Null)
+            .open_session(sample_session_ctx("support/failure_backoff"), Value::Null)
             .await
             .expect("open");
 
         session.send(json!({"attempt": 1})).await.unwrap();
-        let err_1 = session
-            .read(Value::Null)
-            .await
-            .expect_err("first call fails");
-        assert_retry_after(err_1, Some(1_000));
-
-        session.send(json!({"attempt": 2})).await.unwrap();
-        let err_2 = session
-            .read(Value::Null)
-            .await
-            .expect_err("second call fails");
-        assert_retry_after(err_2, Some(2_000));
-
-        session.send(json!({"attempt": 3})).await.unwrap();
-        let quarantined = session
-            .read(Value::Null)
-            .await
-            .expect_err("third call blocked by quarantine");
-
-        match quarantined {
-            ToolSessionError::Transport(BamlRtError::ToolClassified(classified)) => {
-                assert!(classified.code.contains("quarantined"));
-                assert_eq!(classified.disposition, ErrorDisposition::Fatal);
-            }
-            other => panic!("expected quarantined ToolClassified error, got {other:?}"),
-        }
-
-        assert_eq!(
-            invoker.calls(),
-            2,
-            "quarantined call must not reach invoker"
+        assert_retry_after(
+            session
+                .read(Value::Null)
+                .await
+                .expect_err("first call fails"),
+            Some(1_000),
         );
 
-        handler.policy.lift_quarantine().await;
+        session.send(json!({"attempt": 2})).await.unwrap();
+        assert_retry_after(
+            session
+                .read(Value::Null)
+                .await
+                .expect_err("second call fails"),
+            Some(2_000),
+        );
 
-        session.send(json!({"attempt": 4})).await.unwrap();
+        session.send(json!({"attempt": 3})).await.unwrap();
         let step = session
             .read(Value::Null)
             .await
-            .expect("lifted call succeeds");
+            .expect("third call should still reach the invoker");
         assert!(matches!(step, ToolStep::Done { .. }));
         assert_eq!(invoker.calls(), 3);
-    }
-
-    #[tokio::test]
-    async fn emits_quarantine_and_lifted_lifecycle_events() {
-        let tool_name = ToolName::parse("support/quarantine_events").unwrap();
-        let metadata = sample_metadata(tool_name);
-        let invoker = Arc::new(FlakyMockInvoker::new(1));
-
-        let events = Arc::new(std::sync::Mutex::new(Vec::<ExternalLifecycleEvent>::new()));
-        let recorder: ExternalLifecycleRecorder = {
-            let events = events.clone();
-            Arc::new(move |event| {
-                events.lock().unwrap().push(event);
-            })
-        };
-
-        let quota = ToolQuota {
-            quarantine_threshold: 1,
-            ..ToolQuota::default()
-        };
-
-        let handler = ProcessToolHandler::new(metadata, invoker, Duration::from_secs(30))
-            .with_policy_quota(quota)
-            .with_lifecycle_recorder(recorder);
-
-        let mut session = handler
-            .open_session(sample_session_ctx("support/quarantine_events"), Value::Null)
-            .await
-            .expect("open");
-
-        session.send(json!({"attempt": 1})).await.unwrap();
-        let _ = session.read(Value::Null).await.expect_err("must fail");
-
-        handler.lift_quarantine("test").await;
-
-        let captured = events.lock().unwrap();
-        assert!(captured.iter().any(|e| matches!(
-            e,
-            ExternalLifecycleEvent::Quarantine {
-                tool_name,
-                consecutive_failures: 1,
-                ..
-            } if tool_name == "support/quarantine_events"
-        )));
-        assert!(captured.iter().any(|e| matches!(
-            e,
-            ExternalLifecycleEvent::QuarantineLifted { tool_name, .. }
-            if tool_name == "support/quarantine_events"
-        )));
     }
 
     #[tokio::test]

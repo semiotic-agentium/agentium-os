@@ -2,17 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Per-tool invocation policy: concurrency caps, failure tracking, quarantine.
+//! Per-tool invocation policy: concurrency caps and failure backoff.
 //!
-//! Scope is per-agent-instance by default. Quarantine is tripped after
-//! `N` consecutive failures and lifted manually (future: via policy decision).
+//! Scope is per-agent-instance by default.
 //!
 //! Backoff values are advisory: callers decide whether to sleep or surface.
 
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Duration};
 
 use tokio::sync::{Mutex, Semaphore};
 
@@ -30,9 +26,6 @@ pub const DEFAULT_INVOKE_TIMEOUT: Duration = Duration::from_secs(30);
 /// V1 default max concurrent invocations per tool (per agent instance).
 pub const DEFAULT_MAX_CONCURRENT: usize = 10;
 
-/// V1 default quarantine threshold (consecutive failures).
-pub const DEFAULT_QUARANTINE_THRESHOLD: u32 = 5;
-
 /// Backoff schedule used on consecutive failures.
 pub const BACKOFF_SCHEDULE_MS: &[u64] = &[1_000, 2_000, 4_000, 8_000, 16_000, 30_000];
 
@@ -42,7 +35,6 @@ pub struct ToolQuota {
     pub max_concurrent: usize,
     pub describe_timeout: Duration,
     pub invoke_timeout: Duration,
-    pub quarantine_threshold: u32,
 }
 
 impl Default for ToolQuota {
@@ -51,32 +43,18 @@ impl Default for ToolQuota {
             max_concurrent: DEFAULT_MAX_CONCURRENT,
             describe_timeout: DEFAULT_DESCRIBE_TIMEOUT,
             invoke_timeout: DEFAULT_INVOKE_TIMEOUT,
-            quarantine_threshold: DEFAULT_QUARANTINE_THRESHOLD,
         }
     }
-}
-
-/// Current quarantine state for a single tool.
-#[derive(Debug, Clone)]
-pub enum QuarantineState {
-    Healthy,
-    Quarantined {
-        since: Instant,
-        consecutive_failures: u32,
-        reason: String,
-    },
 }
 
 /// Failure cases relevant to policy enforcement.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum PolicyError {
-    #[error("tool '{tool}' is quarantined: {reason}")]
-    Quarantined { tool: ToolName, reason: String },
     #[error("failed to acquire concurrency slot for tool '{tool}'")]
     ConcurrencyExhausted { tool: ToolName },
 }
 
-/// Per-tool policy enforcement: semaphore + failure counter + quarantine flag.
+/// Per-tool policy enforcement: semaphore and failure backoff.
 pub struct InvocationPolicy {
     tool_name: ToolName,
     quota: ToolQuota,
@@ -86,7 +64,6 @@ pub struct InvocationPolicy {
 
 struct InvocationState {
     consecutive_failures: u32,
-    quarantine: QuarantineState,
 }
 
 impl InvocationPolicy {
@@ -98,7 +75,6 @@ impl InvocationPolicy {
             semaphore,
             state: Arc::new(Mutex::new(InvocationState {
                 consecutive_failures: 0,
-                quarantine: QuarantineState::Healthy,
             })),
         }
     }
@@ -111,20 +87,11 @@ impl InvocationPolicy {
         &self.quota
     }
 
-    /// Reserve a concurrency slot. Fails closed if the tool is quarantined.
+    /// Reserve a concurrency slot.
     /// The returned permit releases the slot when dropped.
     pub async fn acquire(
         &self,
     ) -> std::result::Result<tokio::sync::OwnedSemaphorePermit, PolicyError> {
-        {
-            let state = self.state.lock().await;
-            if let QuarantineState::Quarantined { reason, .. } = &state.quarantine {
-                return Err(PolicyError::Quarantined {
-                    tool: self.tool_name.clone(),
-                    reason: reason.clone(),
-                });
-            }
-        }
         self.semaphore.clone().acquire_owned().await.map_err(|_| {
             PolicyError::ConcurrencyExhausted {
                 tool: self.tool_name.clone(),
@@ -132,42 +99,16 @@ impl InvocationPolicy {
         })
     }
 
-    /// Record a successful invocation. Resets failure counters.
+    /// Record a successful invocation and reset the advisory backoff.
     pub async fn record_success(&self) {
-        let mut state = self.state.lock().await;
-        state.consecutive_failures = 0;
-        // Note: success does NOT automatically lift quarantine.
-        // Callers must explicitly call `lift_quarantine()` — prevents flapping.
+        self.state.lock().await.consecutive_failures = 0;
     }
 
-    /// Record a failed invocation. Trips quarantine if threshold hit.
-    /// Returns the suggested backoff to sleep before the next attempt.
-    pub async fn record_failure(&self, reason: impl Into<String>) -> Duration {
+    /// Record a failed invocation and return the suggested advisory backoff.
+    pub async fn record_failure(&self) -> Duration {
         let mut state = self.state.lock().await;
         state.consecutive_failures = state.consecutive_failures.saturating_add(1);
-
-        if matches!(state.quarantine, QuarantineState::Healthy)
-            && state.consecutive_failures >= self.quota.quarantine_threshold
-        {
-            state.quarantine = QuarantineState::Quarantined {
-                since: Instant::now(),
-                consecutive_failures: state.consecutive_failures,
-                reason: reason.into(),
-            };
-        }
-
         backoff_for(state.consecutive_failures)
-    }
-
-    /// Manually lift quarantine (future: exposed via policy-decision API).
-    pub async fn lift_quarantine(&self) {
-        let mut state = self.state.lock().await;
-        state.quarantine = QuarantineState::Healthy;
-        state.consecutive_failures = 0;
-    }
-
-    pub async fn current_state(&self) -> QuarantineState {
-        self.state.lock().await.quarantine.clone()
     }
 }
 
@@ -185,59 +126,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quarantine_after_threshold() {
-        let policy = InvocationPolicy::new(
-            tool(),
-            ToolQuota {
-                quarantine_threshold: 3,
-                ..Default::default()
-            },
-        );
-        for _ in 0..3 {
-            policy.record_failure("boom").await;
-        }
-        match policy.current_state().await {
-            QuarantineState::Quarantined { .. } => {}
-            other => panic!("expected quarantined, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn success_resets_counter_but_not_quarantine() {
-        let policy = InvocationPolicy::new(
-            tool(),
-            ToolQuota {
-                quarantine_threshold: 2,
-                ..Default::default()
-            },
-        );
-        policy.record_failure("first").await;
-        policy.record_failure("second").await;
-        // Quarantined now.
+    async fn backoff_resets_after_success() {
+        let policy = InvocationPolicy::new(tool(), ToolQuota::default());
+        assert_eq!(policy.record_failure().await, Duration::from_millis(1_000));
+        assert_eq!(policy.record_failure().await, Duration::from_millis(2_000));
         policy.record_success().await;
-        match policy.current_state().await {
-            QuarantineState::Quarantined { .. } => {}
-            _ => panic!("success must not auto-lift quarantine"),
-        }
-        policy.lift_quarantine().await;
-        assert!(matches!(
-            policy.current_state().await,
-            QuarantineState::Healthy
-        ));
+        assert_eq!(policy.record_failure().await, Duration::from_millis(1_000));
     }
 
     #[tokio::test]
-    async fn acquire_fails_when_quarantined() {
+    async fn acquire_only_enforces_concurrency() {
         let policy = InvocationPolicy::new(
             tool(),
             ToolQuota {
-                quarantine_threshold: 1,
+                max_concurrent: 1,
                 ..Default::default()
             },
         );
-        policy.record_failure("boom").await;
-        let err = policy.acquire().await.expect_err("must fail closed");
-        assert!(matches!(err, PolicyError::Quarantined { .. }));
+        let permit = policy.acquire().await.expect("first slot available");
+        let second = tokio::time::timeout(Duration::from_millis(10), policy.acquire()).await;
+        assert!(second.is_err(), "second slot should wait for the first");
+        drop(permit);
+        let _permit = policy.acquire().await.expect("slot released");
     }
 
     #[test]

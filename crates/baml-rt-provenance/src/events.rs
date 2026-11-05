@@ -387,7 +387,7 @@ pub enum ProvEventData {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         informed_by_tool_activity_anchor: Option<String>,
     },
-    /// Operational lifecycle events for external tools (describe/artifact/quarantine transitions).
+    /// Operational lifecycle events for external tools (describe, artifact, trust, and drift transitions).
     /// Stored as first-class provenance events for query/audit without log forensics.
     ExternalToolLifecycle {
         tool_name: String,

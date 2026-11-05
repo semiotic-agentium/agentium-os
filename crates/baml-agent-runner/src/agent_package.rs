@@ -816,36 +816,6 @@ fn external_lifecycle_provenance_event(event: ExternalLifecycleEvent) -> ProvEve
             }),
             None,
         ),
-        ExternalLifecycleEvent::Quarantine {
-            tool_name,
-            reason,
-            consecutive_failures,
-            started_at_ms,
-        } => (
-            tool_name,
-            "quarantine".to_string(),
-            "started".to_string(),
-            serde_json::json!({
-                "reason": reason,
-                "consecutive_failures": consecutive_failures,
-                "started_at_ms": started_at_ms,
-            }),
-            None,
-        ),
-        ExternalLifecycleEvent::QuarantineLifted {
-            tool_name,
-            lifted_by,
-            lifted_at_ms,
-        } => (
-            tool_name,
-            "quarantine".to_string(),
-            "lifted".to_string(),
-            serde_json::json!({
-                "lifted_by": lifted_by,
-                "lifted_at_ms": lifted_at_ms,
-            }),
-            None,
-        ),
         ExternalLifecycleEvent::SchemaDrift {
             tool_name,
             expected_schema_digest,

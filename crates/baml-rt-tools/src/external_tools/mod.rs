@@ -64,7 +64,7 @@ pub use metadata_catalog::{
 };
 pub use policy::{
     BACKOFF_SCHEDULE_MS, DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT, DEFAULT_MAX_CONCURRENT,
-    DEFAULT_QUARANTINE_THRESHOLD, InvocationPolicy, PolicyError, QuarantineState, ToolQuota,
+    InvocationPolicy, PolicyError, ToolQuota,
 };
 pub use protocol::{
     ERR_INTERNAL, ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND, ERR_PARSE_ERROR,
@@ -110,17 +110,6 @@ pub enum ExternalLifecycleEvent {
         verification_result: String,
         pull_latency_ms: Option<u64>,
         details: Value,
-    },
-    Quarantine {
-        tool_name: String,
-        reason: String,
-        consecutive_failures: u32,
-        started_at_ms: u64,
-    },
-    QuarantineLifted {
-        tool_name: String,
-        lifted_by: String,
-        lifted_at_ms: u64,
     },
     /// The live tool's `tool/schema` no longer matches its approved snapshot
     /// digest, detected lazily on first invoke by [`drift::DriftGuard`]. The
