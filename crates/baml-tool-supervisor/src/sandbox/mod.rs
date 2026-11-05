@@ -125,6 +125,15 @@ pub fn worker_env(
         ("HOME".to_string(), "/tmp".to_string()),
         ("LANG".to_string(), "C.UTF-8".to_string()),
         ("TMPDIR".to_string(), "/tmp".to_string()),
+        // Workers run under RLIMIT_AS. V8's trap-handler WebAssembly reserves
+        // ~10 GiB of virtual guard space per Wasm memory, so any Wasm
+        // instantiation fails under the cap — including undici's llhttp
+        // parser behind node's global `fetch`. Bounds-checked Wasm needs no
+        // reservation. The worker env is cleared, so nothing else sets this.
+        (
+            "NODE_OPTIONS".to_string(),
+            "--disable-wasm-trap-handler".to_string(),
+        ),
     ];
     // Node ships its own CA list and ignores the system store. When the VM
     // intercepts TLS (egress secret injection) it installs its CA into the
@@ -147,6 +156,31 @@ pub fn worker_env(
         ));
     }
     env
+}
+
+/// Forward each declared egress-bound secret's placeholder from the
+/// supervisor's own environment, where the VM put it at create time.
+///
+/// The host network layer swaps a placeholder for the real value only on
+/// egress to the approved host, so these values are not secret material.
+/// Only names the toolset declared are forwarded, and never one that would
+/// override the worker's base environment or steer the loader or runtime.
+pub fn egress_placeholder_env(
+    names: &[String],
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Vec<(String, String)> {
+    const RESERVED: [&str; 4] = ["PATH", "HOME", "LANG", "TMPDIR"];
+    const RESERVED_PREFIXES: [&str; 3] = ["LD_", "NODE_", "KARAKARA_"];
+    names
+        .iter()
+        .filter(|name| {
+            !RESERVED.contains(&name.as_str())
+                && !RESERVED_PREFIXES
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
+        })
+        .filter_map(|name| lookup(name).map(|value| (name.clone(), value)))
+        .collect()
 }
 
 /// Run a test-only worker harness. Production workers always execute the
@@ -245,6 +279,36 @@ mod tests {
         assert_eq!(table, r#"{"TOKEN":100}"#);
         assert!(!table.contains("s3cret"));
         assert!(env.iter().all(|(_, value)| !value.contains("s3cret")));
+    }
+
+    #[test]
+    fn workers_use_bounds_checked_wasm_under_the_address_space_cap() {
+        let env = worker_env(Path::new("/run/ktool/digest"), None, &[]);
+        assert!(env.contains(&(
+            "NODE_OPTIONS".to_string(),
+            "--disable-wasm-trap-handler".to_string()
+        )));
+    }
+
+    #[test]
+    fn egress_placeholders_forward_only_declared_unreserved_names() {
+        let vm_env = |name: &str| match name {
+            "SLACK_TOKEN" => Some("$MSB_SLACK_TOKEN".to_string()),
+            "NODE_OPTIONS" | "LD_PRELOAD" | "PATH" => Some("$MSB_x".to_string()),
+            _ => None,
+        };
+        let names = [
+            "SLACK_TOKEN",
+            "MISSING",
+            "NODE_OPTIONS",
+            "LD_PRELOAD",
+            "PATH",
+        ]
+        .map(String::from);
+        assert_eq!(
+            egress_placeholder_env(&names, vm_env),
+            vec![("SLACK_TOKEN".to_string(), "$MSB_SLACK_TOKEN".to_string())]
+        );
     }
 
     #[test]

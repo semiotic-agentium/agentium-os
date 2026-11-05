@@ -32,7 +32,7 @@ use tokio::{
 
 use crate::{
     limits::SupervisorLimits,
-    sandbox::{REVEAL_FD_BASE, RevealFd, WorkerBackend, command_for_argv},
+    sandbox::{REVEAL_FD_BASE, RevealFd, WorkerBackend, command_for_argv, egress_placeholder_env},
     secrets::RevealMaterial,
     tool::LoadedTool,
     usage::{self, Usage},
@@ -301,6 +301,8 @@ impl Worker {
                 target: REVEAL_FD_BASE + index as i32,
             })
             .collect();
+        let placeholders =
+            egress_placeholder_env(&tool.egress_secrets, |name| std::env::var(name).ok());
         let command = if limits.worker_harness.is_some() {
             crate::sandbox::command_for_harness(
                 "node",
@@ -308,7 +310,7 @@ impl Worker {
                 limits.node_modules.as_deref(),
                 &fd_sources,
                 limits.worker_harness.as_deref().expect("harness checked"),
-                Vec::new(),
+                placeholders,
             )
         } else {
             command_for_argv(
@@ -316,7 +318,7 @@ impl Worker {
                 &tool.dir,
                 limits.node_modules.as_deref(),
                 &fd_sources,
-                Vec::new(),
+                placeholders,
             )
         };
         let mut child = backend.spawn(&sandbox, command)?;

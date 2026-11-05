@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use baml_ktool::{KtoolRuntimeTier, UnpackedKtool};
+use baml_ktool::{KtoolRuntimeTier, SecretBinding, UnpackedKtool};
 
 use crate::{
     limits::SupervisorLimits,
@@ -21,6 +21,9 @@ pub struct LoadedTool {
     pub runtime_tier: KtoolRuntimeTier,
     /// False when the toolset manifest declared no `net` destinations.
     pub has_network: bool,
+    /// Env names of the toolset's egress-bound secrets. The VM exposes each
+    /// as a placeholder (never the value); workers inherit only these.
+    pub egress_secrets: Vec<String>,
     pub uid: u32,
     pub gid: u32,
 }
@@ -39,6 +42,14 @@ impl LoadedTool {
             descriptors: unpacked.descriptors,
             runtime_tier: unpacked.manifest.runtime_tier,
             has_network: unpacked.manifest.requested.has_network(),
+            egress_secrets: unpacked
+                .manifest
+                .requested
+                .secrets
+                .iter()
+                .filter(|secret| secret.binding == SecretBinding::EgressBound)
+                .map(|secret| secret.name.clone())
+                .collect(),
             uid,
             gid,
         }
