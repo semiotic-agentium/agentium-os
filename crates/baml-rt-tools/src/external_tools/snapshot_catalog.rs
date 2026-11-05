@@ -143,6 +143,7 @@ mod tests {
             tags: vec!["snapshot".to_string()],
             event_sources: vec![],
             datasources: vec![],
+            events: Vec::new(),
             invocation_mode: crate::external_tools::InvocationMode::SingleShot,
             session_policy: Default::default(),
             secrets: vec![],

@@ -3,8 +3,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Runner-owned external datasource raw-mode intake and inbox producer.
+//!
+//! A webhook datasource is declared by a `tool-manifest.json` in a directory
+//! the operator lists under `[external_tools].dirs`. The runner reads the
+//! manifest only: the webhook body is parsed in-process and becomes the
+//! routed event's `messages[0]`, so no tool process ever runs. Activation is
+//! separate, under `[external_datasources]`.
 
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use baml_rt_core::{
@@ -23,7 +32,10 @@ use tracing::warn;
 use crate::{
     EventProducer, ProducerCheckpoint, ProducerPoll, ToolName, WebhookIntake, WebhookRequest,
     WebhookResponse,
-    external_tools::{ExternalDatasourceManifest, ExternalDatasourceMode, ExternalToolMetadata},
+    external_tools::{
+        ExternalDatasourceManifest, ExternalDatasourceMode, ExternalToolMetadata, MetadataSchemas,
+        read_external_manifest,
+    },
 };
 
 #[derive(Debug, Clone, Default)]
@@ -47,6 +59,46 @@ pub struct RawDatasourceSpec {
 struct RawIngressEnvelope {
     payload: Value,
     context_id: String,
+}
+
+/// Read the webhook datasource manifests in `dirs`.
+///
+/// Each dir holds a `tool-manifest.json` declaring at least one
+/// `datasources[]` entry and the `events[]` contracts they emit. A manifest
+/// that declares a `runtime` is rejected: datasources never run a process,
+/// and tools are published as `.ktool` bundles instead.
+pub fn load_datasource_manifests(dirs: &[PathBuf]) -> Result<Vec<ExternalToolMetadata>> {
+    dirs.iter()
+        .map(|dir| load_datasource_manifest(dir))
+        .collect()
+}
+
+fn load_datasource_manifest(dir: &Path) -> Result<ExternalToolMetadata> {
+    let mut manifest = read_external_manifest(dir)?;
+    if manifest.datasources.is_empty() {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "{} declares no datasources; [external_tools].dirs only lists webhook datasources (publish tools with `karak tool publish`)",
+            dir.display()
+        )));
+    }
+    if manifest.runtime.is_some() {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "datasource '{}' declares a runtime; datasources are manifest-only, remove `runtime`",
+            manifest.name
+        )));
+    }
+    if manifest.events.is_empty() {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "datasource '{}' declares no events[] schema",
+            manifest.name
+        )));
+    }
+    let events = std::mem::take(&mut manifest.events);
+    Ok(manifest.into_metadata(MetadataSchemas {
+        input: Value::Null,
+        output: Value::Null,
+        events,
+    }))
 }
 
 pub fn raw_datasource_spec(
@@ -400,6 +452,7 @@ mod tests {
             tags: vec![],
             event_sources: vec!["echo".to_string()],
             datasources: vec![],
+            events: Vec::new(),
             invocation_mode: InvocationMode::SingleShot,
             session_policy: Default::default(),
             secrets: vec![],
@@ -463,5 +516,77 @@ mod tests {
         assert_eq!(poll.events[0].schema_version.as_str(), "echo.v1");
         assert_eq!(poll.events[0].messages[0], json!({"message": "hello"}));
         assert!(poll.events[0].context_id.is_some());
+    }
+
+    /// The shipped example is the reference datasource manifest: it must load
+    /// without a process and yield a mountable raw spec.
+    #[test]
+    fn example_datasource_manifest_loads_without_a_process() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/external-tools/deploy-health-datasource");
+        let tools = load_datasource_manifests(&[dir]).expect("load example");
+        let [tool] = tools.as_slice() else {
+            panic!("expected one datasource tool, got {}", tools.len());
+        };
+        assert_eq!(tool.name, "examples/deploy-health-datasource");
+        let spec =
+            raw_datasource_spec(tool, &tool.datasources[0], &DatasourceActivation::default())
+                .expect("raw spec from manifest-only events");
+        assert_eq!(spec.source_kind.as_str(), "deploy-health");
+        assert_eq!(spec.schema_version.as_str(), "deploy-health.v1");
+    }
+
+    fn write_manifest(dir: &std::path::Path, patch: impl FnOnce(&mut Value)) {
+        let mut manifest = json!({
+            "tool_abi_version": "1",
+            "name": "support/echo",
+            "description": "echo",
+            "bundle": "support",
+            "local_name": "echo",
+            "access_level": "read",
+            "event_sources": ["echo"],
+            "datasources": [{
+                "key": "echo-webhook",
+                "kind": "webhook",
+                "mode": "raw",
+                "schema_version": "echo.v1",
+                "source_key": "echo:local"
+            }],
+            "events": [{"schema_version": "echo.v1", "schema": {"type": "object"}}],
+            "invocation_mode": "single_shot"
+        });
+        patch(&mut manifest);
+        std::fs::write(
+            dir.join("tool-manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn load_err(patch: impl FnOnce(&mut Value)) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(dir.path(), patch);
+        load_datasource_manifests(&[dir.path().to_path_buf()])
+            .expect_err("manifest must be rejected")
+            .to_string()
+    }
+
+    #[test]
+    fn datasource_manifests_reject_runtime_missing_events_and_plain_tools() {
+        let ok = tempfile::tempdir().unwrap();
+        write_manifest(ok.path(), |_| {});
+        assert!(load_datasource_manifests(&[ok.path().to_path_buf()]).is_ok());
+
+        let runtime = load_err(|m| m["runtime"] = json!({"kind": "process", "command": ["x"]}));
+        assert!(runtime.contains("manifest-only"), "{runtime}");
+
+        let events = load_err(|m| m["events"] = json!([]));
+        assert!(events.contains("no events[]"), "{events}");
+
+        let plain_tool = load_err(|m| m["datasources"] = json!([]));
+        assert!(
+            plain_tool.contains("declares no datasources"),
+            "{plain_tool}"
+        );
     }
 }

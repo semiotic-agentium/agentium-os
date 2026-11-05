@@ -4,10 +4,9 @@
 
 //! Optional TOML startup config for the runner.
 //!
-//! Provides path lists that would otherwise come from env vars
-//! (`BAML_EXTERNAL_TOOLS_DIR`, `BAML_SANDBOX_BIND_ROOTS`). The runner merges
-//! file values with env values; env wins when both are set so existing
-//! deployments keep working without changes.
+//! `[external_tools].dirs` lists webhook datasource manifest dirs (env
+//! override: `BAML_EXTERNAL_TOOLS_DIR`; env wins when both are set), and
+//! `[external_datasources]` activates individual datasources.
 
 use std::{
     collections::HashMap,
@@ -19,14 +18,12 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 pub const EXTERNAL_TOOLS_DIR_ENV: &str = "BAML_EXTERNAL_TOOLS_DIR";
-pub const SANDBOX_BIND_ROOTS_ENV: &str = "BAML_SANDBOX_BIND_ROOTS";
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FileConfig {
     pub external_tools: ExternalToolsSection,
     pub external_datasources: HashMap<String, HashMap<String, DatasourceActivation>>,
-    pub sandbox: SandboxSection,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -39,18 +36,6 @@ pub struct ExternalToolsSection {
 #[serde(default, deny_unknown_fields)]
 pub struct DatasourceActivation {
     pub source_key: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct SandboxSection {
-    pub bind: SandboxBindSection,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct SandboxBindSection {
-    pub roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,8 +58,6 @@ impl PathSource {
 pub struct ResolvedPaths {
     pub external_tools_dirs: Vec<PathBuf>,
     pub external_tools_source: PathSource,
-    pub sandbox_bind_roots: Vec<PathBuf>,
-    pub sandbox_bind_source: PathSource,
 }
 
 impl FileConfig {
@@ -89,9 +72,6 @@ impl FileConfig {
         let base = path.parent().unwrap_or_else(|| Path::new("."));
         for dir in config.external_tools.dirs.iter_mut() {
             *dir = resolve_relative(base, dir);
-        }
-        for root in config.sandbox.bind.roots.iter_mut() {
-            *root = resolve_relative(base, root);
         }
         Ok(config)
     }
@@ -109,13 +89,9 @@ fn resolve_relative(base: &Path, p: &Path) -> PathBuf {
 pub fn resolve_paths(file: &FileConfig) -> ResolvedPaths {
     let (external_tools_dirs, external_tools_source) =
         merge_path_list(&file.external_tools.dirs, EXTERNAL_TOOLS_DIR_ENV);
-    let (sandbox_bind_roots, sandbox_bind_source) =
-        merge_path_list(&file.sandbox.bind.roots, SANDBOX_BIND_ROOTS_ENV);
     ResolvedPaths {
         external_tools_dirs,
         external_tools_source,
-        sandbox_bind_roots,
-        sandbox_bind_source,
     }
 }
 
@@ -172,9 +148,6 @@ mod tests {
             r#"
 [external_tools]
 dirs = ["./tools/a", "/abs/tools/b"]
-
-[sandbox.bind]
-roots = ["./bind"]
 "#,
         )
         .expect("write toml");
@@ -183,7 +156,6 @@ roots = ["./bind"]
         assert_eq!(cfg.external_tools.dirs.len(), 2);
         assert_eq!(cfg.external_tools.dirs[0], dir.path().join("tools/a"));
         assert_eq!(cfg.external_tools.dirs[1], PathBuf::from("/abs/tools/b"));
-        assert_eq!(cfg.sandbox.bind.roots, vec![dir.path().join("bind")]);
     }
 
     #[test]
@@ -194,7 +166,6 @@ roots = ["./bind"]
 
         let cfg = FileConfig::load(&path).expect("load");
         assert!(cfg.external_tools.dirs.is_empty());
-        assert!(cfg.sandbox.bind.roots.is_empty());
     }
 
     #[test]
@@ -223,14 +194,12 @@ unknown = true
     async fn merge_env_replaces_file() {
         let _g = env_lock().lock().await;
         remove_env(EXTERNAL_TOOLS_DIR_ENV);
-        remove_env(SANDBOX_BIND_ROOTS_ENV);
 
         let file = FileConfig {
             external_tools: ExternalToolsSection {
                 dirs: vec![PathBuf::from("/from-file")],
             },
             external_datasources: HashMap::new(),
-            sandbox: SandboxSection::default(),
         };
         set_env(EXTERNAL_TOOLS_DIR_ENV, "/from-env-a:/from-env-b");
 
@@ -248,18 +217,12 @@ unknown = true
     async fn merge_falls_back_to_file_when_env_unset() {
         let _g = env_lock().lock().await;
         remove_env(EXTERNAL_TOOLS_DIR_ENV);
-        remove_env(SANDBOX_BIND_ROOTS_ENV);
 
         let file = FileConfig {
             external_tools: ExternalToolsSection {
                 dirs: vec![PathBuf::from("/from-file")],
             },
             external_datasources: HashMap::new(),
-            sandbox: SandboxSection {
-                bind: SandboxBindSection {
-                    roots: vec![PathBuf::from("/bind-from-file")],
-                },
-            },
         };
 
         let resolved = resolve_paths(&file);
@@ -268,38 +231,28 @@ unknown = true
             resolved.external_tools_dirs,
             vec![PathBuf::from("/from-file")]
         );
-        assert_eq!(resolved.sandbox_bind_source, PathSource::File);
-        assert_eq!(
-            resolved.sandbox_bind_roots,
-            vec![PathBuf::from("/bind-from-file")]
-        );
     }
 
     #[tokio::test]
     async fn merge_empty_when_neither_set() {
         let _g = env_lock().lock().await;
         remove_env(EXTERNAL_TOOLS_DIR_ENV);
-        remove_env(SANDBOX_BIND_ROOTS_ENV);
 
         let resolved = resolve_paths(&FileConfig::default());
         assert!(resolved.external_tools_dirs.is_empty());
         assert_eq!(resolved.external_tools_source, PathSource::None);
-        assert!(resolved.sandbox_bind_roots.is_empty());
-        assert_eq!(resolved.sandbox_bind_source, PathSource::None);
     }
 
     #[tokio::test]
     async fn merge_treats_blank_env_as_unset() {
         let _g = env_lock().lock().await;
         remove_env(EXTERNAL_TOOLS_DIR_ENV);
-        remove_env(SANDBOX_BIND_ROOTS_ENV);
 
         let file = FileConfig {
             external_tools: ExternalToolsSection {
                 dirs: vec![PathBuf::from("/from-file")],
             },
             external_datasources: HashMap::new(),
-            sandbox: SandboxSection::default(),
         };
         set_env(EXTERNAL_TOOLS_DIR_ENV, "   ");
 

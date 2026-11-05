@@ -4,9 +4,7 @@
 
 //! Microsandbox 0.7 persistent vsock and clean, grant-keyed snapshot templates.
 
-use std::{
-    collections::HashMap, os::unix::fs::DirBuilderExt, path::PathBuf, sync::Mutex, time::Duration,
-};
+use std::{collections::HashMap, os::unix::fs::DirBuilderExt, path::PathBuf, sync::Mutex};
 
 use baml_rt_core::Result;
 use microsandbox::Sandbox;
@@ -232,8 +230,7 @@ impl MicrosandboxProvider {
                 .await
                 .map_err(|e| to_rt_err("create tool VM", e))?
         };
-        let mut handle = SandboxHandle::new(&spec.name, Duration::from_secs(3600));
-        handle.policy_hash = Some(spec.grant.key().grant_class.to_string());
+        let handle = SandboxHandle::new(&spec.name);
         self.live.insert(spec.name.clone(), sandbox.clone());
         let connection = tokio::time::timeout(spec.control_timeout, listener.accept()).await;
         let stream = match connection {

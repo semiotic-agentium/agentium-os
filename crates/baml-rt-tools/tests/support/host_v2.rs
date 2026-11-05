@@ -18,7 +18,7 @@ use std::{
 
 use async_trait::async_trait;
 use baml_rt_core::{
-    BamlRtError, Result,
+    Result,
     ids::{AgentId, ContextId, UuidId},
 };
 use baml_rt_tools::{
@@ -28,7 +28,7 @@ use baml_rt_tools::{
         host::{
             HostPolicy, HostResolver, PoolPolicy, ToolHost, ToolPolicy, TrustDomain, VmPool, VmSpec,
         },
-        sandbox::{SandboxEvent, SandboxHandle, SandboxProvider, SandboxSpec, TsrpcChannel},
+        sandbox::{SandboxHandle, SandboxProvider, TsrpcChannel},
     },
     tool_fsm::ToolSessionId,
     tools::SecretRequest as ToolSecretRequest,
@@ -37,7 +37,6 @@ use baml_sandbox_protocol::{
     codec::{FrameReader, FrameWriter},
     protocol_v2::{GuestMessage, HostMessage},
 };
-use futures_util::stream::{self, BoxStream};
 use serde_json::{Value, json};
 use test_support::external_tools_v2::{bundle, descriptor};
 
@@ -143,20 +142,8 @@ impl SandboxProvider for FakeVms {
         tokio::spawn(supervisor(guest, self.cancels.clone()));
         let (reader, writer) = tokio::io::split(host);
         Ok((
-            SandboxHandle::new(spec.name, Duration::from_secs(60)),
+            SandboxHandle::new(spec.name),
             TsrpcChannel::new(reader, writer),
-        ))
-    }
-
-    async fn create(&self, _: SandboxSpec) -> Result<SandboxHandle> {
-        Err(BamlRtError::InvalidArgument(
-            "create is not a v2 path".into(),
-        ))
-    }
-
-    async fn rpc_channel(&self, _: &SandboxHandle) -> Result<TsrpcChannel> {
-        Err(BamlRtError::InvalidArgument(
-            "rpc_channel is not a v2 path".into(),
         ))
     }
 
@@ -168,20 +155,6 @@ impl SandboxProvider for FakeVms {
     async fn sweep_vms(&self, owner: &str) -> Result<usize> {
         self.sweeps.lock().unwrap().push(owner.to_string());
         Ok(2)
-    }
-
-    fn events(&self, _: &SandboxHandle) -> BoxStream<'_, SandboxEvent> {
-        Box::pin(stream::empty())
-    }
-
-    async fn list_owned(&self, _: &str) -> Result<Vec<SandboxHandle>> {
-        Ok(Vec::new())
-    }
-
-    async fn reattach(&self, _: &str) -> Result<SandboxHandle> {
-        Err(BamlRtError::InvalidArgument(
-            "reattach is not a v2 path".into(),
-        ))
     }
 }
 

@@ -4,11 +4,10 @@
 
 //! Build-time catalog composition for tools.
 //!
-//! External tools enter the builder through approved snapshots only. Authored
-//! source dirs (`BAML_EXTERNAL_TOOLS_DIR`) are discovered by the runner into
-//! snapshots before they become build/runtime metadata.
+//! External tools enter the builder through approved repository snapshots
+//! only (`karak tool publish`).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use baml_rt_core::{BamlRtError, Result};
 
@@ -18,13 +17,6 @@ use crate::{
     mcp_builder_catalog::McpSnapshotCatalog,
     tool_catalog::{CompositeCatalog, InventoryCatalog, ToolCatalog},
 };
-
-/// Env var that points runner at local external tool source directories.
-///
-/// Value: colon-separated list of tool package directories. Each directory
-/// must contain `tool-manifest.json`. Builder/typegen does not read these dirs
-/// directly; it consumes approved snapshots projected into the build root.
-pub const BUILDER_EXTERNAL_TOOLS_ENV: &str = "BAML_EXTERNAL_TOOLS_DIR";
 
 /// Build a [`CompositeCatalog`] for the builder: static catalog first, then
 /// approved external-tool snapshots and MCP snapshots.
@@ -121,18 +113,4 @@ pub fn build_builder_catalog_with_static_catalog(
         composite.add(Box::new(mcp));
     }
     Ok(composite)
-}
-
-pub fn external_dirs_from_env() -> Option<Vec<PathBuf>> {
-    let raw = std::env::var(BUILDER_EXTERNAL_TOOLS_ENV).ok()?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let dirs: Vec<PathBuf> = trimmed
-        .split(':')
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .collect();
-    if dirs.is_empty() { None } else { Some(dirs) }
 }

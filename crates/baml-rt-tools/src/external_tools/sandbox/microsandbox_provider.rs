@@ -2,59 +2,24 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! First concrete [`SandboxProvider`] — thin wrapper over the `microsandbox`
-//! crate (`tool_sandbox.md` §7.3).
+//! [`SandboxProvider`] over the `microsandbox` crate.
 //!
 //! Behind the `sandbox-provider` Cargo feature *and* `target_os = "linux"`.
 //! [`MicrosandboxProvider::new`] has three behaviors:
-//!   - Linux + feature → real provider
-//!   - non-Linux + feature → `Ok` stub (lets the runner start; sandbox ops
-//!     error at runtime — microsandbox is never linked off Linux)
-//!   - feature off → `Err` explaining sandbox support wasn't compiled in
-//!
-//! This is a pragmatic beta-containment measure and does not contradict §15's
-//! "opt-in by metadata declaration" rule — metadata still drives activation;
-//! the feature gate only controls whether the provider can be built at all.
-//!
-//! ## Platform constraints (§15)
-//! - Linux with KVM (primary production target)
-//! - macOS / Windows: always stub — microsandbox is not linked; `create` and
-//!   `reattach` return errors at runtime if invoked
-//!
-//! ## API mapping to microsandbox 0.7.13
-//! | Trait method | microsandbox API |
-//! |---|---|
-//! | `create` | `Sandbox::builder(name)...create_detached()` (or `.create()`) |
-//! | `rpc_channel` | `Sandbox::exec_stream_with(.., stdin_pipe)` → adapter |
-//! | `teardown` | `Sandbox::stop_and_wait()` with `kill()` fallback |
-//! | `reattach` | `Sandbox::start(name)` + env-var metadata recovery |
-//! | `list_owned` | `Sandbox::list()` filtered by `baml:<runner_id>:` prefix |
-//!
-//! ## Reattach metadata stash (§9.4)
-//!
-//! `policy_hash` must survive a cache rebuild so the §9.4 validation checklist
-//! can run. We stash it as a guest env var at create time:
-//!
-//! - `BAML_POLICY_HASH`
-//! - `BAML_MAX_DURATION_SECS`
-//! - `BAML_IDLE_TIMEOUT_SECS`
-//!
-//! On reattach, the provider does a lightweight `exec` into the guest to
-//! read them back. This is cheap and avoids adding a new sidecar protocol.
+//!   - Linux + feature: real provider
+//!   - non-Linux + feature: `Ok` stub, so the runner starts; VM operations
+//!     fail at runtime (microsandbox is never linked off Linux)
+//!   - feature off: `Err` explaining sandbox support wasn't compiled in
 
 #[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
-use std::{
-    sync::Arc,
-    time::{Duration, SystemTime},
-};
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use baml_rt_core::{BamlRtError, Result};
 #[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 use dashmap::DashMap;
-use futures_util::stream::{self, BoxStream};
 #[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 #[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 #[path = "microsandbox_v2.rs"]
@@ -62,27 +27,8 @@ mod v2;
 #[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 pub use v2::OWNER_LABEL as TOOL_VM_OWNER_LABEL;
 
-use super::{
-    channel::TsrpcChannel,
-    provider::SandboxProvider,
-    spec::{SandboxEvent, SandboxHandle, SandboxSpec},
-};
-#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
-use super::{
-    exec_adapter::exec_handle_into_channel,
-    spec::{PullPolicy, SandboxImageSource, SecretBindingMode},
-};
+use super::{channel::TsrpcChannel, provider::SandboxProvider, spec::SandboxHandle};
 
-/// Env-var names used to stash reattach metadata inside the guest. Chosen
-/// under the `BAML_` prefix so they don't collide with tool-author vars.
-#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
-const STASH_POLICY_HASH: &str = "BAML_POLICY_HASH";
-#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
-const STASH_MAX_DURATION_SECS: &str = "BAML_MAX_DURATION_SECS";
-#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
-const STASH_IDLE_TIMEOUT_SECS: &str = "BAML_IDLE_TIMEOUT_SECS";
-#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
-const STASH_GUEST_WORKDIR: &str = "BAML_GUEST_WORKDIR";
 /// How long to wait for `stop_and_wait` before falling back to `kill`.
 #[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -129,31 +75,6 @@ fn to_rt_err<E: std::fmt::Display>(context: &str, err: E) -> BamlRtError {
 }
 
 #[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
-fn clamp_cpus(cpus: u32) -> u8 {
-    // microsandbox's `.cpus` takes u8; our spec uses u32. Clamp with a warn
-    // so oversized requests don't silently wrap.
-    if cpus == 0 {
-        warn!(requested = cpus, "cpus=0 requested; clamping to 1");
-        1
-    } else if cpus > u8::MAX as u32 {
-        warn!(
-            requested = cpus,
-            max = u8::MAX,
-            "cpus above u8::MAX; clamping"
-        );
-        u8::MAX
-    } else {
-        cpus as u8
-    }
-}
-
-// PullPolicy mapping lives inline in `create()` because the concrete
-// microsandbox_image::PullPolicy type isn't re-exported from microsandbox,
-// and adding it as a direct dep would widen our surface without value. The
-// builder's default is `IfMissing`, which is also our default, so non-default
-// policies fall through to a no-op until §D.
-
-#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
 #[async_trait]
 impl SandboxProvider for MicrosandboxProvider {
     async fn create_vm(
@@ -171,217 +92,9 @@ impl SandboxProvider for MicrosandboxProvider {
         self.sweep_owned_vms(owner).await
     }
 
-    async fn create(&self, spec: SandboxSpec) -> Result<SandboxHandle> {
-        let name = spec.name.clone();
-        let idle_timeout = spec.idle_timeout;
-        let max_duration = spec.max_duration;
-        let guest_workdir = spec.guest_workdir.clone();
-        let policy_hash = spec.policy_hash.clone();
-
-        if matches!(
-            (&spec.image, spec.pull_policy),
-            (SandboxImageSource::Bind(_), PullPolicy::Always)
-        ) {
-            return Err(BamlRtError::InvalidArgument(
-                "pull_policy=always is invalid for bind sandbox images".to_string(),
-            ));
-        }
-
-        let mut builder = microsandbox::Sandbox::builder(&name)
-            .cpus(clamp_cpus(spec.cpus))
-            .memory(spec.memory_mib)
-            .workdir(&guest_workdir)
-            .idle_timeout(spec.idle_timeout.as_secs())
-            .max_duration(spec.max_duration.as_secs())
-            .replace(); // idempotent by name-replace per trait contract
-
-        builder = match &spec.image {
-            SandboxImageSource::Oci(image) => {
-                info!(sandbox = %name, image_source = "oci", image_ref = %image, "creating sandbox with OCI image");
-                builder.image(image.as_str())
-            }
-            SandboxImageSource::Bind(path) => {
-                info!(sandbox = %name, image_source = "bind", bind_path = %path.display(), "creating sandbox with bind rootfs");
-                builder.image(path.clone())
-            }
-        };
-
-        let _ = spec.pull_policy; // see comment above map_pull_policy
-
-        for (k, v) in &spec.env {
-            builder = builder.env(k, v);
-        }
-
-        // Match the working probe's baseline runtime env unless the tool spec
-        // already set an explicit value.
-        for (k, v) in [
-            ("HOME", "/home/sandbox"),
-            ("USER", "sandbox"),
-            ("PWD", guest_workdir.as_str()),
-            ("XDG_CONFIG_HOME", "/home/sandbox/.config"),
-            ("XDG_CACHE_HOME", "/home/sandbox/.cache"),
-            ("TMPDIR", "/tmp"),
-        ] {
-            if !spec.env.contains_key(k) {
-                builder = builder.env(k, v);
-            }
-        }
-
-        // Reattach-metadata stash (§9.4 — policy_hash / max_duration recovered via env inside the guest on reattach).
-        if let Some(hash) = &policy_hash {
-            builder = builder.env(STASH_POLICY_HASH, hash);
-        }
-        builder = builder.env(
-            STASH_MAX_DURATION_SECS,
-            spec.max_duration.as_secs().to_string(),
-        );
-        builder = builder.env(
-            STASH_IDLE_TIMEOUT_SECS,
-            spec.idle_timeout.as_secs().to_string(),
-        );
-        builder = builder.env(STASH_GUEST_WORKDIR, &guest_workdir);
-
-        // Secrets — create-time egress-bound bindings injected via
-        // microsandbox placeholder substitution (§10.1 primary path).
-        // Per-invoke bindings are carried by the runner on invoke payload,
-        // not here.
-        for s in &spec.secrets {
-            if let SecretBindingMode::EgressBound { allow_hosts } = &s.binding {
-                for host in allow_hosts {
-                    builder = builder.secret_env(&s.env_var, &s.value, host);
-                }
-            }
-        }
-
-        // Entrypoint override (when metadata declares one).
-        if !spec.entrypoint.is_empty() {
-            builder = builder.entrypoint(spec.entrypoint.iter().cloned());
-        }
-
-        // Ports.
-        for port in &spec.port_mappings {
-            builder = builder.port(port.host, port.guest);
-        }
-
-        // Scripts — optional `/.msb/scripts/` entries.
-        for (name, content) in &spec.scripts {
-            builder = builder.script(name, content);
-        }
-
-        // Legacy callers may supply only exact, public TCP CIDRs. Empty means deny-all.
-        let mut grants = Vec::new();
-        for rule in &spec.network_policy.allow {
-            let super::spec::Destination::Cidr(cidr) = &rule.destination else {
-                return Err(to_rt_err(
-                    "network policy",
-                    "CIDR-compiled destinations required",
-                ));
-            };
-            let (ip, prefix) = cidr
-                .split_once('/')
-                .ok_or_else(|| to_rt_err("network policy", "invalid CIDR"))?;
-            let ip: std::net::IpAddr = ip.parse().map_err(|e| to_rt_err("network policy", e))?;
-            if !super::super::host::public_ip(ip)
-                || prefix != if ip.is_ipv4() { "32" } else { "128" }
-                || rule.protocol != Some(super::spec::Protocol::Tcp)
-            {
-                return Err(to_rt_err(
-                    "network policy",
-                    "only exact public TCP destinations are supported",
-                ));
-            }
-            grants.push(super::super::host::CidrGrant {
-                cidr: cidr.clone(),
-                port: rule
-                    .port
-                    .filter(|p| *p != 0)
-                    .ok_or_else(|| to_rt_err("network policy", "explicit port required"))?,
-            });
-        }
-        let policy = v2::compile_network(&grants)?;
-        builder = builder.network(|n| n.policy(policy));
-
-        let sandbox = if spec.detached {
-            builder.create_detached().await.map_err(|e| {
-                to_rt_err(&format!("microsandbox create_detached '{name}' failed"), e)
-            })?
-        } else {
-            builder
-                .create()
-                .await
-                .map_err(|e| to_rt_err(&format!("microsandbox create '{name}' failed"), e))?
-        };
-
-        self.live.insert(name.clone(), sandbox);
-        debug!(sandbox = %name, detached = spec.detached, "sandbox created");
-
-        let now = SystemTime::now();
-        Ok(SandboxHandle {
-            name,
-            created_at: now,
-            last_used_at: now,
-            guest_workdir,
-            policy_hash,
-            idle_timeout,
-            max_duration,
-        })
-    }
-
-    async fn rpc_channel(&self, handle: &SandboxHandle) -> Result<TsrpcChannel> {
-        let sandbox = self.live.get(&handle.name).ok_or_else(|| {
-            BamlRtError::InvalidArgument(format!(
-                "MicrosandboxProvider has no live sandbox named '{}'; call create/reattach first",
-                handle.name
-            ))
-        })?;
-
-        // TSRPC transport contract: run the tool adapter with stdin_pipe
-        // enabled so it can stream JSON-RPC responses back.
-        //
-        // Bind-rootfs images often place the binary at `/tool-adapter`
-        // (distroless style) without PATH entries; prefer absolute path and
-        // fall back to PATH lookup for compatibility.
-        let exec_handle = match sandbox
-            .exec_stream_with("/tool-adapter", |opts| {
-                opts.cwd(&handle.guest_workdir).stdin_pipe()
-            })
-            .await
-        {
-            Ok(h) => h,
-            Err(abs_err) => {
-                warn!(
-                    sandbox = %handle.name,
-                    error = ?abs_err,
-                    "exec '/tool-adapter' failed; retrying with PATH lookup 'tool-adapter'"
-                );
-                sandbox
-                    .exec_stream_with("tool-adapter", |opts| {
-                        opts.cwd(&handle.guest_workdir).stdin_pipe()
-                    })
-                    .await
-                    .map_err(|e| {
-                        to_rt_err(
-                            &format!(
-                                "microsandbox exec_stream for sandbox '{}' failed",
-                                handle.name
-                            ),
-                            e,
-                        )
-                    })?
-            }
-        };
-
-        exec_handle_into_channel(exec_handle).map_err(|msg| {
-            BamlRtError::InvalidArgument(format!(
-                "sandbox '{}' exec-to-channel adapter failed: {msg}",
-                handle.name
-            ))
-        })
-    }
-
     async fn teardown(&self, handle: &SandboxHandle) -> Result<()> {
         let Some(sandbox) = self.live.get(&handle.name).map(|s| s.clone()) else {
-            // "Already gone" is fine per SandboxProvider contract.
+            // "Already gone" is fine per the SandboxProvider contract.
             return Ok(());
         };
         // Mirror the in-VM supervisor console to host tracing before the VM is
@@ -390,21 +103,13 @@ impl SandboxProvider for MicrosandboxProvider {
         v2::dump_vm_console(&handle.name, "teardown");
 
         match tokio::time::timeout(STOP_TIMEOUT, sandbox.stop_and_wait()).await {
-            Ok(Ok(_status)) => {
-                debug!(sandbox = %handle.name, "sandbox stopped cleanly");
-                self.live.remove(&handle.name);
-                remove_stopped(&handle.name).await;
-                Ok(())
-            }
+            Ok(Ok(_status)) => debug!(sandbox = %handle.name, "tool VM stopped cleanly"),
             Ok(Err(err)) => {
                 warn!(sandbox = %handle.name, ?err, "stop_and_wait failed; falling back to kill");
                 sandbox
                     .kill()
                     .await
                     .map_err(|e| to_rt_err("kill tool VM", e))?;
-                self.live.remove(&handle.name);
-                remove_stopped(&handle.name).await;
-                Ok(())
             }
             Err(_timeout) => {
                 warn!(
@@ -416,109 +121,14 @@ impl SandboxProvider for MicrosandboxProvider {
                     .kill()
                     .await
                     .map_err(|e| to_rt_err("kill tool VM after timeout", e))?;
-                self.live.remove(&handle.name);
-                remove_stopped(&handle.name).await;
-                Ok(())
             }
         }
-    }
-
-    fn events(&self, _handle: &SandboxHandle) -> BoxStream<'_, SandboxEvent> {
-        // microsandbox exposes no per-sandbox lifecycle event stream from the
-        // provider handle. Consumers rely on the observability spans emitted by
-        // our provider methods plus the ExternalLifecycleRecorder on the resolver.
-        Box::pin(stream::empty())
-    }
-
-    async fn list_owned(&self, runner_id: &str) -> Result<Vec<SandboxHandle>> {
-        let long_prefix = format!("baml:{runner_id}:");
-        let short_prefix = format!("baml:{}:", runner_id.chars().take(8).collect::<String>());
-        let mut all = Vec::new();
-        let mut cursor = None;
-        loop {
-            let mut query = microsandbox::SandboxListBuilder::default();
-            if let Some(value) = cursor {
-                query = query.cursor(value);
-            }
-            let page = microsandbox::Sandbox::list_with(|_| query)
-                .await
-                .map_err(|e| to_rt_err("microsandbox Sandbox::list() failed", e))?;
-            all.extend(page.sandboxes);
-            cursor = page.next_cursor;
-            if cursor.is_none() {
-                break;
-            }
-        }
-        Ok(all
-            .into_iter()
-            .filter(|h| {
-                let n = h.name();
-                n.starts_with(&long_prefix) || n.starts_with(&short_prefix)
-            })
-            .map(|h| SandboxHandle {
-                name: h.name().to_string(),
-                created_at: h
-                    .created_at()
-                    .map(|dt| {
-                        SystemTime::UNIX_EPOCH + Duration::from_secs(dt.timestamp().max(0) as u64)
-                    })
-                    .unwrap_or_else(SystemTime::now),
-                // Metadata stash recovery is done lazily on reattach(); list
-                // returns name-only handles.
-                last_used_at: SystemTime::now(),
-                guest_workdir: "/".to_string(),
-                policy_hash: None,
-                idle_timeout: Duration::from_secs(0),
-                max_duration: Duration::from_secs(0),
-            })
-            .collect())
-    }
-
-    async fn reattach(&self, name: &str) -> Result<SandboxHandle> {
-        // `Sandbox::start(name)` reconnects to a detached sandbox. If it was
-        // never detached or is gone, this errors — caller treats as a
-        // reattach miss and cold-creates.
-        let sandbox = microsandbox::Sandbox::start(name)
-            .await
-            .map_err(|e| to_rt_err(&format!("microsandbox Sandbox::start('{name}') failed"), e))?;
-
-        // Recover stashed metadata by running `printenv` on the guest. One
-        // exec, parse the block, bail gracefully if anything is missing.
-        let (policy_hash, idle_timeout, max_duration, guest_workdir) = recover_reattach_metadata(
-            &sandbox,
-        )
-        .await
-        .unwrap_or_else(|e| {
-            debug!(?e, sandbox = %name, "reattach metadata recovery failed; using defaults");
-            (
-                None,
-                Duration::from_secs(0),
-                Duration::from_secs(0),
-                "/".to_string(),
-            )
-        });
-
-        self.live.insert(name.to_string(), sandbox);
-
-        let now = SystemTime::now();
-        Ok(SandboxHandle {
-            name: name.to_string(),
-            // `created_at` on reattach is "best-effort now" — the real
-            // creation time can be recovered via Sandbox::get(name) if
-            // callers need it later; §9.4 age check uses max_duration anyway.
-            created_at: now,
-            last_used_at: now,
-            guest_workdir,
-            policy_hash,
-            idle_timeout,
-            max_duration,
-        })
+        self.live.remove(&handle.name);
+        remove_stopped(&handle.name).await;
+        Ok(())
     }
 }
 
-/// Run `env` / `printenv` inside the guest to recover the stashed reattach
-/// metadata (§9.4). Failure is treated as "no metadata available" so the
-/// caller can fall back to cold-create semantics.
 /// Delete a stopped VM's persisted state (rootfs, config). Teardown means
 /// gone: a stopped-but-present VM only holds disk and its name. Best effort,
 /// per the `teardown` contract.
@@ -529,54 +139,8 @@ async fn remove_stopped(name: &str) {
     }
 }
 
-#[cfg(all(feature = "sandbox-provider", target_os = "linux"))]
-async fn recover_reattach_metadata(
-    sandbox: &microsandbox::Sandbox,
-) -> Result<(Option<String>, Duration, Duration, String)> {
-    let output = sandbox
-        .exec("printenv", std::iter::empty::<&str>())
-        .await
-        .map_err(|e| to_rt_err("printenv exec failed", e))?;
-    let stdout = output
-        .stdout()
-        .map_err(|e| to_rt_err("printenv stdout not valid utf-8", e))?;
-
-    let mut policy_hash = None;
-    let mut idle_timeout_secs: u64 = 0;
-    let mut max_duration_secs: u64 = 0;
-    let mut guest_workdir = "/".to_string();
-
-    for line in stdout.lines() {
-        if let Some(v) = line.strip_prefix(&format!("{STASH_POLICY_HASH}="))
-            && !v.is_empty()
-        {
-            policy_hash = Some(v.to_string());
-        } else if let Some(v) = line.strip_prefix(&format!("{STASH_MAX_DURATION_SECS}="))
-            && let Ok(n) = v.parse()
-        {
-            max_duration_secs = n;
-        } else if let Some(v) = line.strip_prefix(&format!("{STASH_IDLE_TIMEOUT_SECS}="))
-            && let Ok(n) = v.parse()
-        {
-            idle_timeout_secs = n;
-        } else if let Some(v) = line.strip_prefix(&format!("{STASH_GUEST_WORKDIR}="))
-            && !v.is_empty()
-        {
-            guest_workdir = v.to_string();
-        }
-    }
-
-    Ok((
-        policy_hash,
-        Duration::from_secs(idle_timeout_secs),
-        Duration::from_secs(max_duration_secs),
-        guest_workdir,
-    ))
-}
-
-/// Why the stub provider refuses sandbox ops. Covers both reasons the stub is
-/// compiled: the `sandbox-provider` feature is off, or the target isn't Linux
-/// (microsandbox is Linux-only and never linked elsewhere).
+/// Why the stub provider refuses VM operations: the `sandbox-provider`
+/// feature is off, or the target isn't Linux.
 #[cfg(not(all(feature = "sandbox-provider", target_os = "linux")))]
 const SANDBOX_UNAVAILABLE: &str =
     "sandbox provider unavailable: requires the 'sandbox-provider' feature on a Linux target";
@@ -584,28 +148,16 @@ const SANDBOX_UNAVAILABLE: &str =
 #[cfg(not(all(feature = "sandbox-provider", target_os = "linux")))]
 #[async_trait]
 impl SandboxProvider for MicrosandboxProvider {
-    async fn create(&self, _spec: SandboxSpec) -> Result<SandboxHandle> {
+    async fn create_vm(
+        &self,
+        _spec: super::super::host::VmSpec,
+    ) -> Result<(SandboxHandle, TsrpcChannel)> {
         Err(BamlRtError::InvalidArgument(
             SANDBOX_UNAVAILABLE.to_string(),
         ))
     }
-    async fn rpc_channel(&self, _handle: &SandboxHandle) -> Result<TsrpcChannel> {
-        Err(BamlRtError::InvalidArgument(
-            SANDBOX_UNAVAILABLE.to_string(),
-        ))
-    }
+
     async fn teardown(&self, _handle: &SandboxHandle) -> Result<()> {
         Ok(())
-    }
-    fn events(&self, _handle: &SandboxHandle) -> BoxStream<'_, SandboxEvent> {
-        Box::pin(stream::empty())
-    }
-    async fn list_owned(&self, _runner_id: &str) -> Result<Vec<SandboxHandle>> {
-        Ok(Vec::new())
-    }
-    async fn reattach(&self, _name: &str) -> Result<SandboxHandle> {
-        Err(BamlRtError::InvalidArgument(
-            SANDBOX_UNAVAILABLE.to_string(),
-        ))
     }
 }

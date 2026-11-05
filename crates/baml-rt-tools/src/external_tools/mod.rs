@@ -2,16 +2,15 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! External tool protocol + execution backend.
+//! External tools: approved snapshots, `.ktool` bundles, and the v2 hosts
+//! that serve them (Sandbox VMs, Trusted processes, Service endpoints).
 //!
-//! This module defines the wire contract (JSON-RPC `tool/describe` + `tool/invoke`)
-//! and the abstractions needed to run tools out-of-process over stdio/UDS.
-//!
-//! Phase 1 scope: stateless, single-shot subprocess invocation. Later phases
-//! extend the same protocol to Wasm or keep-alive transports.
+//! Every external tool reaches the runtime as an approved repository
+//! snapshot pinned by the agent's lockfile, and runs through
+//! [`host::ToolHost`] or [`host::ServiceHost`]. Tool manifests in source dirs
+//! are read only for webhook datasources ([`crate::external_datasource`]).
 
 pub mod descriptor;
-pub mod discovery;
 pub mod drift;
 pub mod handler;
 pub mod host;
@@ -24,16 +23,10 @@ pub mod metadata_catalog;
 pub mod policy;
 pub mod protocol;
 pub mod registry_resolver;
-pub mod resolver;
 pub mod runtime;
-pub mod runtime_lock;
 pub mod sandbox;
-pub mod session_handler;
-pub mod session_invoker;
-pub mod sidecar_bundle;
 pub mod snapshot;
 pub mod snapshot_catalog;
-pub mod stdio;
 
 use std::sync::Arc;
 
@@ -41,7 +34,6 @@ pub use descriptor::{
     CapabilityRequest, DESCRIPTOR_ABI, HostPort, McpMappingError, OutputTrust, SecretBinding,
     SecretRequest, SideEffect, ToolDescriptor as UnifiedToolDescriptor, compute_descriptor_digest,
 };
-pub use discovery::{DEFAULT_DISCOVERY_TIMEOUT, discover_snapshot};
 pub use drift::DriftGuard;
 pub use handler::{ProcessToolHandler, ProcessToolSession, SessionInvokerFactory};
 pub use host::{ServiceClient, ServiceHost};
@@ -58,18 +50,17 @@ pub use ktool::{
     verify_ktool_snapshot,
 };
 pub use lockfile::{
-    EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLockfileMode, ExternalToolInterfaceLockEntry,
-    ExternalToolsLockfile, ExternalToolsetLockEntry,
+    EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalToolInterfaceLockEntry, ExternalToolsLockfile,
+    ExternalToolsetLockEntry,
 };
 pub use metadata::{
     CoordinationSpec, ExternalDatasourceManifest, ExternalDatasourceMode, ExternalSecretScope,
     ExternalSessionPolicy, ExternalToolManifest, ExternalToolMetadata, InvocationMode,
-    MetadataSchemas, compute_tool_digest, read_external_manifest,
+    MetadataSchemas, read_external_manifest,
 };
 pub use metadata_catalog::{
-    BUILDER_EXTERNAL_TOOLS_ENV, build_builder_catalog, build_builder_catalog_with_mcp_root,
-    build_builder_catalog_with_roots, build_builder_catalog_with_static_catalog,
-    external_dirs_from_env,
+    build_builder_catalog, build_builder_catalog_with_mcp_root, build_builder_catalog_with_roots,
+    build_builder_catalog_with_static_catalog,
 };
 pub use policy::{
     BACKOFF_SCHEDULE_MS, DEFAULT_DESCRIBE_TIMEOUT, DEFAULT_INVOKE_TIMEOUT, DEFAULT_MAX_CONCURRENT,
@@ -83,25 +74,13 @@ pub use protocol::{
     JsonRpcResponse, METHOD_DESCRIBE, METHOD_INVOKE, METHOD_SCHEMA, PROTOCOL_VERSION,
     SUPPORTED_METHODS, ToolDescribeResult, ToolInvokeParams, ToolInvokeResult, ToolSchemaResult,
 };
-pub use registry_resolver::{ExternalRegistryResolver, load_approved_snapshots_from_dirs};
+pub use registry_resolver::ExternalRegistryResolver;
 pub use runtime::{
     DEFAULT_PROCESS_COMMAND, ProcessRuntimeSpec, SandboxAdapterRuntimeSpec, SandboxImageRef,
     SandboxRuntimeSpec, ServiceEndpoint, ServiceRuntimeSpec, ToolRuntime, ToolRuntimeKind,
     TrustedLaunch, TrustedRuntimeSpec,
 };
-pub use runtime_lock::{RUNTIME_LOCK_FILE_NAME, ToolRuntimeLock, read_runtime_lock};
-pub use sandbox::canonical_bind_digest;
 use serde_json::Value;
-pub use session_handler::{ExternalSessionToolHandler, ExternalSessionToolSession};
-pub use session_invoker::{
-    SessionAbortRequest, SessionFinishRequest, SessionOpenRequest, SessionOpenResponse,
-    SessionReadRequest, SessionReadResponse, SessionSendRequest, SessionToolInvoker,
-};
-pub use sidecar_bundle::{
-    DEFAULT_SCHEMA_CONTENT_TYPE, SIDECAR_BUNDLE_ABS_PATH, SIDECAR_BUNDLE_REL_PATH, SIDECAR_DIR_ABS,
-    ToolManifestSidecar, ToolRuntimeSidecar, ToolSidecarBundle, read_sidecar_bundle,
-    render_sidecar_bundle,
-};
 pub use snapshot::{
     DescribeProvenance, EXTERNAL_TOOL_SNAPSHOT_SCHEMA_VERSION, EXTERNAL_TOOL_SOURCE,
     ExternalApprovalState, ExternalToolDescribeSnapshot, ExternalToolSnapshot,
@@ -112,7 +91,6 @@ pub use snapshot::{
     now_snapshot_timestamp, validate_describe_schema_support, validate_external_tool_snapshot,
 };
 pub use snapshot_catalog::{ExternalToolRegistryCatalog, ExternalToolSnapshotCatalog};
-pub use stdio::StdioSubprocessInvoker;
 
 #[derive(Debug, Clone)]
 pub enum ExternalLifecycleEvent {

@@ -4,10 +4,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# Start a runner with the raw external-datasource demo activated. The tool dir
-# is on the allowed list (runner.toml [external_tools].dirs), so it is
-# discovered + auto-approved at boot, then mounted because runner.toml also
-# activates it under [external_datasources].
+# Start a runner with the raw external-datasource demo activated. The runner
+# reads the datasource manifest from runner.toml [external_tools].dirs at boot
+# and mounts its webhook because runner.toml also activates it under
+# [external_datasources].
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

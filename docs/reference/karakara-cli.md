@@ -131,7 +131,7 @@ Flags: `--url`, `--model`, `--deploy` (publish+deploy agent path before eval), `
 
 Unchanged in role from the former SDK:
 
-- `external-tool enable|inspect|refresh`
+- `external-tool inspect` (enable/refresh were retired with the v1 runtime; publish with `karak tool publish`)
 - `mcp list|enable|server|versions|tool`
 - `export-snapshot-cache`, `snapshot-report`, `doctor`, `list-*`
 

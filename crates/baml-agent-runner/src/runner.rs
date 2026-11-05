@@ -101,8 +101,6 @@ pub(crate) struct AgentRunnerConfig {
     pub(crate) claude_workspaces_base: Option<std::path::PathBuf>,
     pub(crate) repository_url: String,
     pub(crate) embedded_repository: Option<Arc<RepositoryService>>,
-    pub(crate) external_tools_dirs: Vec<std::path::PathBuf>,
-    pub(crate) sandbox_bind_roots: Vec<std::path::PathBuf>,
     pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
     pub(crate) observation_notify: Option<broadcast::Sender<ObservationUpdate>>,
     pub(crate) compaction_summarizer: Arc<dyn baml_rt_provenance::ConversationCompactionSummarizer>,
@@ -126,8 +124,6 @@ pub(crate) struct AgentRunner {
     pub(crate) cluster_manager: std::sync::OnceLock<Arc<crate::cluster::ClusterManager>>,
     /// One map for all deployed agents so `@N` survives internal A2A to another manager.
     pub(crate) shared_context_ref_store: SharedContextRefStore,
-    pub(crate) external_tools_dirs: Vec<std::path::PathBuf>,
-    pub(crate) sandbox_bind_roots: Vec<std::path::PathBuf>,
     /// Shared with the HTTP API so `/diagnose`'s `runtime_progress_lag_ms`
     /// reflects CPU pegs on the QuickJS thread (each booted agent registers a
     /// JS-event-loop probe), not just on the tokio runtime.
@@ -157,8 +153,6 @@ impl AgentRunner {
             repository_http_client: reqwest::Client::new(),
             cluster_manager: std::sync::OnceLock::new(),
             shared_context_ref_store: SharedContextRefStore::new(),
-            external_tools_dirs: config.external_tools_dirs,
-            sandbox_bind_roots: config.sandbox_bind_roots,
             runtime_progress: config.runtime_progress,
             observation_notify: config.observation_notify,
             host_ingress_recorder: Arc::new(crate::services::HostIngressRecorderImpl::new(
@@ -170,14 +164,6 @@ impl AgentRunner {
 
     pub(crate) fn host_ingress_recorder(&self) -> Arc<dyn baml_rt_core::HostIngressRecorder> {
         self.host_ingress_recorder.clone()
-    }
-
-    pub(crate) fn external_tools_dirs(&self) -> &[std::path::PathBuf] {
-        &self.external_tools_dirs
-    }
-
-    pub(crate) fn sandbox_bind_roots(&self) -> &[std::path::PathBuf] {
-        &self.sandbox_bind_roots
     }
 
     pub(crate) fn observation_notify_tx(&self) -> Option<broadcast::Sender<ObservationUpdate>> {
@@ -705,8 +691,6 @@ impl AgentRunner {
                 a2a_handler: scoped_router,
                 stream_idle_secs: self.stream_idle_secs(),
                 claude_workspaces_base: self.claude_workspaces_base.as_deref(),
-                external_tools_dirs: self.external_tools_dirs(),
-                sandbox_bind_roots: self.sandbox_bind_roots(),
                 runtime_progress: self.runtime_progress.clone(),
                 observation_notify: self.observation_notify_tx(),
                 compaction_summarizer: Arc::clone(&self.compaction_summarizer),

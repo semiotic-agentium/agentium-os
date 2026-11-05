@@ -124,7 +124,7 @@ impl DriftGuard {
             observed = %observed,
             event = "external_tool.schema_drift",
             "live external tool schema does not match approved snapshot; refusing to invoke. \
-             Run `karak external-tool refresh <name>` to re-approve, then redeploy."
+             Republish the tool (`karak tool publish`), then redeploy."
         );
         Ok(Verdict::Drifted { observed })
     }
@@ -140,7 +140,7 @@ impl DriftGuard {
             ),
             hint: Some(
                 "The deployed tool's input/output schema no longer matches its approved snapshot. \
-                 Run `karak external-tool refresh <name>` and redeploy."
+                 Republish the tool (`karak tool publish`) and redeploy."
                     .to_string(),
             ),
             retry_after_ms: None,

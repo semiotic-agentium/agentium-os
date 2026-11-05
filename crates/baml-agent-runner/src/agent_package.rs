@@ -30,19 +30,17 @@ use baml_rt_mcp::{
 use baml_rt_observability::spans;
 use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter, index_tools};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, SecretResolverToLlmAdapter};
-#[cfg(all(not(feature = "sandbox-provider"), test))]
-use baml_rt_tools::external_tools::sandbox::MockSandboxProvider;
+#[cfg(any(feature = "sandbox-provider", test))]
+use baml_rt_tools::external_tools::host::{DnsResolver, PoolPolicy, VmPool};
 use baml_rt_tools::{
     BundleRegistrar, ExternalToolResolver, ManifestToolNames, SharedContextRefStore,
     ToolAccessPolicy, ToolRegistry, external_tool_cache,
     external_tools::{
         EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLifecycleEvent, ExternalLifecycleRecorder,
-        ExternalLockfileMode, ExternalRegistryResolver, ExternalToolsLockfile, ServiceHost,
-        ToolDelivery,
-        host::{DnsResolver, HostPolicy, PoolPolicy, ToolHost, ToolPolicy, TrustDomain, VmPool},
+        ExternalRegistryResolver, ExternalToolsLockfile, ServiceHost, ToolDelivery,
+        host::{HostPolicy, ToolHost, ToolPolicy, TrustDomain},
         host_native_runtime_image,
-        resolver::SandboxRuntimeWiring,
-        runtime::{SandboxImageRef, ToolRuntime, TrustedLaunch},
+        runtime::{ToolRuntime, TrustedLaunch},
     },
     register_manifest_tools_with_fallback,
 };
@@ -73,7 +71,7 @@ impl McpSecretResolver for LlmSecretResolverToMcpAdapter {
 use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
 use baml_tools_system::SystemBundle;
 use serde_json::Value;
-use tracing::{Instrument, debug, error, info, warn};
+use tracing::{Instrument, error, info, warn};
 
 use crate::config::ProvenanceConfig;
 
@@ -116,8 +114,6 @@ pub(crate) struct AgentPackageBootArgs<'a> {
     pub(crate) a2a_handler: Arc<dyn A2aRequestHandler>,
     pub(crate) stream_idle_secs: Option<u64>,
     pub(crate) claude_workspaces_base: Option<&'a Path>,
-    pub(crate) external_tools_dirs: &'a [PathBuf],
-    pub(crate) sandbox_bind_roots: &'a [PathBuf],
     /// Meter to register the agent's JS-event-loop progress probe with.
     pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
     pub(crate) observation_notify:
@@ -168,8 +164,6 @@ impl AgentPackage {
         a2a_handler: Arc<dyn A2aRequestHandler>,
         provenance_store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
         claude_workspaces_base: Option<&std::path::Path>,
-        external_tools_dirs: &[std::path::PathBuf],
-        sandbox_bind_roots: &[std::path::PathBuf],
         llm_secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver>,
     ) -> Result<ToolsRegistered> {
         let mut runtime_manager = loaded.runtime_manager;
@@ -224,7 +218,6 @@ impl AgentPackage {
         let lifecycle_writer: Arc<dyn ProvenanceWriter> = provenance_store.clone();
         let lifecycle_recorder = build_external_lifecycle_recorder(lifecycle_writer);
         let lockfile_path = self.extract_dir.join(EXTERNAL_TOOLS_LOCKFILE_NAME);
-        let sandbox_wiring = build_sandbox_wiring(sandbox_bind_roots.to_vec())?;
 
         // PR5 wiring: chain the dev-mode external resolver with the MCP
         // resolver via CompositeResolver so manifest entries like
@@ -255,6 +248,15 @@ impl AgentPackage {
         } else {
             Vec::new()
         };
+        // Every external tool is a v2 toolset now (bundled or Service). A
+        // package built for the removed v1 process/adapter runtime fails here
+        // with a rebuild hint instead of as an unresolved manifest tool.
+        if let Some(legacy) = packaged_snapshots.iter().find(|s| s.v2.is_none()) {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "external tool '{}' was packaged for the removed v1 runtime; rebuild it with `karak tool build` and republish the agent",
+                legacy.tool.name
+            )));
+        }
         if !packaged_snapshots.is_empty() {
             let lockfile = ExternalToolsLockfile::read_from_path(&lockfile_path)?;
             for snapshot in &packaged_snapshots {
@@ -290,103 +292,6 @@ impl AgentPackage {
                     Some(ExternalRegistryResolver::from_v2_bundles(host, bundles)?);
             }
         }
-        let registry_external_resolver = if has_packaged_external_snapshots {
-            match external_tool_cache::read_approved_snapshots(&self.extract_dir) {
-                Ok(snapshots) => {
-                    info!(
-                        agent = %self.manifest.name,
-                        source = "package",
-                        package_external_root = %package_external_root.display(),
-                        external_tool_snapshot_count = snapshots.len(),
-                        "loaded packaged external-tool snapshots"
-                    );
-                    for snapshot in snapshots {
-                        let runtime = snapshot.tool.runtime.as_ref().cloned().unwrap_or_default();
-                        match runtime {
-                            ToolRuntime::Process(_) => debug!(
-                                agent = %self.manifest.name,
-                                source = "package",
-                                tool = %snapshot.tool.name,
-                                snapshot_digest = %snapshot.snapshot_digest,
-                                schema_digest = %snapshot.digests.schema_digest,
-                                runtime_kind = "process",
-                                "packaged external-tool snapshot loaded"
-                            ),
-                            ToolRuntime::Sandbox(spec) => {
-                                let (sandbox_image_kind, sandbox_rootfs) = match spec.image {
-                                    SandboxImageRef::Bind { path } => {
-                                        ("bind", Some(path.display().to_string()))
-                                    }
-                                    SandboxImageRef::Oci { r#ref } => ("oci", Some(r#ref)),
-                                    _ => ("unknown", None),
-                                };
-                                debug!(
-                                    agent = %self.manifest.name,
-                                    source = "package",
-                                    tool = %snapshot.tool.name,
-                                    snapshot_digest = %snapshot.snapshot_digest,
-                                    schema_digest = %snapshot.digests.schema_digest,
-                                    runtime_kind = "sandbox",
-                                    sandbox_image_kind,
-                                    sandbox_rootfs,
-                                    "packaged external-tool snapshot loaded"
-                                );
-                            }
-                            ToolRuntime::Trusted(spec) => debug!(
-                                agent = %self.manifest.name,
-                                source = "package",
-                                tool = %snapshot.tool.name,
-                                snapshot_digest = %snapshot.snapshot_digest,
-                                schema_digest = %snapshot.digests.schema_digest,
-                                runtime_kind = "trusted",
-                                node = spec.node.as_deref().unwrap_or("local"),
-                                "packaged external-tool snapshot loaded"
-                            ),
-                            ToolRuntime::Service(_) => debug!(
-                                agent = %self.manifest.name,
-                                source = "package",
-                                tool = %snapshot.tool.name,
-                                snapshot_digest = %snapshot.snapshot_digest,
-                                schema_digest = %snapshot.digests.schema_digest,
-                                runtime_kind = "service",
-                                "packaged external-tool snapshot loaded"
-                            ),
-                        }
-                    }
-                }
-                Err(err) => warn!(
-                    agent = %self.manifest.name,
-                    package_external_root = %package_external_root.display(),
-                    error = %err,
-                    "failed to read packaged external-tool snapshots for observability; resolver will validate package next"
-                ),
-            }
-            Some(ExternalRegistryResolver::from_cache_root_with_sandbox(
-                &self.extract_dir,
-                sandbox_wiring.clone(),
-                Some(lifecycle_recorder.clone()),
-            )?)
-        } else {
-            None
-        };
-
-        // Dev-mode external tools: BAML_EXTERNAL_TOOLS_DIR=/path/to/tool_a:/path/to/tool_b.
-        // Only use this fallback when the package does not already carry
-        // registry snapshots. Packaged snapshots are the runtime truth for
-        // deployed agents; adding allowed-dir discovery in parallel creates a
-        // duplicate resolver for the same tool and weakens package pinning.
-        let external_resolver = if has_packaged_external_snapshots {
-            None
-        } else {
-            build_allowed_dirs_resolver(
-                Some(lifecycle_recorder.clone()),
-                &lockfile_path,
-                ExternalLockfileMode::from_env(),
-                sandbox_wiring.clone(),
-                external_tools_dirs.to_vec(),
-            )
-            .await?
-        };
         let mut composite = CompositeResolver::new();
         if has_packaged_external_snapshots {
             for snapshot in packaged_snapshots.into_iter().filter(|snapshot| {
@@ -420,12 +325,6 @@ impl AgentPackage {
         }
         if let Some(registry) = bundled_v2_resolver {
             composite.push(Box::new(registry) as Box<dyn ExternalToolResolver>);
-        }
-        if let Some(registry) = registry_external_resolver {
-            composite.push(Box::new(registry) as Box<dyn ExternalToolResolver>);
-        }
-        if let Some(boxed) = external_resolver {
-            composite.push(boxed as Box<dyn ExternalToolResolver>);
         }
         if let Some(mcp) = mcp_resolver {
             composite.push(Box::new(mcp) as Box<dyn ExternalToolResolver>);
@@ -665,8 +564,6 @@ impl AgentPackage {
                     Arc::clone(&args.a2a_handler),
                     args.provenance_config.store().clone(),
                     args.claude_workspaces_base,
-                    args.external_tools_dirs,
-                    args.sandbox_bind_roots,
                     args.provenance_config.llm_secret_resolver(),
                 )
                 .await?;
@@ -1106,6 +1003,34 @@ async fn runner_tool_vm_pool() -> Result<Arc<VmPool>> {
         .cloned()
 }
 
+/// Test-only provider for builds without `sandbox-provider`: registration
+/// works, booting a VM fails closed.
+#[cfg(all(not(feature = "sandbox-provider"), test))]
+struct NoVmProvider;
+
+#[cfg(all(not(feature = "sandbox-provider"), test))]
+#[async_trait::async_trait]
+impl baml_rt_tools::external_tools::sandbox::SandboxProvider for NoVmProvider {
+    async fn create_vm(
+        &self,
+        _spec: baml_rt_tools::external_tools::host::VmSpec,
+    ) -> Result<(
+        baml_rt_tools::external_tools::sandbox::SandboxHandle,
+        baml_rt_tools::external_tools::sandbox::TsrpcChannel,
+    )> {
+        Err(BamlRtError::InvalidArgument(
+            "tool VMs require the sandbox-provider feature".into(),
+        ))
+    }
+
+    async fn teardown(
+        &self,
+        _handle: &baml_rt_tools::external_tools::sandbox::SandboxHandle,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
 async fn build_v2_tool_host(
     agent_id: &AgentId,
     bundles: &[(
@@ -1146,10 +1071,9 @@ async fn build_v2_tool_host(
 
     #[cfg(all(not(feature = "sandbox-provider"), test))]
     {
-        use baml_rt_tools::external_tools::sandbox::{
-            MockSandboxProvider, SandboxProvider, fresh_runner_id,
-        };
-        let provider: Arc<dyn SandboxProvider> = Arc::new(MockSandboxProvider::echo());
+        use baml_rt_tools::external_tools::sandbox::{SandboxProvider, fresh_runner_id};
+        // Package wiring and registration run; an actual invoke fails closed.
+        let provider: Arc<dyn SandboxProvider> = Arc::new(NoVmProvider);
         // Tests keep a pool per host so parallel tests never share a VM budget.
         let pool = VmPool::new(provider, fresh_runner_id(), PoolPolicy::default());
         return Ok(Arc::new(ToolHost::new(
@@ -1165,42 +1089,6 @@ async fn build_v2_tool_host(
         Err(BamlRtError::InvalidArgument(
             "bundled v2 tools require the sandbox-provider feature".into(),
         ))
-    }
-}
-
-pub(crate) fn build_sandbox_wiring(
-    bind_roots: Vec<std::path::PathBuf>,
-) -> Result<Option<SandboxRuntimeWiring>> {
-    #[cfg(feature = "sandbox-provider")]
-    {
-        use baml_rt_tools::external_tools::sandbox::{
-            MicrosandboxProvider, SandboxProvider, fresh_runner_id, stock_wiring_with_bind_roots,
-        };
-        let provider: Arc<dyn SandboxProvider> = Arc::new(MicrosandboxProvider::new()?);
-        Ok(Some(stock_wiring_with_bind_roots(
-            provider,
-            fresh_runner_id(),
-            bind_roots,
-        )))
-    }
-
-    #[cfg(all(not(feature = "sandbox-provider"), test))]
-    {
-        use baml_rt_tools::external_tools::sandbox::{
-            SandboxProvider, fresh_runner_id, stock_wiring_with_bind_roots,
-        };
-        let provider: Arc<dyn SandboxProvider> = Arc::new(MockSandboxProvider::echo());
-        Ok(Some(stock_wiring_with_bind_roots(
-            provider,
-            fresh_runner_id(),
-            bind_roots,
-        )))
-    }
-
-    #[cfg(all(not(feature = "sandbox-provider"), not(test)))]
-    {
-        let _ = bind_roots;
-        Ok(None)
     }
 }
 
@@ -1379,110 +1267,6 @@ async fn verify_service_reachability(
     })
 }
 
-async fn build_allowed_dirs_resolver(
-    lifecycle_recorder: Option<ExternalLifecycleRecorder>,
-    lockfile_path: &Path,
-    lockfile_mode: ExternalLockfileMode,
-    sandbox: Option<SandboxRuntimeWiring>,
-    dirs: Vec<PathBuf>,
-) -> Result<Option<Box<dyn ExternalToolResolver>>> {
-    let lockfile = if lockfile_path.exists() {
-        match ExternalToolsLockfile::read_from_path(lockfile_path) {
-            Ok(lockfile) => Some(lockfile),
-            Err(err) => {
-                emit_external_lockfile_event(
-                    lifecycle_recorder.as_ref(),
-                    "lockfile_parse_error",
-                    serde_json::json!({
-                        "path": lockfile_path.display().to_string(),
-                        "error": err.to_string(),
-                        "mode": format!("{lockfile_mode:?}"),
-                    }),
-                );
-                if lockfile_mode.should_enforce() {
-                    return Err(err);
-                }
-                tracing::warn!(
-                    error = %err,
-                    mode = ?lockfile_mode,
-                    path = %lockfile_path.display(),
-                    "failed to read external tools lockfile; continuing due to non-enforce mode"
-                );
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    if dirs.is_empty() {
-        if let Some(lockfile) = lockfile.as_ref()
-            && !lockfile.toolsets.is_empty()
-        {
-            let entry_count = lockfile
-                .toolsets
-                .iter()
-                .map(|set| set.tools.len())
-                .sum::<usize>();
-            return Err(BamlRtError::InvalidArgument(format!(
-                "package contains {entry_count} external tool lockfile entries at {}, but no external tool directories were configured (set [external_tools].dirs in --runner-config or BAML_EXTERNAL_TOOLS_DIR)",
-                lockfile_path.display()
-            )));
-        }
-        return Ok(None);
-    }
-
-    if lockfile.is_none() && lockfile_mode.should_enforce() {
-        emit_external_lockfile_event(
-            lifecycle_recorder.as_ref(),
-            "lockfile_missing",
-            serde_json::json!({
-                "path": lockfile_path.display().to_string(),
-                "mode": format!("{lockfile_mode:?}"),
-                "external_dir_count": dirs.len(),
-            }),
-        );
-        return Err(BamlRtError::InvalidArgument(format!(
-            "external tools lockfile missing at {} while lockfile mode is enforce",
-            lockfile_path.display()
-        )));
-    }
-
-    info!(
-        count = dirs.len(),
-        mode = ?lockfile_mode,
-        "Loading allowed external tool dirs via approved snapshots"
-    );
-
-    let snapshot_root = lockfile_path.parent().unwrap_or_else(|| Path::new("."));
-    let resolver = ExternalRegistryResolver::from_allowed_dirs(
-        &dirs,
-        snapshot_root,
-        sandbox,
-        lifecycle_recorder,
-    )
-    .await?;
-    Ok(Some(Box::new(resolver)))
-}
-
-fn emit_external_lockfile_event(
-    lifecycle_recorder: Option<&ExternalLifecycleRecorder>,
-    verification_result: &str,
-    details: serde_json::Value,
-) {
-    if let Some(recorder) = lifecycle_recorder {
-        recorder(ExternalLifecycleEvent::Artifact {
-            tool_name: "unknown".to_string(),
-            artifact_ref: EXTERNAL_TOOLS_LOCKFILE_NAME.to_string(),
-            digest: None,
-            signer: None,
-            verification_result: verification_result.to_string(),
-            pull_latency_ms: None,
-            details,
-        });
-    }
-}
-
 // ---------------------------------------------------------------------------
 // BundleRegistrar implementations — one per built-in bundle.
 // ---------------------------------------------------------------------------
@@ -1559,15 +1343,15 @@ impl BundleRegistrar for MemoryBundleRegistrar {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt, path::Path, sync::OnceLock};
+    use std::{fs, path::Path};
 
     use baml_rt_tools::{
         external_tools::{
             CapabilityRequest, DescribeProvenance, ErrorClass, ExternalLifecycleEvent,
-            ExternalToolInterfaceLockEntry, ExternalToolMetadata, ExternalToolSnapshot,
-            ExternalToolsLockfile, ExternalToolsetLockEntry, KtoolRuntimeTier, OutputTrust,
-            ServiceEndpoint, SideEffect, ToolRuntime, TrustedLaunch, TrustedRuntimeSpec,
-            UnifiedToolDescriptor, compute_external_schema_digest, runtime_image_for_tier,
+            ExternalToolInterfaceLockEntry, ExternalToolSnapshot, ExternalToolsLockfile,
+            ExternalToolsetLockEntry, KtoolRuntimeTier, OutputTrust, ServiceEndpoint, SideEffect,
+            ToolRuntime, TrustedLaunch, TrustedRuntimeSpec, UnifiedToolDescriptor,
+            runtime_image_for_tier,
         },
         mcp_snapshot::canonical_digest,
     };
@@ -1575,8 +1359,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        AgentPackage, EXTERNAL_TOOLS_LOCKFILE_NAME, ExternalLifecycleRecorder,
-        ExternalLockfileMode, ManifestToolNames, build_allowed_dirs_resolver,
+        AgentPackage, ExternalLifecycleRecorder, ManifestToolNames,
         external_lifecycle_provenance_event, verify_deploy_reachability,
     };
 
@@ -1718,56 +1501,6 @@ mod tests {
         std::sync::Arc::new(|_| {})
     }
 
-    fn env_lock() -> &'static tokio::sync::Mutex<()> {
-        static ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-        ENV_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-    }
-
-    fn write_tool_fixture(dir: &Path, tool_name: &str) {
-        fs::create_dir_all(dir).expect("create tool fixture dir");
-        let metadata = serde_json::json!({
-            "tool_abi_version": "1",
-            "name": tool_name,
-            "description": "test tool",
-            "bundle": "support",
-            "local_name": "test",
-            "access_level": "read",
-            "tags": [],
-            "invocation_mode": "single_shot",
-            "schemas": {
-                "input": {"type": "object"},
-                "output": {"type": "object"}
-            },
-            "secrets": [],
-            "capabilities": {}
-        });
-        fs::write(
-            dir.join("tool-manifest.json"),
-            serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
-        )
-        .expect("write metadata");
-        let metadata: ExternalToolMetadata =
-            serde_json::from_value(metadata).expect("fixture metadata should deserialize");
-        let schema_digest = compute_external_schema_digest(&metadata);
-
-        let describe = format!(
-            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocol_version\":\"1\",\"tool_name\":\"{tool_name}\",\"supported_methods\":[\"tool/describe\",\"tool/invoke\",\"tool/schema\"],\"schema_digest\":\"{schema_digest}\"}}}}"
-        );
-        let schema = format!(
-            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"schema_version\":1,\"tool_name\":\"{tool_name}\",\"content_type\":\"application/schema+json\",\"content_digest\":\"{schema_digest}\",\"input\":{{\"type\":\"object\"}},\"output\":{{\"type\":\"object\"}}}}}}"
-        );
-        // Drain stdin to EOF then emit one JSON-RPC frame (matches stdio invoker: one line + shutdown).
-        // `cat` is faster and less flaky under parallel test load than a shell read loop.
-        let script = format!(
-            "#!/bin/sh\nreq=$(cat)\nif printf '%s' \"$req\" | grep -q '\"method\":\"tool/schema\"'; then\n  printf '%s\\n' '{schema}'\nelse\n  printf '%s\\n' '{describe}'\nfi\n"
-        );
-        let bin = dir.join("tool-server");
-        fs::write(&bin, script.as_bytes()).expect("write tool-server");
-        let mut perms = fs::metadata(&bin).expect("stat tool-server").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&bin, perms).expect("chmod tool-server");
-    }
-
     #[tokio::test]
     async fn deploy_gate_rejects_trusted_tool_on_another_node() {
         let snapshot = trusted_snapshot(
@@ -1880,104 +1613,5 @@ mod tests {
         assert_eq!(error.tool_name, "support/service");
         assert_eq!(error.target_kind.to_string(), "endpoint");
         assert_eq!(error.target, "http://127.0.0.1:1/mcp");
-    }
-
-    #[tokio::test]
-    async fn build_allowed_dirs_resolver_enforce_fails_when_lockfile_missing() {
-        let _guard = env_lock().lock().await;
-
-        let temp = tempdir().expect("tempdir");
-        let tool_dir = temp.path().join("tool");
-        write_tool_fixture(&tool_dir, "support/test");
-
-        let missing_lockfile = temp.path().join(EXTERNAL_TOOLS_LOCKFILE_NAME);
-        let result = build_allowed_dirs_resolver(
-            None,
-            &missing_lockfile,
-            ExternalLockfileMode::Enforce,
-            None,
-            vec![tool_dir.clone()],
-        )
-        .await;
-
-        let err = match result {
-            Ok(_) => panic!("enforce mode must fail when lockfile is missing"),
-            Err(err) => err,
-        };
-        let msg = err.to_string();
-        assert!(
-            msg.contains("lockfile") && msg.contains("enforce"),
-            "unexpected error: {msg}"
-        );
-    }
-
-    #[tokio::test]
-    async fn build_allowed_dirs_resolver_fails_with_entries_when_dirs_empty() {
-        let _guard = env_lock().lock().await;
-
-        let temp = tempdir().expect("tempdir");
-        let lockfile_path = temp.path().join(EXTERNAL_TOOLS_LOCKFILE_NAME);
-        let lockfile = ExternalToolsLockfile {
-            version: "2".to_string(),
-            toolsets: vec![ExternalToolsetLockEntry {
-                name: "support".to_string(),
-                version: "1.0.0".to_string(),
-                requirement: "*".to_string(),
-                tier: "sandbox".to_string(),
-                tool_digest:
-                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                        .to_string(),
-                tools: vec![ExternalToolInterfaceLockEntry {
-                    name: "test".to_string(),
-                    descriptor_digest:
-                        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                            .to_string(),
-                }],
-            }],
-        };
-        lockfile
-            .write_to_path(&lockfile_path)
-            .expect("write lockfile");
-
-        let err = match build_allowed_dirs_resolver(
-            None,
-            &lockfile_path,
-            ExternalLockfileMode::Permissive,
-            None,
-            Vec::new(),
-        )
-        .await
-        {
-            Ok(_) => panic!("empty dirs with lockfile entries should fail with explicit error"),
-            Err(err) => err,
-        };
-        let msg = err.to_string();
-        assert!(
-            msg.contains("--runner-config") && msg.contains("BAML_EXTERNAL_TOOLS_DIR"),
-            "unexpected error: {msg}"
-        );
-    }
-
-    #[tokio::test]
-    async fn build_allowed_dirs_resolver_rejects_malformed_lockfile() {
-        let _guard = env_lock().lock().await;
-
-        let temp = tempdir().expect("tempdir");
-        let tool_dir = temp.path().join("tool");
-        write_tool_fixture(&tool_dir, "support/test");
-
-        let bad_lockfile = temp.path().join(EXTERNAL_TOOLS_LOCKFILE_NAME);
-        fs::write(&bad_lockfile, b"{not-json").expect("write malformed lockfile");
-
-        let result = build_allowed_dirs_resolver(
-            None,
-            &bad_lockfile,
-            ExternalLockfileMode::Enforce,
-            None,
-            vec![tool_dir],
-        )
-        .await;
-
-        assert!(result.is_err(), "malformed lockfiles must fail closed");
     }
 }

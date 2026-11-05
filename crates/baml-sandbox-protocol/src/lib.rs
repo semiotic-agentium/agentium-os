@@ -21,7 +21,6 @@
 pub mod codec;
 pub mod protocol;
 pub mod protocol_v2;
-pub mod session;
 
 pub use codec::{CodecError, MAX_FRAME_BYTES, TsrpcChannel};
 pub use protocol::{
@@ -34,12 +33,4 @@ pub use protocol::{
 };
 pub use protocol_v2::{
     CallContext, GuestMessage, HostMessage, InvokeRequest, PROTOCOL_V2_VERSION, RevealedSecret,
-};
-pub use session::{
-    METHOD_SESSION_ABORT, METHOD_SESSION_FINISH, METHOD_SESSION_OPEN, METHOD_SESSION_READ,
-    METHOD_SESSION_RESET, METHOD_SESSION_SEND, SUPPORTED_METHODS_SESSION, SessionAbortParams,
-    SessionAbortResult, SessionDisposition, SessionFinishParams, SessionFinishResult,
-    SessionOpenParams, SessionOpenResult, SessionReadParams, SessionReadResult,
-    SessionResetOutcome, SessionResetParams, SessionResetResult, SessionSendParams,
-    SessionSendResult, StepEnvelope, StepError, error_code,
 };

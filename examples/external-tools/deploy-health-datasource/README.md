@@ -8,26 +8,28 @@ SPDX-License-Identifier: Apache-2.0
 # Raw external datasource demo (`deploy-health`)
 
 A **raw** external datasource: the runner parses the webhook body in-process,
-turns it into `messages[0]`, and drains it through a generic producer. There is
-**no per-webhook tool process** — the tool here is spawned only at boot for
-discovery (`tool/describe` + `tool/schema`), which is how it advertises its
-`events[]` contract.
+turns it into `messages[0]`, and drains it through a generic producer. It is
+**manifest-only**: `tool-manifest.json` declares the `datasources[]` entry and
+the `events[]` contract inline, and no tool process ever runs.
 
-## How it loads (same path as external tools)
+This is the shape for any provider that pushes alerts to a webhook (Grafana
+alerting, deploy pipelines, ...): the event lands on the runner, routes to every
+agent subscribed to its `source_kind`, and can start a full A2A workflow
+(investigate, delegate, notify).
 
-1. `runner.toml [external_tools].dirs` lists this directory → at boot the runner
-   discovers the manifest and **auto-approves** it (the dev/config trust path —
-   no separate approval step is required for a configured dir). The snapshot is
-   validated and cached under `--state-dir`.
+## How it loads
+
+1. `runner.toml [external_tools].dirs` lists this directory. At boot the runner
+   reads the manifest and validates it: at least one `datasources[]` entry, a
+   matching `events[]` schema for each raw datasource's `schema_version`, and
+   no `runtime` (datasources never run a process).
 2. `runner.toml [external_datasources."examples/deploy-health-datasource"."events"]`
-   **activates** it. Approval is necessary but not sufficient — without this
+   **activates** it. A listed dir is necessary but not sufficient: without this
    entry the datasource stays dormant. Delete it and the route disappears on the
    next boot.
 
-To add a tool to an already-running runner instead, use the runner's
-`POST /external-tools/enable` endpoint (or the `karak` CLI). Note: a
-newly enabled **datasource** only starts serving its webhook route on the next
-boot, because webhook routes are mounted at startup.
+Webhook routes are mounted at startup, so a new or changed datasource takes
+effect on the next boot.
 
 ## Run it
 

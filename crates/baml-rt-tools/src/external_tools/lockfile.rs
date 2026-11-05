@@ -14,39 +14,9 @@ use std::{collections::HashMap, fs, path::Path};
 use baml_rt_core::{BamlRtError, Result};
 use serde::{Deserialize, Serialize};
 
-use super::metadata::{compute_tool_digest, read_external_manifest};
 use crate::{ToolName, external_tools::ExternalToolSnapshot, mcp_snapshot::Digest};
 
 pub const EXTERNAL_TOOLS_LOCKFILE_NAME: &str = "external_tools.lock.json";
-
-/// Kept as a source-compatibility shim for callers that still pass the old
-/// setting. R1 always enforces the lockfile; the old modes no longer change
-/// runtime behaviour.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ExternalLockfileMode {
-    Off,
-    Permissive,
-    #[default]
-    Enforce,
-}
-
-impl ExternalLockfileMode {
-    pub fn from_env() -> Self {
-        Self::Enforce
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "off" | "permissive" | "enforce" => Some(Self::Enforce),
-            _ => None,
-        }
-    }
-
-    pub fn should_enforce(self) -> bool {
-        true
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalToolsLockfile {
@@ -198,48 +168,6 @@ impl ExternalToolsLockfile {
                 "no approved implementation for external tool '{qualified}' matches descriptor digest {}",
                 entry.descriptor_digest
             ))
-        })
-    }
-
-    /// Legacy source-directory helper. New packages are resolved from approved
-    /// snapshots, but keeping this helper makes local tooling fail closed while
-    /// it migrates to `.ktool` toolsets.
-    pub fn from_tool_dirs(dirs: &[std::path::PathBuf]) -> Result<Self> {
-        let mut toolsets = Vec::new();
-        let mut seen = HashMap::<String, std::path::PathBuf>::new();
-        for dir in dirs {
-            let manifest = read_external_manifest(dir)?;
-            let digest = compute_tool_digest(dir)?;
-            if let Some(prev) = seen.insert(manifest.name.clone(), dir.clone()) {
-                return Err(BamlRtError::InvalidArgument(format!(
-                    "duplicate external tool '{}' across lockfile sources: {} and {}",
-                    manifest.name,
-                    prev.display(),
-                    dir.display()
-                )));
-            }
-            let (bundle, local) = manifest.name.split_once('/').ok_or_else(|| {
-                BamlRtError::InvalidArgument(format!(
-                    "invalid external tool name '{}'",
-                    manifest.name
-                ))
-            })?;
-            toolsets.push(ExternalToolsetLockEntry {
-                name: bundle.to_string(),
-                version: "0.0.0".to_string(),
-                requirement: "*".to_string(),
-                tier: "sandbox".to_string(),
-                tool_digest: digest.to_string(),
-                tools: vec![ExternalToolInterfaceLockEntry {
-                    name: local.to_string(),
-                    descriptor_digest: digest.to_string(),
-                }],
-            });
-        }
-        toolsets.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(Self {
-            version: "2".to_string(),
-            toolsets,
         })
     }
 }

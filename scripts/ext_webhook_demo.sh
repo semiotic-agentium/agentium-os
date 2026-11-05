@@ -6,7 +6,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Event-driven demo (NO chat): a raw external datasource feeds webhook events to
-# a subscribing agent's onDispatch. Mirrors scripts/claude_sandbox.sh ergonomics.
+# a subscribing agent's onDispatch.
 #
 #   Terminal 1:  scripts/ext_webhook_demo.sh runner    # runner + datasource; live logs here
 #   Terminal 2:  scripts/ext_webhook_demo.sh push      # publish + deploy the consumer agent (once)

@@ -257,43 +257,11 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         ),
 
         Commands::ExternalTool { command } => match command {
-            ExternalToolCommands::Enable {
-                dir,
-                repository_url,
-                runner_token,
-                sandbox_rootfs,
-                approved_by,
-                yes,
-                json,
-            } => commands::external_tool::enable(commands::external_tool::EnableParams {
-                dir: &dir,
-                repository_url: repository_url.as_deref(),
-                runner_token: runner_token.as_deref(),
-                sandbox_rootfs: sandbox_rootfs.as_deref(),
-                approved_by: approved_by.as_deref(),
-                yes,
-                json_output: json,
-            }),
             ExternalToolCommands::Inspect {
                 name,
                 cache_dir,
                 json,
             } => commands::external_tool::inspect(&name, cache_dir.as_deref(), json),
-            ExternalToolCommands::Refresh {
-                name,
-                dir,
-                repository_url,
-                runner_token,
-                yes,
-                json,
-            } => commands::external_tool::refresh(
-                &name,
-                &dir,
-                repository_url.as_deref(),
-                runner_token.as_deref(),
-                yes,
-                json,
-            ),
         },
 
         Commands::Mcp { command } => match command {

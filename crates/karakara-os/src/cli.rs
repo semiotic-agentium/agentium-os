@@ -287,7 +287,7 @@ pub enum Commands {
         snapshot_cache: Option<String>,
     },
 
-    /// Inspect and manage external-tool snapshot cache entries
+    /// Inspect external-tool snapshot cache entries
     ExternalTool {
         #[command(subcommand)]
         command: ExternalToolCommands,
@@ -457,29 +457,6 @@ pub enum EvalCommands {
 
 #[derive(Subcommand)]
 pub enum ExternalToolCommands {
-    /// Discover, approve, and import an external-tool snapshot into registry.
-    Enable {
-        /// Path to external tool directory (contains tool-manifest.json).
-        dir: String,
-        /// Repository URL to import the approved snapshot into.
-        #[arg(long)]
-        repository_url: Option<String>,
-        /// Operator token for registry import. Falls back to RUNNER_TOKEN.
-        #[arg(long)]
-        runner_token: Option<String>,
-        /// Bind sandbox rootfs path to use for runner-owned approval.
-        #[arg(long)]
-        sandbox_rootfs: Option<String>,
-        /// Audit identity recorded as the approval owner (self-asserted).
-        #[arg(long)]
-        approved_by: Option<String>,
-        /// Skip interactive approval prompt.
-        #[arg(long)]
-        yes: bool,
-        /// Emit raw snapshot JSON.
-        #[arg(long)]
-        json: bool,
-    },
     /// Show approved and pending snapshots for a tool.
     Inspect {
         /// Tool name, e.g. support/weather.
@@ -487,26 +464,6 @@ pub enum ExternalToolCommands {
         /// Legacy local snapshot cache root for inspect/offline workflows.
         #[arg(long)]
         cache_dir: Option<String>,
-        /// Emit raw JSON.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Re-discover an external tool and approve changed snapshot.
-    Refresh {
-        /// Tool name, e.g. support/weather.
-        name: String,
-        /// Path to external tool directory (contains tool-manifest.json).
-        #[arg(long)]
-        dir: String,
-        /// Repository URL to import the approved snapshot into.
-        #[arg(long)]
-        repository_url: Option<String>,
-        /// Operator token for registry import. Falls back to RUNNER_TOKEN.
-        #[arg(long)]
-        runner_token: Option<String>,
-        /// Skip interactive approval prompt.
-        #[arg(long)]
-        yes: bool,
         /// Emit raw JSON.
         #[arg(long)]
         json: bool,

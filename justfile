@@ -626,41 +626,6 @@ alias persona-claude-extrospection-clickup := coordinator-claude-extrospection-c
 alias persona-claude-extrospection := coordinator-claude-extrospection
 alias persona-claude-extrospection-provenance := coordinator-claude-extrospection-provenance
 
-# Bootstraps and runs the sandbox echo example in foreground-runner mode:
-# - exports env vars for external tools + bind allowlist
-# - runs setup_bind_demo.sh (export rootfs + digest + metadata patch + validation)
-# - prints push/chat commands for a second shell
-# - starts runner with sandbox features enabled (foreground so logs are visible)
-# Stop with Ctrl-C.
-echo-sandbox-demo:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "$(git rev-parse --show-toplevel)"
-    set -a
-    [ -f .env ] && . ./.env
-    set +a
-
-    export BAML_EXTERNAL_TOOLS_DIR="$PWD/examples/external-tools/dev_echo_sandbox"
-    export BAML_SANDBOX_PROVIDER=microsandbox
-    export BAML_SANDBOX_BIND_ROOTS="$PWD/.tmp"
-
-    ./examples/external-tools/dev_echo_sandbox/setup_bind_demo.sh --image dev-echo-sandbox:local --force
-
-    echo
-    echo "Runner will start in foreground; auto-push will run after HTTP is ready."
-    echo "Then in another shell, run chat:"
-    echo "  cargo run -p karakara-os -- chat --agent echo-agent --url {{runner_base_url}}"
-    echo
-
-    (
-      ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-      echo "[echo-sandbox-demo] pushing agents/echo-agent..."
-      cargo run -p karakara-os -- push --agents agents/echo-agent --url {{runner_base_url}}
-      echo "[echo-sandbox-demo] push completed."
-    ) &
-
-    exec cargo run -p karakara-os --all-features -- serve  --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
-
 # Runs the HTTP Notion demo script (starts runner if needed and streams one request).
 notion-demo:
     ./scripts/run-notion-demo.sh
@@ -713,7 +678,6 @@ ci_features := "baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-buil
 # Requires: cargo-nextest and OPENROUTER_API_KEY for LLM tests.
 # OTEL is disabled for stability/noise reduction in local test runs.
 test:
-    cargo build -p sandbox-echo-adapter --locked
     OTEL_SDK_DISABLED=true OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none OTEL_LOGS_EXPORTER=none OTEL_EXPORTER_OTLP_ENDPOINT="" cargo nextest run --workspace --locked --profile ci-merged --no-fail-fast --features {{ci_features}}
 
 # Same as `test` but only compile — useful for a quick pre-push check.

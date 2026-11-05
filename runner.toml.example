@@ -4,22 +4,20 @@
 # (or set BAML_RUNNER_CONFIG=./runner.toml).
 #
 # Relative paths are resolved against this file's parent directory.
-# Legacy env vars (BAML_EXTERNAL_TOOLS_DIR, BAML_SANDBOX_BIND_ROOTS) still work
-# and override the file values when set and non-empty.
+# BAML_EXTERNAL_TOOLS_DIR (colon-separated) overrides `[external_tools].dirs`
+# when set and non-empty.
+#
+# External tools themselves are not configured here: publish them with
+# `karak tool publish` and list them in the agent manifest.
 
 [external_tools]
-# Each entry is a tool package directory containing tool-manifest.json.
-# Add one entry per tool you want the runner to load in dev mode.
+# Webhook datasource manifest dirs. Each holds a tool-manifest.json that
+# declares `datasources[]` and the `events[]` they emit; no process runs.
 dirs = [
-    "./examples/external-tools/claude-ext",
-    # "./examples/external-tools/meteo-tool",
-    # "./examples/external-tools/dev_echo_sandbox",
+    # "./examples/external-tools/deploy-health-datasource",
 ]
 
-[sandbox.bind]
-# Host paths the sandbox is allowed to bind-mount as the tool rootfs.
-# Empty list = all bind sources rejected (`bind rootfs is disabled`).
-# Narrow the roots — broad roots like "/" are tenant-escape vectors.
-roots = [
-    "./examples/external-tools/claude-ext/.tmp",
-]
+# Activation, keyed by "<tool name>"."<datasource key>". A datasource is only
+# mounted (POST /webhooks/ext/<tool name>/<key>) when it is listed here.
+# [external_datasources."examples/deploy-health-datasource"."events"]
+# source_key = "deploy-health:prod"

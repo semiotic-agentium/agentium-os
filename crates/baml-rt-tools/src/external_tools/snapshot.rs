@@ -907,6 +907,7 @@ mod tests {
             tags: vec![],
             event_sources: vec![],
             datasources: vec![],
+            events: Vec::new(),
             invocation_mode: InvocationMode::SingleShot,
             session_policy: Default::default(),
             secrets: vec![],

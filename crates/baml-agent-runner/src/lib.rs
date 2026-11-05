@@ -50,7 +50,6 @@ use baml_rt_repository::{
 use baml_rt_tools::{
     ACCESS_ALLOWLIST_ENV, EventProducer, InventoryCatalog, ProducerCheckpoint, RawDatasourceIntake,
     RawDatasourceProducer, StaticToolCatalogResponse, WebhookIntake,
-    external_tools::{load_approved_snapshots_from_dirs, validate_external_tool_snapshot},
     load_configured_event_producers_with_checkpoints, load_configured_webhook_intakes,
     parse_access_allowlist, raw_datasource_spec,
 };
@@ -393,8 +392,6 @@ async fn run_inner(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow:
         claude_workspaces_base: config.claude_workspaces_base,
         repository_url: config.repository_url.clone(),
         embedded_repository: Some(repository_service.clone()),
-        external_tools_dirs: config.external_tools_dirs.clone(),
-        sandbox_bind_roots: config.sandbox_bind_roots.clone(),
         runtime_progress: runtime_progress.clone(),
         observation_notify: None,
         compaction_summarizer,
@@ -583,15 +580,12 @@ async fn run_inner(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow:
     ));
 
     // Build raw external-datasource intakes + producers once and reuse them in
-    // both the HTTP webhook mount and the event poll loop. Discovering per call
-    // site would spawn each datasource tool twice at boot.
+    // both the HTTP webhook mount and the event poll loop.
     let (external_webhook_intakes, external_producers) = load_external_raw_datasources(
         &config.external_tools_dirs,
-        &config.state_dir,
         &config.external_datasources,
         Arc::clone(&ingress_store) as Arc<dyn baml_rt_core::IngressStore>,
     )
-    .await
     .context("loading external raw datasources")?;
 
     let http_handle = if let Some(bind) = config.serve_http.clone() {
@@ -660,8 +654,6 @@ async fn run_inner(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow:
             webhook_intake_count = webhook_intakes.len(),
             "configured webhook intakes loaded for HTTP API"
         );
-        let external_tool_sandbox =
-            agent_package::build_sandbox_wiring(config.sandbox_bind_roots.clone())?;
         let api_config = baml_rt_api::ApiServerConfig {
             mermaid,
             context_metrics,
@@ -675,7 +667,6 @@ async fn run_inner(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow:
             deployment_manager: Some(runner.clone() as Arc<dyn DeploymentManager>),
             repository_url: Some(config.repository_url.clone()),
             repository_service: Some(repository_service.clone()),
-            external_tool_sandbox,
             runtime_secret_store,
             ready: readyz_for_http,
             runner_token,
@@ -1100,52 +1091,35 @@ async fn run_event_poll_cycle(
     }
 }
 
-async fn load_external_raw_datasources(
+/// Webhook intakes and their inbox producers, one pair per active datasource.
+type RawDatasources = (Vec<Arc<dyn WebhookIntake>>, Vec<Arc<dyn EventProducer>>);
+
+fn load_external_raw_datasources(
     dirs: &[std::path::PathBuf],
-    snapshot_root: &std::path::Path,
     activations: &std::collections::HashMap<
         String,
         std::collections::HashMap<String, runner_config_file::DatasourceActivation>,
     >,
     store: Arc<dyn baml_rt_core::IngressStore>,
-) -> anyhow::Result<(Vec<Arc<dyn WebhookIntake>>, Vec<Arc<dyn EventProducer>>)> {
+) -> anyhow::Result<RawDatasources> {
     if activations.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
 
-    // Datasources ARE external tools, so load them through the same trusted
-    // snapshot path tools use (reuse approved snapshot / discover+approve+
-    // persist), never raw `discover_snapshot`. Auto-approval from a configured
-    // dir is the intended dev/config model, but `validate_external_tool_snapshot`
-    // + digest pinning still apply before any webhook gets mounted.
-    let snapshots = load_approved_snapshots_from_dirs(dirs, snapshot_root, None)
-        .await
-        .context("loading approved external datasource snapshots")?;
+    // Datasources are manifest-only: the operator-listed dir is the trust
+    // root, and activation below is the second, explicit gate.
+    let tools = baml_rt_tools::load_datasource_manifests(dirs)
+        .context("loading external datasource manifests")?;
 
     let mut intakes: Vec<Arc<dyn WebhookIntake>> = Vec::new();
     let mut producers: Vec<Arc<dyn EventProducer>> = Vec::new();
     let mut seen_sources = std::collections::HashMap::<String, String>::new();
     let mut consumed = std::collections::HashSet::<(String, String)>::new();
 
-    for snapshot in &snapshots {
-        let Some(tool_activations) = activations.get(&snapshot.tool.name) else {
+    for tool in &tools {
+        let Some(tool_activations) = activations.get(&tool.name) else {
             continue;
         };
-        // Same gate `from_snapshots` applies to registry-backed tools: reject
-        // structurally invalid or unapproved snapshots before mounting a route.
-        validate_external_tool_snapshot(snapshot).with_context(|| {
-            format!(
-                "validating external datasource snapshot '{}'",
-                snapshot.tool.name
-            )
-        })?;
-        if !snapshot.approval.state.is_approved() {
-            anyhow::bail!(
-                "external datasource tool '{}' snapshot is not approved",
-                snapshot.tool.name
-            );
-        }
-        let tool = &snapshot.tool;
         for datasource in &tool.datasources {
             let Some(activation) = tool_activations.get(&datasource.key) else {
                 continue;
@@ -1183,7 +1157,7 @@ async fn load_external_raw_datasources(
         for key in datasources.keys() {
             if !consumed.contains(&(tool_name.clone(), key.clone())) {
                 anyhow::bail!(
-                    "external datasource activation '{}.{}' did not match an approved datasource tool",
+                    "external datasource activation '{}.{}' did not match a datasource manifest in [external_tools].dirs",
                     tool_name,
                     key
                 );
@@ -1299,8 +1273,6 @@ globalThis.onChatMessage = async function(_message) {
                 claude_workspaces_base: None,
                 repository_url: "http://127.0.0.1:18080/repository".to_string(),
                 embedded_repository: None,
-                external_tools_dirs: Vec::new(),
-                sandbox_bind_roots: Vec::new(),
                 runtime_progress: baml_rt_api::RuntimeProgressMeter::new_without_ticker(),
                 observation_notify: None,
                 compaction_summarizer: baml_rt_provenance::FixedCompactionSummarizer::test_stub(),
@@ -2471,5 +2443,50 @@ globalThis.onChatMessage = async function(_message) {
             elapsed >= std::time::Duration::from_millis(20),
             "retry helper must sleep between attempts (elapsed: {elapsed:?})"
         );
+    }
+
+    /// A webhook datasource loads from its manifest alone and mounts only when
+    /// activated; an activation that names no manifest fails boot.
+    #[test]
+    fn external_datasource_manifest_mounts_only_when_activated() {
+        use std::collections::HashMap;
+
+        use crate::runner_config_file::DatasourceActivation;
+
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/external-tools/deploy-health-datasource");
+        let store: Arc<dyn baml_rt_core::IngressStore> =
+            Arc::new(baml_rt_tools::ingress_store::test_support::MemoryIngressStore::default());
+        let activate = |tool: &str, key: &str| {
+            HashMap::from([(
+                tool.to_string(),
+                HashMap::from([(key.to_string(), DatasourceActivation::default())]),
+            )])
+        };
+
+        let (intakes, producers) = super::load_external_raw_datasources(
+            std::slice::from_ref(&dir),
+            &activate("examples/deploy-health-datasource", "events"),
+            Arc::clone(&store),
+        )
+        .expect("activated datasource loads");
+        assert_eq!((intakes.len(), producers.len()), (1, 1));
+
+        let (intakes, _) = super::load_external_raw_datasources(
+            std::slice::from_ref(&dir),
+            &HashMap::new(),
+            Arc::clone(&store),
+        )
+        .expect("no activation is not an error");
+        assert!(intakes.is_empty(), "dormant without activation");
+
+        let err = super::load_external_raw_datasources(
+            std::slice::from_ref(&dir),
+            &activate("examples/deploy-health-datasource", "missing"),
+            store,
+        )
+        .err()
+        .expect("unknown activation must fail boot");
+        assert!(err.to_string().contains("did not match"), "{err:#}");
     }
 }

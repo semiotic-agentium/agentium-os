@@ -66,13 +66,11 @@ pub(crate) struct RunnerConfig {
     /// Placement TTL in milliseconds: placements on runners whose last heartbeat
     /// is older than this are excluded from resolution.
     pub(crate) placement_ttl_ms: u64,
-    /// Resolved external tool package directories (file → env precedence).
+    /// Webhook datasource manifest dirs (file → env precedence).
     pub(crate) external_tools_dirs: Vec<PathBuf>,
     /// Datasource activation map from runner.toml.
     pub(crate) external_datasources:
         std::collections::HashMap<String, std::collections::HashMap<String, DatasourceActivation>>,
-    /// Resolved sandbox bind allowlist roots (file → env precedence).
-    pub(crate) sandbox_bind_roots: Vec<PathBuf>,
     /// Whether provenance drift scoring is enabled. `true` when
     /// `--enable-provenance-drift` is passed OR a non-empty `BAML_MODELS_DIR`
     /// is set (an explicit signal the operator provisioned a model tree). When
@@ -179,9 +177,9 @@ pub struct Cli {
     )]
     pub(crate) placement_ttl_ms: u64,
 
-    /// Path to a runner.toml with optional `[external_tools]` and
-    /// `[sandbox.bind]` sections. Values are merged with the legacy env vars
-    /// (`BAML_EXTERNAL_TOOLS_DIR`, `BAML_SANDBOX_BIND_ROOTS`); env wins when set.
+    /// Path to a runner.toml with optional `[external_tools]` (webhook
+    /// datasource manifest dirs) and `[external_datasources]` (activation)
+    /// sections. `BAML_EXTERNAL_TOOLS_DIR` overrides the dirs when set.
     #[arg(long, value_name = "FILE", env = "BAML_RUNNER_CONFIG")]
     pub(crate) runner_config: Option<PathBuf>,
 
@@ -233,11 +231,6 @@ impl Cli {
             source = resolved.external_tools_source.as_str(),
             "external_tools.dirs resolved"
         );
-        info!(
-            count = resolved.sandbox_bind_roots.len(),
-            source = resolved.sandbox_bind_source.as_str(),
-            "sandbox.bind.roots resolved"
-        );
 
         Ok(RunnerConfig {
             repository_url: self.repository_url,
@@ -265,7 +258,6 @@ impl Cli {
             placement_ttl_ms: self.placement_ttl_ms,
             external_tools_dirs: resolved.external_tools_dirs,
             external_datasources: file_config.external_datasources,
-            sandbox_bind_roots: resolved.sandbox_bind_roots,
             provenance_drift_enabled,
         })
     }

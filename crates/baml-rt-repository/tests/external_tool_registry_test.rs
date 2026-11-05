@@ -30,6 +30,7 @@ fn snapshot(name: &str, description: &str, state: ApprovalState) -> ExternalTool
         tags: vec![],
         event_sources: vec![],
         datasources: vec![],
+        events: Vec::new(),
         invocation_mode: InvocationMode::SingleShot,
         session_policy: Default::default(),
         secrets: vec!["API_KEY".to_string()],

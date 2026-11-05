@@ -72,7 +72,7 @@ pub use event_source_type::{
 };
 pub use external_datasource::{
     DatasourceActivation, RawDatasourceIntake, RawDatasourceProducer, RawDatasourceSpec,
-    raw_datasource_spec,
+    load_datasource_manifests, raw_datasource_spec,
 };
 pub use host_registration::{
     ExternalToolResolver, register_manifest_tools, register_manifest_tools_with_fallback,

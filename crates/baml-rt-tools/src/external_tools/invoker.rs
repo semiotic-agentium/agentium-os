@@ -4,9 +4,8 @@
 
 //! `ExternalInvoker` — transport-abstract interface for the tool protocol.
 //!
-//! V1 default transport is a stateless subprocess speaking JSON-RPC over stdio
-//! ([`super::stdio::StdioSubprocessInvoker`]). Later backends (UDS, Wasm) implement
-//! the same trait so callers don't depend on transport details.
+//! The v2 hosts implement it: the Sandbox/Trusted supervisor channel and the
+//! Service (MCP) client. Callers never depend on the transport.
 
 use std::time::Duration;
 

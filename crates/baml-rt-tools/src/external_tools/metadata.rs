@@ -262,7 +262,7 @@ pub struct ExternalDatasourceManifest {
     pub handler: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExternalToolManifest {
     pub tool_abi_version: String,
     pub name: String,
@@ -276,6 +276,11 @@ pub struct ExternalToolManifest {
     pub event_sources: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub datasources: Vec<ExternalDatasourceManifest>,
+    /// Event contracts a webhook datasource emits. Declared inline because a
+    /// datasource has no process to answer `tool/schema`; each raw
+    /// datasource's `schema_version` must match one of these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<EventSchema>,
     pub invocation_mode: InvocationMode,
     #[serde(default)]
     pub session_policy: ExternalSessionPolicy,
@@ -331,6 +336,10 @@ impl From<ExternalToolMetadata> for ExternalToolManifest {
             tags: meta.tags,
             event_sources: meta.event_sources,
             datasources: meta.datasources,
+            // Snapshot event schemas live in `schemas.events` and are pinned by
+            // the schema digest; keeping them out of the manifest keeps stored
+            // manifest digests stable.
+            events: Vec::new(),
             invocation_mode: meta.invocation_mode,
             session_policy: meta.session_policy,
             secrets: meta.secrets,
@@ -537,90 +546,4 @@ fn digest_canonical_payload(payload: &serde_json::Value) -> String {
     let mut hasher = Sha256::new();
     hasher.update(&canonical);
     format!("sha256:{:x}", hasher.finalize())
-}
-
-/// Compute deterministic digest for a local external tool package directory.
-///
-/// Process runtime input (in order):
-/// - magic/version marker: `baml-ext-tool-v1\0`
-/// - tool binary bytes prefixed by u64 little-endian length
-/// - canonicalized manifest bytes prefixed by u64 little-endian length
-/// - filesystem mode bits (`stat().mode() & 0o7777`) as u32 little-endian
-///
-/// Sandbox runtime input (in order):
-/// - magic/version marker: `baml-ext-tool-sandbox-v1\0`
-/// - canonicalized manifest bytes prefixed by u64 little-endian length
-pub fn compute_tool_digest(dir: &Path) -> Result<String> {
-    let manifest_path = dir.join("tool-manifest.json");
-    let manifest_raw =
-        fs::read_to_string(&manifest_path).map_err(|e| BamlRtError::InvalidArgumentWithSource {
-            message: format!(
-                "failed to read external tool manifest {}",
-                manifest_path.display()
-            ),
-            source: Box::new(e),
-        })?;
-    let manifest_json: Value = serde_json::from_str(&manifest_raw).map_err(|e| {
-        BamlRtError::InvalidArgumentWithSource {
-            message: format!(
-                "failed to parse external tool manifest {}",
-                manifest_path.display()
-            ),
-            source: Box::new(e),
-        }
-    })?;
-    let manifest: ExternalToolManifest = serde_json::from_str(&manifest_raw).map_err(|e| {
-        BamlRtError::InvalidArgumentWithSource {
-            message: format!(
-                "failed to decode typed external tool manifest {}",
-                manifest_path.display()
-            ),
-            source: Box::new(e),
-        }
-    })?;
-    validate_external_abi(&manifest.name, &manifest.tool_abi_version)?;
-    let canonical_manifest =
-        serde_jcs::to_vec(&manifest_json).map_err(|e| BamlRtError::InvalidArgumentWithSource {
-            message: "failed to canonicalize external tool manifest JSON".to_string(),
-            source: Box::new(e),
-        })?;
-
-    if matches!(manifest.runtime, Some(ToolRuntime::Sandbox(_))) {
-        let mut hasher = Sha256::new();
-        hasher.update(b"baml-ext-tool-sandbox-v1\0");
-        hasher.update((canonical_manifest.len() as u64).to_le_bytes());
-        hasher.update(&canonical_manifest);
-        return Ok(format!("sha256:{:x}", hasher.finalize()));
-    }
-
-    let bin_path = dir.join("tool-server");
-    let bin_bytes = fs::read(&bin_path).map_err(|e| BamlRtError::InvalidArgumentWithSource {
-        message: format!("failed to read external tool binary {}", bin_path.display()),
-        source: Box::new(e),
-    })?;
-    let mode_bits = file_mode_bits(&bin_path)?;
-
-    let mut hasher = Sha256::new();
-    hasher.update(b"baml-ext-tool-v1\0");
-    hasher.update((bin_bytes.len() as u64).to_le_bytes());
-    hasher.update(&bin_bytes);
-    hasher.update((canonical_manifest.len() as u64).to_le_bytes());
-    hasher.update(&canonical_manifest);
-    hasher.update(mode_bits.to_le_bytes());
-    Ok(format!("sha256:{:x}", hasher.finalize()))
-}
-
-fn file_mode_bits(path: &Path) -> Result<u32> {
-    use std::os::unix::fs::MetadataExt;
-
-    let meta = fs::metadata(path).map_err(|e| BamlRtError::InvalidArgumentWithSource {
-        message: format!("failed to stat {}", path.display()),
-        source: Box::new(e),
-    })?;
-    Ok(meta.mode() & 0o7777)
-}
-
-#[cfg(not(unix))]
-fn file_mode_bits(_path: &Path) -> Result<u32> {
-    Ok(0)
 }

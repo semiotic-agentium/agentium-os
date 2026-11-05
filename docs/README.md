@@ -78,7 +78,7 @@ Install, test, demo, and operate.
 | [ci-security.md](runbooks/ci-security.md) | Public-repo CI trust model and GitHub settings |
 | [k8s-pilot-load-testing.md](runbooks/k8s-pilot-load-testing.md) | Load-test harness contract |
 | [task-daemon.md](runbooks/task-daemon.md) | Task-daemon user guide |
-| [host-tool-quickstart.md](runbooks/host-tool-quickstart.md) | Sandboxed external tool + agent checklist |
+| [meteo-tool README](../examples/external-tools/meteo-tool/README.md) | External tool v2: build, test, publish, deploy, chat |
 | [coordinator-demo.md](runbooks/coordinator-demo.md) | Coordinator delegation demo |
 | [notion-demo.md](runbooks/notion-demo.md) | Notion agent demo |
 | [slack-it-requirements.md](runbooks/slack-it-requirements.md) | Slack Business+ IT questionnaire |
