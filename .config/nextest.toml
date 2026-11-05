@@ -18,6 +18,13 @@ provenance = { max-threads = 1 }
 runner-subprocess = { max-threads = 1 }
 slack-source-ingress-e2e = { max-threads = 1 }
 llm-heavy = { max-threads = 1 }
+# Live microVM tests (`just test-kvm`): one at a time keeps peak VM count and
+# host memory bounded.
+kvm = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(baml-rt-tools) and binary(external_tools_supervisor_kvm)'
+test-group = "kvm"
 
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-provenance) and binary(tool_index_test)'

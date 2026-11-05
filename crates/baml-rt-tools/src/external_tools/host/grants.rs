@@ -138,8 +138,15 @@ pub struct ToolGrant {
     pub(super) key: VmKey,
     pub(super) network: Vec<CidrGrant>,
     /// Declared hostname -> the exact addresses `network` allows for it. The
-    /// VM serves these from `/etc/hosts`; guest DNS egress stays closed.
+    /// VM serves these from `/etc/hosts`. Excludes [`Self::dns_hosts`].
     pub(super) hosts: BTreeMap<String, BTreeSet<IpAddr>>,
+    /// Destinations an egress-bound secret is bound to. The guest resolves
+    /// these through the VM's DNS forwarder instead of `/etc/hosts`: the
+    /// forwarder's answer is the TLS identity the network layer checks before
+    /// it substitutes a secret, and the VM allows these by name. The
+    /// forwarder answers only names the policy allows and refuses private
+    /// answers.
+    pub(super) dns_hosts: Vec<HostPort>,
     pub(super) secrets: Vec<EgressSecret>,
     pub(super) reveal: Vec<RevealSecret>,
 }
@@ -153,6 +160,9 @@ impl ToolGrant {
     }
     pub fn hosts(&self) -> &BTreeMap<String, BTreeSet<IpAddr>> {
         &self.hosts
+    }
+    pub fn dns_hosts(&self) -> &[HostPort] {
+        &self.dns_hosts
     }
     pub fn egress_secrets(&self) -> &[EgressSecret] {
         &self.secrets
@@ -314,6 +324,7 @@ pub(super) async fn grant(
     let (secrets, reveal) = grant_secrets(ctx, requested, policy)
         .inspect_err(|_| metrics::record_tool_grant_denied(GrantDenial::Secret))?;
     let network: Vec<_> = network.into_iter().collect();
+    let (hosts, dns_hosts) = split_secret_hosts(hosts, &requested.net, secrets.values());
     let secrets: Vec<_> = secrets.into_values().collect();
     let reveal: Vec<_> = reveal.into_values().collect();
     // Keyed fingerprints prevent offline guessing and force fresh VMs on rotation.
@@ -343,8 +354,9 @@ pub(super) async fn grant(
             )
         })
         .collect();
-    // The hosts map is VM state (`/etc/hosts`), so it is part of VM identity.
-    let grant_class = canonical_digest(&(&network, &hosts, bindings, reveal_bindings));
+    // The hosts map (`/etc/hosts`) and the by-name destinations are VM state,
+    // so both are part of VM identity.
+    let grant_class = canonical_digest(&(&network, &hosts, &dns_hosts, bindings, reveal_bindings));
     Ok(ToolGrant {
         agent_id: ctx.agent_id.to_string(),
         tool_digest,
@@ -355,9 +367,30 @@ pub(super) async fn grant(
         },
         network,
         hosts,
+        dns_hosts,
         secrets,
         reveal,
     })
+}
+
+/// Move every host an egress secret is bound to out of the `/etc/hosts` pin
+/// map and into the by-name destinations, with each port the tool requested
+/// for it.
+fn split_secret_hosts<'a>(
+    mut hosts: BTreeMap<String, BTreeSet<IpAddr>>,
+    requested: &[HostPort],
+    secrets: impl Iterator<Item = &'a EgressSecret>,
+) -> (BTreeMap<String, BTreeSet<IpAddr>>, Vec<HostPort>) {
+    let bound: BTreeSet<&str> = secrets
+        .flat_map(|secret| secret.hosts.iter().map(String::as_str))
+        .collect();
+    let dns_hosts: BTreeSet<HostPort> = requested
+        .iter()
+        .filter(|destination| bound.contains(destination.host.as_str()))
+        .cloned()
+        .collect();
+    hosts.retain(|host, _| !bound.contains(host.as_str()));
+    (hosts, dns_hosts.into_iter().collect())
 }
 
 fn validate_host(host: &str) -> Result<()> {

@@ -126,6 +126,8 @@ pub struct FakeVms {
     pub cancels: Arc<AtomicUsize>,
     /// `grant.hosts()` of every VM spec, i.e. what lands in the VM's /etc/hosts.
     pub hosts: std::sync::Mutex<Vec<BTreeMap<String, std::collections::BTreeSet<IpAddr>>>>,
+    /// `grant.dns_hosts()` of every VM spec: destinations allowed by name.
+    pub dns_hosts: std::sync::Mutex<Vec<Vec<HostPort>>>,
     /// `spec.owner` of every created VM.
     pub owners: std::sync::Mutex<Vec<String>>,
     /// Owner of every `sweep_vms` call.
@@ -137,6 +139,10 @@ impl SandboxProvider for FakeVms {
     async fn create_vm(&self, spec: VmSpec) -> Result<(SandboxHandle, TsrpcChannel)> {
         self.created.fetch_add(1, Ordering::SeqCst);
         self.hosts.lock().unwrap().push(spec.grant.hosts().clone());
+        self.dns_hosts
+            .lock()
+            .unwrap()
+            .push(spec.grant.dns_hosts().to_vec());
         self.owners.lock().unwrap().push(spec.owner.clone());
         let (host, guest) = tokio::io::duplex(64 * 1024);
         tokio::spawn(supervisor(guest, self.cancels.clone()));
@@ -273,6 +279,7 @@ pub fn build(
         teardowns: AtomicUsize::new(0),
         cancels: Arc::new(AtomicUsize::new(0)),
         hosts: std::sync::Mutex::new(Vec::new()),
+        dns_hosts: std::sync::Mutex::new(Vec::new()),
         owners: std::sync::Mutex::new(Vec::new()),
         sweeps: std::sync::Mutex::new(Vec::new()),
     });

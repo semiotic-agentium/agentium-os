@@ -17,7 +17,7 @@ use std::{
 
 use baml_rt_tools::{
     external_tools::{
-        CapabilityRequest, SecretBinding, SecretRequest,
+        CapabilityRequest, HostPort, SecretBinding, SecretRequest,
         host::{PoolPolicy, ToolPolicy, TrustDomain, VmBudget, VmPool},
     },
     tool_fsm::ToolStep,
@@ -251,6 +251,29 @@ async fn grant_pins_declared_hosts_to_their_allowed_addresses() {
     assert_eq!(hosts[0].len(), 1, "only declared hosts are pinned");
 }
 
+/// A host an egress secret is bound to is resolved by the VM's DNS forwarder
+/// (the TLS identity the secret check needs), so it is allowed by name and
+/// never pinned in `/etc/hosts`.
+#[tokio::test]
+async fn secret_bound_hosts_resolve_by_name_not_from_pinned_hosts() {
+    let requested = full_request();
+    let (f, ctx) = fixture(requested.clone(), policy(requested), "s3cret");
+    invoke(&f, &ctx, json!({"q": "dns"})).await;
+    let hosts = f.vm.hosts.lock().unwrap();
+    assert!(
+        !hosts[0].contains_key("api.example.com"),
+        "a secret-bound host must not be pinned"
+    );
+    let dns_hosts = f.vm.dns_hosts.lock().unwrap();
+    assert_eq!(
+        dns_hosts[0],
+        [HostPort {
+            host: "api.example.com".into(),
+            port: 443,
+        }]
+    );
+}
+
 #[tokio::test]
 async fn timed_out_call_does_not_retire_shared_channel() {
     let requested = net("api.example.com");
@@ -437,6 +460,7 @@ async fn pool_start_sweeps_its_own_leftovers_and_owns_new_vms() {
         teardowns: AtomicUsize::new(0),
         cancels: Arc::new(AtomicUsize::new(0)),
         hosts: std::sync::Mutex::new(Vec::new()),
+        dns_hosts: std::sync::Mutex::new(Vec::new()),
         owners: std::sync::Mutex::new(Vec::new()),
         sweeps: std::sync::Mutex::new(Vec::new()),
     });

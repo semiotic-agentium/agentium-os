@@ -5,8 +5,12 @@
 //! Pinned name resolution for granted egress hosts.
 //!
 //! The host resolves every declared tool host to exact addresses at grant time
-//! and the VM network policy allows TCP only to those addresses; the guest has
-//! no DNS egress. The host hands the same mapping to the supervisor in
+//! and the VM network policy allows TCP only to those addresses. Hosts an
+//! egress secret is bound to are the exception: they are left out of this
+//! map and resolved through the VM's DNS forwarder, whose answer is the TLS
+//! identity the network layer checks before substituting the secret. The
+//! forwarder answers no other name. The host hands the pinned mapping to the
+//! supervisor in
 //! [`PINNED_HOSTS_ENV`] (`ip host;ip host;...`), and the supervisor appends it
 //! to `/etc/hosts` before serving, so `getaddrinfo` (nsswitch `files`) answers
 //! with exactly the allowed addresses.

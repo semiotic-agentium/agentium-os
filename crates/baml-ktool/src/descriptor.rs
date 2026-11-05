@@ -46,7 +46,7 @@ pub enum OutputTrust {
 
 /// A host:port the tool requests outbound access to. The host resolves this to
 /// a CIDR grant at approval time (§8: domain allow-rules are unreliable).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct HostPort {
     pub host: String,
     pub port: u16,

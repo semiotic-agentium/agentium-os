@@ -13,7 +13,7 @@ use tokio::net::UnixListener;
 use super::{MicrosandboxProvider, to_rt_err};
 use crate::{
     external_tools::{
-        KtoolRuntimeImage,
+        HostPort, KtoolRuntimeImage,
         host::{CidrGrant, VmKey, VmSpec},
         sandbox::{SandboxHandle, TsrpcChannel},
     },
@@ -156,7 +156,7 @@ impl MicrosandboxProvider {
         let socket = SocketPath(socket_path);
         let listener =
             UnixListener::bind(&socket.0).map_err(|e| to_rt_err("bind supervisor vsock", e))?;
-        let policy = compile_network(spec.grant.network())?;
+        let policy = compile_network(spec.grant.network(), spec.grant.dns_hosts())?;
         let template = self
             .v2
             .templates
@@ -346,8 +346,17 @@ pub(super) fn encode_pinned_hosts(
     entries.join(";")
 }
 
-/// Hard denies precede exact TCP CIDRs; no domain rules or implicit public egress.
-pub(super) fn compile_network(grants: &[CidrGrant]) -> Result<microsandbox::NetworkPolicy> {
+/// Hard denies precede exact TCP CIDRs and the by-name rules for
+/// secret-bound hosts; no implicit public egress.
+///
+/// A `Domain` rule allows a connection only to an address the VM's DNS
+/// forwarder resolved for that exact name, and it is also the only thing that
+/// lets the forwarder answer a query for the name: every other DNS query gets
+/// NXDOMAIN under the default deny.
+pub(super) fn compile_network(
+    grants: &[CidrGrant],
+    dns_hosts: &[HostPort],
+) -> Result<microsandbox::NetworkPolicy> {
     let mut policy = microsandbox::NetworkPolicy::builder()
         .default_deny()
         .egress(|r| {
@@ -359,6 +368,9 @@ pub(super) fn compile_network(grants: &[CidrGrant]) -> Result<microsandbox::Netw
         });
     for grant in grants {
         policy = policy.egress(|r| r.tcp().port(grant.port).allow().cidr(&grant.cidr));
+    }
+    for HostPort { host, port } in dns_hosts {
+        policy = policy.egress(|r| r.tcp().port(*port).allow().domain(host));
     }
     policy
         .build()

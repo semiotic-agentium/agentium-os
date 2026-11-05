@@ -3,7 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! P4.11 live lane: the P3 `ToolHost` against the real guest supervisor inside
-//! a real microVM, plus the P0 isolation matrix.
+//! a real microVM, plus the P0 isolation matrix and the egress-bound secret
+//! promise (§8), all in one VM to keep the lane cheap.
+//!
+//! The egress checks reach the public internet: `postman-echo.com` is the
+//! secret's bound host (it echoes request headers back), `example.com` is an
+//! allowed destination the secret is not bound to. The secret value is fake.
 //!
 //! Enable with `--features sandbox-e2e-kvm` on a KVM host and point
 //! `KARAKARA_KVM_IMAGE` at the digest-pinned `node` runtime image built by
@@ -21,7 +26,10 @@ use std::{
 };
 
 use async_trait::async_trait;
-use baml_ktool::{CapabilityRequest, DESCRIPTOR_ABI, OutputTrust, SideEffect, ToolDescriptor};
+use baml_ktool::{
+    CapabilityRequest, DESCRIPTOR_ABI, HostPort, OutputTrust, SecretBinding,
+    SecretRequest as KtoolSecretRequest, SideEffect, ToolDescriptor,
+};
 use baml_rt_core::{
     Result,
     ids::{AgentId, ContextId, UuidId},
@@ -30,7 +38,10 @@ use baml_rt_tools::{
     ToolName, ToolSecretResolver, ToolSecretValue, ToolSecrets, ToolSessionContext,
     external_tools::{
         ExternalToolSnapshot, build_ktool_bundle, default_node_runtime_image,
-        host::{HostPolicy, HostResolver, PoolPolicy, ToolHost, ToolPolicy, TrustDomain, VmPool},
+        host::{
+            DnsResolver, HostPolicy, HostResolver, PoolPolicy, ToolHost, ToolPolicy, TrustDomain,
+            VmPool,
+        },
         sandbox::MicrosandboxProvider,
     },
     tool_fsm::ToolSessionId,
@@ -40,9 +51,16 @@ use baml_sandbox_protocol::protocol_v2::{CallContext, GuestMessage};
 use serde_json::{Value, json};
 
 const TOOL: &str = "test/kvm-supervisor";
+/// Egress-bound secret env name, its bound host, and an allowed unbound host.
+const SECRET: &str = "KVM_EGRESS_SECRET";
+const BOUND_HOST: &str = "postman-echo.com";
+const UNBOUND_HOST: &str = "example.com";
+/// Header the probe puts the placeholder in.
+const PROBE_HEADER: &str = "x-karakara-probe";
 
 const TOOL_JS: &str = r#"
 import fs from "node:fs";
+import dns from "node:dns/promises";
 
 // MCP stdio transport: newline-delimited JSON-RPC (no Content-Length headers).
 let buffer = "";
@@ -95,6 +113,30 @@ async function handle(message) {
         try { fs.readFileSync(p); return [p, true]; } catch { return [p, false]; }
       }));
     }
+    if (input.env) {
+      out.env = Object.fromEntries(input.env.map((n) => [n, process.env[n] ?? null]));
+      out.env_values = Object.values(process.env);
+    }
+    if (input.lookup) {
+      out.lookup = {};
+      for (const name of input.lookup) {
+        try { out.lookup[name] = (await dns.lookup(name, { all: true })).map((a) => a.address); }
+        catch (e) { out.lookup[name] = { error: String(e?.code ?? e) }; }
+      }
+    }
+    if (input.fetch) {
+      out.fetch = [];
+      for (const req of input.fetch) {
+        const headers = {};
+        if (req.secret) headers[req.header] = process.env[req.secret] ?? "";
+        try {
+          const res = await fetch(req.url, { headers, signal: AbortSignal.timeout(10000) });
+          out.fetch.push({ status: res.status, body: await res.text() });
+        } catch (e) {
+          out.fetch.push({ error: String(e?.cause?.code ?? e?.cause?.message ?? e?.message ?? e) });
+        }
+      }
+    }
     send({
       jsonrpc: "2.0",
       id: message.id,
@@ -137,6 +179,31 @@ impl ToolSecretResolver for NoSecrets {
     }
 }
 
+/// Resolves [`SECRET`] to a fixed fake value.
+struct FakeSecret(String);
+
+impl ToolSecretResolver for FakeSecret {
+    fn resolve_tool_secret(&self, name: &str) -> Option<ToolSecretValue> {
+        (name == SECRET).then(|| ToolSecretValue::new(self.0.clone()))
+    }
+}
+
+/// One egress-bound secret plus HTTPS to its bound host and to an unbound one.
+fn egress_capabilities() -> CapabilityRequest {
+    CapabilityRequest {
+        net: [BOUND_HOST, UNBOUND_HOST]
+            .map(|host| HostPort {
+                host: host.into(),
+                port: 443,
+            })
+            .to_vec(),
+        secrets: vec![KtoolSecretRequest {
+            name: SECRET.into(),
+            binding: SecretBinding::EgressBound,
+        }],
+    }
+}
+
 fn descriptor() -> ToolDescriptor {
     ToolDescriptor {
         descriptor_abi: DESCRIPTOR_ABI,
@@ -156,6 +223,13 @@ fn descriptor() -> ToolDescriptor {
 }
 
 fn session_ctx() -> ToolSessionContext {
+    session_ctx_with(ToolSecrets::scoped(
+        Some(Arc::new(NoSecrets)),
+        &[ToolSecretRequest::api_key("UNUSED", "kvm", "kvm")],
+    ))
+}
+
+fn session_ctx_with(secrets: ToolSecrets) -> ToolSessionContext {
     ToolSessionContext {
         session_id: ToolSessionId::random(),
         tool_name: ToolName::parse(TOOL).unwrap(),
@@ -163,10 +237,7 @@ fn session_ctx() -> ToolSessionContext {
         agent_id: AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4())),
         config: None,
         config_version: None,
-        secrets: ToolSecrets::scoped(
-            Some(Arc::new(NoSecrets)),
-            &[ToolSecretRequest::api_key("UNUSED", "kvm", "kvm")],
-        ),
+        secrets,
         task_id: None,
         execution_classifier: None,
     }
@@ -190,26 +261,38 @@ async fn real_vm_supervisor_runs_the_isolation_matrix() {
     // Unique per run so the owner-label assertions see only this test's VMs.
     let owner = format!("kvm-test-{}", uuid::Uuid::new_v4());
     let pool = VmPool::new(Arc::new(provider), owner.clone(), PoolPolicy::default());
-    let ctx = session_ctx();
-    let bytes = bundle();
+    // The VM is created with the egress grant so the isolation checks run in
+    // the production configuration (TLS interception on) and the egress
+    // checks below need no second VM.
+    let real_secret = format!("kvm-real-{}", uuid::Uuid::new_v4().simple());
+    let ctx = session_ctx_with(ToolSecrets::scoped(
+        Some(Arc::new(FakeSecret(real_secret.clone()))),
+        &[ToolSecretRequest::api_key(SECRET, "kvm", "kvm")],
+    ));
+    let capabilities = egress_capabilities();
+    let bytes = test_support::external_tools_v2::bundle_with_entrypoint(
+        &descriptor(),
+        capabilities.clone(),
+        TOOL_JS.as_bytes(),
+    );
     let audited = baml_rt_tools::external_tools::audit_ktool_bundle(&bytes).expect("audit");
     let policy = ToolPolicy {
         trust_domain: TrustDomain::ThirdParty,
-        capabilities: CapabilityRequest::default(),
-        secret_hosts: BTreeMap::new(),
+        capabilities: capabilities.clone(),
+        secret_hosts: BTreeMap::from([(SECRET.to_string(), vec![BOUND_HOST.to_string()])]),
     };
     let mut host_policy = HostPolicy::default();
     host_policy
         .tools
         .insert((ctx.agent_id.to_string(), audited.tool_digest), policy);
     let host = Arc::new(
-        ToolHost::new(pool.clone(), host_policy, Arc::new(StaticResolver)).expect("tool host"),
+        ToolHost::new(pool.clone(), host_policy, Arc::new(DnsResolver)).expect("tool host"),
     );
 
     let descriptor = descriptor();
     let snapshot = ExternalToolSnapshot::from_v2_bundle(
         descriptor,
-        CapabilityRequest::default(),
+        capabilities,
         audited.bundle_digest,
         audited.tool_digest,
         audited.manifest.runtime_image,
@@ -293,6 +376,105 @@ async fn real_vm_supervisor_runs_the_isolation_matrix() {
     )
     .await;
     assert_eq!(alive["echo"], "alive");
+
+    // 4. Egress-bound secret (§8). The worker sees only a placeholder.
+    let seen = invoke(
+        &host,
+        &snapshot,
+        &bytes,
+        &ctx,
+        json!({"env": [SECRET]}),
+        10_000,
+    )
+    .await;
+    let placeholder = seen["env"][SECRET]
+        .as_str()
+        .expect("worker env carries the declared secret's placeholder")
+        .to_string();
+    assert!(!placeholder.is_empty());
+    assert!(
+        !placeholder.contains(&real_secret),
+        "the worker env holds the real secret value"
+    );
+    assert!(
+        seen["env_values"]
+            .as_array()
+            .expect("env values")
+            .iter()
+            .all(|value| !value.as_str().unwrap_or_default().contains(&real_secret)),
+        "some worker env value carries the real secret"
+    );
+
+    // 5. Guest DNS answers only granted names: the secret-bound host through
+    //    the VM's forwarder, the unbound one from /etc/hosts, nothing else.
+    let ungranted = "example.org";
+    let lookups = invoke(
+        &host,
+        &snapshot,
+        &bytes,
+        &ctx,
+        json!({"lookup": [BOUND_HOST, UNBOUND_HOST, ungranted]}),
+        15_000,
+    )
+    .await;
+    eprintln!("guest DNS lookups: {lookups}");
+    for granted in [BOUND_HOST, UNBOUND_HOST] {
+        assert!(
+            lookups["lookup"][granted].is_array(),
+            "granted host {granted} does not resolve: {lookups}"
+        );
+    }
+    assert!(
+        lookups["lookup"][ungranted].get("error").is_some(),
+        "an ungranted name resolved in the guest: {lookups}"
+    );
+
+    // 6. The bound host receives the real value; an allowed but unbound host
+    //    is reachable, yet a request carrying the placeholder to it is blocked.
+    let probe = |url: String, secret: bool| {
+        if secret {
+            json!({"url": url, "header": PROBE_HEADER, "secret": SECRET})
+        } else {
+            json!({"url": url})
+        }
+    };
+    let egress = invoke(
+        &host,
+        &snapshot,
+        &bytes,
+        &ctx,
+        json!({"fetch": [
+            probe(format!("https://{BOUND_HOST}/get"), true),
+            probe(format!("https://{UNBOUND_HOST}/"), false),
+            probe(format!("https://{UNBOUND_HOST}/"), true),
+        ]}),
+        30_000,
+    )
+    .await;
+    eprintln!("egress probe results: {egress}");
+    let results = egress["fetch"].as_array().expect("fetch results");
+    let bound = &results[0];
+    assert_eq!(bound["status"], 200, "bound host request failed: {bound}");
+    let echoed: Value =
+        serde_json::from_str(bound["body"].as_str().expect("echo body")).expect("echo json");
+    // The echo carries the substituted value back into the guest. That is the
+    // echo-back exposure of header substitution, accepted here because the
+    // value is fake; it is how the test observes what the bound host received.
+    assert_eq!(
+        echoed["headers"][PROBE_HEADER], real_secret,
+        "the bound host did not receive the substituted secret"
+    );
+    let control = &results[1];
+    assert_eq!(
+        control["status"], 200,
+        "unbound host is not reachable without the secret: {control}"
+    );
+    let leak = &results[2];
+    assert!(
+        leak.get("error").is_some(),
+        "a placeholder sent to an unbound host must be blocked: {leak}"
+    );
+    assert!(!leak.to_string().contains(&real_secret));
 
     host.shutdown().await.expect("shutdown");
     // Teardown removes the VM, not just stops it: nothing is left holding disk.

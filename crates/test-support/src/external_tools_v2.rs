@@ -34,7 +34,22 @@ pub fn descriptor(name: &str) -> UnifiedToolDescriptor {
 /// `requested` (R1 §R1.1: capabilities live on the manifest, not the
 /// descriptor).
 pub fn bundle(descriptor: &UnifiedToolDescriptor, requested: CapabilityRequest) -> Vec<u8> {
-    bundle_with_launch(descriptor, requested, KtoolRuntimeTier::Sandbox, None)
+    bundle_with_entrypoint(descriptor, requested, b"export default {};")
+}
+
+/// [`bundle`] with a real MCP server as the node entrypoint, for live runs.
+pub fn bundle_with_entrypoint(
+    descriptor: &UnifiedToolDescriptor,
+    requested: CapabilityRequest,
+    entrypoint: &[u8],
+) -> Vec<u8> {
+    bundle_with_launch(
+        descriptor,
+        requested,
+        KtoolRuntimeTier::Sandbox,
+        None,
+        entrypoint,
+    )
 }
 
 /// Build a `Trusted` `.ktool` that declares where its supervisor lives
@@ -46,6 +61,7 @@ pub fn trusted_bundle(descriptor: &UnifiedToolDescriptor, launch: KtoolTrustedLa
         CapabilityRequest::default(),
         KtoolRuntimeTier::Trusted,
         Some(launch),
+        b"export default {};",
     )
 }
 
@@ -54,6 +70,7 @@ fn bundle_with_launch(
     requested: CapabilityRequest,
     tier: KtoolRuntimeTier,
     trusted_launch: Option<KtoolTrustedLaunch>,
+    entrypoint: &[u8],
 ) -> Vec<u8> {
     let runtime_image = match tier {
         KtoolRuntimeTier::Sandbox => baml_rt_tools::external_tools::default_node_runtime_image(),
@@ -93,7 +110,7 @@ fn bundle_with_launch(
             serde_json::to_vec(&vec![descriptor]).unwrap(),
         ),
         (KTOOL_SBOM_PATH, b"{}".to_vec()),
-        (KTOOL_NODE_ENTRYPOINT, b"export default {};".to_vec()),
+        (KTOOL_NODE_ENTRYPOINT, entrypoint.to_vec()),
     ] {
         let mut header = Header::new_gnu();
         header.set_size(body.len() as u64);
