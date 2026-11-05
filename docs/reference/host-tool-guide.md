@@ -118,6 +118,7 @@ port = 443
 
 [[toolset.capabilities.secrets]]
 name = "EXAMPLE_API_KEY"
+binding = "egress_bound"   # or "reveal"; required (see Secrets below)
 ```
 
 Workflow:
@@ -132,6 +133,115 @@ karak tool publish ./tools/support          # host audits the bundle, records th
 tool's canonical descriptor into `tools.json`; MCP annotations map to Karakara
 semantics (`readOnlyHint` ⇒ Read, `destructiveHint` ⇒ Irreversible, else Write;
 `idempotentHint`). Other languages follow with their runtime images.
+
+### Secrets: how a key reaches your tool code
+
+A tool's secret **never travels through MCP calls**. The MCP `tools/call`
+between the supervisor and your server carries only arguments and results, the
+same data the LLM chose and provenance records. Secrets take a separate route
+that only the host controls.
+
+Example: an external ClickUp toolset that needs an API token.
+
+**1. The author declares the request** (`karakara.toml`). This grants nothing;
+the operator decides.
+
+```toml
+[toolset]
+name = "support"
+version = "0.1.0"
+
+[[toolset.capabilities.net]]
+host = "api.clickup.com"
+port = 443
+
+[[toolset.capabilities.secrets]]
+name = "CLICKUP_API_KEY"
+binding = "egress_bound"   # ClickUp sends the token as a header
+```
+
+**2. The author writes ordinary code** with the official MCP SDK. There is no
+Karakara secret API:
+
+```ts
+server.registerTool("create_task", { inputSchema: { list_id: z.string(), name: z.string() } },
+  async ({ list_id, name }) => {
+    const res = await fetch(`https://api.clickup.com/api/v2/list/${list_id}/task`, {
+      method: "POST",
+      headers: {
+        // Inside the VM this is a placeholder ("$MSB_CLICKUP_API_KEY"),
+        // never the real token.
+        Authorization: process.env.CLICKUP_API_KEY!,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ name }),
+    });
+    const task = await res.json();
+    return { structuredContent: task, content: [{ type: "text", text: JSON.stringify(task) }] };
+  });
+```
+
+**3. The operator** puts the real token in fnox / the secret store and binds it
+in policy: this agent may use this exact toolset digest, and
+`CLICKUP_API_KEY` may only be sent to `api.clickup.com`.
+
+**4. At runtime there are two routes, and they never mix:**
+
+```
+ROUTE 1 — the call: arguments and results only, never a secret
+  LLM / agent ─"create_task {list_id, name}"─► runner ─protocol_v2 (vsock)─► supervisor ─MCP stdio─► tool
+       ▲                                                                                              │
+       └───────────────────────────────────── result ◄───────────────────────────────────────────────┘
+
+ROUTE 2 — the secret: host side only
+  fnox (real token) ─► runner ─► microsandbox network layer (host side)
+                                    │ at VM create: env CLICKUP_API_KEY = "$MSB_CLICKUP_API_KEY"
+                                    ▼
+                             supervisor env ─► worker env ─► process.env in the tool (placeholder)
+
+WHERE THEY MEET — on the network, outside the guest
+  tool: fetch(api.clickup.com, Authorization: "$MSB_CLICKUP_API_KEY")
+        │ TLS from the guest
+        ▼
+  host network layer: is this really api.clickup.com (DNS identity + verified TLS)?
+        ├─ yes → swap the placeholder for the real token ─► api.clickup.com
+        └─ no  → cut the connection
+```
+
+Why it works this way: everything on Route 1 is seen by the LLM (which can be
+prompt-injected), recorded in provenance, and logged. Keeping the secret off
+that route means the most a misbehaving tool or a tricked LLM can leak is the
+placeholder, which is worthless anywhere except a verified TLS connection to
+the bound host.
+
+How the VM enforces it:
+
+- The guest resolves the bound host through the VM's DNS forwarder; that answer
+  is the identity the network layer checks before substituting. DNS answers
+  only names the toolset requested, so nothing else resolves.
+- Plain HTTP, or any other host, never receives the real value.
+- Locally, `karak tool test` runs your server outside a VM, so you can export a
+  real `CLICKUP_API_KEY` for development; the code does not change.
+
+**Choosing a binding**
+
+| Binding | Use when | What the tool sees |
+|---|---|---|
+| `egress_bound` (default choice) | the secret is sent as-is on the wire: `Authorization: Bearer …`, `x-api-key`, API-key headers | a placeholder in `process.env.<NAME>` |
+| `reveal` (separately approved, rare) | the code must compute with the value: request signing (AWS SigV4, HMAC webhooks), non-HTTP protocols | the real value, delivered to that one worker over a sealed fd; `KARAKARA_REVEAL_FDS` maps `NAME` → fd number. Never in env, argv, or the invoke payload |
+
+With `reveal`, the plaintext is inside the VM, in one worker only. Prefer
+short-lived credentials (e.g. AWS STS) over long-lived keys.
+
+Caveats:
+
+- Header substitution applies to every request header. An API that echoes a
+  request header back would return the real value to the tool. Send the
+  placeholder only in the header the API expects.
+- The real value also exists on the host: in fnox, the runner's memory, and
+  today in microsandbox's local state (`$MSB_HOME`). Keep that directory on
+  memory-backed storage in deployments, and run the runner as its own OS user
+  when other agents share the machine.
 
 ### Trusted placement
 
