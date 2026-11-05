@@ -98,6 +98,7 @@ pub(crate) enum VmEvictReason {
     MaxLifetime,
     Unhealthy,
     Budget,
+    Released,
     Shutdown,
 }
 
@@ -108,6 +109,7 @@ impl VmEvictReason {
             Self::MaxLifetime => "max_lifetime",
             Self::Unhealthy => "unhealthy",
             Self::Budget => "budget",
+            Self::Released => "released",
             Self::Shutdown => "shutdown",
         }
     }

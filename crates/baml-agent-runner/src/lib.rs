@@ -1257,6 +1257,7 @@ globalThis.onChatMessage = async function(_message) {
             provenance: crate::agent_package::DeploymentProvenance::Ephemeral,
             lifecycle: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
             boot_event_id: baml_rt_core::ids::ActivityAnchorId::from("test-boot"),
+            tool_host: None,
         }
     }
 
@@ -2003,6 +2004,7 @@ globalThis.onChatMessage = async function(_message) {
             },
             lifecycle: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
             boot_event_id: baml_rt_core::ids::ActivityAnchorId::from("idempotent-boot"),
+            tool_host: None,
         };
         let pkg = AgentPackageName::parse("idempotent-agent").unwrap();
         let rk = AgentRouteKey::new(pkg);
@@ -2239,6 +2241,7 @@ globalThis.onChatMessage = async function(_message) {
             provenance: crate::agent_package::DeploymentProvenance::Ephemeral,
             lifecycle: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
             boot_event_id: baml_rt_core::ids::ActivityAnchorId::from("test-boot"),
+            tool_host: None,
         };
         let mut agents = std::collections::HashMap::new();
         agents.insert("other-agent".to_string(), make(agent1, "other-agent"));

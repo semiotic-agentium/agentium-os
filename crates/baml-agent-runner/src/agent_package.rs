@@ -88,11 +88,13 @@ struct SchemaLoaded {
 
 struct ToolsRegistered {
     runtime_manager: BamlRuntimeManager,
+    tool_host: Option<Arc<ToolHost>>,
 }
 
 pub(crate) struct JsInitialized {
     pub(crate) runtime_manager: Arc<tokio::sync::RwLock<BamlRuntimeManager>>,
     pub(crate) agent: A2aAgent,
+    pub(crate) tool_host: Option<Arc<ToolHost>>,
 }
 
 /// Inputs for [`AgentPackage::boot`], grouped to satisfy clippy `too_many_arguments`.
@@ -271,6 +273,7 @@ impl AgentPackage {
             .await?;
         }
         let mut bundled_v2_resolver = None;
+        let mut tool_host = None;
         if has_packaged_external_snapshots {
             let mut bundles = Vec::new();
             for snapshot in &packaged_snapshots {
@@ -288,6 +291,7 @@ impl AgentPackage {
             }
             if !bundles.is_empty() {
                 let host = build_v2_tool_host(agent_id, &bundles).await?;
+                tool_host = Some(host.clone());
                 bundled_v2_resolver =
                     Some(ExternalRegistryResolver::from_v2_bundles(host, bundles)?);
             }
@@ -363,7 +367,10 @@ impl AgentPackage {
             "manifest tools registered; building A2a runtime next"
         );
 
-        Ok(ToolsRegistered { runtime_manager })
+        Ok(ToolsRegistered {
+            runtime_manager,
+            tool_host,
+        })
     }
 
     async fn build_agent_phase(
@@ -374,19 +381,20 @@ impl AgentPackage {
     ) -> Result<JsInitialized> {
         use baml_rt_quickjs::QuickJSConfig;
 
-        registered
-            .runtime_manager
+        let ToolsRegistered {
+            mut runtime_manager,
+            tool_host,
+        } = registered;
+        runtime_manager
             .tool_registry()
             .set_config_resolver(Some(args.provenance_config.config_service()));
-        registered
-            .runtime_manager
+        runtime_manager
             .tool_registry()
             .set_secret_resolver(Some(Arc::new(
                 baml_rt_llm_config::SecretResolverToToolAdapter::new(
                     args.provenance_config.llm_secret_resolver(),
                 ),
             )));
-        let mut runtime_manager = registered.runtime_manager;
         runtime_manager.set_llm_secret_resolver(Arc::new(SecretResolverToLlmAdapter::new(
             args.provenance_config.llm_secret_resolver(),
         )));
@@ -489,6 +497,7 @@ impl AgentPackage {
         Ok(JsInitialized {
             runtime_manager: runtime_manager_arc,
             agent,
+            tool_host,
         })
     }
 
@@ -528,7 +537,12 @@ impl AgentPackage {
     pub(crate) async fn boot(
         &self,
         args: AgentPackageBootArgs<'_>,
-    ) -> Result<(A2aAgent, AgentId, baml_rt_core::ids::ActivityAnchorId)> {
+    ) -> Result<(
+        A2aAgent,
+        AgentId,
+        baml_rt_core::ids::ActivityAnchorId,
+        Option<Arc<ToolHost>>,
+    )> {
         async {
             info!(
                 agent = %self.manifest.name,
@@ -580,8 +594,11 @@ impl AgentPackage {
                 bridge_guard.register_progress_probe(args.runtime_progress.as_ref());
             }
             let initialized = self.initialize_js_phase(built).await?;
-            let agent = initialized.agent;
-            let runtime_manager_arc = initialized.runtime_manager;
+            let JsInitialized {
+                agent,
+                runtime_manager: runtime_manager_arc,
+                tool_host,
+            } = initialized;
 
             {
                 let manager = runtime_manager_arc.read().await;
@@ -611,7 +628,7 @@ impl AgentPackage {
                 info!(agent_id = %agent_id, "AgentBooted event written to provenance store");
             }
 
-            Ok((agent, agent_id, boot_event_id))
+            Ok((agent, agent_id, boot_event_id, tool_host))
         }
         .instrument(spans::load_agent_package(&self.extract_dir))
         .await
@@ -684,6 +701,8 @@ pub(crate) struct BootedAgent {
     pub(crate) provenance: DeploymentProvenance,
     pub(crate) lifecycle: Arc<AtomicU8>,
     pub(crate) boot_event_id: baml_rt_core::ids::ActivityAnchorId,
+    /// Host authority for releasing this agent's pooled tool VMs on undeploy.
+    pub(crate) tool_host: Option<Arc<ToolHost>>,
 }
 
 impl BootedAgent {

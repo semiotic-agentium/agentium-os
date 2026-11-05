@@ -166,7 +166,7 @@ Runner-wide tool VM pool ([`host/pool.rs`](../crates/baml-rt-tools/src/external_
 |-------------|------|---------|
 | `baml_rt_tools.tool_vm.active` | UpDownCounter | VMs currently in the pool, by `trust_domain` (`first-party`, `third-party`). Per-trust-domain usage. |
 | `baml_rt_tools.tool_vm.calls_inflight` | UpDownCounter | Calls currently holding a pooled VM. Host-side proxy for busy guest workers: the supervisor does not report its worker count. |
-| `baml_rt_tools.tool_vm.lifecycle.total` | Counter | VM lifecycle by `event` / `reason`: `created`/`cold_boot`, `create_failed`/`boot`, `evicted`/(`idle`, `max_lifetime`, `unhealthy`, `budget`, `shutdown`), `teardown_failed`/(same reasons), `swept`/`previous_run` (leftovers of this runner's previous run removed at start). |
+| `baml_rt_tools.tool_vm.lifecycle.total` | Counter | VM lifecycle by `event` / `reason`: `created`/`cold_boot`, `create_failed`/`boot`, `evicted`/(`idle`, `max_lifetime`, `unhealthy`, `budget`, `released`, `shutdown`), `teardown_failed`/(same reasons), `swept`/`previous_run` (leftovers of this runner's previous run removed at start). |
 | `baml_rt_tools.tool_vm.boot.duration_ms` | Histogram | VM create + supervisor handshake, by `result` (`ok`, `error`). |
 | `baml_rt_tools.tool_grant.denied.total` | Counter | Refused tool grants by `reason`: `audit`, `unauthorized_agent`, `capability_outside_policy`, `network`, `secret`, `timeout`. |
 | `baml_rt_tools.tool_call.cpu_ms` | Histogram | Per-call worker CPU time from the supervisor `usage` event. |

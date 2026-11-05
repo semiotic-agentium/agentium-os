@@ -230,6 +230,11 @@ impl ToolHost {
         outcome
     }
 
+    /// Release the VM references owned by an undeployed agent.
+    pub async fn release_agent(&self, agent_id: &str) -> Result<()> {
+        self.pool.release_agent(agent_id).await
+    }
+
     pub async fn shutdown(&self) -> Result<()> {
         self.pool.shutdown().await
     }

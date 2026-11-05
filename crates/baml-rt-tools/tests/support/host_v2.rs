@@ -262,6 +262,24 @@ pub fn build(
     pool_policy: PoolPolicy,
     memory_mib: u32,
 ) -> Fixture {
+    build_for_agents(
+        descriptor,
+        requested,
+        policy,
+        &[ctx],
+        pool_policy,
+        memory_mib,
+    )
+}
+
+pub fn build_for_agents(
+    descriptor: &baml_rt_tools::external_tools::UnifiedToolDescriptor,
+    requested: CapabilityRequest,
+    policy: ToolPolicy,
+    contexts: &[&ToolSessionContext],
+    pool_policy: PoolPolicy,
+    memory_mib: u32,
+) -> Fixture {
     let bytes = bundle(descriptor, requested.clone());
     let audited = baml_rt_tools::external_tools::audit_ktool_bundle(&bytes).unwrap();
     let snapshot = ExternalToolSnapshot::from_v2_bundle(
@@ -288,9 +306,12 @@ pub fn build(
         memory_mib,
         ..HostPolicy::default()
     };
-    host_policy
-        .tools
-        .insert((ctx.agent_id.to_string(), audited.tool_digest), policy);
+    for ctx in contexts {
+        host_policy.tools.insert(
+            (ctx.agent_id.to_string(), audited.tool_digest),
+            policy.clone(),
+        );
+    }
     Fixture {
         host: Arc::new(ToolHost::new(pool, host_policy, resolver()).unwrap()),
         snapshot,

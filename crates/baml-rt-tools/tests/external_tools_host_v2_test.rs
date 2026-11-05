@@ -185,6 +185,112 @@ async fn vm_is_reused_within_a_grant_class_and_split_on_secret_rotation() {
 }
 
 #[tokio::test]
+async fn undeploy_releases_shared_vm_after_the_last_agent() {
+    let requested = full_request();
+    let ctx_a = session_ctx("shared-secret");
+    let ctx_b = session_ctx("shared-secret");
+    let f = build_for_agents(
+        &descriptor(TOOL),
+        requested.clone(),
+        policy(requested),
+        &[&ctx_a, &ctx_b],
+        PoolPolicy::default(),
+        512,
+    );
+
+    invoke(&f, &ctx_a, json!({"agent": "a"})).await;
+    invoke(&f, &ctx_b, json!({"agent": "b"})).await;
+    assert_eq!(f.vm.created.load(Ordering::SeqCst), 1);
+
+    f.host
+        .release_agent(&ctx_a.agent_id.to_string())
+        .await
+        .unwrap();
+    assert_eq!(
+        f.vm.teardowns.load(Ordering::SeqCst),
+        0,
+        "a shared VM must survive while agent B remains deployed"
+    );
+
+    f.host
+        .release_agent(&ctx_b.agent_id.to_string())
+        .await
+        .unwrap();
+    assert_eq!(f.vm.teardowns.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn undeploy_does_not_touch_another_agents_vm() {
+    let requested = full_request();
+    let ctx_a = session_ctx("agent-a-secret");
+    let ctx_b = session_ctx("agent-b-secret");
+    let f = build_for_agents(
+        &descriptor(TOOL),
+        requested.clone(),
+        policy(requested),
+        &[&ctx_a, &ctx_b],
+        PoolPolicy::default(),
+        512,
+    );
+
+    invoke(&f, &ctx_a, json!({"agent": "a"})).await;
+    invoke(&f, &ctx_b, json!({"agent": "b"})).await;
+    assert_eq!(f.vm.created.load(Ordering::SeqCst), 2);
+
+    f.host
+        .release_agent(&ctx_a.agent_id.to_string())
+        .await
+        .unwrap();
+    assert_eq!(
+        f.vm.teardowns.load(Ordering::SeqCst),
+        1,
+        "undeploying A must only tear down A's grant-class VM"
+    );
+
+    f.host
+        .release_agent(&ctx_b.agent_id.to_string())
+        .await
+        .unwrap();
+    assert_eq!(f.vm.teardowns.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn releasing_during_a_call_waits_for_the_call_to_finish() {
+    let requested = net("api.example.com");
+    let (f, ctx) = fixture(requested.clone(), policy(requested), "s3cret");
+    let host = f.host.clone();
+    let snapshot = f.snapshot.clone();
+    let bytes = f.bytes.clone();
+    let call_ctx = ctx.clone();
+    let call = tokio::spawn(async move {
+        host.invoke(
+            &snapshot,
+            &bytes,
+            &call_ctx,
+            Default::default(),
+            json!({"q": "draining", "delay": 100}),
+        )
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(f.vm.created.load(Ordering::SeqCst), 1);
+
+    f.host
+        .release_agent(&ctx.agent_id.to_string())
+        .await
+        .unwrap();
+    assert_eq!(
+        f.vm.teardowns.load(Ordering::SeqCst),
+        0,
+        "an in-flight call must keep its VM alive"
+    );
+
+    call.await.unwrap().unwrap();
+    f.host.shutdown().await.unwrap();
+    assert_eq!(f.vm.teardowns.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn idle_vms_are_evicted_before_the_budget_is_exceeded() {
     let requested = full_request();
     let ctx = session_ctx("first");

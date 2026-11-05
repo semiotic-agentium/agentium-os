@@ -677,7 +677,7 @@ impl AgentRunner {
                     entries: self.discovery_entries(),
                 })
             };
-        let (agent, booted_agent_id, boot_event_id) = package
+        let (agent, booted_agent_id, boot_event_id, tool_host) = package
             .boot(AgentPackageBootArgs {
                 agent_id: agent_id.clone(),
                 artifact_hash: artifact_hash.clone(),
@@ -728,6 +728,7 @@ impl AgentRunner {
             },
             lifecycle: Arc::new(AtomicU8::new(0)),
             boot_event_id,
+            tool_host,
         };
         Ok((name, route_key, booted))
     }
@@ -1528,6 +1529,18 @@ impl DeploymentManager for AgentRunner {
         }
 
         tracing::info!(agent = %target_name, "undeploy: drain finished; removing from routing");
+
+        if let Some(tool_host) = &booted.tool_host
+            && let Err(error) = tool_host
+                .release_agent(&booted.agent.agent_id().to_string())
+                .await
+        {
+            tracing::warn!(
+                agent = %target_name,
+                error = %error,
+                "failed to release pooled tool VMs during undeploy"
+            );
+        }
 
         if let Err(error) = self
             .provenance_config

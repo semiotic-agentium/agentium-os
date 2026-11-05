@@ -5,7 +5,7 @@
 //! Runner-wide VM admission and idle LRU eviction. Busy VMs are never evicted.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -97,6 +97,8 @@ impl Drop for VmLease {
 #[derive(Default)]
 struct State {
     entries: HashMap<VmKey, Arc<Entry>>,
+    /// Deployed agent identities that currently use each pooled VM.
+    agent_refs: HashMap<VmKey, HashSet<String>>,
     closed: bool,
 }
 
@@ -196,10 +198,12 @@ impl VmPool {
             return Err(invalid("tool VM pool is shut down"));
         }
         let key = grant.key().clone();
+        let agent_id = grant.agent_id.clone();
         self.prune_locked(&mut state).await?;
-        if let Some(entry) = state.entries.get(&key) {
+        if let Some(entry) = state.entries.get(&key).cloned() {
             if entry.channel.healthy() && entry.created.elapsed() < self.policy.max_lifetime {
-                return Ok(VmLease::new(entry.clone()));
+                state.agent_refs.entry(key).or_default().insert(agent_id);
+                return Ok(VmLease::new(entry));
             }
             return Err(invalid("expired tool VM still has active calls"));
         }
@@ -274,7 +278,8 @@ impl VmPool {
             created: Instant::now(),
             last_used: Mutex::new(Instant::now()),
         });
-        state.entries.insert(key, entry.clone());
+        state.entries.insert(key.clone(), entry.clone());
+        state.agent_refs.entry(key).or_default().insert(agent_id);
         Ok(VmLease::new(entry))
     }
 
@@ -288,7 +293,39 @@ impl VmPool {
             }
         }
         if state.entries.remove(key).is_some() {
+            state.agent_refs.remove(key);
             metrics::record_tool_vm_evicted(key.trust_domain.as_str(), reason);
+        }
+        Ok(())
+    }
+
+    /// Release all VM references held by one deployed agent.
+    ///
+    /// A VM is torn down immediately when the agent was its last deployment
+    /// reference and no invocation still holds a lease. If a call is still
+    /// draining, the next prune tears the VM down after its lease is dropped.
+    pub async fn release_agent(&self, agent_id: &str) -> Result<()> {
+        let mut state = self.state.lock().await;
+        let keys: Vec<_> = state
+            .agent_refs
+            .iter_mut()
+            .filter_map(|(key, agents)| {
+                agents
+                    .remove(agent_id)
+                    .then_some((key.clone(), agents.is_empty()))
+            })
+            .filter_map(|(key, last_agent)| last_agent.then_some(key))
+            .collect();
+
+        for key in keys {
+            if state
+                .entries
+                .get(&key)
+                .is_some_and(|entry| Arc::strong_count(entry) == 1)
+            {
+                self.evict(&mut state, &key, VmEvictReason::Released)
+                    .await?;
+            }
         }
         Ok(())
     }
@@ -311,7 +348,13 @@ impl VmPool {
             .entries
             .iter()
             .filter(|(_, e)| Arc::strong_count(e) == 1)
-            .filter_map(|(k, e)| self.expiry(e).map(|reason| (k.clone(), reason)))
+            .filter_map(|(k, e)| {
+                if !state.agent_refs.contains_key(k) {
+                    Some((k.clone(), VmEvictReason::Released))
+                } else {
+                    self.expiry(e).map(|reason| (k.clone(), reason))
+                }
+            })
             .collect();
         for (key, reason) in expired {
             self.evict(state, &key, reason).await?;
