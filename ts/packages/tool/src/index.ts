@@ -47,24 +47,23 @@ export interface ToolSpec<
   output: O;
   sideEffect?: SideEffect;
   idempotent?: boolean;
-  /** Outbound destinations requested by this toolset, written as `host:port`. */
+  /** Outbound TCP destinations requested by this toolset, written as `host:port`. */
   net?: readonly string[];
   /** Named secret requests. Secret values never belong in source code. */
   secrets?: S;
-  errors?: readonly ToolErrorClass[];
 }
 
 export interface ToolContext<S extends SecretSpec = Record<never, never>> {
-  /** Fetch with a local preflight check against `spec.net`. The host enforces the same list. */
+  /** HTTP(S) fetch with declaration checks. The host owns network enforcement. */
   fetch(input: string | URL | Request, init?: RequestInit): Promise<Response>;
   /** Create a classified error for `throw ctx.error(...)`. */
-  error(errorClass: ToolErrorClass, message: string): ToolExecutionError;
-  /** Emit an MCP logging notification. */
+  error(errorClass: ToolErrorClass, message: string): Error;
+  /** Emit a structured tool log event. */
   log(
     level: "debug" | "info" | "notice" | "warning" | "error",
     message: string,
   ): Promise<void>;
-  /** Aborts when the host cancels the MCP invocation. */
+  /** Aborts when the host cancels the tool invocation. */
   readonly signal: AbortSignal;
   /** Egress placeholders or reveal values provided by the supervisor. */
   readonly secrets: Readonly<{ [K in keyof S]: string }>;
@@ -76,17 +75,7 @@ export type ToolHandler<
   S extends SecretSpec,
 > = (input: Static<I>, ctx: ToolContext<S>) => Promise<Static<O>> | Static<O>;
 
-export interface DefinedTool<
-  I extends TSchema,
-  O extends TSchema,
-  S extends SecretSpec,
-> {
-  readonly spec: ToolSpec<I, O, S>;
-  readonly server: Server;
-  readonly ready: Promise<void>;
-}
-
-export class ToolExecutionError extends Error {
+class ToolExecutionError extends Error {
   readonly errorClass: ToolErrorClass;
 
   constructor(errorClass: ToolErrorClass, message: string) {
@@ -102,19 +91,16 @@ interface ParsedTarget {
 }
 
 /**
- * Define and start one TypeBox-backed MCP stdio tool.
+ * Define one TypeBox-backed Karakara tool.
  *
- * The TypeBox schemas are returned by `tools/list`, so `karak tool build` can
- * derive the descriptor and toolset manifest without a second schema file.
+ * The SDK owns runtime startup and transport. Authors provide only the tool
+ * contract and business-logic handler.
  */
 export function defineTool<
   I extends TSchema,
   O extends TSchema,
   S extends SecretSpec = Record<never, never>,
->(
-  spec: ToolSpec<I, O, S>,
-  handler: ToolHandler<I, O, S>,
-): DefinedTool<I, O, S> {
+>(spec: ToolSpec<I, O, S>, handler: ToolHandler<I, O, S>): void {
   const { toolsetName, localName } = parseToolName(spec.name);
   const version = spec.version ?? "0.1.0";
   const description = spec.description ?? localName;
@@ -128,7 +114,7 @@ export function defineTool<
       binding: binding === "egress-bound" ? "egress_bound" : binding,
     })),
   };
-  const errorClasses = [...(spec.errors ?? ALL_ERROR_CLASSES)];
+  const errorClasses = [...ALL_ERROR_CLASSES];
   const server = new Server(
     { name: localName, version },
     { capabilities: { logging: {}, tools: {} } },
@@ -209,19 +195,10 @@ export function defineTool<
     }
   });
 
-  const ready = server.connect(new StdioServerTransport());
-  ready.catch((error: unknown) => {
+  server.connect(new StdioServerTransport()).catch((error: unknown) => {
     console.error(`@karakara/tool failed to start: ${errorMessage(error)}`);
     process.exitCode = 1;
   });
-  return { spec, server, ready };
-}
-
-/** Wait for the stdio server started by `defineTool`. */
-export async function serve(
-  tool: DefinedTool<TSchema, TSchema, SecretSpec>,
-): Promise<void> {
-  await tool.ready;
 }
 
 function createContext<S extends SecretSpec>(
@@ -251,21 +228,16 @@ function createContext<S extends SecretSpec>(
       await server.sendLoggingMessage({ level, data: message });
     },
     fetch: async (input, init = {}) => {
-      const url = requestUrl(input);
-      const port = url.port
-        ? Number(url.port)
-        : url.protocol === "https:"
-          ? 443
-          : 80;
-      const destination = `${url.hostname.toLowerCase()}:${port}`;
-      if (!allowed.has(destination)) {
-        throw new ToolExecutionError(
-          "permission",
-          `network destination '${destination}' is not declared in this tool's net list`,
-        );
-      }
+      assertFetchDestination(requestUrl(input), allowed);
       const requestSignal = combineSignals(signal, init.signal);
-      return globalThis.fetch(input, { ...init, signal: requestSignal });
+      const response = await globalThis.fetch(input, {
+        ...init,
+        signal: requestSignal,
+      });
+      if (response.url) {
+        assertFetchDestination(new URL(response.url), allowed);
+      }
+      return response;
     },
   };
 }
@@ -330,6 +302,27 @@ function requestUrl(input: string | URL | Request): URL {
   if (input instanceof URL) return input;
   if (typeof input === "string") return new URL(input);
   return new URL(input.url);
+}
+
+function assertFetchDestination(url: URL, allowed: ReadonlySet<string>): void {
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new ToolExecutionError(
+      "permission",
+      `ctx.fetch supports HTTP and HTTPS, not '${url.protocol}'`,
+    );
+  }
+  const port = url.port
+    ? Number(url.port)
+    : url.protocol === "https:"
+      ? 443
+      : 80;
+  const destination = `${url.hostname.toLowerCase()}:${port}`;
+  if (!allowed.has(destination)) {
+    throw new ToolExecutionError(
+      "permission",
+      `network destination '${destination}' is not declared in this tool's net list`,
+    );
+  }
 }
 
 function validationMessage(schema: TSchema, value: unknown): string {

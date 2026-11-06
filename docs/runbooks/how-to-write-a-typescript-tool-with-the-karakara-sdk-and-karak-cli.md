@@ -100,7 +100,9 @@ export default defineTool(
 TypeScript infers `input` and the handler return type from the TypeBox schemas.
 You do not write a separate JSON Schema, MCP registration, or manifest.
 
-`defineTool` starts the MCP stdio server automatically.
+`defineTool` starts the worker automatically. MCP transport and lifecycle are
+internal SDK details; the authoring API exposes only the tool contract and
+handler context.
 
 ## 3. Build it
 
@@ -120,7 +122,8 @@ tool.lock.json
 
 `tools.json` contains the TypeBox-derived input and output schemas.
 `tool-manifest.json` contains the toolset name, version, descriptor digest,
-command, and requested network access.
+command, and requested network access. Omit `net` when the tool needs no
+external network; the resulting Sandbox worker has no external egress.
 
 For example:
 

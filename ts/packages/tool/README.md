@@ -47,14 +47,29 @@ export default defineTool(
 );
 ```
 
-`defineTool` starts an ordinary MCP stdio server. The Karakara supervisor still
-uses MCP as its worker protocol, so tools written with the official MCP SDK
-remain valid.
+`defineTool` owns runtime startup and transport. It does not expose an MCP
+server, connection lifecycle, or transport objects. Authors define the contract
+and handler; Karakara handles the rest. Plain MCP servers remain compatible as
+a separate, lower-level authoring path.
 
 The SDK validates input before calling the handler and validates output before
-returning it. `ctx.fetch` rejects destinations missing from `net`; the Sandbox
-host independently enforces the generated network request. Use `ctx.error` to
-classify failures and `ctx.signal` for cancellable work.
+returning it. Use `ctx.error` to classify failures and `ctx.signal` for
+cancellable work.
+
+## Network access
+
+Omit `net` for tools that do not need the network. Their Sandbox workers receive
+no external egress.
+
+`net` requests outbound TCP destinations as `host:port`. The Sandbox host owns
+and enforces those grants. `ctx.fetch` is the HTTP and HTTPS helper: it checks
+the initial and final destination against `net` for fast feedback, while the
+host remains the security boundary for redirects and every connection.
+
+The host grant is not limited to HTTP. Future capability-aware helpers can use
+the same destination model for protocols such as gRPC. Long-lived consumers,
+such as Kafka subscriptions, belong in the Service tier rather than a
+request/response Sandbox tool.
 
 ## Build
 

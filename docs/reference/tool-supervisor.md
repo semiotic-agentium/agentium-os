@@ -80,8 +80,8 @@ surface kills the worker.
 
 ## Calls
 
-One warm worker per tool digest serves many invokes. The SDK `serve()` loop is
-sequential, so calls on one worker are serialized.
+One warm worker per tool digest serves many invokes. The SDK owns the worker's
+MCP request loop internally; tool authors cannot access its server or transport.
 
 - Deadline: the supervisor takes `min(host deadline, host cap)` and kills the
   worker process group when it expires. A killed warm worker is dropped.

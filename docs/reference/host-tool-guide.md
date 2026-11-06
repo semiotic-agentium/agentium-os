@@ -131,9 +131,10 @@ export default defineTool(
 );
 ```
 
-The SDK returns an ordinary MCP stdio server. A plain server built with the
-official MCP SDK is still valid, but it must declare toolset metadata and
-capabilities in `karakara.toml`.
+The SDK owns its MCP stdio worker internally; tool authors do not receive a
+server, transport, or connection lifecycle. A plain server built with the
+official MCP SDK is still valid as a lower-level path, but it must declare
+toolset metadata and capabilities in `karakara.toml`.
 
 ```bash
 karak tool new --lang ts weather --bundle support
@@ -142,11 +143,25 @@ karak tool test ./weather --input '{"query":"refunds"}'
 karak tool publish ./weather
 ```
 
-`karak tool build` asks the server for `tools/list`. For SDK tools it derives
-`tools.json` and `tool-manifest.json` from the TypeBox schemas and `defineTool`
-spec. Standard MCP annotations still map to Karakara semantics for plain MCP
-servers: `readOnlyHint` means Read, `destructiveHint` means Irreversible, and
-`idempotentHint` controls retry safety.
+`karak tool build` asks the internal worker for `tools/list`. For SDK tools it
+derives `tools.json` and `tool-manifest.json` from the TypeBox schemas and
+`defineTool` spec. Standard MCP annotations still map to Karakara semantics for
+plain MCP servers: `readOnlyHint` means Read, `destructiveHint` means
+Irreversible, and `idempotentHint` controls retry safety.
+
+### Network access
+
+Omitting `net` requests no external network access and gives the Sandbox worker
+a loopback-only network namespace. `net` entries are outbound TCP destinations
+written as `host:port`; the host compiles and enforces the approved grant.
+
+`ctx.fetch` is an HTTP and HTTPS convenience API, not the platform's network
+boundary. It checks declared destinations for early feedback, while the host
+applies policy to every connection, including redirects. The underlying grant
+model can support other TCP protocols later. A supported gRPC path needs its
+own capability-aware SDK API for cancellation, TLS, metadata, and secrets.
+Long-lived consumers such as Kafka subscriptions belong in the Service tier;
+they do not fit a deadline-bound Sandbox function invocation.
 
 ### Secrets: how a key reaches your tool code
 
