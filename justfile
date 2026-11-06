@@ -7,7 +7,6 @@ set dotenv-load
 
 provenance_db := "provenance.db"
 # Separate SurrealKV store dirs (provenance + sibling config.db) so this stack can run alongside another runner using `provenance.db`.
-provenance_coordinator_claude_notion_db := "coordinator-claude-notion-provenance.db"
 # Default HTTP bind for `just` recipes. Port 8080 is a frequent conflict (e.g. inference gateways that 503
 # every route until a huge model loads). To use 8080, change the assignment below to `127.0.0.1:8080`.
 runner_http_bind := "127.0.0.1:18080"
@@ -466,7 +465,7 @@ coordinator-agent-debug: build-debug
     exec {{karak_debug_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
 
 
-# Same as coordinator-agent stack, but adds claude-session + workspace coordinator-agent publish and persists provenance.
+# Same as coordinator-agent, but persists provenance to provenance.db.
 coordinator-agent-provenance: build-release
     #!/usr/bin/env bash
     set -euo pipefail
@@ -479,35 +478,6 @@ coordinator-agent-provenance: build-release
       {{karak_bin}} install agent --path agents/coordinator-agent --repository-url {{repository_url}} --url {{runner_base_url}}
       {{karak_bin}} install agent --path agents/notion-agent --repository-url {{repository_url}} --url {{runner_base_url}}
       {{karak_bin}} install agent --path agents/clickup-agent --repository-url {{repository_url}} --url {{runner_base_url}}
-      {{karak_bin}} install agent --path agents/claude-session-demo --repository-url {{repository_url}} --url {{runner_base_url}}
-    ) &
-    exec {{karak_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
-
-# Rebuilds claude-session-agent and runs it via a2a stdio.
-claude-session-agent: build-release
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "$(git rev-parse --show-toplevel)"
-    set -a
-    [ -f .env ] && . ./.env
-    set +a
-    (
-      ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-      {{karak_bin}} install agent --path agents/claude-session-demo --repository-url {{repository_url}} --url {{runner_base_url}}
-    ) &
-    exec {{karak_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
-
-# Same as claude-session-agent, but persists provenance to provenance.db.
-claude-session-agent-provenance: build-release
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "$(git rev-parse --show-toplevel)"
-    set -a
-    [ -f .env ] && . ./.env
-    set +a
-    (
-      ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-      {{karak_bin}} install agent --path agents/claude-session-demo --repository-url {{repository_url}} --url {{runner_base_url}}
     ) &
     exec {{karak_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
 
@@ -527,23 +497,6 @@ coordinator-notion: web-build build-release
     {{karak_bin}} install agent --path agents/notion-agent --repository-url {{repository_url}} --url {{runner_base_url}}
     wait "$runner_pid"
 
-# Coordinator-agent + Claude session + Notion, HTTP + provenance + web UI.
-coordinator-claude-notion: web-build build-release
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd "$(git rev-parse --show-toplevel)"
-    set -a
-    [ -f .env ] && . ./.env
-    set +a
-    {{karak_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_coordinator_claude_notion_db}} --web-dir web/dist &
-    runner_pid=$!
-    trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
-    ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
-    {{karak_bin}} install agent --path agents/coordinator-agent --repository-url {{repository_url}} --url {{runner_base_url}}
-    {{karak_bin}} install agent --path agents/claude-session-demo --repository-url {{repository_url}} --url {{runner_base_url}}
-    {{karak_bin}} install agent --path agents/notion-agent --repository-url {{repository_url}} --url {{runner_base_url}}
-    wait "$runner_pid"
-
 # Full local dev stack: all primary dev agent packages, web UI, provenance.
 # HTTP only (no --a2a-stdio) so the server stays up without a stdio client.
 dev-all-agents: web-build build-release
@@ -559,15 +512,14 @@ dev-all-agents: web-build build-release
     ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
     {{karak_bin}} install agent --path agents/coordinator-agent --repository-url {{repository_url}} --url {{runner_base_url}}
     {{karak_bin}} install agent --path tests/fixtures/agents/security-eval-agent --repository-url {{repository_url}} --url {{runner_base_url}}
-    {{karak_bin}} install agent --path agents/claude-session-demo --repository-url {{repository_url}} --url {{runner_base_url}}
     {{karak_bin}} install agent --path agents/clickup-agent --repository-url {{repository_url}} --url {{runner_base_url}}
     {{karak_bin}} install agent --path agents/extrospection-agent --repository-url {{repository_url}} --url {{runner_base_url}}
     {{karak_bin}} install agent --path agents/notion-agent --repository-url {{repository_url}} --url {{runner_base_url}}
     {{karak_bin}} install agent --path agents/slack-agent --repository-url {{repository_url}} --url {{runner_base_url}}
     wait "$runner_pid"
 
-# Rebuilds coordinator-agent + claude-session + extrospection + clickup + security-eval and runs them with provenance (HTTP only, no stdio).
-coordinator-claude-extrospection-clickup: build-release
+# Rebuilds coordinator-agent + extrospection + clickup + security-eval and runs them with provenance (HTTP only, no stdio).
+coordinator-extrospection-clickup: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
@@ -579,14 +531,13 @@ coordinator-claude-extrospection-clickup: build-release
     trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
     ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
     {{karak_bin}} install agent --path agents/coordinator-agent --repository-url {{repository_url}} --url {{runner_base_url}}
-    {{karak_bin}} install agent --path agents/claude-session-demo --repository-url {{repository_url}} --url {{runner_base_url}}
     {{karak_bin}} install agent --path agents/extrospection-agent --repository-url {{repository_url}} --url {{runner_base_url}}
     {{karak_bin}} install agent --path agents/clickup-agent --repository-url {{repository_url}} --url {{runner_base_url}}
     {{karak_bin}} install agent --path tests/fixtures/agents/security-eval-agent --repository-url {{repository_url}} --url {{runner_base_url}}
     wait "$runner_pid"
 
-# Rebuilds coordinator-agent + claude-session + extrospection + security-eval and runs them via a2a stdio.
-coordinator-claude-extrospection: build-release
+# Rebuilds coordinator-agent + extrospection + security-eval and runs them via a2a stdio.
+coordinator-extrospection: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
@@ -596,14 +547,13 @@ coordinator-claude-extrospection: build-release
     (
       ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
       {{karak_bin}} install agent --path agents/coordinator-agent --repository-url {{repository_url}} --url {{runner_base_url}}
-      {{karak_bin}} install agent --path agents/claude-session-demo --repository-url {{repository_url}} --url {{runner_base_url}}
       {{karak_bin}} install agent --path agents/extrospection-agent --repository-url {{repository_url}} --url {{runner_base_url}}
       {{karak_bin}} install agent --path tests/fixtures/agents/security-eval-agent --repository-url {{repository_url}} --url {{runner_base_url}}
     ) &
     exec {{karak_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --a2a-stdio
 
-# Same as coordinator-claude-extrospection, but persists provenance to provenance.db.
-coordinator-claude-extrospection-provenance: build-release
+# Same as coordinator-extrospection, but persists provenance to provenance.db.
+coordinator-extrospection-provenance: build-release
     #!/usr/bin/env bash
     set -euo pipefail
     cd "$(git rev-parse --show-toplevel)"
@@ -613,18 +563,13 @@ coordinator-claude-extrospection-provenance: build-release
     (
       ./scripts/wait-runner-http.sh "{{runner_base_url}}" {{runner_http_ready_secs}}
       {{karak_bin}} install agent --path agents/coordinator-agent --repository-url {{repository_url}} --url {{runner_base_url}}
-      {{karak_bin}} install agent --path agents/claude-session-demo --repository-url {{repository_url}} --url {{runner_base_url}}
       {{karak_bin}} install agent --path agents/extrospection-agent --repository-url {{repository_url}} --url {{runner_base_url}}
       {{karak_bin}} install agent --path tests/fixtures/agents/security-eval-agent --repository-url {{repository_url}} --url {{runner_base_url}}
     ) &
     exec {{karak_bin}} serve --serve-http {{runner_http_bind}} --repository-url {{repository_url}} --state-dir {{runner_state_dir}} --repository-dir {{runner_repository_dir}} --provenance-db {{provenance_db}} --a2a-stdio
 
-# Deprecated names: these stacks publish `agents/coordinator-agent`, not the removed persona fixture.
+# Deprecated names: these stacks publish `agents/coordinator-agent`.
 alias persona-notion := coordinator-notion
-alias persona-claude-notion := coordinator-claude-notion
-alias persona-claude-extrospection-clickup := coordinator-claude-extrospection-clickup
-alias persona-claude-extrospection := coordinator-claude-extrospection
-alias persona-claude-extrospection-provenance := coordinator-claude-extrospection-provenance
 
 # Runs the HTTP Notion demo script (starts runner if needed and streams one request).
 notion-demo:
