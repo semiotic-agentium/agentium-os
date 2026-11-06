@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 Semiotic AI, Inc.
+// SPDX-FileCopyrightText: 2026 Karakara Labs
 // SPDX-License-Identifier: Apache-2.0
 
 //! End-to-end for the TypeScript authoring loop: TypeBox descriptor generation,

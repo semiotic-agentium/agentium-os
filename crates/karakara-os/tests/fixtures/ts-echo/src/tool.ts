@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Karakara Labs
+//
+// SPDX-License-Identifier: Apache-2.0
+
 import { defineTool, Type } from "@karakara/tool";
 
 const Input = Type.Object({
