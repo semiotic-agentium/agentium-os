@@ -68,7 +68,6 @@ impl McpSecretResolver for LlmSecretResolverToMcpAdapter {
         std::env::var(name).ok()
     }
 }
-use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
 use baml_tools_system::SystemBundle;
 use serde_json::Value;
 use tracing::{Instrument, error, info, warn};
@@ -115,7 +114,6 @@ pub(crate) struct AgentPackageBootArgs<'a> {
     pub(crate) agent_list_catalogue: Arc<dyn AgentLister>,
     pub(crate) a2a_handler: Arc<dyn A2aRequestHandler>,
     pub(crate) stream_idle_secs: Option<u64>,
-    pub(crate) claude_workspaces_base: Option<&'a Path>,
     /// Meter to register the agent's JS-event-loop progress probe with.
     pub(crate) runtime_progress: Arc<RuntimeProgressMeter>,
     pub(crate) observation_notify:
@@ -165,7 +163,6 @@ impl AgentPackage {
         agent_list_catalogue: Arc<dyn AgentLister>,
         a2a_handler: Arc<dyn A2aRequestHandler>,
         provenance_store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
-        claude_workspaces_base: Option<&std::path::Path>,
         llm_secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver>,
     ) -> Result<ToolsRegistered> {
         let mut runtime_manager = loaded.runtime_manager;
@@ -174,36 +171,13 @@ impl AgentPackage {
         let tool_registry = runtime_manager.tool_registry();
 
         // --- Build registrars with pre-injected dependencies ---
-        let claude_workspace_root = match claude_workspaces_base {
-            Some(base) => {
-                info!(
-                    base = %base.display(),
-                    "Claude workspaces root from --claude-workspaces-base (persistent)",
-                );
-                base.to_path_buf()
-            }
-            None => {
-                let fallback = self.extract_dir.join(".claude-workspaces");
-                info!(
-                    base = %fallback.display(),
-                    "Claude workspaces root under extract dir (no --claude-workspaces-base).",
-                );
-                fallback
-            }
-        };
-
         #[allow(unused_mut)] // mut needed only when `memory` feature adds to vec
-        let mut registrars: Vec<Box<dyn BundleRegistrar>> = vec![
-            Box::new(SystemBundleRegistrar {
-                agent_list_catalogue,
-                tool_registry: tool_registry.clone(),
-                a2a_handler,
-                provenance_query: provenance_store.clone(),
-            }),
-            Box::new(ClaudeBundleRegistrar {
-                workspace_root: claude_workspace_root,
-            }),
-        ];
+        let mut registrars: Vec<Box<dyn BundleRegistrar>> = vec![Box::new(SystemBundleRegistrar {
+            agent_list_catalogue,
+            tool_registry: tool_registry.clone(),
+            a2a_handler,
+            provenance_query: provenance_store.clone(),
+        })];
 
         #[cfg(feature = "memory")]
         registrars.push(Box::new(MemoryBundleRegistrar {
@@ -577,7 +551,6 @@ impl AgentPackage {
                     Arc::clone(&args.agent_list_catalogue),
                     Arc::clone(&args.a2a_handler),
                     args.provenance_config.store().clone(),
-                    args.claude_workspaces_base,
                     args.provenance_config.llm_secret_resolver(),
                 )
                 .await?;
@@ -1284,27 +1257,6 @@ impl BundleRegistrar for SystemBundleRegistrar {
             self.a2a_handler.clone(),
             self.provenance_query.clone(),
         ))
-    }
-}
-
-/// Registrar for Claude session tools (code workspace management).
-struct ClaudeBundleRegistrar {
-    workspace_root: PathBuf,
-}
-
-impl BundleRegistrar for ClaudeBundleRegistrar {
-    fn name(&self) -> &str {
-        "claude"
-    }
-
-    fn should_register(&self, _manifest_tools: &[String]) -> bool {
-        true // claude session tools always register
-    }
-
-    fn register(&self, registry: &ToolRegistry) -> Result<()> {
-        registry.register_bundle(ClaudeSessionBundle::new(Arc::new(
-            AgentWorkspaceRegistry::new(self.workspace_root.clone()),
-        )))
     }
 }
 

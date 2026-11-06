@@ -1097,8 +1097,8 @@ fn emit_node(
 /// 1. **WAS_RECEIVED_BY**: `MessageProcessing --WAS_RECEIVED_BY--> Message` — another agent's
 ///    activity received it. Use that agent as recipient.
 /// 2. **WAS_CONSUMED_BY**: `ToolCall --WAS_CONSUMED_BY--> Message` — a tool consumed it as input.
-///    Use the tool name as recipient (e.g. claude_dev, not User).
-/// 3. **Delegation fallback**: If the sender is a delegation target (e.g. claude_session_demo
+///    Use the tool name as recipient (e.g. a tool participant, not User).
+/// 3. **Delegation fallback**: If the sender is a delegation target (e.g. a delegated worker
 ///    emitting Requirements/Plan), the invoking agent (who called internal_a2a) is the recipient.
 /// 4. Otherwise we assume the message goes to the User.
 fn resolve_message_recipient(
@@ -1126,7 +1126,7 @@ fn resolve_message_recipient(
                 return Some(recipient);
             }
         } else if edge_relation_matches(&edge.relation, semantic_labels::WAS_CONSUMED_BY) {
-            // ToolCall consumed this message (e.g. prompt to claude_dev). Recipient is the tool.
+            // ToolCall consumed this message (e.g. prompt to a tool). Recipient is the tool.
             let tool_call_id = edge.from.as_str();
             if let Some(tool_node) = indices.nodes_by_id.get(tool_call_id)
                 && let Some(tool_name) = prop_str(tool_node, a2a::TOOL_NAME)
@@ -2531,7 +2531,7 @@ mod tests {
     #[test]
     fn delegation_shows_coordinator_as_sender_and_recipient_not_user() {
         let coordinator = "coordinator_agent_1_0_0";
-        let worker = "claude_session_demo_1_0_0";
+        let worker = "worker_agent_1_0_0";
         let mut edges = vec![
             // Coordinator receives initial user message
             edge("mp1", EDGE_WAS_RECEIVED_BY, "m1"),
@@ -2567,7 +2567,7 @@ mod tests {
                 ),
                 msg_node("m3", "assistant", "--- Plan --- Requirements: ...", Some(5)),
                 tool_node("tc1", "system/internal_a2a", 450, Some(2)),
-                args_node("args1", r#"{"target":"claude_session_demo"}"#),
+                args_node("args1", r#"{"target":"worker_agent"}"#),
                 delegation_target_node("dt1", worker),
             ],
             edges,

@@ -699,7 +699,7 @@ impl A2aAgent {
         if stream_in_flight {
             return true;
         }
-        // Also check for open host tool sessions (e.g. claude, slack).
+        // Also check for open host tool sessions (e.g. system or integration tools).
         let runtime = self.runtime.read().await;
         runtime.has_any_open_tool_sessions()
     }

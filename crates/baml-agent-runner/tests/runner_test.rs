@@ -1334,7 +1334,7 @@ async fn test_e2e_stream_baml_tool() {
 ///
 /// **Regression test for resume (L4-Resume) bug:** Chapman's second turn sends a follow-up
 /// with the same context_id; the handler runs BAML (`ArgumentReply`) on resume. That exercises
-/// the same path as "hi twice" in claude-session-demo: deliver_resume_input → brief eval →
+/// the same path as the multi-turn resume flow: deliver_resume_input → brief eval →
 /// poll_promise_until_result. If the JS continuation that calls `__set_eval_result` never runs
 /// on the event loop we advance, the poll hits the cap and the test fails. See
 /// crates/baml-rt-quickjs/docs/QUICKJS_BRIDGE_LIVENESS_INVARIANTS.md (L4-Resume).

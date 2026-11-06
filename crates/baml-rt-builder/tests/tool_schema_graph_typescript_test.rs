@@ -16,7 +16,6 @@ use baml_rt_builder::builder::tool_schema_graph::{
 use baml_rt_tools::{
     OpaqueJson, ToolBackend, ToolOrigin, tool_schema::json_schema_value, tools::ToolName,
 };
-use baml_rt_tools_claude::tools::ClaudeUserContentBlockDto;
 use baml_tools_system::metadata::system_callback_metadata;
 use serde_json::{Value, json};
 
@@ -67,7 +66,15 @@ fn tool_schema_graph_typescript_surface() {
 }
 
 fn representative_tool() -> baml_rt_tools::tools::ToolFunctionMetadata {
-    let claude_content_block = json_schema_value::<ClaudeUserContentBlockDto>();
+    let content_block = json!({
+        "type": "object",
+        "properties": {
+            "kind": { "type": "string" },
+            "text": { "type": "string" }
+        },
+        "required": ["kind", "text"],
+        "additionalProperties": false
+    });
     let opaque_json = json_schema_value::<OpaqueJson>();
     let representative_schema = json!({
         "type": "object",
@@ -79,8 +86,8 @@ fn representative_tool() -> baml_rt_tools::tools::ToolFunctionMetadata {
             "addresses": { "type": "array", "items": { "$ref": "#/$defs/Address" } },
             "content": {
                 "oneOf": [
-                    claude_content_block.clone(),
-                    { "type": "array", "items": claude_content_block }
+                    content_block.clone(),
+                    { "type": "array", "items": content_block }
                 ]
             },
             "opaque_payload": opaque_json

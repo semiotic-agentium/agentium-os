@@ -37,7 +37,6 @@
 // macro to work when binaries only depend on baml-tool-links.
 
 // Unconditional re-exports (core platform tools - always linked)
-pub use baml_rt_tools_claude;
 pub use baml_tools_calculator;
 // Feature-gated re-exports (integration tools)
 #[cfg(feature = "clickup")]
@@ -105,8 +104,6 @@ macro_rules! force_link_all_tools {
         use $crate::baml_tools_slack_notify as _;
         #[cfg(feature = "typesafe")]
         use $crate::baml_tools_typesafe as _;
-        use $crate::{
-            baml_rt_tools_claude as _, baml_tools_calculator as _, baml_tools_system as _,
-        };
+        use $crate::{baml_tools_calculator as _, baml_tools_system as _};
     };
 }

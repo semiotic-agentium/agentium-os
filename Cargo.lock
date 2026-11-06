@@ -1531,7 +1531,6 @@ dependencies = [
  "baml-rt-repository",
  "baml-rt-router",
  "baml-rt-tools",
- "baml-rt-tools-claude",
  "baml-tools-calculator",
  "baml-tools-clickup",
  "baml-tools-github",
@@ -1839,7 +1838,6 @@ dependencies = [
  "baml-rt-quickjs",
  "baml-rt-repository",
  "baml-rt-tools",
- "baml-rt-tools-claude",
  "baml-runtime",
  "baml-tools-calculator",
  "baml-tools-clickup",
@@ -2226,26 +2224,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "baml-rt-tools-claude"
-version = "0.1.0"
-dependencies = [
- "async-channel 2.5.0",
- "async-trait",
- "baml-derive 0.1.0",
- "baml-derive-core",
- "baml-rt-core",
- "baml-rt-tools",
- "claude-agent-sdk-rs",
- "futures-util",
- "inventory",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "baml-rt-vocabulary"
 version = "0.1.0"
 dependencies = [
@@ -2399,7 +2377,6 @@ dependencies = [
 name = "baml-tool-links"
 version = "0.1.0"
 dependencies = [
- "baml-rt-tools-claude",
  "baml-tools-calculator",
  "baml-tools-clickup",
  "baml-tools-github",
@@ -3510,30 +3487,6 @@ name = "clap_lex"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
-
-[[package]]
-name = "claude-agent-sdk-rs"
-version = "0.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b07aee643e9d8f0837ffdb0141e7a902fbc1ea1b40f6ce68bf530f4135b4fc81"
-dependencies = [
- "anyhow",
- "async-stream",
- "async-trait",
- "dashmap 6.1.0",
- "flume 0.12.0",
- "futures",
- "paste",
- "path-absolutize",
- "pin-project",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "typed-builder",
- "uuid",
-]
 
 [[package]]
 name = "clipboard-win"
@@ -4838,9 +4791,6 @@ name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
-dependencies = [
- "getrandom 0.2.17",
-]
 
 [[package]]
 name = "fd-lock"
@@ -4996,7 +4946,6 @@ version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
 dependencies = [
- "fastrand 2.3.0",
  "futures-core",
  "futures-sink",
  "spin",
@@ -9611,28 +9560,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
-name = "path-absolutize"
-version = "3.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4af381fe79fa195b4909485d99f73a80792331df0625188e707854f0b3383f5"
-dependencies = [
- "path-dedot",
-]
-
-[[package]]
 name = "path-clean"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "17359afc20d7ab31fdb42bb844c8b3bb1dabd7dcf7e68428492da7f16966fcef"
-
-[[package]]
-name = "path-dedot"
-version = "3.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07ba0ad7e047712414213ff67533e6dd477af0a4e1d14fb52343e53d30ea9397"
-dependencies = [
- "once_cell",
-]
 
 [[package]]
 name = "pbkdf2"
@@ -14041,26 +13972,6 @@ name = "typed-arena"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6af6ae20167a9ece4bcb41af5b80f8a1f1df981f6391189ce00fd257af04126a"
-
-[[package]]
-name = "typed-builder"
-version = "0.23.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31aa81521b70f94402501d848ccc0ecaa8f93c8eb6999eb9747e72287757ffda"
-dependencies = [
- "typed-builder-macro",
-]
-
-[[package]]
-name = "typed-builder-macro"
-version = "0.23.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "076a02dc54dd46795c2e9c8282ed40bcfb1e22747e955de9389a1de28190fb26"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
 
 [[package]]
 name = "typed-path"

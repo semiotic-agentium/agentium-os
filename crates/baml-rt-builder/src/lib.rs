@@ -11,7 +11,6 @@ pub mod static_tool_registry;
 
 use std::path::Path;
 
-use baml_rt_tools_claude as _;
 #[cfg(feature = "clickup")]
 use baml_tools_clickup as _;
 #[cfg(feature = "memory")]

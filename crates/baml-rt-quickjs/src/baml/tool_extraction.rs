@@ -637,7 +637,6 @@ mod tests {
             v in prop_oneof![
                 polymorphic_open_step("support/calculate"),
                 polymorphic_open_step("system/internal_a2a"),
-                polymorphic_open_step("claude/dev"),
             ]
         ) {
             let plan = extract_tool_session_plan(&v).unwrap().expect("plan");

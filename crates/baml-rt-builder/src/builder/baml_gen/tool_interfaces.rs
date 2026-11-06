@@ -100,7 +100,6 @@ pub fn render_baml_tool_interfaces_with_static_catalog(
     // Force link so inventory sees these metadata registrations (regen_fixtures + builder).
     #[cfg(feature = "dev-tools")]
     let _ = baml_tools_calculator::support_calculate_metadata;
-    let _ = baml_rt_tools_claude::metadata::claude_dev_metadata;
     let _ = baml_tools_system::metadata::system_internal_a2a_metadata;
     #[cfg(feature = "clickup")]
     let _ = baml_tools_clickup::ClickUpTool::new;
@@ -196,17 +195,15 @@ fn generate_tool_baml_interface(
         .unwrap_or_default();
 
     let tool_name = tool.name.to_string();
-    let is_claude_or_a2a = tool_name.starts_with("claude/")
-        || tool_name.contains("/a2a")
-        || tool_name.contains("_a2a");
+    let is_a2a = tool_name.contains("/a2a") || tool_name.contains("_a2a");
 
-    let send_input_desc = if is_claude_or_a2a {
+    let send_input_desc = if is_a2a {
         "Conversational message payload. Set text to a non-empty string. Never null, never omit text."
     } else {
         "Payload for this step."
     };
-    let step_desc = if is_claude_or_a2a {
-        prompt_copy::STEP_DESC_CLAUDE_OR_A2A
+    let step_desc = if is_a2a {
+        prompt_copy::STEP_DESC_A2A
     } else {
         prompt_copy::STEP_DESC_DEFAULT
     };

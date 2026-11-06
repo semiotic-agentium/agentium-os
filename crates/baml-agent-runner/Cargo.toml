@@ -28,7 +28,6 @@ baml-rt-provenance = { path = "../baml-rt-provenance" }
 baml-rt-karakara = { path = "../baml-rt-karakara" }
 baml-rt-repository = { path = "../baml-rt-repository" }
 baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
-baml-rt-tools-claude = { path = "../tools/claude" }
 baml-rt-mcp = { path = "../baml-rt-mcp" }
 baml-tools-system = { path = "../tools/system" }
 baml-tools-calculator = { path = "../tools/calculator", optional = true }

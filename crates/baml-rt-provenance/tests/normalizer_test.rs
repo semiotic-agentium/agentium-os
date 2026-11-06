@@ -220,7 +220,7 @@ fn normalize_tool_call_completed_with_delegation_target_creates_was_delegated_to
         }),
         100,
         Outcome::Success,
-        Some("claude-session-demo".to_string()),
+        Some("worker-agent".to_string()),
     );
     let normalized = normalize_event(&event).expect("normalize tool call with delegation target");
 

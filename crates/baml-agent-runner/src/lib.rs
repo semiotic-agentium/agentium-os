@@ -28,7 +28,7 @@ mod stdio;
 
 use std::{
     num::NonZeroUsize,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -84,27 +84,9 @@ use services::{
 use stdio::unix_timestamp_secs;
 use tracing::{error, info, warn};
 
-fn resolve_claude_workspaces_base(cli: &Cli) -> Option<PathBuf> {
-    cli.claude_workspaces_base.as_ref().map(|base| {
-        let absolute = if base.is_absolute() {
-            base.clone()
-        } else {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(base)
-        };
-        if let Err(e) = std::fs::create_dir_all(&absolute) {
-            let path = absolute.display();
-            panic!("Cannot create Claude workspaces base {path}: {e}");
-        }
-        std::fs::canonicalize(&absolute).unwrap_or(absolute)
-    })
-}
-
 /// Start the Karakara platform (HTTP / stdio / event poll loop).
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
-    let claude_workspaces_base = resolve_claude_workspaces_base(&cli);
-    run_inner(cli, claude_workspaces_base).await
+    run_inner(cli).await
 }
 
 /// Reject cluster endpoints that are not routable from other pods.
@@ -129,7 +111,7 @@ fn validate_cluster_endpoint(endpoint: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_inner(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow::Result<()> {
+async fn run_inner(cli: Cli) -> anyhow::Result<()> {
     // Load dotenv before tracing/OTEL bootstrap so OTEL_* from .env are visible
     // to `init_tracing()` and exporter wiring.
     let dotenv_result = dotenvy::dotenv();
@@ -146,12 +128,7 @@ async fn run_inner(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow:
     // probes against the same meter the HTTP API will publish via /diagnose.
     let runtime_progress = RuntimeProgressMeter::spawn_in_current_runtime();
 
-    let config = cli
-        .into_config(claude_workspaces_base)
-        .context("Failed to parse arguments")?;
-    if let Some(ref base) = config.claude_workspaces_base {
-        info!(base = %base.display(), "Claude workspaces base set from --claude-workspaces-base");
-    }
+    let config = cli.into_config().context("Failed to parse arguments")?;
 
     match &config.provenance_db {
         ProvenanceDb::InMemory => {
@@ -389,7 +366,6 @@ async fn run_inner(cli: Cli, claude_workspaces_base: Option<PathBuf>) -> anyhow:
         deployment_state,
         access_policy: access_allowlist,
         stream_idle_secs: config.stream_idle_secs,
-        claude_workspaces_base: config.claude_workspaces_base,
         repository_url: config.repository_url.clone(),
         embedded_repository: Some(repository_service.clone()),
         runtime_progress: runtime_progress.clone(),
@@ -1271,7 +1247,6 @@ globalThis.onChatMessage = async function(_message) {
                 deployment_state: state,
                 access_policy: baml_rt_tools::ToolAccessPolicy::default(),
                 stream_idle_secs: None,
-                claude_workspaces_base: None,
                 repository_url: "http://127.0.0.1:18080/repository".to_string(),
                 embedded_repository: None,
                 runtime_progress: baml_rt_api::RuntimeProgressMeter::new_without_ticker(),

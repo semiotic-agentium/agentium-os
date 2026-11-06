@@ -8,15 +8,21 @@ use std::collections::HashMap;
 
 use baml_rt_builder::builder::schema_to_baml::generate_baml_types_from_schemas;
 use baml_rt_tools::{OpaqueJson, tool_schema::json_schema_value};
-use baml_rt_tools_claude::tools::ClaudeUserContentBlockDto;
 use serde_json::json;
 
 #[test]
 fn schema_to_baml_representative_boundary_snapshot() {
-    // These are the production schemas behind Claude's tagged content blocks and the opaque
-    // JSON transport marker. The surrounding schema keeps the corpus compact while covering
+    // The tagged content block and opaque JSON schemas keep the corpus compact while covering
     // the other forms accepted by this compatibility API.
-    let claude_content_block = json_schema_value::<ClaudeUserContentBlockDto>();
+    let content_block = json!({
+        "type": "object",
+        "properties": {
+            "kind": { "type": "string" },
+            "text": { "type": "string" }
+        },
+        "required": ["kind", "text"],
+        "additionalProperties": false
+    });
     let opaque_json = json_schema_value::<OpaqueJson>();
     let representative_schema = json!({
         "type": "object",
@@ -34,8 +40,8 @@ fn schema_to_baml_representative_boundary_snapshot() {
             },
             "content": {
                 "oneOf": [
-                    claude_content_block.clone(),
-                    { "type": "array", "items": claude_content_block }
+                    content_block.clone(),
+                    { "type": "array", "items": content_block }
                 ]
             },
             "opaque_payload": opaque_json

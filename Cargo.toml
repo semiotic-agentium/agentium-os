@@ -32,7 +32,6 @@ members = [
   "crates/test-support",
   "crates/task-daemon",
   "crates/tools/calculator",
-  "crates/tools/claude",
   "crates/tools/internal-dev",
   "crates/tools/security-eval",
   "crates/tools/clickup",

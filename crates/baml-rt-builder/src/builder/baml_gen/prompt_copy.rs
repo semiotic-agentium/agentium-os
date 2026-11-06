@@ -69,7 +69,7 @@ pub(crate) const BAML_CONVERSATION_HISTORY_JINJA_BLOCK: &str = r#"{{ ctx.tags['c
 
 // --- Session plan `step` field guidance ---
 
-pub(crate) const STEP_DESC_CLAUDE_OR_A2A: &str = "Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes above — do not paraphrase them in prose. @N beside a prior Send is an archive handle for PageRead/SearchRead (archive_ref is @ only). Do not use #N as an archive handle — #N indexes transcript lines only. For A2A Send, `input.text` is required when sending.";
+pub(crate) const STEP_DESC_A2A: &str = "Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes above — do not paraphrase them in prose. @N beside a prior Send is an archive handle for PageRead/SearchRead (archive_ref is @ only). Do not use #N as an archive handle — #N indexes transcript lines only. For A2A Send, `input.text` is required when sending.";
 
 pub(crate) const STEP_DESC_DEFAULT: &str = "Emit one step. Legal `op` and field shapes: this return type and the `*OpenStep` / `*SendStep` / `SearchRead` / `PageRead` / `Finish` / `Abort` classes in this file — do not paraphrase JSON field lists in the prompt. @N beside a prior Send is an archive handle for PageRead/SearchRead (archive_ref is @ only). Do not use #N as an archive handle — #N indexes transcript lines only.";
 

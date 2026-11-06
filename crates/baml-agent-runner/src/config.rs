@@ -53,8 +53,6 @@ pub(crate) struct RunnerConfig {
     pub(crate) web_dir: Option<PathBuf>,
     pub(crate) provenance_db: ProvenanceDb,
     pub(crate) state_dir: PathBuf,
-    /// Resolved canonical path for Claude workspaces root, if provided via CLI.
-    pub(crate) claude_workspaces_base: Option<PathBuf>,
     /// Stream collector idle timeout in seconds.
     pub(crate) stream_idle_secs: Option<u64>,
     /// Event producer poll interval. `None` disables the poll loop.
@@ -134,10 +132,6 @@ pub struct Cli {
     #[arg(long, value_name = "DIR", default_value = "./.runner-state")]
     pub(crate) state_dir: PathBuf,
 
-    /// Claude workspaces root directory. When set, overrides BAML_CLAUDE_WORKSPACES_BASE.
-    #[arg(long, value_name = "DIR")]
-    pub(crate) claude_workspaces_base: Option<PathBuf>,
-
     /// Stream collector idle timeout (seconds). Default 900.
     #[arg(long, value_name = "SECS", default_value = "900")]
     pub(crate) stream_idle_secs: u64,
@@ -192,10 +186,7 @@ pub struct Cli {
 }
 
 impl Cli {
-    pub(crate) fn into_config(
-        self,
-        claude_workspaces_base: Option<PathBuf>,
-    ) -> anyhow::Result<RunnerConfig> {
+    pub(crate) fn into_config(self) -> anyhow::Result<RunnerConfig> {
         let invoke = self
             .invoke
             .map(|values| (values[0].clone(), values[1].clone(), values[2].clone()));
@@ -241,7 +232,6 @@ impl Cli {
             web_dir: self.web_dir,
             provenance_db,
             state_dir: self.state_dir,
-            claude_workspaces_base,
             stream_idle_secs: Some(self.stream_idle_secs),
             event_poll_interval: if self.event_poll_interval_secs > 0 {
                 Some(std::time::Duration::from_secs(

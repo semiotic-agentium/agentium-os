@@ -46,7 +46,7 @@
 //! # Mode 2 — Metadata-only (no runtime handler)
 //!
 //! For tools where the runtime handler is provided by a host bundle (e.g.
-//! memory, system, claude tools), place `#[baml_tool]` on a unit struct with
+//! memory and system tools), place `#[baml_tool]` on a unit struct with
 //! the `metadata_only` flag. You must explicitly specify the type parameters.
 //!
 //! ```rust,ignore

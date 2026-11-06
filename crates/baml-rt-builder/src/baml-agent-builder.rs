@@ -35,7 +35,6 @@ use baml_rt_tools::{
     ManifestToolNames, ToolAccessPolicy, external_tools::build_builder_catalog,
     parse_access_allowlist, register_manifest_tools, tool_catalog::ToolCatalog,
 };
-use baml_rt_tools_claude as _;
 #[cfg(feature = "dev-tools")]
 use baml_tools_calculator as _;
 #[cfg(feature = "clickup")]

@@ -270,7 +270,7 @@ export interface TaskStatus {
   metadata?: Record<string, unknown>;
 }
 
-/** One event from a tool stream (e.g. claude/dev). */
+/** One event from a streaming tool. */
 export interface ToolEvent {
   kind: string;
   thinking?: string;

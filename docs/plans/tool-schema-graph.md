@@ -717,7 +717,7 @@ Task 2 is complete when the graph can represent every schema currently accepted 
 - [ ] Add dual-render comparison tests for static tools that currently provide `baml_decl`. Compile existing and graph-rendered BAML and compare normalized DTO IR signatures, not only text.
 - [ ] Resolve every semantic difference in aliases, field names, optionality, unions, descriptions, and nested symbols. Snapshot deliberate text changes.
 - [ ] Add a parity fixture in which equivalent static and external schemas produce equivalent normalized graph declarations and BAML after root-name normalization.
-- [ ] Regenerate and compile representative Notion, Slack or ClickUp, Claude, external-tool, and MCP fixtures.
+- [ ] Regenerate and compile representative Notion, Slack or ClickUp, external-tool, and MCP fixtures.
 
 Task 3 is complete when the graph renderer reproduces the supported BAML contract and equivalent schemas no longer depend on whether the tool was linked statically or imported.
 
@@ -786,7 +786,6 @@ At minimum, regenerate and compile:
 
 - Notion, for nested enums/unions and the current `BlockRenderMode` overlap;
 - Slack or ClickUp, for a large static DTO graph;
-- Claude, for `vec_or_one` and richer serde shapes;
 - an external-tool fixture;
 - an MCP fixture with typed input and opaque fallback;
 - System One on the integration branch after its tool metadata is present.

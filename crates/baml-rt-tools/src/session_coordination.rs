@@ -25,7 +25,7 @@ use crate::tools::ToolFunctionMetadata;
 /// Provider for session coordination BAML. Tool crates submit these via inventory; the builder
 /// collects BAML for tools named in the manifest.
 pub struct SessionCoordinationProvider {
-    /// Tool name (e.g. "claude/dev"). Must match manifest.
+    /// Tool name (for example, "support/example"). Must match manifest.
     pub tool_id: &'static str,
     /// Renders the full BAML fragment (classes, function, prompt) for this session tool.
     pub render: fn() -> Result<String>,

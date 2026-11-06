@@ -434,9 +434,9 @@ async fn coordinator_flow_shows_initial_user_message_before_delegated_message() 
     store
         .add_event(ProvEvent::agent_booted(
             worker_id.clone(),
-            AgentType::new("claude_session_demo").expect("agent_type"),
+            AgentType::new("worker_agent").expect("agent_type"),
             "1.0.0".to_string(),
-            "claude-session-demo@1.0.0".to_string(),
+            "worker-agent@1.0.0".to_string(),
         ))
         .await
         .expect("worker_booted");

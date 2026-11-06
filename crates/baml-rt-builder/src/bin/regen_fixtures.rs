@@ -16,7 +16,6 @@ use baml_rt_builder::builder::{
     },
     compiler::write_canonical_tsconfig,
 };
-use baml_rt_tools_claude as _; // Force link so claude tool metadata is in inventory
 #[cfg(feature = "security-eval")]
 use baml_tools_security_eval as _; // Force link so security-eval tool metadata is in inventory
 #[cfg(feature = "slack")]
