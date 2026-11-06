@@ -1,5 +1,6 @@
 ---
 source: crates/baml-rt-builder/tests/tool_schema_graph_test.rs
+assertion_line: 92
 expression: "format!(\"== graph projection ==\\n{}\\n== rendered BAML ==\\n{}\",\nproject_graph(&graph), rendered.trim_end())"
 ---
 == graph projection ==
@@ -14,32 +15,21 @@ NestedRequest (1) fp=object[address:true:ref:0,kind:true:ref:4,ap:AllowedAny]
   field kind: RequestKind required=true
   deps [Address, RequestKind]
 
-RepresentativeToolInput (2) fp=object[request:true:ref:1,required_nullable:true:union[string|null],optional_note:false:string,labels:true:map[string],addresses:true:arr[ref:0],content:false:vec_or_one[union[ref:5|ref:6|ref:7]],opaque_payload:true:json,ap:AllowedAny]
+RepresentativeToolInput (2) fp=object[request:true:ref:1,required_nullable:true:union[string|null],optional_note:false:string,labels:true:map[string],addresses:true:arr[ref:0],content:false:vec_or_one[ref:5],opaque_payload:true:json,ap:AllowedAny]
   owner public graph/representative input
   field request: NestedRequest required=true
   field required_nullable: string | null required=true
   field optional_note: string required=false
   field labels: map<string, string> required=true
   field addresses: Address[] required=true
-  field content: (RepresentativeToolInputContentAlt0 | RepresentativeToolInputContentAlt1 | RepresentativeToolInputContentAlt2 | RepresentativeToolInputContentAlt0 | RepresentativeToolInputContentAlt1 | RepresentativeToolInputContentAlt2[]) required=false
+  field content: (RepresentativeToolInputContent | RepresentativeToolInputContent[]) required=false
   field opaque_payload: json required=true
-  deps [Address, NestedRequest, RepresentativeToolInputContentAlt0, RepresentativeToolInputContentAlt1, RepresentativeToolInputContentAlt2]
+  deps [Address, NestedRequest, RepresentativeToolInputContent]
 
-RepresentativeToolInputContentAlt0 (5) fp=object[kind:true:lit:String("text"),text:true:string,ap:AllowedAny]
-  owner nested tool:graph/representative:input graph/representative input /properties/content/oneOf/1/items/oneOf/0
-  field kind: literal(String("text")) required=true
+RepresentativeToolInputContent (5) fp=object[kind:true:string,text:true:string,ap:Forbidden]
+  owner nested tool:graph/representative:input graph/representative input /properties/content/oneOf/1/items
+  field kind: string required=true
   field text: string required=true
-
-RepresentativeToolInputContentAlt1 (6) fp=object[kind:true:lit:String("image_url"),url:true:string,ap:AllowedAny]
-  owner nested tool:graph/representative:input graph/representative input /properties/content/oneOf/1/items/oneOf/1
-  field kind: literal(String("image_url")) required=true
-  field url: string required=true
-
-RepresentativeToolInputContentAlt2 (7) fp=object[kind:true:lit:String("image_base64"),media_type:true:string,data:true:string,ap:AllowedAny]
-  owner nested tool:graph/representative:input graph/representative input /properties/content/oneOf/1/items/oneOf/2
-  field kind: literal(String("image_base64")) required=true
-  field media_type: string required=true
-  field data: string required=true
 
 RepresentativeToolOutput (3) fp=object[accepted:true:bool,ap:Forbidden]
   owner public graph/representative output
@@ -56,23 +46,9 @@ tool graph/representative (class GraphRepresentative)
   output: RepresentativeToolOutput
 
 == rendered BAML ==
-class RepresentativeToolInputContentAlt0 {
-  kind "text"
+class RepresentativeToolInputContent {
+  kind string
   text string
-  @@dynamic
-}
-
-class RepresentativeToolInputContentAlt1 {
-  kind "image_url"
-  url string
-  @@dynamic
-}
-
-class RepresentativeToolInputContentAlt2 {
-  kind "image_base64"
-  media_type string
-  data string
-  @@dynamic
 }
 
 class RepresentativeToolOutput {
@@ -104,7 +80,7 @@ class RepresentativeToolInput {
   optional_note string?
   labels map<string, string>
   addresses Address[]
-  content (RepresentativeToolInputContentAlt0 | RepresentativeToolInputContentAlt1 | RepresentativeToolInputContentAlt2 | (RepresentativeToolInputContentAlt0 | RepresentativeToolInputContentAlt1 | RepresentativeToolInputContentAlt2)[])?
+  content (RepresentativeToolInputContent | RepresentativeToolInputContent[])?
   opaque_payload OpaqueJson @description("Opaque JSON transport value. Direct host callers may send raw JSON; generated BAML callers should use the OpaqueJson wrapper.")
   @@dynamic
 }

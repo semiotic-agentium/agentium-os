@@ -1,25 +1,12 @@
 ---
 source: crates/baml-rt-builder/tests/schema_to_baml_boundary_test.rs
+assertion_line: 109
 expression: "format!(\"== rendered BAML ==\\n{}\\n== unsupported allOf diagnostic ==\\n{}\\n\",\nrendered.trim_end(), diagnostic,)"
 ---
 == rendered BAML ==
-class RepresentativeToolInputContentAlt0 {
-  kind "text"
+class RepresentativeToolInputContent {
+  kind string
   text string
-  @@dynamic
-}
-
-class RepresentativeToolInputContentAlt1 {
-  kind "image_url"
-  url string
-  @@dynamic
-}
-
-class RepresentativeToolInputContentAlt2 {
-  kind "image_base64"
-  media_type string
-  data string
-  @@dynamic
 }
 
 class Address {
@@ -47,7 +34,7 @@ class RepresentativeToolInput {
   optional_note string?
   labels map<string, string>
   addresses Address[]
-  content (RepresentativeToolInputContentAlt0 | RepresentativeToolInputContentAlt1 | RepresentativeToolInputContentAlt2 | (RepresentativeToolInputContentAlt0 | RepresentativeToolInputContentAlt1 | RepresentativeToolInputContentAlt2)[])?
+  content (RepresentativeToolInputContent | RepresentativeToolInputContent[])?
   opaque_payload OpaqueJson @description("Opaque JSON transport value. Direct host callers may send raw JSON; generated BAML callers should use the OpaqueJson wrapper.")
   @@dynamic
 }
