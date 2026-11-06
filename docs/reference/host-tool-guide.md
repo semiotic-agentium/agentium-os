@@ -102,6 +102,9 @@ supervisor runs. The three protocol layers are: runner ↔ supervisor
 
 ### Authoring (TypeScript)
 
+For the complete scaffold-to-deploy workflow, see
+[How to write a TypeScript tool with the Karakara SDK and `karak` CLI](../runbooks/how-to-write-a-typescript-tool-with-the-karakara-sdk-and-karak-cli.md).
+
 `@karakara/tool` uses TypeBox schemas for both TypeScript inference and the JSON
 Schema returned by MCP `tools/list`:
 
