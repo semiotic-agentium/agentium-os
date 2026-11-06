@@ -14,7 +14,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use baml_rt_tools::external_tools::{KtoolRuntimeTier, audit_ktool_bundle};
 use baml_sandbox_protocol::{
     MAX_FRAME_BYTES,
-    protocol_v2::{GuestMessage, HostMessage, InvokeRequest, PROTOCOL_V2_VERSION},
+    protocol_v2::{CallContext, GuestMessage, HostMessage, InvokeRequest, PROTOCOL_V2_VERSION},
 };
 use console::style;
 use serde_json::{Value, json};
@@ -119,7 +119,10 @@ fn drive(child: &mut Child, bundle: &[u8], input: Value) -> Result<Value> {
             request_id: 1,
             tool: audited.descriptor.name.clone(),
             tool_digest: audited.tool_digest.to_string(),
-            call_context: Default::default(),
+            call_context: CallContext {
+                deadline_ms,
+                ..Default::default()
+            },
             input,
             deadline_ms,
         })),

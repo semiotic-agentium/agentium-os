@@ -64,9 +64,7 @@ export interface ToolContext<S extends SecretSpec = Record<never, never>> {
     level: "debug" | "info" | "notice" | "warning" | "error",
     message: string,
   ): Promise<void>;
-  /** Invocation deadline duration supplied by the host, when present. */
-  readonly deadlineMs: number | undefined;
-  /** Aborts on MCP cancellation or when the invocation deadline expires. */
+  /** Aborts when the host cancels the MCP invocation. */
   readonly signal: AbortSignal;
   /** Egress placeholders or reveal values provided by the supervisor. */
   readonly secrets: Readonly<{ [K in keyof S]: string }>;
@@ -183,8 +181,7 @@ export function defineTool<
       );
     }
 
-    const invocation = invocationContext(request.params._meta, extra.signal);
-    const ctx = createContext(server, targets, spec.secrets, invocation);
+    const ctx = createContext(server, targets, spec.secrets, extra.signal);
     try {
       const output = await handler(input as Static<I>, ctx);
       if (!Value.Check(spec.output, output)) {
@@ -198,14 +195,17 @@ export function defineTool<
         ...(isRecord(output) ? { structuredContent: output } : {}),
       };
     } catch (error) {
-      const classified = classifyError(error);
+      const classified = extra.signal.aborted
+        ? new ToolExecutionError(
+            "transient",
+            errorMessage(extra.signal.reason ?? error),
+          )
+        : classifyError(error);
       return {
         content: [{ type: "text" as const, text: classified.message }],
         isError: true,
         _meta: { "karakara/errorClass": classified.errorClass },
       };
-    } finally {
-      invocation.dispose();
     }
   });
 
@@ -228,7 +228,7 @@ function createContext<S extends SecretSpec>(
   server: Server,
   targets: readonly ParsedTarget[],
   secrets: S | undefined,
-  invocation: InvocationContext,
+  signal: AbortSignal,
 ): ToolContext<S> {
   const allowed = new Set(targets.map(({ host, port }) => `${host}:${port}`));
   const revealFds = revealFdTable();
@@ -244,8 +244,7 @@ function createContext<S extends SecretSpec>(
   ) as { [K in keyof S]: string };
 
   return {
-    deadlineMs: invocation.deadlineMs,
-    signal: invocation.signal,
+    signal,
     secrets: secretValues,
     error: (errorClass, message) => new ToolExecutionError(errorClass, message),
     log: async (level, message) => {
@@ -265,47 +264,8 @@ function createContext<S extends SecretSpec>(
           `network destination '${destination}' is not declared in this tool's net list`,
         );
       }
-      const signal = combineSignals(invocation.signal, init.signal);
-      return globalThis.fetch(input, { ...init, signal });
-    },
-  };
-}
-
-interface InvocationContext {
-  deadlineMs: number | undefined;
-  signal: AbortSignal;
-  dispose(): void;
-}
-
-function invocationContext(
-  meta: Record<string, unknown> | undefined,
-  signal: AbortSignal,
-): InvocationContext {
-  const callContext = meta?.["karakara/call_context"];
-  const rawDeadline = isRecord(callContext)
-    ? callContext.deadline_ms
-    : undefined;
-  const deadlineMs =
-    typeof rawDeadline === "number" && rawDeadline > 0
-      ? rawDeadline
-      : undefined;
-  if (deadlineMs === undefined) {
-    return { deadlineMs, signal, dispose: () => undefined };
-  }
-  const controller = new AbortController();
-  const abort = () => controller.abort(signal.reason);
-  signal.addEventListener("abort", abort, { once: true });
-  const timer = setTimeout(
-    () => controller.abort(new Error("tool deadline exceeded")),
-    deadlineMs,
-  );
-  timer.unref();
-  return {
-    deadlineMs,
-    signal: controller.signal,
-    dispose: () => {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", abort);
+      const requestSignal = combineSignals(signal, init.signal);
+      return globalThis.fetch(input, { ...init, signal: requestSignal });
     },
   };
 }
